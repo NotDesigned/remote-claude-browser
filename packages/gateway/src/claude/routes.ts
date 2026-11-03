@@ -199,6 +199,17 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
     metrics.bytes += Buffer.byteLength(frame);
     current.response.write(frame);
   };
+  const publishState = (current: Lease, state: ChatState) => {
+    if (!isCurrent(current)) return;
+    const change = chatDelta(current.readUnavailable ? undefined : current.state, state);
+    current.readUnavailable = false;
+    current.state = state;
+    if (change) {
+      send(current, change);
+      if (change.type === "snapshot") metrics.snapshots++;
+      else metrics.deltas++;
+    }
+  };
 
   app.get<{ Querystring: { tab?: string; connectionKey?: string } }>(
     apiPath("/events"),
@@ -329,14 +340,7 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
             sampledAt = Date.now();
             metrics.pollStage = "sampled";
             if (!canPoll()) return;
-            const change = chatDelta(current.readUnavailable ? undefined : current.state, state);
-            current.readUnavailable = false;
-            current.state = state;
-            if (change) {
-              send(current, change);
-              if (change.type === "snapshot") metrics.snapshots++;
-              else metrics.deltas++;
-            }
+            publishState(current, state);
           }
         } catch (error) {
           metrics.pollErrors++;
@@ -498,12 +502,16 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
                       .filter((m) => m.role === "user")
                       .slice(beforeCount)
                       .some((m) => m.text.trim() === text.trim())
-                  )
+                  ) {
+                    publishState(current, next);
                     return true;
+                  }
                 } else if (
                   body.type === "stop" ? !next.generating : new URL(next.url).pathname === path
-                )
+                ) {
+                  publishState(current, next);
                   return true;
+                }
                 // The site's stop handler can still be initializing when its button appears.
                 // Reassert this pending stop only in the same document. Sends are never repeated.
                 if (

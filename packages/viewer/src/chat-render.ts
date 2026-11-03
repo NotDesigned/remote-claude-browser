@@ -48,8 +48,10 @@ export function tokenizeChatText(text: string): ChatToken[] {
 }
 
 const markdown = new MarkdownIt({ html: false, linkify: false });
-const formulas = new Map<string, string>();
+const formulas = new Map<string, { id: string; html: string }>();
+const formulaHtml = new Map<string, string>();
 let formulaBytes = 0;
+let formulaSerial = 0;
 markdown.inline.ruler.before("escape", "chat_math", (state, silent) => {
   const start = state.pos;
   const opening = state.src.slice(start).match(/^(\$\$|\$|\\\[|\\\()/)?.[0];
@@ -64,34 +66,41 @@ markdown.inline.ruler.before("escape", "chat_math", (state, silent) => {
   return true;
 });
 for (const type of ["chat_math", "chat_math_block"]) {
-  markdown.renderer.rules[type] = (tokens, index) => {
+  markdown.renderer.rules[type] = (tokens, index, _options, environment) => {
+    const required = environment!.formulas as Map<string, string>;
     const content = tokens[index]!.content.trim();
     const display = type === "chat_math_block";
     const key = `${type}:${content}`;
     const cached = formulas.get(key);
-    if (cached) return cached;
-    const html = `<span class="${display ? "math-block" : "math-inline"}">${katex.renderToString(
-      content,
-      {
-        displayMode: display,
-        throwOnError: false,
-        trust: false,
-        strict: "ignore",
-        maxExpand: 1000,
-        maxSize: 12,
-      },
-    )}</span>`;
+    if (cached) {
+      required.set(cached.id, cached.html);
+      return `<span class="${display ? "math-block" : "math-inline"}" data-chat-formula="${cached.id}"></span>`;
+    }
+    const html = katex.renderToString(content, {
+      displayMode: display,
+      throwOnError: false,
+      trust: false,
+      strict: "ignore",
+      maxExpand: 1000,
+      maxSize: 12,
+    });
     if (html.length < 32000) {
       while (formulas.size >= 128 || formulaBytes + html.length > 512000) {
         const first = formulas.keys().next().value;
         if (first === undefined) break;
-        formulaBytes -= formulas.get(first)!.length;
+        const old = formulas.get(first)!;
+        formulaBytes -= old.html.length;
+        formulaHtml.delete(old.id);
         formulas.delete(first);
       }
-      formulas.set(key, html);
+      const id = String(++formulaSerial);
+      formulas.set(key, { id, html });
+      formulaHtml.set(id, html);
+      required.set(id, html);
       formulaBytes += html.length;
+      return `<span class="${display ? "math-block" : "math-inline"}" data-chat-formula="${id}"></span>`;
     }
-    return html;
+    return `<span class="${display ? "math-block" : "math-inline"}">${html}</span>`;
   };
 }
 markdown.renderer.rules.link_open = (tokens, index, options, _env, renderer) => {
@@ -114,16 +123,33 @@ interface RenderedBlock {
 }
 const rendered = new WeakMap<HTMLElement, RenderedBlock[]>();
 
+function populateFormulas(node: Node, required: ReadonlyMap<string, string>): void {
+  if (node.nodeType !== 1) return;
+  const element = node as Element;
+  const formulas = [
+    ...(element.hasAttribute("data-chat-formula") ? [element] : []),
+    ...element.querySelectorAll("[data-chat-formula]"),
+  ];
+  for (const formula of formulas)
+    formula.innerHTML = required.get(formula.getAttribute("data-chat-formula")!) || "";
+}
+
 /** Preserve existing text nodes and completed blocks while a streamed paragraph grows. */
-function patchChildren(parent: Node, desired: Node[]): void {
+function patchChildren(
+  parent: Node,
+  desired: Node[],
+  required: ReadonlyMap<string, string> = formulaHtml,
+): void {
   desired.forEach((next, index) => {
     const current = parent.childNodes[index];
     if (current === next) return;
     if (!current) {
+      populateFormulas(next, required);
       parent.appendChild(next);
       return;
     }
     if (current.nodeType !== next.nodeType || current.nodeName !== next.nodeName) {
+      populateFormulas(next, required);
       parent.replaceChild(next, current);
       return;
     }
@@ -150,13 +176,20 @@ function patchChildren(parent: Node, desired: Node[]): void {
     if (current.nodeType === 1) {
       const oldElement = current as Element,
         newElement = next as Element;
+      const formula = newElement.getAttribute("data-chat-formula");
+      if (formula) {
+        if (oldElement.getAttribute("data-chat-formula") === formula) return;
+        populateFormulas(next, required);
+        parent.replaceChild(next, current);
+        return;
+      }
       for (const attribute of Array.from(oldElement.attributes))
         if (!newElement.hasAttribute(attribute.name)) oldElement.removeAttribute(attribute.name);
       for (const attribute of Array.from(newElement.attributes))
         if (oldElement.getAttribute(attribute.name) !== attribute.value)
           oldElement.setAttribute(attribute.name, attribute.value);
     }
-    patchChildren(current, Array.from(next.childNodes));
+    patchChildren(current, Array.from(next.childNodes), required);
   });
   while (parent.childNodes.length > desired.length) parent.lastChild!.remove();
 }
@@ -166,7 +199,8 @@ export function renderChatText(element: HTMLElement, text: string, rich = true):
     patchChildren(element, [element.ownerDocument.createTextNode(text)]);
     return;
   }
-  const tokens = markdown.parse(text, {});
+  const environment = { formulas: new Map<string, string>() };
+  const tokens = markdown.parse(text, environment);
   const htmlBlocks: string[] = [];
   let start = 0,
     depth = 0;
@@ -174,7 +208,7 @@ export function renderChatText(element: HTMLElement, text: string, rich = true):
     depth += token.nesting;
     if (depth === 0) {
       htmlBlocks.push(
-        markdown.renderer.render(tokens.slice(start, index + 1), markdown.options, {}),
+        markdown.renderer.render(tokens.slice(start, index + 1), markdown.options, environment),
       );
       start = index + 1;
     }
@@ -203,6 +237,7 @@ export function renderChatText(element: HTMLElement, text: string, rich = true):
   patchChildren(
     element,
     plans.flatMap((block) => block.nodes),
+    environment.formulas,
   );
   if (bookmark && selection?.toString() !== bookmark.text) {
     const content = element.textContent || "";

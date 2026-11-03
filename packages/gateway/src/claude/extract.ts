@@ -9,7 +9,10 @@ const FILE_NAME = String.raw`(e) => (e.getAttribute('download') || (e.getAttribu
 const MESSAGE_TEXT = String.raw`(element, rich = true) => {
   const skip = 'button, script, style, svg, .sr-only, [aria-hidden="true"], [data-testid="message-actions"], [data-testid="user-message-actions"]';
   const read = node => {
-    if (node.nodeType === 3) return node.textContent || '';
+    if (node.nodeType === 3) {
+      const text = node.textContent || '';
+      return rich ? text.replace(/([\\\x60*_\[\]~$#>])/g, '\\$1') : text;
+    }
     if (node.nodeType !== 1) return '';
     if (node.matches('.katex-display, .katex, math, mjx-container')) {
       const tex = (node.querySelector('annotation[encoding="application/x-tex"]')?.textContent || node.getAttribute('data-latex') || node.getAttribute('data-tex') || node.getAttribute('alttext') || '').trim();
@@ -27,7 +30,7 @@ const MESSAGE_TEXT = String.raw`(element, rich = true) => {
         const href = node.getAttribute('href') || '';
         if (/^(https?:|mailto:|\/)/i.test(href)) {
           const url = new URL(href, location.href).href.replace(/\(/g, '%28').replace(/\)/g, '%29');
-          return '[' + text.replace(/([\[\]])/g, '\\$1') + '](' + url + ')';
+          return '[' + text + '](' + url + ')';
         }
       }
       if (node.tagName === 'STRONG' || node.tagName === 'B') return '**' + text + '**';
