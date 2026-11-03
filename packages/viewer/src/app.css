@@ -3,12 +3,12 @@
   --tabstrip-height: 38px;
   --urlbar-height: 46px;
   --toolbar-height: 48px;
-  --chrome-border: #dedfd9;
-  --chrome-ink: #26352f;
-  --chrome-muted: #69756e;
-  --chrome-accent: #286257;
+  --chrome-border: #dedcda;
+  --chrome-ink: #322e29;
+  --chrome-muted: #726f6c;
+  --chrome-accent: #554635;
   color: var(--chrome-ink);
-  background: #f0f1ec;
+  background: #f0efed;
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -49,9 +49,9 @@ body,
   height: var(--server-status-height);
   padding: 0 12px;
   overflow: hidden;
-  color: #62756b;
-  background: #e4ebe3;
-  border-bottom: 1px solid #d4ded2;
+  color: #716c66;
+  background: #e9e7e5;
+  border-bottom: 1px solid #dbd8d5;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
@@ -65,14 +65,14 @@ body,
 }
 
 .server-stat strong {
-  color: #335748;
+  color: #4f463b;
   font-weight: 600;
 }
 
 .server-status-freshness {
   justify-self: end;
   overflow: hidden;
-  color: #71836e;
+  color: #7e7973;
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -80,7 +80,7 @@ body,
 
 #server-status[data-status="stale"] .server-stat strong,
 #server-status[data-status="pending"] .server-stat strong {
-  color: #829082;
+  color: #8d8985;
 }
 
 #server-status[data-status="stale"] .server-status-freshness {
@@ -90,7 +90,7 @@ body,
 #shell button:focus-visible,
 #shell summary:focus-visible,
 #connection-state a:focus-visible {
-  outline: 2px solid #508d7d;
+  outline: 2px solid #7f705e;
   outline-offset: 2px;
 }
 
@@ -101,7 +101,7 @@ body,
   align-items: center;
   padding: 4px 12px;
   overflow: hidden;
-  background: #eef0e9;
+  background: #eeedeb;
   border-bottom: 1px solid var(--chrome-border);
 }
 
@@ -110,7 +110,7 @@ body,
   gap: 7px;
   align-items: center;
   padding-right: 6px;
-  color: #5c6d61;
+  color: #696560;
   font-size: 11px;
   font-weight: 650;
   white-space: nowrap;
@@ -163,14 +163,14 @@ body,
 }
 
 .browser-tab[data-active="true"] {
-  color: #263d31;
-  background: #fff;
-  border-color: #d9ded4;
-  box-shadow: 0 1px 2px rgb(37 53 39 / 5%);
+  color: #38322b;
+  background: #ffffff;
+  border-color: #dcd9d6;
+  box-shadow: 0 1px 2px rgb(49 45 41 / 5%);
 }
 
 .browser-tab:not([data-active="true"]):hover {
-  background: #e3e8dd;
+  background: #e6e3df;
 }
 
 .tab-activate,
@@ -215,7 +215,7 @@ body,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #829080;
+  color: #8c8884;
 }
 
 .tab-favicon-placeholder svg {
@@ -228,7 +228,7 @@ body,
   flex: 0 0 10px;
   width: 8px;
   height: 8px;
-  border: 2px solid #c9d7ca;
+  border: 2px solid #d4d0cc;
   border-right-color: var(--chrome-accent);
   border-radius: 50%;
   animation: loading-spin 700ms linear infinite;
@@ -253,8 +253,8 @@ body,
 
 .tab-close:hover,
 #new-tab:not(:disabled):hover {
-  color: #214b3c;
-  background: #dfe7d9;
+  color: #42372a;
+  background: #e4e0dc;
 }
 
 #new-tab {
@@ -269,7 +269,7 @@ body,
   gap: 4px;
   align-items: center;
   padding: 6px 164px 6px 12px;
-  background: #fafbf8;
+  background: #fafaf9;
   border-bottom: 1px solid var(--chrome-border);
 }
 
@@ -278,7 +278,7 @@ body,
   display: grid;
   place-items: center;
   padding: 0;
-  color: #617165;
+  color: #6d6965;
   background: transparent;
   border: 0;
   border-radius: 7px;
@@ -286,12 +286,12 @@ body,
 }
 
 #urlbar button:not(:disabled):hover {
-  color: #25493a;
-  background: #e9eee4;
+  color: #41382d;
+  background: #ece9e6;
 }
 
 #urlbar button:disabled {
-  color: #bcc3b9;
+  color: #c1bebb;
   cursor: default;
 }
 
@@ -305,7 +305,7 @@ body,
   top: 7px;
   left: 11px;
   display: flex;
-  color: #82907f;
+  color: #8c8883;
   pointer-events: none;
 }
 
@@ -315,8 +315,8 @@ body,
   height: 32px;
   padding: 5px 32px 5px 36px;
   color: var(--chrome-ink);
-  background: #f0f3ed;
-  border: 1px solid #e5e9e0;
+  background: #f2f0ee;
+  border: 1px solid #e7e5e2;
   border-radius: 9px;
   outline: none;
   font-family: inherit;
@@ -325,13 +325,13 @@ body,
 }
 
 #urlbar input:focus {
-  background: #fff;
-  border-color: #85ab99;
-  box-shadow: 0 0 0 3px rgb(95 148 120 / 12%);
+  background: #ffffff;
+  border-color: #a2998e;
+  box-shadow: 0 0 0 3px rgb(136 122 107 / 12%);
 }
 
 #urlbar input::placeholder {
-  color: #8b9789;
+  color: #94908c;
 }
 
 .loading-indicator {
@@ -341,7 +341,7 @@ body,
   right: 10px;
   width: 12px;
   height: 12px;
-  border: 2px solid #c9d7ca;
+  border: 2px solid #d4d0cc;
   border-right-color: var(--chrome-accent);
   border-radius: 50%;
   opacity: 0;
@@ -373,7 +373,7 @@ body,
   overflow-y: hidden;
   scrollbar-width: none;
   color: var(--chrome-muted);
-  background: #fff;
+  background: #ffffff;
   border-bottom: 1px solid var(--chrome-border);
   font-size: 12px;
 }
@@ -393,8 +393,8 @@ body,
 }
 
 #input-state[data-ready="true"] {
-  color: #356350;
-  background: #edf5ef;
+  color: #594d3f;
+  background: #f3f1ef;
 }
 
 #input-state::before,
@@ -419,7 +419,7 @@ body,
 }
 
 #connection-state[data-state="open"] .connection-badge {
-  color: #487459;
+  color: #6a5f52;
 }
 
 .connection-environment {
@@ -437,9 +437,9 @@ body,
   max-width: 190px;
   min-height: 26px;
   padding: 0 9px;
-  color: #426352;
-  background: #f1f5ed;
-  border: 1px solid #dfe8d8;
+  color: #5c5349;
+  background: #f3f1ef;
+  border: 1px solid #e4e0dc;
   border-radius: 7px;
   font-size: 11px;
   font-weight: 600;
@@ -448,8 +448,8 @@ body,
 
 .session-account {
   padding-left: 6px;
-  color: #809176;
-  border-left: 1px solid #d6e1ce;
+  color: #8b847c;
+  border-left: 1px solid #ddd8d2;
   font-size: 10px;
   font-weight: 400;
 }
@@ -470,24 +470,24 @@ body,
   place-items: center;
   padding: 24px;
   overflow: auto;
-  background: #f6f7f2;
+  background: #f6f5f3;
 }
 
 .client-session-card {
   box-sizing: border-box;
   width: min(100%, 460px);
   padding: 28px;
-  border: 1px solid #e1e6d9;
+  border: 1px solid #e3e0dc;
   border-radius: 16px;
-  background: #fff;
-  box-shadow: 0 8px 32px rgb(41 61 35 / 5%);
+  background: #ffffff;
+  box-shadow: 0 8px 32px rgb(55 48 41 / 5%);
 }
 
 .session-eyebrow {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: #6a8061;
+  color: #797168;
   font-size: 11px;
 }
 
@@ -496,12 +496,12 @@ body,
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #76a16b;
+  background: #958777;
 }
 
 .client-session-card h1 {
   margin: 13px 0 10px;
-  color: #2f4431;
+  color: #3f3a34;
   font-size: 23px;
   font-weight: 600;
   line-height: 1.4;
@@ -509,7 +509,7 @@ body,
 
 .client-session-card p {
   margin: 0;
-  color: #68755f;
+  color: #706a64;
   font-size: 13px;
   line-height: 1.9;
 }
@@ -517,8 +517,8 @@ body,
 .client-session-card .session-policy {
   margin-top: 13px;
   padding-top: 13px;
-  border-top: 1px solid #edf0e6;
-  color: #64715d;
+  border-top: 1px solid #eeebe8;
+  color: #6c6762;
   font-size: 11px;
 }
 
@@ -532,7 +532,7 @@ body,
 
 .client-session-actions a,
 .owned-client-sessions a {
-  color: #4d7450;
+  color: #6b6156;
   font-size: 12px;
   text-decoration: none;
 }
@@ -543,8 +543,8 @@ body,
   min-height: 35px;
   box-sizing: border-box;
   padding: 7px 14px;
-  color: #fff;
-  border: 1px solid #28584b;
+  color: #ffffff;
+  border: 1px solid #4d4133;
   border-radius: 8px;
   background: var(--chrome-accent);
   font: inherit;
@@ -553,7 +553,7 @@ body,
 }
 
 .client-session-actions .session-primary-action:hover {
-  background: #1f5044;
+  background: #45382a;
 }
 
 .owned-client-sessions {
@@ -570,9 +570,9 @@ body,
 
 .owned-client-sessions a {
   padding: 7px 11px;
-  border: 1px solid #dde7d4;
+  border: 1px solid #e3ded8;
   border-radius: 7px;
-  background: #f5f8ef;
+  background: #f6f4f1;
 }
 
 #view-mode-select {
@@ -581,9 +581,9 @@ body,
   min-height: 32px;
   max-width: 164px;
   padding: 4px 8px;
-  color: var(--chrome-text, #304b40);
-  background: var(--chrome-surface, #fff);
-  border: 1px solid #cddcc5;
+  color: var(--chrome-text, #453e36);
+  background: var(--chrome-surface, #ffffff);
+  border: 1px solid #d7d1ca;
   border-radius: 8px;
   font: inherit;
   font-size: 12px;
@@ -631,8 +631,8 @@ body,
   align-items: center;
   min-width: 0;
   padding: 1px 5px;
-  color: #526079;
-  background: #eef2f7;
+  color: #6c675f;
+  background: #f4f3f1;
   border-radius: 999px;
   white-space: nowrap;
 }
@@ -645,8 +645,8 @@ body,
 
 .presence-driver {
   padding: 0 4px;
-  color: #1d4ed8;
-  background: #dbeafe;
+  color: #ab5b3e;
+  background: #f3eee6;
   border-radius: 999px;
   font-size: 9px;
   font-weight: 700;
@@ -654,12 +654,12 @@ body,
 }
 
 #connection-state .request-driver {
-  color: #fff;
-  background: #2563eb;
+  color: #ffffff;
+  background: #bc6646;
 }
 
 #connection-state .request-driver:hover {
-  background: #1d4ed8;
+  background: #ab5b3e;
 }
 
 #connection-state button {
@@ -667,9 +667,9 @@ body,
   flex-shrink: 0;
   min-height: 30px;
   padding: 4px 9px;
-  color: #4d6655;
-  background: #f5f7f1;
-  border: 1px solid #e2e7dc;
+  color: #605a53;
+  background: #f6f4f2;
+  border: 1px solid #e5e2de;
   border-radius: 7px;
   font: inherit;
   white-space: nowrap;
@@ -677,7 +677,7 @@ body,
 }
 
 #connection-state button:not(:disabled):hover {
-  background: #eaf0e3;
+  background: #edeae6;
 }
 
 #connection-state button:disabled {
@@ -688,7 +688,7 @@ body,
 #connection-state > a {
   flex-shrink: 0;
   padding: 6px 3px;
-  color: #697c69;
+  color: #78736d;
   font-size: 11px;
   text-decoration: none;
   white-space: nowrap;
@@ -700,7 +700,7 @@ body,
 }
 
 #connection-state > a:hover {
-  color: #23523c;
+  color: #473b2e;
   text-decoration: underline;
 }
 
@@ -716,7 +716,7 @@ body,
      clipping pins both, so the reported viewport no longer depends on bar visibility. */
   overflow: hidden;
   overscroll-behavior: contain;
-  background: #f8fafc;
+  background: #fbfaf9;
 }
 
 .px-canvas {
@@ -724,7 +724,7 @@ body,
   display: block;
   width: 100%;
   height: 100%;
-  background: #111827;
+  background: #201d18;
   outline: none;
 }
 
@@ -779,7 +779,7 @@ body,
   min-height: 100%;
   margin: 0;
   place-items: center;
-  color: #526079;
+  color: #6c675f;
 }
 
 #viewer-hud-layer {
@@ -795,9 +795,9 @@ body,
 .connection-hud {
   position: relative;
   width: 148px;
-  border: 1px solid #dfe6d9;
+  border: 1px solid #e3e0dc;
   border-radius: 9px;
-  background: #f1f5ec;
+  background: #f3f1ee;
 }
 
 .connection-hud > summary {
@@ -816,7 +816,7 @@ body,
 }
 
 .connection-hud > summary:hover {
-  background: #e8efdf;
+  background: #ebe7e3;
 }
 
 .hud-chevron {
@@ -824,7 +824,7 @@ body,
   width: 11px;
   height: 11px;
   margin-left: auto;
-  stroke: #778571;
+  stroke: #807b76;
   stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -847,7 +847,7 @@ body,
 }
 
 .connection-hud[data-connection="open"] .hud-state-dot {
-  background: #5b956d;
+  background: #887968;
 }
 
 .connection-hud[data-connection="closed"] .hud-state-dot {
@@ -871,10 +871,10 @@ body,
   max-height: min(460px, calc(100dvh - var(--tabstrip-height) - var(--urlbar-height) - 24px));
   padding: 4px 13px 13px;
   overflow-y: auto;
-  border: 1px solid #dce3d5;
+  border: 1px solid #e0dcd8;
   border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 12px 36px rgb(35 53 34 / 12%);
+  background: #ffffff;
+  box-shadow: 0 12px 36px rgb(49 44 38 / 12%);
 }
 
 .hud-metrics {
@@ -889,14 +889,14 @@ body,
 }
 
 .hud-metrics dt {
-  color: #899180;
+  color: #8d8984;
   font-size: 11px;
 }
 
 .hud-metrics dd {
   overflow: hidden;
   margin: 4px 0 0;
-  color: #344b37;
+  color: #464039;
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -914,14 +914,14 @@ body,
 
 .hud-tabs h2 {
   margin: 14px 0 7px;
-  color: #899180;
+  color: #8d8984;
   font-size: 11px;
   font-weight: 600;
 }
 
 .hud-tabs p {
   margin: 4px 0 0;
-  color: #899180;
+  color: #8d8984;
 }
 
 .hud-tabs ul {
@@ -940,12 +940,12 @@ body,
   gap: 7px;
   align-items: center;
   padding: 4px 5px;
-  color: #66745f;
+  color: #6f6a64;
   border-radius: 6px;
 }
 
 .hud-tabs li[data-active="true"] {
-  background: #f2f6ec;
+  background: #f4f1ee;
 }
 
 .hud-tab-title {
@@ -957,8 +957,8 @@ body,
 .hud-mode {
   min-width: 26px;
   padding: 1px 4px;
-  color: #467052;
-  background: #ebf3e5;
+  color: #675c4f;
+  background: #f0ece8;
   border-radius: 5px;
   text-align: center;
 }
@@ -969,7 +969,7 @@ body,
 }
 
 .hud-resync-count {
-  color: #899180;
+  color: #8d8984;
   font-size: 10px;
 }
 
@@ -1128,55 +1128,55 @@ body,
 /* The default remains the low-contrast light workspace. Dark mode is opt-in and keeps the same
    geometry so switching themes never renegotiates the remote viewport. */
 #shell[data-theme="dark"] {
-  --chrome-border: #35443c;
-  --chrome-ink: #e8eee8;
-  --chrome-muted: #a5b4aa;
-  --chrome-accent: #74b39a;
+  --chrome-border: #413d38;
+  --chrome-ink: #edebe9;
+  --chrome-muted: #b1ada8;
+  --chrome-accent: #a59582;
   color: var(--chrome-ink);
-  background: #18211d;
+  background: #1f1d1a;
 }
 
 #shell[data-theme="dark"] #server-status,
 #shell[data-theme="dark"] #tabstrip,
 #shell[data-theme="dark"] #urlbar,
 #shell[data-theme="dark"] #connection-state {
-  color: #b9c9bd;
-  background: #202c26;
-  border-color: #35443c;
+  color: #c5c1bd;
+  background: #292623;
+  border-color: #413d38;
 }
 
 #shell[data-theme="dark"] .browser-tab[data-active="true"],
 #shell[data-theme="dark"] .view-mode-options,
 #shell[data-theme="dark"] .hud-panel {
-  color: #e8eee8;
-  background: #26342d;
-  border-color: #42544a;
+  color: #edebe9;
+  background: #312d29;
+  border-color: #504b46;
 }
 
 #shell[data-theme="dark"] .browser-tab:not([data-active="true"]):hover,
 #shell[data-theme="dark"] .view-mode-options button:hover:not(:disabled),
 #shell[data-theme="dark"] .view-mode-options a:hover,
 #shell[data-theme="dark"] #connection-state button:not(:disabled):hover {
-  background: #34483d;
+  background: #443e38;
 }
 
 #shell[data-theme="dark"] #connection-state button,
 #shell[data-theme="dark"] #view-mode-menu summary,
 #shell[data-theme="dark"] #connection-state #theme-toggle {
-  color: #d9e6dc;
-  background: #2d4035;
-  border-color: #486052;
+  color: #e3e0dc;
+  background: #3c3731;
+  border-color: #5b544d;
 }
 
 #shell[data-theme="dark"] .view-mode-options button,
 #shell[data-theme="dark"] .view-mode-options a,
 #shell[data-theme="dark"] #urlbar input {
-  color: #e8eee8;
+  color: #edebe9;
 }
 
 #shell[data-theme="dark"] #server-status {
-  background: #26362c;
-  border-color: #405449;
+  background: #322e2a;
+  border-color: #4f4a44;
 }
 
 #transfer-panels {
@@ -1189,7 +1189,7 @@ body,
   width: min(420px, calc(100vw - 24px));
   max-height: 55dvh;
   overflow-y: auto;
-  color: #172033;
+  color: #2a2620;
   font-size: 12px;
 }
 #transfer-panels > [aria-hidden="true"] {
@@ -1205,18 +1205,18 @@ body,
 
 .download-tray {
   overflow: hidden;
-  border: 1px solid rgb(148 163 184 / 55%);
+  border: 1px solid rgb(172 167 160 / 55%);
   border-radius: 9px;
-  background: rgb(248 250 252 / 96%);
-  box-shadow: 0 8px 28px rgb(15 23 42 / 24%);
+  background: rgb(251 250 249 / 96%);
+  box-shadow: 0 8px 28px rgb(33 29 24 / 24%);
   backdrop-filter: blur(8px);
 }
 
 .download-tray h2 {
   margin: 0;
   padding: 8px 10px;
-  color: #526079;
-  border-bottom: 1px solid #d8dee8;
+  color: #6c675f;
+  border-bottom: 1px solid #e3e0dd;
   font-size: 11px;
   font-weight: 650;
   letter-spacing: 0.04em;
@@ -1239,7 +1239,7 @@ body,
 }
 
 .download-entry + .download-entry {
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid #ebe9e7;
 }
 
 .download-entry-heading,
@@ -1262,7 +1262,7 @@ body,
   width: 22px;
   height: 22px;
   padding: 0;
-  color: #64748b;
+  color: #7e7971;
   background: transparent;
   border: 0;
   border-radius: 5px;
@@ -1271,39 +1271,39 @@ body,
 }
 
 .download-dismiss:hover {
-  color: #172033;
-  background: #e2e8f0;
+  color: #2a2620;
+  background: #ebe9e7;
 }
 
 .download-entry progress {
   width: 100%;
   height: 7px;
-  accent-color: #2563eb;
+  accent-color: #bc6646;
 }
 
 .download-status,
 .download-preparing {
-  color: #64748b;
+  color: #7e7971;
   font-size: 11px;
 }
 
 .download-save {
   padding: 4px 10px;
-  color: #fff;
-  background: #2563eb;
+  color: #ffffff;
+  background: #bc6646;
   border-radius: 6px;
   font-weight: 650;
   text-decoration: none;
 }
 
 .download-save:hover {
-  background: #1d4ed8;
+  background: #ab5b3e;
 }
 
 #shell[data-theme="dark"] #view-mode-select {
-  color: #e2e9df;
-  background: #27322d;
-  border-color: #526257;
+  color: #e7e4e1;
+  background: #302d29;
+  border-color: #5e5a56;
 }
 
 #upload-panel {
@@ -1312,10 +1312,10 @@ body,
   align-items: center;
   gap: 10px;
   padding: 14px;
-  border: 1px solid #cddcc5;
+  border: 1px solid #d7d1ca;
   border-radius: 12px;
-  background: #fff;
-  color: #304b40;
+  background: #ffffff;
+  color: #453e36;
   box-shadow: 0 4px 24px #0002;
 }
 #upload-panel > span {
@@ -1329,22 +1329,22 @@ body,
 #upload-panel button {
   padding: 7px 10px;
   border-radius: 7px;
-  border: 1px solid #cddcc5;
+  border: 1px solid #d7d1ca;
   cursor: pointer;
 }
 #shell[data-theme="dark"] #upload-panel {
-  background: #27322d;
-  color: #e2e9df;
+  background: #302d29;
+  color: #e7e4e1;
 }
 
 #shell[data-theme="dark"] .download-tray {
-  background: #27322d;
-  color: #e2e9df;
-  border-color: #526257;
+  background: #302d29;
+  color: #e7e4e1;
+  border-color: #5e5a56;
 }
 #shell[data-theme="dark"] .download-tray h2 {
-  color: #c9d6c8;
-  border-color: #526257;
+  color: #d3cfcb;
+  border-color: #5e5a56;
 }
 
 #connection-state #server-status {

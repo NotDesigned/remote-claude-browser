@@ -467,45 +467,29 @@ async function captureHeader(page, name, viewport) {
         bottom: rect.bottom,
       };
     };
-    const header = document.querySelector("#connection-state");
+    const header = document.querySelector("#shell-bar");
     const host = document.querySelector("#mirror-host");
     return {
       width: innerWidth,
       height: innerHeight,
       header: box(header),
-      serverStatus: box(document.querySelector("#server-status")),
-      serverStats: [...document.querySelectorAll(".server-stat")].map((element) => ({
-        text: element.textContent,
-        ...box(element),
-      })),
       host: box(host),
       address: box(document.querySelector('#urlbar input[aria-label="Address"]')),
       tabTitle: box(document.querySelector('.browser-tab[data-active="true"] .tab-title')),
       hud: box(document.querySelector("#viewer-hud-layer")),
-      controls: ["view-mode-select", "theme-toggle"].map((id) => {
-        const element = document.getElementById(id);
+      controls: [
+        ...document.querySelectorAll("#shell-bar [data-view-mode]"),
+        document.querySelector("#shell-menu-toggle"),
+        document.querySelector("#shell-status"),
+      ].map((element) => {
         const rect = box(element);
         const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+        const id = element.dataset.viewMode ?? element.id;
         return { id, ...rect, hit: hit !== null && (hit === element || element.contains(hit)) };
       }),
     };
   });
   layouts[name] = layout;
-  assert(
-    layout.serverStatus.y >= layout.header.y &&
-      layout.serverStatus.bottom <= layout.header.bottom + 1,
-    `${name}: server metrics must share the connection toolbar`,
-  );
-  for (const metric of layout.serverStats) {
-    assert(
-      metric.x >= 0 && metric.right <= layout.width + 1,
-      `${name}: status metric clips horizontally`,
-    );
-    assert(
-      metric.y >= 0 && metric.bottom <= layout.serverStatus.bottom + 1,
-      `${name}: status metric clips vertically`,
-    );
-  }
   assert(layout.header.bottom <= layout.host.y + 1, `${name}: header overlaps the content`);
   assert(layout.address.right <= layout.hud.x + 1, `${name}: RTT control overlaps the address`);
   assert(layout.tabTitle.width >= 20, `${name}: active tab title is squeezed out`);
@@ -637,19 +621,24 @@ try {
   await address.blur();
   assert.equal(await firstPage.locator(".address-site-title").count(), 0);
   checks.websiteTitleUpdatesWithoutReplacingAddressDraft = true;
-  const modeSelect = firstPage.locator("#view-mode-select");
+  const viewButton = (mode) => firstPage.locator(`#shell-bar [data-view-mode="${mode}"]`);
   assert.deepEqual(
-    await modeSelect
-      .locator("option")
-      .evaluateAll((options) => options.map((option) => option.value)),
+    await firstPage
+      .locator("#shell-bar [data-view-mode]")
+      .evaluateAll((buttons) => buttons.map((button) => button.dataset.viewMode)),
     ["chat", "dom", "px"],
   );
-  await modeSelect.selectOption("chat");
-  await firstPage.waitForURL("**/chat.html?**");
+  // Switching views happens inside the unified page: no navigation, no reload.
+  await firstPage.evaluate(() => (window.__samePage = true));
+  await viewButton("chat").click();
+  await firstPage.locator("#chat-view #draft").waitFor();
+  assert.equal(await viewButton("chat").getAttribute("aria-pressed"), "true");
+  assert.equal(await firstPage.evaluate(() => window.__samePage), true);
   const chat = new URL(firstPage.url());
-  assert.equal(await firstPage.locator("#view-mode-select").inputValue(), "chat");
+  assert.equal(chat.pathname, "/");
+  assert.equal(chat.searchParams.get("mode"), "chat");
   assert.equal(chat.searchParams.get("sid"), "client-1");
-  assert.equal(chat.searchParams.get("tab"), "fixture-client-1");
+  assert.equal(await firstPage.locator("#mirror-host").isHidden(), true);
   await firstPage.locator("#messages .katex").first().waitFor({ state: "visible" });
   assert.equal(await firstPage.locator("#messages .katex").count(), 4);
   const nativeFonts = await firstPage.evaluate(() =>
@@ -695,15 +684,16 @@ try {
     path: resolve(artifacts, "client-ui-native-chat-mobile.png"),
     fullPage: true,
   });
-  assert.equal(await firstPage.locator("#view-mode-select").isVisible(), true);
+  assert.equal(await viewButton("chat").isVisible(), true);
   assert.equal(
     await firstPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
     true,
   );
   await firstPage.setViewportSize({ width: 1360, height: 900 });
   checks.nativeAttachmentUploadAndDownload = true;
-  await firstPage.locator("#view-mode-select").selectOption("dom");
+  await viewButton("dom").click();
   await ready(firstPage, "client-1");
+  assert.equal(await firstPage.evaluate(() => window.__samePage), true);
   await firstPage.evaluate(() =>
     fetch("/s/client-1/uploads/prepare", {
       method: "POST",
@@ -720,10 +710,8 @@ try {
   assert.equal(uploadedFiles.at(-2).name, "DOM附件一.txt");
   assert.equal(uploadedFiles.at(-1).text, "附件二");
   await firstPage.locator("#upload-panel button").click();
-  await firstPage.locator("#view-mode-select").selectOption("px");
-  await firstPage.waitForFunction(
-    () => document.querySelector("#view-mode-select")?.value === "px",
-  );
+  await viewButton("px").click();
+  await firstPage.locator('#shell-bar [data-view-mode="px"][aria-pressed="true"]').waitFor();
   await firstPage.evaluate(() =>
     fetch("/s/client-1/uploads/prepare", {
       method: "POST",
@@ -740,10 +728,8 @@ try {
   await firstPage.getByText("附件已传至远端，请等待官网处理完成", { exact: true }).waitFor();
   assert.equal(uploadedFiles.at(-1).text, "图像模式中文附件");
   await firstPage.locator("#upload-panel button").click();
-  await firstPage.locator("#view-mode-select").selectOption("dom");
-  await firstPage.waitForFunction(
-    () => document.querySelector("#view-mode-select")?.value === "dom",
-  );
+  await viewButton("dom").click();
+  await firstPage.locator('#shell-bar [data-view-mode="dom"][aria-pressed="true"]').waitFor();
   checks.domAndPixelAttachmentUploads = true;
   checks.refreshReusesSessionAndChatScope = true;
   checks.actualThreeModeNavigation = true;
@@ -778,15 +764,13 @@ try {
   assert.equal(connections.filter((connection) => !connection.closed).length, 2);
   checks.capacityOverlayOwnedLinksAndStableRetry = true;
 
-  await firstPage.locator('#server-status[data-status="fresh"]').waitFor();
-  assert.equal(
-    await firstPage.locator('#server-status [data-stat="online"]').textContent(),
-    "在线客户端2",
+  await firstPage.locator("#shell-menu-toggle").click();
+  const menu = firstPage.locator("#shell-menu");
+  await menu.waitFor();
+  await firstPage.waitForFunction(() =>
+    document.querySelector("#shell-menu")?.textContent?.includes("在线设备2"),
   );
-  assert.match(
-    await firstPage.locator('#server-status [data-stat="memory"]').innerText(),
-    /1\.2\/1\.9 GiB/,
-  );
+  assert.match(await menu.innerText(), /1\.2 \/ 1\.9 GiB/);
   assert.equal(
     await firstPage.locator("#presence-chrome").count(),
     0,
@@ -807,8 +791,10 @@ try {
   cpuPercent = 47;
   broadcastStatus();
   await firstPage.waitForFunction(() =>
-    document.querySelector('#server-status [data-stat="cpu"]')?.textContent?.includes("47%"),
+    document.querySelector("#shell-menu")?.textContent?.includes("CPU47%"),
   );
+  await firstPage.keyboard.press("Escape");
+  await menu.waitFor({ state: "hidden" });
   await thirdPage.waitForFunction(
     (before) =>
       window.__clientUiTrace.filter(
@@ -830,22 +816,18 @@ try {
 
   await firstPage.bringToFront();
   const headerHeight = await firstPage
-    .locator("#connection-state")
+    .locator("#shell-bar")
     .evaluate((header) => header.getBoundingClientRect().height);
   for (const socket of wss.clients) {
     if (socket.readyState === 1)
       socket.send(JSON.stringify({ t: "px-capacity", available: false }));
   }
   await firstPage.waitForFunction(
-    () => document.querySelector('#view-mode-select option[value="px"]')?.disabled === true,
-  );
-  assert.equal(
-    await firstPage.locator('#view-mode-select option[value="px"]').textContent(),
-    "图像模式（已占用）",
+    () => document.querySelector('#shell-bar [data-view-mode="px"]')?.disabled === true,
   );
   assert.equal(
     await firstPage
-      .locator("#connection-state")
+      .locator("#shell-bar")
       .evaluate((header) => header.getBoundingClientRect().height),
     headerHeight,
   );
@@ -853,20 +835,18 @@ try {
     if (socket.readyState === 1) socket.send(JSON.stringify({ t: "px-capacity", available: true }));
   }
   await firstPage.waitForFunction(
-    () => document.querySelector('#view-mode-select option[value="px"]')?.disabled === false,
-  );
-  assert.equal(
-    await firstPage.locator('#view-mode-select option[value="px"]').textContent(),
-    "图像模式",
+    () => document.querySelector('#shell-bar [data-view-mode="px"]')?.disabled === false,
   );
   checks.pixelCapacityDisablesAndRestoresWithoutToolbarResize = true;
 
   await captureHeader(firstPage, "desktop", { width: 1360, height: 900 });
   await captureHeader(firstPage, "mobile", { width: 375, height: 812 });
-  await firstPage.locator("#theme-toggle").click();
+  await firstPage.locator("#shell-menu-toggle").click();
+  await firstPage.locator("#shell-menu").getByRole("button", { name: "深色", exact: true }).click();
   await firstPage.locator('#shell[data-theme="dark"]').waitFor();
-  await firstPage.locator("#theme-toggle").click();
+  await firstPage.locator("#shell-menu").getByRole("button", { name: "浅色", exact: true }).click();
   await firstPage.locator('#shell[data-theme="light"]').waitFor();
+  await firstPage.keyboard.press("Escape");
   checks.themeToggleKeepsGeometry = true;
   const settledViews = views.length;
   await firstPage.waitForTimeout(400);

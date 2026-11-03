@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CLIENT_KEY_STORAGE_KEY,
   ClientSessionError,
-  chatEntryUrl,
   clientChatUrl,
   clientGatewayUrl,
   clientPageMode,
@@ -275,20 +274,17 @@ describe("client session bootstrap", () => {
     expect(clientReturnUrl("client-1")).toBe("/?sid=client-1");
   });
 
-  it("enters text chat by default and honours an explicit or remembered browser view", () => {
+  it("prefers text chat and remembers an explicitly chosen browser view", () => {
     const store = new Map<string, string>();
     const storage = {
       getItem: (key: string) => store.get(key) ?? null,
       setItem: (key: string, value: string) => void store.set(key, value),
     };
     expect(preferredViewMode(storage)).toBe("chat");
-    expect(chatEntryUrl(new URL("https://v.test/?sid=client-3"), "client-3", storage)).toBe(
-      "/chat.html?sid=client-3",
-    );
-    expect(chatEntryUrl(new URL("https://v.test/?mode=dom"), "client-3", storage)).toBeNull();
-    expect(chatEntryUrl(new URL("https://v.test/?fixture=demo"), "client-3", storage)).toBeNull();
     rememberViewMode(storage, "px");
-    expect(chatEntryUrl(new URL("https://v.test/"), "client-3", storage)).toBeNull();
+    expect(preferredViewMode(storage)).toBe("px");
+    store.set("mirror.view-mode", "nonsense");
+    expect(preferredViewMode(storage)).toBe("chat");
     const blocked = {
       getItem: () => {
         throw new Error("blocked");

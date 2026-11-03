@@ -1,0 +1,490 @@
+/*
+ * Unified shell: one top bar for chat, page (DOM) and screen (pixel) views.
+ * Palette A — warm paper and terracotta — shared by every view, light and dark.
+ */
+:root {
+  --bg: #faf9f6;
+  --surface: #fffefb;
+  --sunken: #f2eee6;
+  --line: #e3ddd1;
+  --ink: #27251f;
+  --muted: #665e54;
+  --accent: #a35c3f;
+  --accent-ink: #ffffff;
+  --accent-soft: #f4e7e0;
+  --warn-bg: #fbf0dc;
+  --warn-ink: #6e440b;
+  --ok: #3b7a4c;
+  --busy: #b26b12;
+  --bad: #b3392f;
+  --focus: #a35c3f;
+  --shellbar-height: 56px;
+  --chrome-border: var(--line);
+  --chrome-ink: var(--ink);
+  --chrome-muted: var(--muted);
+  --chrome-accent: var(--accent);
+  color: var(--ink);
+  background: var(--bg);
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1f1d1a;
+  --surface: #282521;
+  --sunken: #171613;
+  --line: #3b3630;
+  --ink: #ece6dd;
+  --muted: #aca297;
+  --accent: #d48c6d;
+  --accent-ink: #1f1d1a;
+  --accent-soft: #3a2b24;
+  --warn-bg: #3a2c17;
+  --warn-ink: #f0c987;
+  --ok: #7fbf8f;
+  --busy: #e0a55a;
+  --bad: #ef8a80;
+  --focus: #d48c6d;
+}
+
+body {
+  background: var(--bg);
+}
+
+/* Layout: a column whose middle part is either the chat view or the mirrored page. */
+#shell {
+  display: flex !important;
+  flex-direction: column;
+  height: 100dvh;
+  background: var(--bg);
+  color: var(--ink);
+  --server-status-height: 0px;
+  --toolbar-height: 0px;
+}
+#shell > * {
+  flex: none;
+}
+#shell[data-tabs="hidden"] {
+  --tabstrip-height: 0px;
+}
+#shell[data-address="hidden"] {
+  --urlbar-height: 0px;
+}
+#shell > #mirror-host,
+#shell > #chat-view {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+#shell > #mirror-host[hidden],
+#shell > #transfer-panels[hidden] {
+  display: none !important;
+}
+#shell .client-session-overlay {
+  inset: var(--shellbar-height) 0 0;
+  background: var(--bg);
+}
+#viewer-hud-layer {
+  top: calc(var(--shellbar-height) + var(--tabstrip-height) + 7px);
+}
+
+/* Top bar */
+#shell-bar {
+  position: relative;
+  z-index: 40;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  height: var(--shellbar-height);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  box-sizing: border-box;
+}
+#shell-bar button,
+#shell-menu button,
+#shell-menu input {
+  font: inherit;
+}
+#shell-bar :focus-visible,
+#shell-menu :focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.shell-bar-start,
+.shell-bar-end {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.shell-bar-end {
+  justify-content: flex-end;
+  gap: 8px;
+}
+.shell-brand {
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.shell-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+.shell-icon:hover:enabled {
+  background: var(--sunken);
+}
+.shell-icon:disabled {
+  color: var(--muted);
+  opacity: 0.5;
+  cursor: default;
+}
+.shell-icon svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.shell-icon circle {
+  fill: currentColor;
+}
+.shell-address {
+  min-width: 0;
+  max-width: 280px;
+  height: 34px;
+  padding: 0 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: var(--sunken);
+  color: var(--muted);
+  font-size: 13px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* View switch */
+.shell-views {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--sunken);
+}
+.shell-views button {
+  min-width: 64px;
+  height: 34px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+.shell-views button[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+}
+.shell-views button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Status pill */
+#shell-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  height: 30px;
+  padding: 0 11px;
+  overflow: hidden;
+  border-radius: 15px;
+  background: var(--sunken);
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.shell-status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.shell-status-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+#shell-status[data-tone="busy"] .shell-status-dot {
+  background: var(--busy);
+}
+#shell-status[data-tone="bad"] .shell-status-dot {
+  background: var(--bad);
+}
+
+/* ⋯ menu */
+#shell-menu {
+  position: absolute;
+  top: calc(var(--shellbar-height) - 4px);
+  right: 12px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 340px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - var(--shellbar-height) - 16px);
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 16%);
+  box-sizing: border-box;
+  font-size: 14px;
+}
+.shell-menu-address {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 8px 8px;
+}
+.shell-menu-address label,
+.shell-menu-section > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.shell-menu-address input {
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sunken);
+  color: var(--ink);
+  font-size: 14px;
+}
+.shell-menu-item,
+.shell-menu-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 14px;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.shell-menu-item:hover,
+.shell-menu-switch:hover {
+  background: var(--sunken);
+}
+.shell-switch {
+  position: relative;
+  flex: none;
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--line);
+  transition: background 120ms ease;
+}
+.shell-switch::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  content: "";
+  transition: transform 120ms ease;
+}
+.shell-menu-switch[aria-pressed="true"] .shell-switch {
+  background: var(--accent);
+}
+.shell-menu-switch[aria-pressed="true"] .shell-switch::after {
+  transform: translateX(16px);
+}
+.shell-menu-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px 8px 4px;
+  border-top: 1px solid var(--line);
+}
+.shell-menu-choices {
+  display: flex;
+  gap: 4px;
+}
+.shell-menu-choices button {
+  flex: 1;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  cursor: pointer;
+}
+.shell-menu-choices button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.shell-menu-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+  margin: 0;
+  font-size: 13px;
+}
+.shell-menu-stats div {
+  display: flex;
+  gap: 6px;
+}
+.shell-menu-stats dt {
+  color: var(--muted);
+}
+.shell-menu-stats dd {
+  margin: 0;
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Banners */
+#shell-banners:empty {
+  display: none;
+}
+.shell-banner {
+  margin: 0;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.shell-banner[data-tone="warn"] {
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+}
+
+/* The chat view sits directly under the bar; it no longer needs its own page header. */
+#chat-view {
+  display: flex;
+  flex-direction: column;
+  color: var(--ink);
+  background: var(--bg);
+}
+#chat-view .chat-subbar {
+  display: none;
+}
+#chat-view .chat-subbar:has(#retry-chat:not([hidden])) {
+  display: flex;
+}
+:root[data-theme="dark"] #chat-view {
+  background: var(--bg);
+}
+
+@media (max-width: 760px) {
+  #shell-bar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 6px;
+    padding: 0 6px;
+  }
+  .shell-brand,
+  .shell-wide-only,
+  .shell-status-text {
+    display: none;
+  }
+  .shell-bar-start:empty {
+    display: none;
+  }
+  .shell-views {
+    justify-content: stretch;
+  }
+  .shell-views button {
+    flex: 1;
+    min-width: 0;
+    padding: 0 8px;
+  }
+  #shell-status {
+    width: 30px;
+    padding: 0;
+    justify-content: center;
+  }
+  #shell-menu {
+    position: fixed;
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    max-width: none;
+    max-height: 80dvh;
+    padding: 10px 12px 22px;
+    border-radius: 18px 18px 0 0;
+    font-size: 15px;
+  }
+  .shell-menu-item,
+  .shell-menu-switch {
+    min-height: 48px;
+  }
+  .shell-menu-choices button,
+  .shell-menu-address input {
+    height: 44px;
+  }
+  .shell-menu-address input {
+    font-size: 16px;
+  }
+  #chat-view .chat-subbar {
+    display: flex;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell-switch,
+  .shell-switch::after {
+    transition: none;
+  }
+}
+
+/* Let the shared tokens win over the browser chrome's older per-theme values. */
+#shell,
+#shell[data-theme="dark"] {
+  --chrome-border: var(--line);
+  --chrome-ink: var(--ink);
+  --chrome-muted: var(--muted);
+  --chrome-accent: var(--accent);
+}
+#shell > #chat-view {
+  height: auto;
+}
+
+/* Native progress bars follow the accent instead of the platform blue. */
+#shell progress {
+  accent-color: var(--accent);
+}

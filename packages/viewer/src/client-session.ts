@@ -221,18 +221,3 @@ export function rememberViewMode(storage: Pick<Storage, "setItem">, mode: ViewMo
     /* A blocked store only loses the preference. */
   }
 }
-
-/**
- * An entry without an explicit `mode` goes straight to text chat when that is the preferred
- * view, so the everyday path never downloads a full DOM snapshot it would discard.
- */
-export function chatEntryUrl(
-  pageUrl: URL,
-  sid: ClientSessionId,
-  storage: Pick<Storage, "getItem">,
-): string | null {
-  if (pageUrl.searchParams.has("mode") || pageUrl.searchParams.has("fixture")) return null;
-  return preferredViewMode(storage) === "chat"
-    ? clientChatUrl(sid, pageUrl.searchParams.get("tab"))
-    : null;
-}

@@ -574,16 +574,19 @@ describe("chat page takeover handling", () => {
       return retries.length;
     });
     const clearTimer = vi.fn();
-    const source = await readFile(new URL("../../../viewer/src/chat.js", import.meta.url), "utf8");
-    new Script(source.replace(/^import .*;$/gm, "")).runInNewContext({
+    const source = await readFile(
+      new URL("../../../viewer/src/chat-view.js", import.meta.url),
+      "utf8",
+    );
+    const context: Record<string, unknown> = {
+      CHAT_VIEW_MARKUP: "",
       document: {
         getElementById: node,
         createElement: () => node("pending-article"),
         addEventListener: () => undefined,
-        documentElement: { dataset: {}, style: { setProperty: () => {} } },
+        removeEventListener: () => undefined,
       },
-      window: { addEventListener: () => undefined },
-      location: { search: "?sid=client-1&tab=owned-tab" },
+      window: { addEventListener: () => undefined, removeEventListener: () => undefined },
       URLSearchParams,
       matchMedia: () => ({ matches: false, addEventListener: () => {} }),
       crypto: { randomUUID: () => "stable-page-key" },
@@ -594,6 +597,24 @@ describe("chat page takeover handling", () => {
       clearTimeout: clearTimer,
       setInterval: () => 1,
       clearInterval: () => {},
+    };
+    new Script(
+      source.replace(/^import .*;$/gm, "").replace(/^export function /m, "function ") +
+        "\nglobalThis.mountChatView = mountChatView;",
+    ).runInNewContext(context);
+    const root = {
+      innerHTML: "",
+      style: { setProperty: () => {} },
+      querySelector: (selector: string) => node(selector.slice(1)),
+      toggleAttribute: () => {},
+      hasAttribute: () => false,
+      removeAttribute: () => {},
+      replaceChildren: () => {},
+    };
+    (context.mountChatView as (root: unknown, options: unknown) => () => void)(root, {
+      sid: "client-1",
+      tab: "owned-tab",
+      connectionKey: "stable-page-key",
     });
     expect(sources[0]?.url).toContain(
       "/s/client-1/api/claude/events?connectionKey=stable-page-key",

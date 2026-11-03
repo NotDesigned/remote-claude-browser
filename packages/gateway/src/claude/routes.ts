@@ -198,7 +198,7 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
       if (contextId === undefined) throw error;
       state = await evaluate(target, CHAT_EXPRESSION);
     }
-    if (new URL(state.url).origin !== siteOrigin) throw new Error("请在通用视图打开 Claude");
+    if (new URL(state.url).origin !== siteOrigin) throw new Error("请在“页面”模式打开 Claude");
     return {
       ...state,
       tab: target.targetId,
@@ -324,7 +324,8 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
             if (Date.now() - lastHeartbeat > 3000 || current.seq === 0) {
               send(current, {
                 type: "unavailable",
-                message: "请先在通用视图打开 Claude 并登录，再切换到聊天视图。",
+                message:
+                  "远程浏览器还没有打开 Claude，或需要登录。请切换到“页面”模式打开并登录，然后回到聊天。",
               });
               current.readUnavailable = true;
               lastHeartbeat = Date.now();
