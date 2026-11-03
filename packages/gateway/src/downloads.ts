@@ -54,6 +54,11 @@ export interface DownloadManager {
   list(sessionId: string): DownloadMsg[];
   cancel(id: string, sessionId: string): Promise<void>;
   claim(key: string, sessionId?: string): DownloadClaim | undefined;
+  /**
+   * The client received the whole file. Keep it only briefly for a retry, so completed downloads
+   * do not sit on the server for the full lifetime.
+   */
+  delivered(key: string, sessionId: string): void;
   /** Forget all in-progress GUIDs and completed links before a workspace SID is reassigned. */
   revokeSession(sessionId: string): void;
   close(): void;
@@ -86,6 +91,7 @@ export async function createDownloadManager(
   const links = new Map<string, DownloadRecord>();
   let closed = false;
   const lifetimeMs = 30 * 60 * 1000;
+  const deliveredGraceMs = 2 * 60 * 1000;
   const removeRecord = (record: DownloadRecord) => {
     downloads.delete(record.guid);
     for (const [key, link] of links) if (link === record) links.delete(key);
@@ -206,6 +212,11 @@ export async function createDownloadManager(
         name: record.name,
       };
     },
+    delivered(key, deliveredSessionId) {
+      const record = links.get(key);
+      if (record === undefined || record.sessionId !== deliveredSessionId) return;
+      record.expiresAt = Math.min(record.expiresAt ?? Infinity, Date.now() + deliveredGraceMs);
+    },
     revokeSession(revokedSessionId) {
       nonEmpty(revokedSessionId, "sessionId");
       for (const [guid, record] of downloads) {
@@ -274,8 +285,13 @@ export function registerDownloadRoutes(app: FastifyInstance, options: DownloadRo
       reply.header("accept-ranges", "bytes");
       reply.type("application/octet-stream");
       const range = request.headers.range;
+      const manager = options.managerFor(request.params.sid);
+      // Only a response that actually reached the last byte counts as a delivery.
+      const markDeliveredOnFinish = () =>
+        reply.raw.once("finish", () => manager?.delivered(request.params.key, request.params.sid));
       if (range === undefined) {
         reply.header("content-length", file.size);
+        markDeliveredOnFinish();
         return reply.send(createReadStream(claim.filePath));
       }
       const match = /^bytes=(\d*)-(\d*)$/.exec(range);
@@ -302,6 +318,7 @@ export function registerDownloadRoutes(app: FastifyInstance, options: DownloadRo
         .code(206)
         .header("content-range", `bytes ${start}-${end}/${file.size}`)
         .header("content-length", end - start + 1);
+      if (end === file.size - 1) markDeliveredOnFinish();
       return reply.send(createReadStream(claim.filePath, { start, end }));
     },
   );

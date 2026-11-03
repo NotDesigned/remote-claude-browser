@@ -272,6 +272,59 @@ describe("download flow", () => {
     }
   });
 
+  it("keeps a fully delivered file only for a short retry window", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mirror-delivered-download-test-"));
+    tempDirs.push(root);
+    await writeFile(join(root, "guid-d"), "delivered body");
+    const browser = new DownloadBrowser();
+    let clock = 1_000_000;
+    const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    const manager = await createDownloadManager({
+      sessionId: "client-1",
+      browser,
+      downloadDir: root,
+      publish: () => undefined,
+      createKey: () => "delivered-key",
+    });
+    managers.push(manager);
+    browser.emit("Browser.downloadWillBegin", {
+      frameId: "frame",
+      guid: "guid-d",
+      url: "https://files.test/file",
+      suggestedFilename: "report.txt",
+    });
+    browser.emit("Browser.downloadProgress", {
+      guid: "guid-d",
+      totalBytes: 14,
+      receivedBytes: 14,
+      state: "completed",
+    });
+    const app = Fastify();
+    const guard = createSessionGuard({ key: KEY, now: () => NOW });
+    registerDownloadRoutes(app, { preHandler: guard.preHandler, managerFor: () => manager });
+    const headers = {
+      cookie: `${SESSION_COOKIE}=${mintInvite({ sid: "client-1", role: "driver", exp: NOW + 60 }, KEY)}`,
+    };
+    try {
+      // A partial range that stops before the end is not a delivery.
+      await app.inject({
+        url: "/s/client-1/d/delivered-key",
+        headers: { ...headers, range: "bytes=0-3" },
+      });
+      clock += 5 * 60 * 1000;
+      expect(manager.claim("delivered-key", "client-1")).toBeDefined();
+      const full = await app.inject({ url: "/s/client-1/d/delivered-key", headers });
+      expect(full.body).toBe("delivered body");
+      clock += 60 * 1000;
+      expect(manager.claim("delivered-key", "client-1")).toBeDefined();
+      clock += 61 * 1000;
+      expect(manager.claim("delivered-key", "client-1")).toBeUndefined();
+    } finally {
+      now.mockRestore();
+      await app.close();
+    }
+  });
+
   it("configures the browser root and maps GUID filenames into progress messages", async () => {
     const browser = new DownloadBrowser();
     const published: unknown[] = [];

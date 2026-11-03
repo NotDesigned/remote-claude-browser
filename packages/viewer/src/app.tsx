@@ -44,6 +44,7 @@ import {
 import "@rrweb/replay/dist/style.css";
 import "./app.css";
 import "./shell.css";
+import { DOWNLOAD_NOTICE_MS, startClientDownload } from "./auto-download";
 
 function configuredResyncWindowMs(): number {
   const raw = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env
@@ -305,6 +306,16 @@ export function App() {
     pendingModeRef.current = null;
     const entryTab = entryParams.get("tab");
     const presentation = createPresentationState();
+    const autoStarted = new Set<string>();
+    const dismissDownloadSoon = (id: string) => {
+      const timer = setTimeout(() => {
+        if (disposed) return;
+        dismissedDownloadIdsRef.current.add(id);
+        setDownloads((current) => dismissDownload(current, id));
+      }, DOWNLOAD_NOTICE_MS);
+      downloadTimers.add(timer);
+    };
+    const downloadTimers = new Set<ReturnType<typeof setTimeout>>();
     let reconnectPending = false;
     let viewportBeforeDisconnect: ReturnType<typeof presentation.currentViewport>;
     let pxView: PxView | null = null;
@@ -493,6 +504,7 @@ export function App() {
       driver = false;
       inputsReady = false;
       host.inert = true;
+      for (const timer of downloadTimers) clearTimeout(timer);
       // Leaving the browser view (e.g. for chat) must not leave a stale "ready" behind: the next
       // connection unlocks input only after its own hello and viewport agreement.
       if (mountedRef.current) setInputReady(false);
@@ -585,7 +597,15 @@ export function App() {
             signal: controller.signal,
           })
             .then(async (response) => {
-              if (response.ok && !disposed) setDownloads(await response.json());
+              if (!response.ok || disposed) return;
+              const listed = (await response.json()) as DownloadEntry[];
+              setDownloads(listed);
+              // Finished before this page connected: offer the link briefly, never re-download.
+              for (const entry of listed)
+                if (entry.state !== "active") {
+                  autoStarted.add(entry.id);
+                  dismissDownloadSoon(entry.id);
+                }
             })
             .catch(() => undefined);
           driver = message.role === "driver";
@@ -663,6 +683,11 @@ export function App() {
         }
         if (message.t === "download" && !dismissedDownloadIdsRef.current.has(message.id)) {
           setDownloads((current) => updateDownloads(current, message));
+          if (message.state === "done" && message.href && !autoStarted.has(message.id)) {
+            autoStarted.add(message.id);
+            startClientDownload(message.href, message.name);
+            dismissDownloadSoon(message.id);
+          }
         }
         if (message.t === "filepick" && driver && sessionId !== null) {
           uploads.handlePick(message, sessionId);

@@ -82,11 +82,28 @@ try {
   }));
   await page.screenshot({ path: "artifacts/production-shell-chat.png" });
   await page.locator('#shell-bar [data-view-mode="dom"]').click();
-  await page.waitForFunction(
-    () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
-    null,
-    { timeout: 90000 },
-  );
+  const switchedAt = Date.now();
+  const domState = () =>
+    page.evaluate(() => {
+      const host = document.querySelector("#mirror-host");
+      return {
+        status: document.querySelector("#shell-status")?.textContent,
+        inputReady: host?.getAttribute("data-input-ready"),
+        mirrorState: host?.dataset.mirrorState,
+        resyncPending: host?.dataset.resyncPending,
+        hostText: host?.textContent?.slice(0, 120),
+        hud: document.querySelector("#viewer-hud-layer")?.textContent?.slice(0, 200),
+        tabs: document.querySelectorAll(".browser-tab").length,
+      };
+    });
+  report.domTimeline = [];
+  for (let waited = 0; waited < 180; waited += 10) {
+    const state = await domState();
+    report.domTimeline.push({ s: Math.round((Date.now() - switchedAt) / 1000), ...state });
+    if (state.inputReady === "true") break;
+    await page.waitForTimeout(10000);
+  }
+  report.domReadyAfterSeconds = Math.round((Date.now() - switchedAt) / 1000);
   await page.waitForTimeout(3000);
   report.page = await page.evaluate(() => ({
     status: document.querySelector("#shell-status")?.textContent,

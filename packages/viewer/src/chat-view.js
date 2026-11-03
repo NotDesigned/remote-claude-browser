@@ -1,6 +1,7 @@
 import "./chat-view.css";
 import { renderChatText } from "./chat-render";
 import { CHAT_VIEW_MARKUP } from "./chat-markup";
+import { DOWNLOAD_NOTICE_MS, startClientDownload } from "./auto-download";
 
 /**
  * Text chat, mounted inside the unified page. Returns a dispose function that closes the chat
@@ -242,7 +243,7 @@ export function mountChatView(root, options) {
                 });
                 if (!response.ok) throw new Error((await response.json()).error || "下载失败");
                 $("action-status").textContent = "已请求下载，完成后可在下方保存";
-                setTimeout(pollDownloads, 1000);
+                for (const delay of [1000, 2500, 5000]) setTimeout(pollDownloads, delay);
               } catch (error) {
                 $("action-status").textContent = error.message || "下载失败";
               } finally {
@@ -440,6 +441,8 @@ export function mountChatView(root, options) {
       connected = true;
       setRetryVisible(false);
       setConnectionText("已连接");
+      // Record downloads that finished before this view, so only new ones start automatically.
+      if (!downloadsPrimed) void pollDownloads();
       controls();
     };
     source.onmessage = (event) => {
@@ -832,6 +835,8 @@ export function mountChatView(root, options) {
     }
   };
   let downloadRequest = false;
+  const finishedAt = new Map();
+  let downloadsPrimed = false;
   async function pollDownloads() {
     if (!connected || leaving || downloadRequest) return;
     downloadRequest = true;
@@ -839,21 +844,38 @@ export function mountChatView(root, options) {
       const response = await fetch(`${transferBase}/downloads`, { cache: "no-store" });
       if (!response.ok) return;
       const entries = await response.json();
-      const root = $("downloads");
-      root.hidden = entries.length === 0;
-      root.replaceChildren(
-        ...entries.slice(-10).map((entry) => {
+      const now = Date.now();
+      for (const entry of entries) {
+        if (entry.state === "active" || finishedAt.has(entry.id)) continue;
+        finishedAt.set(entry.id, now);
+        // Hand a download that finishes while this view is open straight to the browser.
+        // Ones that finished before the view opened are only offered, never re-downloaded.
+        if (downloadsPrimed && entry.state === "done" && entry.href) {
+          startClientDownload(entry.href, entry.name);
+          $("action-status").textContent = `已开始下载 ${entry.name}`;
+        }
+      }
+      downloadsPrimed = true;
+      // Finished entries stay briefly as a fallback link, then leave the chat.
+      const visible = entries.filter(
+        (entry) =>
+          entry.state === "active" || now - (finishedAt.get(entry.id) ?? now) < DOWNLOAD_NOTICE_MS,
+      );
+      const list = $("downloads");
+      list.hidden = visible.length === 0;
+      list.replaceChildren(
+        ...visible.slice(-10).map((entry) => {
           const row = document.createElement("div");
           const name = document.createElement("span");
-          name.textContent = `${entry.name} · ${entry.state === "done" ? "下载完成" : entry.total > 0 ? Math.round((entry.recv / entry.total) * 100) + "%" : "下载中"}`;
+          name.textContent = `${entry.name} · ${entry.state === "done" ? "已开始下载" : entry.state === "canceled" ? "已取消" : entry.total > 0 ? Math.round((entry.recv / entry.total) * 100) + "%" : "下载中"}`;
           row.append(name);
           if (entry.state === "done" && entry.href) {
             const save = document.createElement("a");
             save.href = entry.href;
             save.download = entry.name;
-            save.textContent = "保存文件";
+            save.textContent = "没有开始？点此下载";
             row.append(save);
-          } else {
+          } else if (entry.state === "active") {
             const cancel = document.createElement("button");
             cancel.type = "button";
             cancel.textContent = "取消";

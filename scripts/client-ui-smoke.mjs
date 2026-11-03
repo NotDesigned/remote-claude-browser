@@ -668,7 +668,14 @@ try {
     text: "文字模式中文附件",
   });
   const textDownloadButton = firstPage.getByRole("button", { name: "↓ 结果.txt" });
-  await textDownloadButton.click();
+  // A finished remote download starts in this browser by itself; no save click is needed.
+  const [autoSaved] = await Promise.all([
+    firstPage.waitForEvent("download", { timeout: 20000 }),
+    textDownloadButton.click(),
+  ]);
+  assert.equal(await autoSaved.failure(), null);
+  assert.equal(autoSaved.suggestedFilename(), "结果.txt");
+  // The fallback link stays for a moment in case the browser blocked the automatic download.
   await firstPage.locator("#downloads a").waitFor({ state: "visible" });
   const [saved] = await Promise.all([
     firstPage.waitForEvent("download"),
