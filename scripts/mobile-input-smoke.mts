@@ -219,7 +219,12 @@ try {
     deviceScaleFactor: 2,
   });
   // The root page opens text chat by default; these checks exercise the DOM view.
-  await context.addInitScript(() => localStorage.setItem("mirror.view-mode", "dom"));
+  await context.addInitScript(() => {
+    // The first about:blank document has an opaque origin and no storage.
+    try {
+      localStorage.setItem("mirror.view-mode", "dom");
+    } catch {}
+  });
   const page = await context.newPage();
   page.on("pageerror", (error) => console.error("mobile fixture viewer error", error.message));
   await page.goto(origin);

@@ -251,7 +251,12 @@ try {
   });
   const page = await browser.newPage({ viewport: { width: 1100, height: 850 } });
   // The root page opens text chat by default; these checks exercise the DOM view.
-  await page.addInitScript(() => localStorage.setItem("mirror.view-mode", "dom"));
+  await page.addInitScript(() => {
+    // The first about:blank document has an opaque origin and no storage.
+    try {
+      localStorage.setItem("mirror.view-mode", "dom");
+    } catch {}
+  });
   pixel = await page.evaluate(() => {
     const c = document.createElement("canvas");
     c.width = c.height = 2;

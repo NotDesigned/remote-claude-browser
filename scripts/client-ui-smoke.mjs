@@ -535,7 +535,12 @@ try {
   });
   context = await browser.newContext({ viewport: { width: 1360, height: 900 } });
   // The root page opens text chat by default; these checks exercise the DOM view.
-  await context.addInitScript(() => localStorage.setItem("mirror.view-mode", "dom"));
+  await context.addInitScript(() => {
+    // The first about:blank document has an opaque origin and no storage.
+    try {
+      localStorage.setItem("mirror.view-mode", "dom");
+    } catch {}
+  });
   context.on("page", (page) => {
     page.setDefaultTimeout(20000);
     page.on("pageerror", (error) => pageErrors.push(error.message));

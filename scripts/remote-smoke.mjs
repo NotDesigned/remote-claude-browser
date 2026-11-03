@@ -21,7 +21,12 @@ const browser = await chromium.launch({
 });
 const context = await browser.newContext({ viewport: { width: 1360, height: 1000 } });
 // The root page opens text chat by default; these checks exercise the DOM view.
-await context.addInitScript(() => localStorage.setItem("mirror.view-mode", "dom"));
+await context.addInitScript(() => {
+  // The first about:blank document has an opaque origin and no storage.
+  try {
+    localStorage.setItem("mirror.view-mode", "dom");
+  } catch {}
+});
 const page = await context.newPage();
 const requests = [];
 const errors = [];
