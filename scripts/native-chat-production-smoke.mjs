@@ -377,8 +377,8 @@ try {
   await send("请读取刚上传的附件，只回复第一行的标记。");
   await page.waitForFunction(
     (mark) =>
-      window.__qa.state?.messages.some(
-        (message) => message.role === "assistant" && message.text.includes(mark),
+      [...document.querySelectorAll(".message.assistant .text")].some((message) =>
+        message.textContent.includes(mark),
       ) && !window.__qa.state.generating,
     marker,
     { timeout: 150000 },

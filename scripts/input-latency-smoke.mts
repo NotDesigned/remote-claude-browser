@@ -231,7 +231,7 @@ try {
         snapshot("viewport");
       }
       if (message.t === "resync-req") {
-        editableResyncs++;
+        if (message.reason === "editable-clear") editableResyncs++;
         snapshot("resync");
       }
       if (message.t === "mode") {
