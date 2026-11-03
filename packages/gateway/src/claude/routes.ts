@@ -46,6 +46,8 @@ interface Lease {
   seq: number;
   stopWatching?(): void;
   wake?(): void;
+  /** The chat observer's isolated world, where reads use the per-message cache. */
+  readContext?(): number | undefined;
 }
 interface ActionBody {
   id?: unknown;
@@ -158,8 +160,10 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
     target: TargetRef,
     expression: string,
     userGesture = false,
+    contextId?: number,
   ): Promise<T> => {
     const result = (await boundedSend(target, "Runtime.evaluate", {
+      ...(contextId === undefined ? {} : { contextId }),
       expression,
       timeout: 2000,
       returnByValue: true,
@@ -180,8 +184,16 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
         return false;
       }
     });
-  const sample = async (target: TargetRef): Promise<ChatState> => {
-    const state = await evaluate<Omit<ChatState, "tab" | "epoch">>(target, CHAT_EXPRESSION);
+  const sample = async (target: TargetRef, lease?: Lease): Promise<ChatState> => {
+    const contextId = lease?.readContext?.();
+    let state: Omit<ChatState, "tab" | "epoch">;
+    try {
+      state = await evaluate(target, CHAT_EXPRESSION, false, contextId);
+    } catch (error) {
+      // A navigation can retire the isolated world before the observer reinstalls it.
+      if (contextId === undefined) throw error;
+      state = await evaluate(target, CHAT_EXPRESSION);
+    }
     if (new URL(state.url).origin !== siteOrigin) throw new Error("请在通用视图打开 Claude");
     return {
       ...state,
@@ -278,6 +290,7 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
         clearTimeout(timer);
         observer?.close();
       };
+      current.readContext = () => observer?.contextId();
       current.wake = () => {
         dirty = true;
         if (!polling) schedule(Math.max(0, CHAT_ACTIVE_POLL_MS - (Date.now() - sampledAt)));
@@ -336,7 +349,7 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
               );
             }
             metrics.pollStage = "sample";
-            const state = await sample(target);
+            const state = await sample(target, current);
             sampledAt = Date.now();
             metrics.pollStage = "sampled";
             if (!canPoll()) return;
@@ -448,7 +461,7 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
             if (!canAct()) return "not-started";
             let checked: ChatState;
             try {
-              checked = await sample(target);
+              checked = await sample(target, current);
             } catch {
               return "not-started";
             }
@@ -493,7 +506,7 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
             while (Date.now() < deadline) {
               if (!canAct()) return false;
               try {
-                const next = await sample(target);
+                const next = await sample(target, current);
                 if (!canAct()) return false;
                 if (body.type === "send") {
                   const beforeCount = state.messages.filter((m) => m.role === "user").length;

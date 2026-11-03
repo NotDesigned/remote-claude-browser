@@ -28,7 +28,9 @@ const MESSAGE_TEXT = String.raw`(element, rich = true) => {
       if (/^H[1-6]$/.test(node.tagName)) return '\n' + '#'.repeat(Number(node.tagName[1])) + ' ' + text.trim() + '\n\n';
       if (node.tagName === 'A') {
         const href = node.getAttribute('href') || '';
-        if (/^(https?:|mailto:|\/)/i.test(href)) {
+        // Downloads are offered as file buttons through the gateway; never as a direct link.
+        const download = node.hasAttribute('download') || /^(blob:|sandbox:)|\/files\/|attachment/i.test(href);
+        if (!download && /^(https?:|mailto:|\/)/i.test(href)) {
           const url = new URL(href, location.href).href.replace(/\(/g, '%28').replace(/\)/g, '%29');
           return '[' + text + '](' + url + ')';
         }
@@ -60,6 +62,10 @@ const MESSAGE_TEXT = String.raw`(element, rich = true) => {
   return read(body).replace(/\n{3,}/g, '\n\n').trim().slice(0, 1000000);
 }`;
 
+/** Isolated-world global holding the per-message serialization cache (see observe.ts). */
+export const CHAT_CACHE_GLOBAL = "__mirrorChatCache";
+export const CHAT_MESSAGE_SELECTOR = MESSAGE_SELECTOR;
+
 /**
  * Thinking and other process rows (`group/status`) sit above the answer: a one-line summary,
  * an expand button, and their detail only while expanded. They are reported separately so the
@@ -83,16 +89,26 @@ export const CHAT_EXPRESSION = String.raw`(() => {
   const editor = [...document.querySelectorAll('.ProseMirror[contenteditable="true"], [contenteditable="true"][role="textbox"], textarea[placeholder]')].find(visible);
   const candidates = [...document.querySelectorAll(${JSON.stringify(MESSAGE_SELECTOR)})];
   const messageText = ${MESSAGE_TEXT};
+  // In the observer's isolated world a cache keeps each message's serialized content until a
+  // mutation inside that message marks it dirty, so streaming re-reads only the changing reply.
+  const cache = globalThis.${CHAT_CACHE_GLOBAL};
   const messages = candidates.filter(e => !candidates.some(p => p !== e && p.contains(e))).slice(-300).map((e, index) => {
     const user = e.matches('[data-testid="user-message"]');
-    const steps = user ? [] : (${STATUS_STEPS})(e);
-    const message = {
+    let content = cache && !cache.dirty.has(e) ? cache.entries.get(e) : undefined;
+    if (!content) {
+      const steps = user ? [] : (${STATUS_STEPS})(e);
+      content = {
+        text: messageText(e, !user),
+        files: (${FILE_CONTROLS})(e).map((a, id) => ({ id: String(id), name: (${FILE_NAME})(a) })),
+        ...(steps.length ? { steps } : {})
+      };
+      if (cache) { cache.entries.set(e, content); cache.dirty.delete(e); }
+    }
+    return {
       id: e.closest('[data-message-id]')?.getAttribute('data-message-id') || String(index),
       role: user ? 'user' : 'assistant',
-      text: messageText(e, !user),
-      files: (${FILE_CONTROLS})(e).map((a, id) => ({ id: String(id), name: (${FILE_NAME})(a) }))
+      ...content
     };
-    return steps.length ? { ...message, steps } : message;
   });
   const conversations = [...document.querySelectorAll('a[href^="/chat/"]')].map(e => ({path: new URL(e.href).pathname, title: (e.textContent || '').trim().slice(0, 150)})).filter(e => e.title && /^\/chat\/[a-zA-Z0-9-]+$/.test(e.path));
   const stop = [...document.querySelectorAll('button[aria-label], button[data-testid]')].find(e => /stop|停止/i.test((e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-testid') || '')) && visible(e));

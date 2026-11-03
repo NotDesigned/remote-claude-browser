@@ -1,20 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { BrowserHandle } from "../browser/launch";
 import type { TargetRef } from "../types";
+import { CHAT_CACHE_GLOBAL, CHAT_MESSAGE_SELECTOR } from "./extract";
 
-/** Private DOM invalidations let native chat sleep between actual page changes. */
-export function observeChat(
-  browser: BrowserHandle,
-  target: TargetRef,
-  changed: () => void,
-  failed: (error: unknown) => void,
-): { available(): boolean; close(): void } {
-  const binding = `mirrorChat_${randomUUID().replaceAll("-", "")}`;
-  let contextId: number | undefined;
-  let disposed = false,
-    available = false,
-    generation = 0;
-  const expression = `(() => {
+/**
+ * Installed in the chat observer's isolated world: wakes the poller on relevant DOM changes
+ * and marks changed messages dirty in the per-message read cache.
+ */
+export function chatObserverExpression(binding: string): string {
+  return `(() => {
     if (window.top !== window) return;
     const name = ${JSON.stringify(binding)};
     const selector = '[data-testid="user-message"], [data-testid="assistant-message"], .font-claude-response, .ProseMirror, [contenteditable="true"], textarea, button[aria-label], button[data-testid], a[href^="/chat/"], title';
@@ -23,14 +17,37 @@ export function observeChat(
       const element = node.nodeType === 1 ? node : node.parentElement;
       return element && (element.closest(selector) || element.querySelector(selector));
     };
+    const messageSelector = ${JSON.stringify(CHAT_MESSAGE_SELECTOR)};
+    const cache = globalThis[${JSON.stringify(CHAT_CACHE_GLOBAL)}] = { entries: new WeakMap(), dirty: new WeakSet() };
+    const markDirty = node => {
+      let element = node && (node.nodeType === 1 ? node : node.parentElement);
+      for (element = element && element.closest(messageSelector); element; element = element.parentElement && element.parentElement.closest(messageSelector))
+        cache.dirty.add(element);
+    };
     const observer = new MutationObserver(records => {
+      for (const record of records) markDirty(record.target);
       if (timer || !records.some(record => relevant(record.target) || [...record.addedNodes, ...record.removedNodes].some(relevant))) return;
       timer = setTimeout(() => { timer = undefined; globalThis[name](location.href); }, 60);
     });
     observer.observe(document, { subtree: true, childList: true, characterData: true,
-      attributes: true, attributeFilter: ['disabled', 'aria-label', 'aria-hidden', 'hidden', 'contenteditable', 'href', 'data-testid'] });
-    globalThis[name + '_dispose'] = () => { observer.disconnect(); clearTimeout(timer); delete globalThis[name + '_dispose']; };
+      attributes: true, attributeFilter: ['disabled', 'aria-label', 'aria-hidden', 'aria-expanded', 'hidden', 'contenteditable', 'href', 'data-testid', 'data-state', 'download'] });
+    globalThis[name + '_dispose'] = () => { observer.disconnect(); clearTimeout(timer); delete globalThis[${JSON.stringify(CHAT_CACHE_GLOBAL)}]; delete globalThis[name + '_dispose']; };
   })()`;
+}
+
+/** Private DOM invalidations let native chat sleep between actual page changes. */
+export function observeChat(
+  browser: BrowserHandle,
+  target: TargetRef,
+  changed: () => void,
+  failed: (error: unknown) => void,
+): { available(): boolean; contextId(): number | undefined; close(): void } {
+  const binding = `mirrorChat_${randomUUID().replaceAll("-", "")}`;
+  let contextId: number | undefined;
+  let disposed = false,
+    available = false,
+    generation = 0;
+  const expression = chatObserverExpression(binding);
   const send = async (method: string, params?: Record<string, unknown>) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -92,6 +109,7 @@ export function observeChat(
   void install().catch(failed);
   return {
     available: () => available,
+    contextId: () => (available ? contextId : undefined),
     close() {
       if (disposed) return;
       disposed = true;
