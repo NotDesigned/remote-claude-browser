@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ACCESS_COOKIE, createAccessGate } from "./auth/access-gate";
-import { gatewayHost, registerViewerStatic } from "./serving";
+import { gatewayHost, registerViewerStatic, staticCacheControl } from "./serving";
 
 const roots: string[] = [];
 
@@ -46,6 +46,7 @@ describe("gateway production serving", () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toContain("text/html");
     expect(response.body).toContain("<title>Mirror viewer</title>");
+    expect(response.headers["cache-control"]).toBe("private, no-cache");
     expect((await app.inject({ url: "/healthz" })).statusCode).toBe(200);
     await app.close();
   });
@@ -64,5 +65,16 @@ describe("gateway production serving", () => {
   it("uses GATEWAY_HOST when configured and keeps the loopback default", () => {
     expect(gatewayHost({})).toBe("127.0.0.1");
     expect(gatewayHost({ GATEWAY_HOST: "172.19.0.1" })).toBe("172.19.0.1");
+  });
+
+  it("caches hashed assets for good and makes pages revalidate", () => {
+    expect(staticCacheControl("/opt/viewer/assets/browser-CmJBMSbW.js")).toBe(
+      "private, max-age=31536000, immutable",
+    );
+    expect(staticCacheControl("/opt/viewer/assets/KaTeX_Main-Regular-ypZvNtVU.ttf")).toBe(
+      "private, max-age=31536000, immutable",
+    );
+    expect(staticCacheControl("/opt/viewer/index.html")).toBe("private, no-cache");
+    expect(staticCacheControl("/opt/viewer/chat.html")).toBe("private, no-cache");
   });
 });
