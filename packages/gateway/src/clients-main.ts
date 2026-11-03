@@ -28,7 +28,7 @@ import { createPixelCapacity } from "./px-capacity";
 import { createRtcSignalRelay } from "./rtcsig";
 import { registerClaudeChat } from "./claude/routes";
 import { registerSecurityHeaders } from "./security-headers";
-import { gatewayHost, registerViewerStatic } from "./serving";
+import { gatewayHost, LOOPBACK_PROXIES, registerViewerStatic } from "./serving";
 import { createTabLifecycle } from "./session/tabs";
 import { CLIENT_SLOTS, ClientSessionError, createClientSessions } from "./session/clients";
 import { createIdleReaper } from "./session/idle-reaper";
@@ -72,7 +72,7 @@ export async function startClientGateway(): Promise<void> {
     isolatedStorage: true,
     downloadDir: join(profile, "downloads"),
   });
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger: false, trustProxy: LOOPBACK_PROXIES });
   registerSecurityHeaders(app);
   const key = process.env.MIRROR_AUTH_SECRET
     ? Buffer.from(process.env.MIRROR_AUTH_SECRET)

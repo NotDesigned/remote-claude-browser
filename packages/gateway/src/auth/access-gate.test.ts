@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import type { IncomingMessage } from "node:http";
 import { describe, expect, it } from "vitest";
 import { ACCESS_COOKIE, ACCESS_MAX_AGE_SECONDS, createAccessGate } from "./access-gate";
+import { LOOPBACK_PROXIES } from "../serving";
 import { mintInvite } from "./invite";
 import { createSessionGuard } from "./middleware";
 
@@ -95,6 +96,29 @@ describe("ACCESS-GATE device front door", () => {
     expect(repeated.statusCode).toBe(429);
     expect(repeated.headers["retry-after"]).toBe("1");
     expect(repeated.headers["set-cookie"]).toBeUndefined();
+    await app.close();
+  });
+
+  it("backs off each forwarded client separately behind a loopback proxy", async () => {
+    const app = Fastify({ trustProxy: LOOPBACK_PROXIES });
+    const gate = createAccessGate({ password: "correct", secret: SECRET, now: () => NOW });
+    gate.registerRoutes(app);
+    const attempt = (client: string, password: string) =>
+      app.inject({
+        method: "POST",
+        url: "/gate",
+        remoteAddress: "127.0.0.1",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-forwarded-for": client,
+        },
+        payload: new URLSearchParams({ password }).toString(),
+      });
+
+    expect((await attempt("203.0.113.7", "wrong")).statusCode).toBe(401);
+    expect((await attempt("203.0.113.7", "wrong")).statusCode).toBe(429);
+    // A different user behind the same proxy is not locked out by someone else's guesses.
+    expect((await attempt("198.51.100.4", "correct")).statusCode).toBe(303);
     await app.close();
   });
 

@@ -31,7 +31,7 @@ import { createInputRelay, type InputMsg } from "./input/relay";
 import { createScreencast, type ScreencastController } from "./px";
 import { createRtcSignalRelay, type RtcSignalRelay } from "./rtcsig";
 import { registerSecurityHeaders } from "./security-headers";
-import { gatewayHost, registerViewerStatic } from "./serving";
+import { gatewayHost, LOOPBACK_PROXIES, registerViewerStatic } from "./serving";
 import { createTabLifecycle, type TabLifecycle } from "./session/tabs";
 import type { TargetRef } from "./types";
 import { createRoleManager } from "./ws/roles";
@@ -39,6 +39,7 @@ import { createWsServer } from "./ws/server";
 import { registerClaudeChat } from "./claude/routes";
 import type { ViewerConn } from "./ws/viewerconn";
 import { startClientGateway } from "./clients-main";
+import { assertProductionSafe } from "./production-guard";
 
 const SESSION_ID = "dev";
 const DEFAULT_PORT = 3000;
@@ -120,7 +121,7 @@ async function main(): Promise<void> {
   const agent = createAgentLink(browser, {
     publishClipboard: (message) => publishClipboard?.(message),
   });
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger: false, trustProxy: LOOPBACK_PROXIES });
   registerSecurityHeaders(app);
   const targets = new Map<string, TargetRef>();
   const targetInfo = new Map<string, BrowserTargetInfo>();
@@ -586,5 +587,6 @@ function isInputMsg(msg: Up): msg is InputMsg {
   );
 }
 
+assertProductionSafe();
 if (["2", "5", "8", "16"].includes(process.env.MIRROR_CLIENTS ?? "")) await startClientGateway();
 else await main();

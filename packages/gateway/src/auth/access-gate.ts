@@ -17,6 +17,19 @@ const FORM_CONTENT_TYPE = "application/x-www-form-urlencoded";
 const DEFAULT_BACKOFF_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
 const FAILURE_RESET_MS = 15 * 60_000;
+/** Bounds memory when many distinct addresses fail; stale entries go first, then the oldest. */
+const MAX_TRACKED_IPS = 10_000;
+
+function pruneFailures(failures: Map<string, FailureState>, nowMs: number): void {
+  for (const [ip, state] of failures) {
+    if (nowMs - state.lastFailure >= FAILURE_RESET_MS) failures.delete(ip);
+  }
+  // Map iteration is insertion order, so this drops the longest-tracked addresses.
+  for (const ip of failures.keys()) {
+    if (failures.size < MAX_TRACKED_IPS) break;
+    failures.delete(ip);
+  }
+}
 
 export interface AccessGateOptions {
   /** Defaults to MIRROR_ACCESS_PASSWORD. There is intentionally no built-in password. */
@@ -142,6 +155,7 @@ export function createAccessGate(options: AccessGateOptions = {}): AccessGate {
 
         const submitted = request.body?.password;
         if (typeof submitted !== "string" || !constantTimePasswordEqual(submitted, password)) {
+          if (failuresByIp.size >= MAX_TRACKED_IPS) pruneFailures(failuresByIp, requestTime);
           const failures = (failuresByIp.get(request.ip)?.failures ?? 0) + 1;
           const delay = Math.min(MAX_BACKOFF_MS, backoffMs * 2 ** Math.min(failures - 1, 16));
           failuresByIp.set(request.ip, {
