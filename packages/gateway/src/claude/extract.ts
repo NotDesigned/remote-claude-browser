@@ -87,7 +87,9 @@ const STATUS_STEPS = String.raw`(element) => [...element.querySelectorAll('[clas
 export const CHAT_EXPRESSION = String.raw`(() => {
   const visible = e => !!e && e.isConnected && !e.closest('[hidden], [inert], [aria-hidden="true"]');
   const editor = [...document.querySelectorAll('.ProseMirror[contenteditable="true"], [contenteditable="true"][role="textbox"], textarea[placeholder]')].find(visible);
-  const candidates = [...document.querySelectorAll(${JSON.stringify(MESSAGE_SELECTOR)})];
+  // Sign-in and logout pages reuse the reply typography for marketing copy; never read them as chat.
+  const signedOut = /^\/(login|logout|oauth|auth|magic-link)(\/|$)/i.test(location.pathname);
+  const candidates = signedOut ? [] : [...document.querySelectorAll(${JSON.stringify(MESSAGE_SELECTOR)})];
   const messageText = ${MESSAGE_TEXT};
   // In the observer's isolated world a cache keeps each message's serialized content until a
   // mutation inside that message marks it dirty, so streaming re-reads only the changing reply.
@@ -114,7 +116,7 @@ export const CHAT_EXPRESSION = String.raw`(() => {
   const stop = [...document.querySelectorAll('button[aria-label], button[data-testid]')].find(e => /stop|停止/i.test((e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-testid') || '')) && visible(e));
   const editorText = ${editableText.toString()};
   const draft = editor ? ('value' in editor ? editor.value : editorText(editor)) : '';
-  return {url: location.href, title: document.title, ready: !!editor, draft: draft.trim() ? draft.slice(0, 100000) : '', generating: !!stop, messages, conversations: [...new Map(conversations.map(e => [e.path,e])).values()].slice(0,100)};
+  return {url: location.href, title: document.title, signedOut, ready: !signedOut && !!editor, draft: draft.trim() ? draft.slice(0, 100000) : '', generating: !!stop, messages, conversations: [...new Map(conversations.map(e => [e.path,e])).values()].slice(0,100)};
 })()`;
 
 export const EDITOR_FOCUS_EXPRESSION = `(() => {

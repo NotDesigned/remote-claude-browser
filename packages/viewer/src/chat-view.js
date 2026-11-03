@@ -276,8 +276,9 @@ export function mountChatView(root, options) {
     $("jump-latest").hidden = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
     const notice = $("notice");
     notice.hidden = state.ready;
-    notice.textContent =
-      "还没有找到 Claude 的输入框。如果需要登录或验证，请切换到上方的“页面”或“画面”完成，然后回到聊天。";
+    notice.textContent = state.signedOut
+      ? "远程浏览器里的 Claude 已登出。请切换到上方的“页面”模式登录（需要人机验证时用“画面”），登录后回到聊天即可。"
+      : "还没有找到 Claude 的输入框。如果需要登录或验证，请切换到上方的“页面”或“画面”完成，然后回到聊天。";
     const conversationList = $("conversations");
     const activePaths = new Set();
     state.conversations.forEach((conversation, index) => {
@@ -502,6 +503,7 @@ export function mountChatView(root, options) {
         Object.assign(state, {
           title: data.title,
           url: data.url,
+          signedOut: data.signedOut,
           ready: data.ready,
           draft: data.draft,
           generating: data.generating,

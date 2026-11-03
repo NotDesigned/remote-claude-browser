@@ -13,6 +13,8 @@ export interface ChatState {
   url: string;
   title: string;
   ready: boolean;
+  /** The remote page is on a sign-in or logout page; nothing there is chat content. */
+  signedOut?: boolean;
   draft?: string;
   generating: boolean;
   messages: ChatMessage[];
@@ -67,6 +69,7 @@ export function chatDelta(
   const metadata = {
     url: after.url,
     title: after.title,
+    signedOut: after.signedOut,
     ready: after.ready,
     draft: after.draft,
     generating: after.generating,
@@ -75,6 +78,7 @@ export function chatDelta(
   const prior = {
     url: before.url,
     title: before.title,
+    signedOut: before.signedOut,
     ready: before.ready,
     draft: before.draft,
     generating: before.generating,

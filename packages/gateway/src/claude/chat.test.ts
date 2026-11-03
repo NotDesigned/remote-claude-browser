@@ -53,6 +53,23 @@ describe("chat text transport", () => {
     });
     expect(chatDelta(done, done)).toBeNull();
   });
+  it("reports a forced logout as metadata", () => {
+    const signedIn: ChatState = {
+      tab: "tab",
+      epoch: "doc",
+      url: "https://claude.ai/new",
+      title: "Claude",
+      ready: true,
+      generating: false,
+      messages: [],
+      conversations: [],
+    };
+    expect(chatDelta(signedIn, { ...signedIn, signedOut: true, ready: false })).toMatchObject({
+      type: "delta",
+      signedOut: true,
+      ready: false,
+    });
+  });
   it("reconstructs append, correction, deletion and Chinese/surrogate text", () => {
     for (const [before, after] of [
       ["", "你好"],
