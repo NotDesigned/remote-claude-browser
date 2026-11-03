@@ -514,3 +514,85 @@ describe("shared-browser client scopes", () => {
     pool.dispose();
   });
 });
+
+describe("shared login cookie write-back", () => {
+  function setup(contextCookie: { value: string } | null, canPersist: () => boolean) {
+    const browser = new FakeBrowser();
+    let contextNumber = 0,
+      pageNumber = 0;
+    const original = browser.sendBrowser.getMockImplementation()!;
+    browser.sendBrowser.mockImplementation(async (method, params = {}) => {
+      if (method === "Target.createBrowserContext")
+        return { browserContextId: `private-${++contextNumber}` };
+      if (method === "Storage.getCookies") {
+        const shared = { name: "sessionKey", value: "shared", domain: ".claude.ai", path: "/" };
+        if (!params.browserContextId) return { cookies: [shared] };
+        return {
+          cookies:
+            contextCookie === null
+              ? [{ name: "other", value: "x", domain: ".claude.ai", path: "/" }]
+              : [{ ...shared, value: contextCookie.value }],
+        };
+      }
+      return original(method, params);
+    });
+    browser.create = async () => {
+      const target = page(`cookie-page-${++pageNumber}`);
+      browser.attach(target);
+      return { targetId: target.targetId };
+    };
+    const pool = createClientBrowserPool(browser, {
+      isolatedStorage: true,
+      canPersistCookies: canPersist,
+      cookieSyncIntervalMs: 1_000,
+    });
+    const writeBacks = () =>
+      browser.sendBrowser.mock.calls.filter(
+        ([method, params]) => method === "Storage.setCookies" && !params?.browserContextId,
+      );
+    return { browser, pool, writeBacks };
+  }
+
+  it("does not write back a session that is on a sign-in page when it closes", async () => {
+    const { pool, writeBacks } = setup({ value: "refreshed" }, () => false);
+    const a = pool.scope("a");
+    await a.sendBrowser!("Target.createTarget", { url: "https://claude.ai/login" });
+    await a.close();
+    expect(writeBacks()).toHaveLength(0);
+    pool.dispose();
+  });
+
+  it("never spreads a forced logout that cleared the login cookie", async () => {
+    for (const lost of [null, { value: "" }]) {
+      const { pool, writeBacks } = setup(lost, () => true);
+      const a = pool.scope("a");
+      await a.sendBrowser!("Target.createTarget", { url: "https://claude.ai/new" });
+      await a.close();
+      expect(writeBacks()).toHaveLength(0);
+      pool.dispose();
+    }
+  });
+
+  it("shares a refreshed login token periodically, without waiting for the session to end", async () => {
+    vi.useFakeTimers();
+    try {
+      const { pool, writeBacks } = setup({ value: "rotated" }, () => true);
+      const a = pool.scope("a");
+      await a.sendBrowser!("Target.createTarget", { url: "https://claude.ai/new" });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(writeBacks()).toEqual([
+        [
+          "Storage.setCookies",
+          { cookies: [{ name: "sessionKey", value: "rotated", domain: ".claude.ai", path: "/" }] },
+        ],
+      ]);
+      // Already shared: the next round and the final close have nothing new to write.
+      await vi.advanceTimersByTimeAsync(1_000);
+      await a.close();
+      expect(writeBacks()).toHaveLength(1);
+      pool.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

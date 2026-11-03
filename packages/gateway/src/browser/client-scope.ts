@@ -47,6 +47,13 @@ export interface ClientBrowserPoolOptions {
   /** Separate website storage while bootstrapping each context from the saved login cookies. */
   isolatedStorage?: boolean;
   downloadDir?: string;
+  /**
+   * Whether a session's cookies may be written back to the shared login store right now. A
+   * session sitting on a sign-in or forced-logout page must never overwrite everyone's login.
+   */
+  canPersistCookies?(sid: string): boolean;
+  /** Periodically copy refreshed login cookies of healthy sessions to the shared store. */
+  cookieSyncIntervalMs?: number;
 }
 
 export function createClientBrowserPool(
@@ -148,6 +155,47 @@ export function createClientBrowserPool(
       if (parentOwner !== undefined) claim(parentOwner, target.targetId);
     }
   });
+
+  const poolSend = (method: string, params?: Record<string, unknown>) => {
+    if (!browser.sendBrowser) return Promise.reject(new Error("Browser/root CDP is unavailable"));
+    return browser.sendBrowser(method, params);
+  };
+
+  /**
+   * Copy cookies that changed in a session's context since its last sync into the shared store,
+   * so refreshed or rotated login tokens reach new sessions without waiting for this one to end.
+   * Skipped when the session lost its login (no session cookie left), which would otherwise
+   * spread a forced logout to every later session.
+   */
+  async function persistScopeCookies(state: ScopeState): Promise<boolean> {
+    if (!state.context || !state.initialCookies) return false;
+    const id = await state.context.catch(() => undefined);
+    if (!id) return false;
+    const saved = (await poolSend("Storage.getCookies", { browserContextId: id })) as {
+      cookies?: Record<string, unknown>[];
+    };
+    const current = cookieParameters(saved.cookies ?? []);
+    if (!hasLoginCookie(current)) return false;
+    const changed = current.filter(
+      (cookie) => state.initialCookies?.get(cookieIdentity(cookie)) !== JSON.stringify(cookie),
+    );
+    if (changed.length === 0) return true;
+    await poolSend("Storage.setCookies", { cookies: changed });
+    for (const cookie of changed)
+      state.initialCookies.set(cookieIdentity(cookie), JSON.stringify(cookie));
+    return true;
+  }
+
+  const cookieSyncTimer =
+    options.isolatedStorage && options.canPersistCookies
+      ? setInterval(() => {
+          for (const [sid, state] of scopes) {
+            if (state.disposed || state.closing || !options.canPersistCookies!(sid)) continue;
+            void persistScopeCookies(state).catch(() => undefined);
+          }
+        }, options.cookieSyncIntervalMs ?? 30_000)
+      : undefined;
+  cookieSyncTimer?.unref?.();
 
   function scope(sid: string): ClientBrowserScope {
     if (disposed) throw new Error("Client browser pool is disposed");
@@ -283,6 +331,8 @@ export function createClientBrowserPool(
       if (state.closePromise) return state.closePromise;
       ensureActive();
       state.closing = true;
+      // Decide before the pages close: afterwards their URLs are gone.
+      const persistCookies = options.canPersistCookies?.(sid) ?? true;
       state.closePromise = (async () => {
         try {
           for (const pending of [...state.pendingCreates.values()])
@@ -316,14 +366,7 @@ export function createClientBrowserPool(
               const id = await state.context.catch(() => undefined);
               if (id) {
                 try {
-                  const saved = (await rootSend("Storage.getCookies", {
-                    browserContextId: id,
-                  })) as { cookies?: Record<string, unknown>[] };
-                  const cookies = cookieParameters(saved.cookies ?? []).filter(
-                    (cookie) =>
-                      state.initialCookies?.get(cookieIdentity(cookie)) !== JSON.stringify(cookie),
-                  );
-                  if (cookies.length) await rootSend("Storage.setCookies", { cookies });
+                  if (persistCookies) await persistScopeCookies(state);
                 } finally {
                   await rootSend("Target.disposeBrowserContext", { browserContextId: id });
                 }
@@ -465,6 +508,7 @@ export function createClientBrowserPool(
     dispose() {
       if (disposed) return;
       disposed = true;
+      if (cookieSyncTimer) clearInterval(cookieSyncTimer);
       for (const state of scopes.values()) state.facade.dispose();
       scopes.clear();
       owners.clear();
@@ -497,6 +541,19 @@ function cookieParameters(cookies: Record<string, unknown>[]): Record<string, un
     Object.fromEntries(
       fields.filter((field) => cookie[field] !== undefined).map((field) => [field, cookie[field]]),
     ),
+  );
+}
+
+/** A context still logged in to the site keeps a session cookie; a forced logout clears it. */
+function hasLoginCookie(cookies: Record<string, unknown>[]): boolean {
+  return cookies.some(
+    (cookie) =>
+      typeof cookie.name === "string" &&
+      /session/i.test(cookie.name) &&
+      typeof cookie.value === "string" &&
+      cookie.value.length > 0 &&
+      typeof cookie.domain === "string" &&
+      /(^|\.)claude\.ai$/i.test(cookie.domain),
   );
 }
 

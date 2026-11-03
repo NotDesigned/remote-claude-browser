@@ -71,6 +71,22 @@ export async function startClientGateway(): Promise<void> {
   const pool = createClientBrowserPool(browser, {
     isolatedStorage: true,
     downloadDir: join(profile, "downloads"),
+    // Only a session that is visibly signed in may refresh everyone's shared login cookies.
+    canPersistCookies: (sid) => {
+      const pages = [...(runtimes.get(sid)?.metadata.values() ?? [])]
+        .map((info) => {
+          try {
+            return new URL(info.url);
+          } catch {
+            return undefined;
+          }
+        })
+        .filter((url): url is URL => url !== undefined && /(^|\.)claude\.ai$/i.test(url.hostname));
+      return (
+        pages.length > 0 &&
+        !pages.some((url) => /^\/(login|logout|oauth|auth|magic-link)(\/|$)/i.test(url.pathname))
+      );
+    },
   });
   const app = Fastify({ logger: false, trustProxy: LOOPBACK_PROXIES });
   registerSecurityHeaders(app);
