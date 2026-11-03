@@ -450,7 +450,7 @@ export function rewriteCssText(
     }
     position += 1;
   }
-  return applyReplacements(css, replacements);
+  return portableSupports(applyReplacements(css, replacements));
 }
 
 function parseUrlFunction(
@@ -680,4 +680,23 @@ function isRecord(value: unknown): value is UnknownRecord {
 
 function record(value: unknown): UnknownRecord {
   return isRecord(value) ? value : {};
+}
+
+/**
+ * The remote page is laid out by Chromium, but the mirror is painted by the viewer's browser.
+ * Rules guarded by Chromium-only `@supports` tests must still style the elements Chromium created
+ * because of them: Claude's sidebar shimmer inserts a text "clone" only when
+ * `(-webkit-mask-clip:text) and (-webkit-app-region:drag)` holds, and in Safari the clone then
+ * rendered as a bare dark bar. Dropping the `-webkit-app-region` clause keeps the remaining,
+ * portable condition.
+ */
+export function portableSupports(css: string): string {
+  if (!/-webkit-app-region/i.test(css)) return css;
+  return css.replace(/@supports([^{;]*)\{/gi, (rule, prelude: string) => {
+    const clause = String.raw`\(\s*-webkit-app-region\s*:\s*[\w-]+\s*\)`;
+    const portable = prelude
+      .replace(new RegExp(String.raw`\s+and\s+` + clause, "gi"), "")
+      .replace(new RegExp(clause + String.raw`\s+and\s+`, "gi"), "");
+    return portable === prelude ? rule : `@supports${portable}{`;
+  });
 }

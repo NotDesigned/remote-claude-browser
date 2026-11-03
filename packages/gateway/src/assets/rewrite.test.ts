@@ -1,6 +1,10 @@
-import { EventType, IncrementalSource, type eventWithTime } from "@mirror/protocol";
+import {
+  EventType,
+  IncrementalSource,
+  type eventWithTime,
+} from "@mirror/protocol";
 import { describe, expect, it } from "vitest";
-import { createRewriteStage, rewriteCssText, rewriteSrcset } from "./rewrite";
+import { createRewriteStage, portableSupports, rewriteCssText, rewriteSrcset } from "./rewrite";
 import { openAssetToken, type AssetRef } from "./token";
 
 const KEY = Buffer.alloc(32, 0x5a);
@@ -627,5 +631,27 @@ describe("rrweb RewriteStage", () => {
       childNodes: [{ type: 3, id: 2, textContent: "same" }],
     });
     expect(createRewriteStage(KEY)(original, CTX)).toBe(original);
+  });
+});
+
+describe("portable @supports for the viewer's browser", () => {
+  const clone =
+    "@supports ((-webkit-mask-clip:text)) and (-webkit-app-region:drag) { .cds-root [data-cds-shimmer-clone] { mask-clip: text; position: absolute; } }";
+
+  it("drops the Chromium-only app-region clause so Safari styles Chromium-created elements", () => {
+    expect(portableSupports(clone)).toBe(
+      "@supports ((-webkit-mask-clip:text)) { .cds-root [data-cds-shimmer-clone] { mask-clip: text; position: absolute; } }",
+    );
+    expect(
+      portableSupports("@supports (-webkit-app-region: drag) and (display:grid) { a { b: c } }"),
+    ).toBe("@supports (display:grid) { a { b: c } }");
+    expect(rewriteCssText(clone, (url) => url)).not.toContain("app-region");
+  });
+
+  it("leaves every other rule, and a condition that only tests app-region, untouched", () => {
+    const plain = ".drag { -webkit-app-region: drag; } @supports (display:grid) { a { b: c } }";
+    expect(portableSupports(plain)).toBe(plain);
+    const only = "@supports (-webkit-app-region:drag) { .titlebar { height: 28px } }";
+    expect(portableSupports(only)).toBe(only);
   });
 });
