@@ -9,6 +9,7 @@ import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import type { Down, Up } from "../packages/protocol/src/index";
+import { encodeResumeCursors } from "../packages/protocol/src/index";
 import { CHAT_EXPRESSION, fileDownloadExpression } from "../packages/gateway/src/claude/extract";
 
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Run through scripts/limited-run.sh");
@@ -85,6 +86,9 @@ class Viewer {
   readonly frames = new Map<string, number>();
   readonly modes = new Map<string, "dom" | "px">();
   readonly acknowledged = new Map<string, number>();
+  /** Replay position per tab, as a real viewer would report it when resuming. */
+  readonly cursors = new Map<string, { epoch: number; nextSeq: number }>();
+  resumed: string[] = [];
   pixelAvailable?: boolean;
   status?: ServerStatus;
   socket: import("ws").WebSocket;
@@ -98,9 +102,10 @@ class Viewer {
     readonly owner: string,
     readonly sid: string,
     readonly connectionKey = randomUUID(),
+    resume?: string,
   ) {
     this.socket = new WebSocket(
-      `${origin.replace("http:", "ws:")}/ws?sid=${encodeURIComponent(sid)}&connectionKey=${encodeURIComponent(connectionKey)}`,
+      `${origin.replace("http:", "ws:")}/ws?sid=${encodeURIComponent(sid)}&connectionKey=${encodeURIComponent(connectionKey)}${resume === undefined ? "" : `&resume=${encodeURIComponent(resume)}`}`,
       {
         headers: { Origin: origin, "x-mirror-e2e-owner": owner },
       },
@@ -110,6 +115,16 @@ class Viewer {
       if (message.t === "hello") {
         this.viewerId = message.viewerId;
         this.driver = message.role === "driver";
+        this.resumed = message.resumed ?? [];
+      }
+      if (message.t === "snapshot")
+        this.cursors.set(message.tab, { epoch: message.epoch, nextSeq: message.seq + 1 });
+      if (message.t === "resync") this.cursors.delete(message.tab);
+      if (message.t === "delta") {
+        const cursor = this.cursors.get(message.tab);
+        if (cursor?.epoch === message.epoch && cursor.nextSeq === message.seq)
+          cursor.nextSeq += message.data.length;
+        else this.cursors.delete(message.tab);
       }
       if (message.t === "driver") this.driver = message.viewerId === this.viewerId;
       if (message.t === "mode") this.modes.set(message.tab, message.mode);
@@ -753,6 +768,51 @@ try {
   assert.ok((await state("a", first.sid)).tabs.some((tab) => tab.tab === aTab));
   checks.concurrentPixelStreamsAndIndependentRelease = true;
   checks.reconnectRetainsOwnedPage = true;
+
+  // A dropped connection continues from its replay position: only the missed deltas arrive,
+  // the geometry agreement is inherited, and input works without a new snapshot.
+  await evaluate(
+    "a",
+    first.sid,
+    aTab,
+    "(() => { document.body.dataset.resume = 'live'; return true; })()",
+  );
+  await waitFor(() => (a.cursors.get(aTab)?.nextSeq ?? 0) > 0, "A has a replay cursor");
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const cursor = { ...a.cursors.get(aTab)! };
+  const pageKey = a.connectionKey;
+  await a.close();
+  await evaluate(
+    "a",
+    first.sid,
+    aTab,
+    "(() => { document.body.dataset.resume = 'missed'; return true; })()",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  a = await new Viewer(
+    "a",
+    first.sid,
+    pageKey,
+    encodeResumeCursors([{ tab: aTab, epoch: cursor.epoch, nextSeq: cursor.nextSeq }]),
+  ).open();
+  assert.deepEqual(a.resumed, [aTab], "hello reports the resumed tab");
+  await waitFor(
+    () => a.messages.some((m) => m.t === "delta" && m.tab === aTab && m.seq === cursor.nextSeq),
+    "missed deltas continue from the cursor",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  assert.ok(
+    !a.messages.some((m) => (m.t === "snapshot" || m.t === "resync") && m.tab === aTab),
+    "a resumed tab receives no snapshot",
+  );
+  await focusEnd("a", first.sid, aTab);
+  const beforeResumeInput = await editor("a", first.sid, aTab);
+  a.send({ t: "text", tab: aTab, insert: "续传后输入" });
+  await waitFor(
+    async () => (await editor("a", first.sid, aTab)) === beforeResumeInput + "续传后输入",
+    "input works after resume without renegotiation",
+  );
+  checks.reconnectResumesWithoutSnapshot = true;
 
   await evaluate(
     "a",

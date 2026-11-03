@@ -12,6 +12,7 @@ import {
   IncrementalSource,
   type Down,
   type eventWithTime,
+  type ResumeCursor,
   type TabId,
 } from "@mirror/protocol";
 import { createServerClock, type ServerClock } from "./clock";
@@ -35,7 +36,10 @@ type Delta = Extract<Down, { t: "delta" }>;
 export interface Mirror {
   handle(msg: Down): void;
   connectionLost(): void;
-  connectionRestored(): void;
+  /** `resumed`: the gateway continued this replay from its cursor, so no snapshot is needed. */
+  connectionRestored(resumed?: boolean): void;
+  /** Where the live replay stands, for resuming after a reconnect; null when it must rebuild. */
+  resumeCursor(): ResumeCursor | null;
   selectTab(tab: TabId): void;
   getActiveTab(): TabId | null;
   getIframe(): HTMLIFrameElement | null;
@@ -543,9 +547,14 @@ export function createMirror(opts: MirrorOpts): Mirror {
       else opts.container.dataset.connectionStale = "true";
       resyncRequested = false;
     },
-    connectionRestored() {
+    connectionRestored(resumed = false) {
       delete opts.container.dataset.connectionStale;
+      if (resumed && state !== null && state.tab === activeTab) return;
       if (activeTab !== null) requestFreshSnapshot(activeTab, "ws reconnect");
+    },
+    resumeCursor() {
+      if (state === null || resyncRequested || state.tab !== activeTab) return null;
+      return { tab: state.tab, epoch: state.epoch, nextSeq: state.lastSeq + 1 };
     },
     selectTab(tab) {
       if (tab === activeTab) return;

@@ -19,6 +19,8 @@ export interface RoleConnectionOptions {
   send: RoleSender;
   viewerId?: string;
   name?: string;
+  /** Tabs this connection resumed from the viewer's cursor; echoed in `hello`. */
+  resumed?: string[];
 }
 
 export interface DriverChange {
@@ -119,6 +121,7 @@ export function createRoleManager(options: RoleManagerOptions = {}): RoleManager
         role: session.driverId === viewerId ? "driver" : "viewer",
         sessionId: peer.sessionId,
         serverTs: now(),
+        ...(connection.resumed?.length ? { resumed: [...connection.resumed] } : {}),
       });
       broadcastState(session);
       return viewerId;

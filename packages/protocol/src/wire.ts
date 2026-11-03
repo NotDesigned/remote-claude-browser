@@ -81,6 +81,11 @@ export type Down =
       sessionId: string;
       /** Gateway wall-clock reference for viewer clock-skew estimation. */
       serverTs?: number;
+      /**
+       * Tabs whose replay this connection continued from the viewer's resume cursor: the join
+       * payload carries only the missed deltas and the viewer keeps its geometry and input.
+       */
+      resumed?: TabId[];
     }
   /** Application-level RTT echo; browser JS cannot observe WebSocket control-frame pong timing. */
   | { t: "pong"; id: number; sentTs: number; serverTs: number }
@@ -278,4 +283,51 @@ export function decodeDown(raw: string): Down {
 /** Gateway side: decode a viewer message. Throws on unknown/garbled input. */
 export function decodeUp(raw: string): Up {
   return decode(raw, UP_TAGS, "Up") as Up;
+}
+
+/** Where a viewer's replay stands for one tab: the next sequence number it expects. */
+export interface ResumeCursor {
+  tab: TabId;
+  epoch: number;
+  nextSeq: number;
+}
+
+const MAX_RESUME_CURSORS = 8;
+const MAX_RESUME_PARAM_LENGTH = 2048;
+
+/** WebSocket URL parameter carrying resume cursors across a reconnect. */
+export function encodeResumeCursors(cursors: readonly ResumeCursor[]): string {
+  return JSON.stringify(
+    cursors
+      .slice(0, MAX_RESUME_CURSORS)
+      .map((cursor) => [cursor.tab, cursor.epoch, cursor.nextSeq]),
+  );
+}
+
+/** Untrusted input: anything malformed simply means "no resume". */
+export function decodeResumeCursors(raw: string | null | undefined): ResumeCursor[] {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_RESUME_PARAM_LENGTH)
+    return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const cursors: ResumeCursor[] = [];
+  for (const entry of parsed.slice(0, MAX_RESUME_CURSORS)) {
+    if (!Array.isArray(entry) || entry.length !== 3) continue;
+    const [tab, epoch, nextSeq] = entry as unknown[];
+    if (
+      typeof tab === "string" &&
+      /^[A-Za-z0-9_-]{1,128}$/.test(tab) &&
+      Number.isSafeInteger(epoch) &&
+      Number.isSafeInteger(nextSeq) &&
+      (epoch as number) >= 0 &&
+      (nextSeq as number) >= 0
+    )
+      cursors.push({ tab, epoch: epoch as number, nextSeq: nextSeq as number });
+  }
+  return cursors;
 }

@@ -1,7 +1,7 @@
 /** Viewer shell layout. */
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { AgentMsg, Down, eventWithTime, TabId } from "@mirror/protocol";
-import { EventType } from "@mirror/protocol";
+import { EventType, encodeResumeCursors } from "@mirror/protocol";
 import { createMirror, type Mirror } from "./mirror";
 import { attachMirrorInput } from "./input";
 import { EventPipeline } from "./pipeline";
@@ -273,6 +273,8 @@ export function App() {
     let entryMode = entryParams.get("mode");
     const entryTab = entryParams.get("tab");
     const presentation = createPresentationState();
+    let reconnectPending = false;
+    let viewportBeforeDisconnect: ReturnType<typeof presentation.currentViewport>;
     let pxView: PxView | null = null;
     let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     const reportViewport = () => {
@@ -528,7 +530,19 @@ export function App() {
         if (message.t === "hello") {
           setInputFailures({});
           setPageStates({});
-          presentation.resetViewport();
+          const resumed =
+            reconnectPending &&
+            currentTab !== null &&
+            !presentation.isPixel(currentTab) &&
+            (message.resumed ?? []).includes(currentTab);
+          if (reconnectPending) {
+            reconnectPending = false;
+            mirror.connectionRestored(resumed);
+          }
+          // A resumed replay keeps its negotiated geometry; anything else renegotiates (D7).
+          if (resumed) presentation.restoreViewport(viewportBeforeDisconnect);
+          else presentation.resetViewport();
+          viewportBeforeDisconnect = undefined;
           viewerId = message.viewerId;
           sessionId = message.sessionId;
           setViewerId(message.viewerId);
@@ -541,6 +555,7 @@ export function App() {
             .catch(() => undefined);
           driver = message.role === "driver";
           if (driver) setDriverId(message.viewerId);
+          if (resumed && driver) inputStatus(true);
           scheduleViewport(0);
         }
         if (message.t === "driver") {
@@ -626,11 +641,17 @@ export function App() {
           mirror.observeRtt(sample);
           setRttMs(sample);
         },
+        resumeParam() {
+          if (currentTab === null || presentation.isPixel(currentTab)) return null;
+          const cursor = mirror.resumeCursor();
+          return cursor === null ? null : encodeResumeCursors([cursor]);
+        },
         onStateChange(state, reconnected) {
           if (disposed) return;
           setConnection(state);
           if (state !== "open") {
             inputStatus(false);
+            viewportBeforeDisconnect ??= presentation.currentViewport();
             presentation.resetViewport();
           }
           if (state === "replaced") {
@@ -646,9 +667,9 @@ export function App() {
           }
           if (state === "closed" && !presentation.isPixel(currentTab)) mirror.connectionLost();
           if (state === "open" && reconnected && !presentation.isPixel(currentTab)) {
-            // The new hello forces geometry negotiation for the new viewer identity.
+            // `hello` says whether the gateway resumed this replay; recovery waits for it.
             // Content recovery does not unlock input before its viewport acknowledgement.
-            mirror.connectionRestored();
+            reconnectPending = true;
           }
         },
         onProtocolError(error) {

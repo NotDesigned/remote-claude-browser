@@ -182,7 +182,23 @@ export class TabHub {
    * Viewer join / resync — same code path (D4): [resync, snapshot(Meta+FullSnapshot@epoch),
    * one delta with the whole buffer]; caller then feeds the live tail.
    */
-  joinPayload(): Down[] {
+  /**
+   * True when a reconnecting viewer that has applied everything before `nextSeq` in `epoch` can
+   * continue from this hub's buffer instead of receiving a fresh snapshot.
+   */
+  canResume(epoch: number, nextSeq: number): boolean {
+    if (this.meta === null || this.snapshot === null || epoch !== this.epoch) return false;
+    const offset = nextSeq - (this.snapshotSeq + 1);
+    return Number.isSafeInteger(offset) && offset >= 0 && offset <= this.deltas.length;
+  }
+
+  joinPayload(resume?: { epoch: number; nextSeq: number }): Down[] {
+    if (resume !== undefined && this.canResume(resume.epoch, resume.nextSeq)) {
+      const tail = this.deltas.slice(resume.nextSeq - (this.snapshotSeq + 1));
+      return tail.length === 0
+        ? []
+        : [{ t: "delta", tab: this.tabId, epoch: this.epoch, seq: resume.nextSeq, data: tail }];
+    }
     const payload: Down[] = [{ t: "resync", tab: this.tabId }];
     if (this.meta === null || this.snapshot === null) return payload;
 

@@ -13,7 +13,7 @@ export interface GatewaySocket {
 
 export type GatewayConnectionState = "connecting" | "open" | "closed" | "replaced";
 
-interface WebSocketLike {
+export interface WebSocketLike {
   readonly readyState: number;
   onopen: (() => void) | null;
   onmessage: ((event: { data: unknown }) => void) | null;
@@ -34,6 +34,8 @@ export interface GatewaySocketOptions {
   now?: () => number;
   /** Identifies this page instance across reconnects; it grants no access permissions. */
   connectionKey?: string;
+  /** Encoded resume cursors for the next (re)connect, or null to request a full rebuild. */
+  resumeParam?: () => string | null;
 }
 
 const OPEN = 1;
@@ -90,6 +92,9 @@ export function connectGateway(
   const open = () => {
     if (disposed) return;
     notify("connecting");
+    const resume = hasOpened ? (options.resumeParam?.() ?? null) : null;
+    if (resume === null) socketUrl.searchParams.delete("resume");
+    else socketUrl.searchParams.set("resume", resume);
     const current = makeSocket(socketUrl.href);
     socket = current;
 

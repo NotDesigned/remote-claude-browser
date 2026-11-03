@@ -78,6 +78,15 @@ export class ViewportInputGate {
     return true;
   }
 
+  /**
+   * A reconnecting viewer whose replay continued in the same hub epoch has already applied the
+   * snapshot of the current geometry, so it inherits that agreement without a new negotiation.
+   */
+  inheritAgreement(viewerId: string, tabId: TabId): boolean {
+    const epoch = this.requiredEpochs.get(tabId);
+    return epoch !== undefined && this.acknowledge(viewerId, tabId, epoch);
+  }
+
   allowsInput(viewerId: string, tabId: TabId): boolean {
     if (this.pendingTabs.has(tabId)) return false;
     const requiredEpoch = this.requiredEpochs.get(tabId);

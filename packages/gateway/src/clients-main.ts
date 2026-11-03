@@ -35,7 +35,7 @@ import { createIdleReaper } from "./session/idle-reaper";
 import { createResourceSampler } from "./monitor/resources";
 import type { TargetRef, AgentLink } from "./types";
 import { createRoleManager } from "./ws/roles";
-import { createWsServer } from "./ws/server";
+import { createWsServer, resumeCursorsFor } from "./ws/server";
 import type { ViewerConn } from "./ws/viewerconn";
 
 interface ClientRuntime {
@@ -205,13 +205,22 @@ export async function startClientGateway(): Promise<void> {
       viewers.set(id, { viewer, sid, owner: currentOwner(request)! });
       chats.get(sid)?.disconnectController("replaced");
       idleReaper.touch(sid);
+      const runtime = runtimes.get(sid)!;
+      // A reconnect whose replay position is still buffered keeps its geometry agreement: the
+      // epoch did not change, so this viewer identity inherits the acknowledgement directly.
+      const resumed = resumeCursorsFor(request)
+        .filter((cursor) =>
+          runtime.tabs.hubFor(cursor.tab)?.canResume(cursor.epoch, cursor.nextSeq),
+        )
+        .filter((cursor) => runtime.viewport.gate.inheritAgreement(id, cursor.tab))
+        .map((cursor) => cursor.tab);
       roles.connect({
         sessionId: sid,
         inviteRole: "driver",
         viewerId: id,
         send: (message, serialized) => viewer.send(message, serialized),
+        resumed,
       });
-      const runtime = runtimes.get(sid)!;
       void runtime
         .setRecording(true)
         .catch((error) => report("client recorder resume failed", error));

@@ -6,7 +6,14 @@
  * once per broadcast (encodeMsg) and fan out the string. Auth middleware slot: SEC-2's cookie
  * guard runs at upgrade time (see ../auth/middleware.ts), not on first message.
  */
-import { decodeUp, encodeMsg, type Down, type Up } from "@mirror/protocol";
+import {
+  decodeResumeCursors,
+  decodeUp,
+  encodeMsg,
+  type Down,
+  type ResumeCursor,
+  type Up,
+} from "@mirror/protocol";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer } from "ws";
@@ -346,10 +353,17 @@ export function createWsServer(opts: WsServerOpts): WsServer {
       if (connectionKey) activeKeys.set(sessionId, connectionKey);
       else activeKeys.delete(sessionId);
     }
+    // A reconnecting viewer may continue from its resume cursors, but only on its first join:
+    // drain recovery after a stall always rebuilds from a fresh snapshot.
+    let resumeCursors = resumeCursorsFor(request);
     const joinPayload = (): Down[] => {
       const hubs =
         sessionId === undefined ? (opts.hubs?.() ?? []) : opts.hubsForSession!(sessionId);
-      return [...hubs].flatMap((hub) => hub.joinPayload());
+      const cursors = resumeCursors;
+      resumeCursors = [];
+      return [...hubs].flatMap((hub) =>
+        hub.joinPayload(cursors.find((cursor) => cursor.tab === hub.tabId)),
+      );
     };
     const viewerSocket: ViewerSocket =
       oneWayDelayMs === 0 ? socket : new DelayedViewerSocket(socket, oneWayDelayMs);
@@ -485,6 +499,17 @@ export function createWsServer(opts: WsServerOpts): WsServer {
       retiredKeys.clear();
     },
   };
+}
+
+/** Resume cursors a reconnecting viewer reported in its WebSocket URL. */
+export function resumeCursorsFor(request: IncomingMessage): ResumeCursor[] {
+  try {
+    return decodeResumeCursors(
+      new URL(request.url ?? "/", "http://gateway.invalid").searchParams.get("resume"),
+    );
+  } catch {
+    return [];
+  }
 }
 
 function connectionKeyFor(request: IncomingMessage): string | undefined {

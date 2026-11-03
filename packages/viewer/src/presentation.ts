@@ -37,6 +37,13 @@ export function createPresentationState() {
     resetViewport() {
       viewport = undefined;
     },
+    /** The last viewport this page negotiated, kept across a resumable reconnect. */
+    currentViewport() {
+      return viewport === undefined ? undefined : { ...viewport };
+    },
+    restoreViewport(saved: { tab: TabId; w: number; h: number; dpr: number } | undefined) {
+      viewport = saved === undefined ? undefined : { ...saved };
+    },
     requested(tab: TabId, w: number, h: number, dpr = 1) {
       viewport = { tab, w, h, dpr };
     },
