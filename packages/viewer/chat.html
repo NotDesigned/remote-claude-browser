@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Claude · 远程文字聊天</title>
+    <script src="/src/chat.js" type="module"></script>
+  </head>
+  <body>
+    <header>
+      <a id="chat-link" class="brand" href="/chat.html">Claude <span>远程工作台</span></a
+      ><button id="mobile-new-chat" type="button" disabled>＋ 新对话</button
+      ><button id="history-toggle" type="button" aria-controls="chat-sidebar" aria-expanded="false">
+        对话</button
+      ><span id="connection" role="status">连接中</span
+      ><button id="retry-chat" type="button" hidden>重新连接</button
+      ><select id="view-mode-select" aria-label="浏览模式">
+        <option value="chat" selected>文字聊天</option>
+        <option value="dom">DOM 模式</option>
+        <option value="px">图像模式</option></select
+      ><button id="theme-toggle" type="button">浅色</button>
+    </header>
+    <div class="layout">
+      <button id="history-backdrop" type="button" aria-label="关闭对话列表" hidden></button>
+      <aside id="chat-sidebar">
+        <button id="history-close" type="button">关闭</button>
+        <button id="new-chat" disabled>＋ 新对话</button>
+        <p class="label">远端会话</p>
+        <nav id="conversations"></nav>
+        <p class="aside-note">浏览器与登录态保存在 B。<br />文字通过 A 同步到此处。</p>
+      </aside>
+      <main>
+        <div id="notice" role="status">正在读取 B 上的 Claude 页面…</div>
+        <div id="messages" aria-label="对话内容"></div>
+        <button id="jump-latest" type="button" hidden>回到最新消息 ↓</button>
+        <div class="chat-status">
+          <span id="generation-status" role="status"></span
+          ><span id="action-status" role="status"></span>
+        </div>
+        <button id="resolve-pending" hidden>已核对远端页面，解除待确认状态</button>
+        <section id="transfer-status" role="status" hidden>
+          <span id="upload-status"></span>
+          <input id="file-picker" type="file" hidden />
+          <progress id="upload-progress" max="100" value="0" hidden></progress>
+          <button id="cancel-upload" type="button">取消上传</button>
+        </section>
+        <section id="downloads" aria-label="下载文件" hidden></section>
+        <form id="composer">
+          <label class="sr-only" for="draft">消息</label
+          ><textarea
+            id="draft"
+            rows="3"
+            maxlength="100000"
+            placeholder="输入消息… Enter 发送，Shift + Enter 换行"
+          ></textarea>
+          <div class="compose-footer">
+            <button id="attach" type="button" disabled>＋ 附件</button
+            ><span>文本增量同步 · 草稿保留在本机</span
+            ><button type="button" id="stop" hidden>停止生成</button
+            ><button type="submit" id="send" disabled>发送 ↑</button>
+          </div>
+        </form>
+      </main>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,47 @@
+[Unit]
+Description=Claude authoritative browser and agent (B)
+Requires=claude-display.service claude-egress.service
+After=network-online.target claude-display.service claude-egress.service
+Wants=network-online.target
+
+[Service]
+User=claude-browser
+Slice=claude-browser.slice
+Group=claude-browser
+WorkingDirectory=/var/lib/claude-browser
+EnvironmentFile=/etc/claude-browser/agent.env
+Environment=NODE_ENV=production
+Environment=DISPLAY=:99
+Environment=CHROME_PATH=/usr/bin/google-chrome
+Environment=CHROME_HEADFUL=1
+Environment=CHROME_USER_DATA_DIR=/var/lib/claude-browser/profile
+Environment=VIEWER_DIST_ROOT=/opt/claude-browser/current/viewer
+Environment=GATEWAY_HOST=127.0.0.1
+Environment=GATEWAY_PORT=3010
+Environment=CLAUDE_CHAT_ENABLED=1
+Environment=MIRROR_CLIENTS=16
+Environment=MIRROR_DISABLE_RTC=1
+Environment=MIRROR_CANVAS_SNAPSHOTS=0
+Environment=MIRROR_START_URL=https://claude.ai/new
+ExecStart=/usr/local/bin/node /opt/claude-browser/current/dist/main.mjs
+Restart=always
+RestartSec=3
+TimeoutStopSec=25
+KillMode=mixed
+UMask=0077
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/claude-browser /tmp
+CPUAccounting=yes
+CPUQuota=350%
+CPUWeight=20
+Nice=10
+MemoryAccounting=yes
+MemoryHigh=3072M
+MemoryMax=3328M
+MemorySwapMax=128M
+OOMPolicy=kill
+TasksMax=768
+
+[Install]
+WantedBy=multi-user.target

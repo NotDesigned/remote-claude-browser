@@ -1,0 +1,28 @@
+{
+  "name": "@mirror/viewer",
+  "version": "0.1.0",
+  "description": "Scriptless semantic DOM viewer for Remote Browser",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests --maxWorkers=1 --minWorkers=1"
+  },
+  "dependencies": {
+    "@mirror/protocol": "workspace:*",
+    "@rrweb/replay": "2.1.1",
+    "@rrweb/rrweb-plugin-canvas-webrtc-replay": "2.1.1",
+    "katex": "^0.19.1",
+    "markdown-it": "^15.0.3",
+    "preact": "^10.24.0"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.9.0",
+    "@types/katex": "^0.16.8",
+    "@types/markdown-it": "^14.2.0",
+    "vite": "^6.0.0"
+  }
+}

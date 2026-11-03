@@ -1,0 +1,12 @@
+[Unit]
+Description=Combined browser and display budget on B
+
+[Slice]
+CPUAccounting=yes
+CPUQuota=380%
+CPUWeight=20
+MemoryAccounting=yes
+MemoryHigh=3328M
+MemoryMax=3584M
+MemorySwapMax=128M
+TasksMax=1024

@@ -1,0 +1,14 @@
+[Unit]
+Description=Claude browser user outbound network boundary
+Before=claude-browser.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/claude-browser/agent.env
+ExecStart=/opt/claude-browser/current/deploy/egress.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

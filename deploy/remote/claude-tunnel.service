@@ -1,0 +1,24 @@
+[Unit]
+Description=Private A to B Claude agent tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Slice=claude.slice
+ExecStart=/usr/bin/ssh -NT -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=15 -L 127.0.0.1:3010:127.0.0.1:3010 remote-server
+Restart=always
+RestartSec=3
+CPUAccounting=yes
+CPUQuota=15%
+CPUWeight=20
+Nice=5
+MemoryAccounting=yes
+MemoryHigh=32M
+MemoryMax=64M
+MemorySwapMax=0
+TasksMax=16
+OOMPolicy=kill
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Serial build and test budget on single-core A
+
+[Slice]
+CPUAccounting=yes
+CPUQuota=35%
+CPUWeight=10
+MemoryAccounting=yes
+MemoryHigh=800M
+MemoryMax=960M
+MemorySwapMax=128M
+IOWeight=10
+TasksMax=256
