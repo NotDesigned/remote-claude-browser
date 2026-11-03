@@ -5,7 +5,7 @@
  */
 import { useEffect, useRef, useState } from "preact/hooks";
 import { normalizeNavigationUrl } from "./chrome/urlbar";
-import type { ReceivedServerStatus } from "./server-status";
+import { SERVER_STATUS_STALE_MS, type ReceivedServerStatus } from "./server-status";
 import type { ViewMode } from "./client-session";
 
 export type ThemePreference = "auto" | "light" | "dark";
@@ -69,7 +69,7 @@ export function ShellBar(props: ShellBarProps) {
 
   // A sample older than ~10 s is stale: hide numbers rather than show a false reading.
   const sample =
-    props.serverStatus && Date.now() - props.serverStatus.receivedAt < 10_000
+    props.serverStatus && Date.now() - props.serverStatus.receivedAt < SERVER_STATUS_STALE_MS
       ? props.serverStatus.value
       : null;
   const gib = (bytes: number | null | undefined) =>

@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CLIENT_KEY_STORAGE_KEY,
   ClientSessionError,
-  clientChatUrl,
   clientGatewayUrl,
   clientPageMode,
   clientReturnUrl,
@@ -269,8 +268,6 @@ describe("client session bootstrap", () => {
       "wss://viewer.test/ws?sid=client-2",
     );
     expect(clientGatewayUrl("http://127.0.0.1:3010/?fixture=demo")).toBe("ws://127.0.0.1:3010/ws");
-    expect(clientChatUrl("client-2", "tab/a b")).toBe("/chat.html?sid=client-2&tab=tab%2Fa+b");
-    expect(clientChatUrl(null, null)).toBe("/chat.html");
     expect(clientReturnUrl("client-1")).toBe("/?sid=client-1");
   });
 

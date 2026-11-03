@@ -182,13 +182,6 @@ export function clientReturnUrl(sid: ClientSessionId): string {
   return `/?${new URLSearchParams({ sid })}`;
 }
 
-export function clientChatUrl(sid: ClientSessionId | null, tab: string | null): string {
-  const params = new URLSearchParams();
-  if (sid !== null) params.set("sid", sid);
-  if (tab !== null) params.set("tab", tab);
-  return `/chat.html${params.size === 0 ? "" : `?${params}`}`;
-}
-
 function isSid(value: unknown): value is ClientSessionId {
   return typeof value === "string" && /^client-(?:[1-9]|1[0-6])$/.test(value);
 }

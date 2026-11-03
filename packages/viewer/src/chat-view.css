@@ -49,16 +49,6 @@
   padding: 0 28px;
   background: #fffefa;
 }
-#chat-view .brand {
-  font-family: inherit;
-  font-size: 25px;
-}
-#chat-view .brand span {
-  font-family: inherit;
-  font-size: 12px;
-  color: #817a6c;
-  margin-left: 8px;
-}
 #chat-view #connection {
   font-size: 12px;
   color: #867857;
@@ -69,10 +59,6 @@
   color: #775d35;
   background: #fbf5e8;
   font-size: 12px;
-}
-#chat-view #browser-link {
-  margin-left: auto;
-  font-size: 13px;
 }
 #chat-view .layout {
   display: grid;
@@ -237,13 +223,6 @@
     padding: 0 16px;
     gap: 14px;
   }
-  #chat-view .brand span {
-    display: none;
-  }
-  #chat-view #browser-link {
-    margin-left: auto;
-    font-size: 11px;
-  }
   #chat-view .layout {
     grid-template-columns: 1fr;
   }
@@ -256,17 +235,6 @@
   #chat-view .compose-footer span {
     font-size: 10px;
   }
-}
-
-#chat-view #view-mode-select {
-  margin-left: auto;
-  border: 1px solid #dcd6c9;
-  border-radius: 9px;
-  padding: 8px;
-  color: inherit;
-  background: transparent;
-  font: inherit;
-  font-size: 13px;
 }
 :root[data-theme="dark"] #chat-view {
   color-scheme: dark;
@@ -296,12 +264,6 @@
 @media (max-width: 760px) {
   #chat-view .chat-subbar {
     gap: 8px;
-  }
-  #chat-view #view-mode-select {
-    max-width: 112px;
-  }
-  #chat-view #theme-toggle {
-    padding: 8px;
   }
 }
 
@@ -512,9 +474,6 @@
     padding: 8px 12px;
     gap: 7px;
   }
-  #chat-view .brand {
-    font-size: 18px;
-  }
   #chat-view #mobile-new-chat,
   #chat-view #history-toggle {
     display: inline-block;
@@ -524,9 +483,6 @@
   #chat-view #connection {
     flex-basis: auto;
     font-size: 11px;
-  }
-  #chat-view #view-mode-select {
-    font-size: 12px;
   }
   #chat-view #chat-main {
     padding-bottom: max(12px, env(safe-area-inset-bottom));

@@ -35,61 +35,12 @@ body,
 }
 
 #shell > nav,
-#server-status,
-#connection-state,
 .hud-panel {
   box-sizing: border-box;
 }
 
-#server-status {
-  display: grid;
-  grid-template-columns: repeat(4, max-content) minmax(0, 1fr);
-  align-items: center;
-  gap: 18px;
-  height: var(--server-status-height);
-  padding: 0 12px;
-  overflow: hidden;
-  color: #716c66;
-  background: #e9e7e5;
-  border-bottom: 1px solid #dbd8d5;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-
-.server-stat {
-  display: inline-flex;
-  min-width: 0;
-  gap: 6px;
-  align-items: baseline;
-  white-space: nowrap;
-}
-
-.server-stat strong {
-  color: #4f463b;
-  font-weight: 600;
-}
-
-.server-status-freshness {
-  justify-self: end;
-  overflow: hidden;
-  color: #7e7973;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-#server-status[data-status="stale"] .server-stat strong,
-#server-status[data-status="pending"] .server-stat strong {
-  color: #8d8985;
-}
-
-#server-status[data-status="stale"] .server-status-freshness {
-  color: #98764e;
-}
-
 #shell button:focus-visible,
-#shell summary:focus-visible,
-#connection-state a:focus-visible {
+#shell summary:focus-visible {
   outline: 2px solid #7f705e;
   outline-offset: 2px;
 }
@@ -358,70 +309,6 @@ body,
   }
 }
 
-#connection-state {
-  position: relative;
-  z-index: 20;
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 8px;
-  align-items: center;
-  height: var(--toolbar-height);
-  min-width: 0;
-  min-height: 0;
-  padding: 7px 12px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
-  color: var(--chrome-muted);
-  background: #ffffff;
-  border-bottom: 1px solid var(--chrome-border);
-  font-size: 12px;
-}
-
-#input-state {
-  order: 5;
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: 5px;
-  align-items: center;
-  padding: 4px 7px;
-  color: #8a6c39;
-  background: #fbf5e7;
-  border-radius: 6px;
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-#input-state[data-ready="true"] {
-  color: #594d3f;
-  background: #f3f1ef;
-}
-
-#input-state::before,
-.connection-badge::before {
-  content: "";
-  width: 5px;
-  height: 5px;
-  flex: 0 0 5px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.connection-badge {
-  order: 6;
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: 5px;
-  align-items: center;
-  color: #8a6c39;
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-#connection-state[data-state="open"] .connection-badge {
-  color: #6a5f52;
-}
-
 .connection-environment {
   order: 2;
   font-size: 11px;
@@ -575,25 +462,6 @@ body,
   background: #f6f4f1;
 }
 
-#view-mode-select {
-  order: 20;
-  flex: 0 0 auto;
-  min-height: 32px;
-  max-width: 164px;
-  padding: 4px 8px;
-  color: var(--chrome-text, #453e36);
-  background: var(--chrome-surface, #ffffff);
-  border: 1px solid #d7d1ca;
-  border-radius: 8px;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-#connection-state #theme-toggle {
-  order: 21;
-}
-
 #page-recovery-state {
   flex: 0 0 auto;
   max-width: 230px;
@@ -651,57 +519,6 @@ body,
   font-size: 9px;
   font-weight: 700;
   text-transform: uppercase;
-}
-
-#connection-state .request-driver {
-  color: #ffffff;
-  background: #bc6646;
-}
-
-#connection-state .request-driver:hover {
-  background: #ab5b3e;
-}
-
-#connection-state button {
-  box-sizing: border-box;
-  flex-shrink: 0;
-  min-height: 30px;
-  padding: 4px 9px;
-  color: #605a53;
-  background: #f6f4f2;
-  border: 1px solid #e5e2de;
-  border-radius: 7px;
-  font: inherit;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-#connection-state button:not(:disabled):hover {
-  background: #edeae6;
-}
-
-#connection-state button:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-#connection-state > a {
-  flex-shrink: 0;
-  padding: 6px 3px;
-  color: #78736d;
-  font-size: 11px;
-  text-decoration: none;
-  white-space: nowrap;
-}
-
-#connection-state > button:not(#view-mode-select),
-#connection-state > a {
-  order: 1;
-}
-
-#connection-state > a:hover {
-  color: #473b2e;
-  text-decoration: underline;
 }
 
 #mirror-host {
@@ -993,33 +810,6 @@ body,
     --toolbar-height: 94px;
   }
 
-  #server-status {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-    grid-template-rows: repeat(2, 20px);
-    gap: 2px 7px;
-    align-content: center;
-    padding: 5px 8px;
-    font-size: 10px;
-  }
-
-  .server-stat {
-    grid-column: span 3;
-    gap: 4px;
-  }
-
-  .server-stat[data-stat="cpu"] {
-    grid-column: span 2;
-  }
-
-  .server-stat[data-stat="memory"] {
-    grid-column: span 3;
-  }
-
-  .server-status-freshness {
-    grid-column: span 1;
-    font-size: 9px;
-  }
-
   #tabstrip {
     gap: 7px;
     padding-right: 8px;
@@ -1062,39 +852,9 @@ body,
     display: none;
   }
 
-  #connection-state {
-    flex-wrap: wrap;
-    align-content: center;
-    column-gap: 7px;
-    row-gap: 6px;
-    padding: 7px 8px;
-  }
-
-  #connection-state .connection-badge {
-    display: none;
-  }
-
-  #connection-state button {
-    padding-right: 7px;
-    padding-left: 7px;
-    font-size: 11px;
-  }
-
   #presence-chrome[data-viewer-role="driver"],
   #presence-chrome[data-viewer-role="pending"] {
     display: none;
-  }
-
-  #connection-state:has(#presence-chrome[data-viewer-role="follower"]) #input-state {
-    display: none;
-  }
-
-  #connection-state #view-mode-select {
-    flex-basis: 104px;
-    margin-left: auto;
-    padding-right: 8px;
-    padding-left: 8px;
-    font-size: 11px;
   }
 
   #view-mode-menu {
@@ -1136,10 +896,8 @@ body,
   background: #1f1d1a;
 }
 
-#shell[data-theme="dark"] #server-status,
 #shell[data-theme="dark"] #tabstrip,
-#shell[data-theme="dark"] #urlbar,
-#shell[data-theme="dark"] #connection-state {
+#shell[data-theme="dark"] #urlbar {
   color: #c5c1bd;
   background: #292623;
   border-color: #413d38;
@@ -1155,14 +913,11 @@ body,
 
 #shell[data-theme="dark"] .browser-tab:not([data-active="true"]):hover,
 #shell[data-theme="dark"] .view-mode-options button:hover:not(:disabled),
-#shell[data-theme="dark"] .view-mode-options a:hover,
-#shell[data-theme="dark"] #connection-state button:not(:disabled):hover {
+#shell[data-theme="dark"] .view-mode-options a:hover {
   background: #443e38;
 }
 
-#shell[data-theme="dark"] #connection-state button,
-#shell[data-theme="dark"] #view-mode-menu summary,
-#shell[data-theme="dark"] #connection-state #theme-toggle {
+#shell[data-theme="dark"] #view-mode-menu summary {
   color: #e3e0dc;
   background: #3c3731;
   border-color: #5b544d;
@@ -1172,11 +927,6 @@ body,
 #shell[data-theme="dark"] .view-mode-options a,
 #shell[data-theme="dark"] #urlbar input {
   color: #edebe9;
-}
-
-#shell[data-theme="dark"] #server-status {
-  background: #322e2a;
-  border-color: #4f4a44;
 }
 
 #transfer-panels {
@@ -1300,12 +1050,6 @@ body,
   background: #ab5b3e;
 }
 
-#shell[data-theme="dark"] #view-mode-select {
-  color: #e7e4e1;
-  background: #302d29;
-  border-color: #5e5a56;
-}
-
 #upload-panel {
   display: flex;
   flex-wrap: wrap;
@@ -1345,28 +1089,4 @@ body,
 #shell[data-theme="dark"] .download-tray h2 {
   color: #d3cfcb;
   border-color: #5e5a56;
-}
-
-#connection-state #server-status {
-  order: 30;
-  display: flex;
-  flex: 0 0 auto;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  margin-left: auto;
-  padding: 0;
-  height: auto;
-  border: 0;
-  background: transparent;
-}
-#connection-state #server-status .server-status-freshness {
-  display: none;
-}
-@media (max-width: 760px) {
-  #connection-state #server-status {
-    flex-basis: 100%;
-    justify-content: flex-end;
-    gap: 4px 12px;
-    font-size: 10px;
-  }
 }

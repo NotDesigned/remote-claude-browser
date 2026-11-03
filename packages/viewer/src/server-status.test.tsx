@@ -1,8 +1,7 @@
 // @vitest-environment node
-import type { ComponentChildren, VNode } from "preact";
 import type { ServerStatusMsg } from "@mirror/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { pollServerStatus, receiveServerStatus, ServerStatusBar } from "./server-status";
+import { pollServerStatus, receiveServerStatus } from "./server-status";
 
 const value: ServerStatusMsg = {
   t: "server-status",
@@ -18,44 +17,15 @@ const value: ServerStatusMsg = {
   memoryTotalBytes: 1.9 * 1024 ** 3,
   browserMemoryBytes: 0.8 * 1024 ** 3,
 };
-function text(value: ComponentChildren): string {
-  if (Array.isArray(value)) return value.map(text).join("");
-  if (value === null || value === undefined || typeof value === "boolean") return "";
-  if (typeof value === "object" && "props" in value) return text((value as VNode).props.children);
-  return String(value);
-}
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 afterEach(() => vi.useRealTimers());
 
 describe("server B status", () => {
-  it("renders dynamic capacity, host CPU and memory without treating unknowns as zero", () => {
-    const sample = receiveServerStatus(null, value, 50_000);
-    const tree = ServerStatusBar({ sample, live: true, now: 50_100 });
-    expect(tree.props["data-status"]).toBe("fresh");
-    expect(text(tree)).toContain("在线客户端1会话占用2/16CPU30%Mem1.2/1.9 GiB");
-    expect(text(tree)).not.toContain("图像");
-    const unknown = ServerStatusBar({
-      sample: receiveServerStatus(null, { ...value, cpuPercent: null, memoryUsedBytes: null }, 0),
-      live: true,
-      now: 1,
-    });
-    expect(text(unknown)).toContain("CPU—Mem—");
-    expect(text(ServerStatusBar({ sample: null, live: false, now: 0 }))).not.toContain("0/5");
-  });
-
-  it("expires after ten seconds or a disconnect and ignores duplicate/late sample timestamps", () => {
+  it("ignores duplicate and late sample timestamps", () => {
     const sample = receiveServerStatus(null, value, 100);
     expect(receiveServerStatus(sample, value, 9_999)).toBe(sample);
     expect(receiveServerStatus(sample, { ...value, sampledAt: 0 }, 9_999)).toBe(sample);
-    for (const props of [
-      { live: false, now: 101 },
-      { live: true, now: 10_101 },
-    ]) {
-      const tree = ServerStatusBar({ sample, ...props });
-      expect(tree.props["data-status"]).toBe("stale");
-      expect(text(tree)).toContain("在线客户端—");
-      expect(text(tree)).toContain("数据已过期");
-    }
+    expect(receiveServerStatus(sample, { ...value, sampledAt: 2 }, 9_999).receivedAt).toBe(9_999);
   });
 
   it.each([401, 403])("stops polling after HTTP %i", async (status) => {
