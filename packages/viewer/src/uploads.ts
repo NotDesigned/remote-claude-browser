@@ -43,6 +43,8 @@ export interface FileUploadRelayOptions {
 export interface FileUploadRelay {
   handlePick(message: FilePick, sessionId: string): void;
   select(tab: TabId, input: HTMLInputElement): void;
+  /** Stage files that did not come from a file input (for example a pasted screenshot). */
+  selectFiles(tab: TabId, files: readonly File[]): void;
   cancel(): void;
   clear(): void;
   dispose(): void;
@@ -93,6 +95,11 @@ export function createFileUploadRelay(options: FileUploadRelayOptions = {}): Fil
         total,
         name,
       });
+    notify(
+      0,
+      selection.files.reduce((sum, file) => sum + file.size, 0),
+      selection.files[0]?.name ?? "",
+    );
     const transport = options.fetch ?? ((url, init) => xhrUpload(url, init, notify));
     void uploadBatch(transport, pick, selection.files, controller.signal, notify)
       .then(() => {
@@ -169,10 +176,13 @@ export function createFileUploadRelay(options: FileUploadRelayOptions = {}): Fil
       const files = input.files === null ? [] : Array.from(input.files);
       // File objects remain readable after reset and resetting allows the same file to be picked.
       input.value = "";
-      if (files.length === 0) return;
+      this.selectFiles(tab, files);
+    },
+    selectFiles(tab, files) {
+      if (disposed || files.length === 0) return;
       clearSelection(tab);
       const timer = schedule(() => selections.delete(tab), stageTimeoutMs);
-      selections.set(tab, { files, timer });
+      selections.set(tab, { files: [...files], timer });
       pair(tab);
     },
     cancel() {

@@ -19,6 +19,8 @@ export interface MirrorInputOptions {
   onEditableInput?(focus: EditableFocus): void;
   onKeyDown?(event: KeyboardEvent, focus: EditableFocus | null): void;
   onFileSelection?(tab: TabId, input: HTMLInputElement): void;
+  /** Files pasted into the mirror; they are uploaded to the remote page as attachments. */
+  onPasteFiles?(tab: TabId, files: File[]): void;
   scrollFilter?: ScrollFilter;
 }
 
@@ -96,6 +98,10 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
         committedContenteditable: true,
         onEditableFocus: options.onEditableFocus,
         onKeyDown: options.onKeyDown,
+        onPasteFiles:
+          options.onPasteFiles === undefined
+            ? undefined
+            : (files) => options.onPasteFiles?.(options.tab, files),
       }),
     );
 

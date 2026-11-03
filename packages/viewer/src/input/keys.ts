@@ -29,6 +29,11 @@ export interface KeyCaptureOptions {
   flushComposing?(target: Element, complete?: boolean): void;
   /** Native contenteditable input is sent as complete text by change capture. */
   committedContenteditable?: boolean;
+  /**
+   * Files pasted without accompanying text (screenshots, copied images). They must reach the
+   * remote page as attachments; a native paste would only insert them into the local mirror.
+   */
+  onPasteFiles?(files: File[]): void;
   onEditableFocus?(focus: EditableFocus | null): void;
   onKeyDown?(event: KeyboardEvent, focus: EditableFocus | null): void;
 }
@@ -302,6 +307,26 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
   };
   const onPaste = (event: ClipboardEvent) => {
     if (!event.isTrusted) return;
+    const files = options.onPasteFiles === undefined ? [] : pastedFiles(event.clipboardData);
+    if (files.length > 0) {
+      options.onPasteFiles?.(files);
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      const host = options.committedContenteditable ? editingHost(event.target) : null;
+      if (text === "" || host !== null) {
+        // A native paste would put the image into the local mirror only. Keep the text part on
+        // the committed-text path by inserting it as plain text, which change capture forwards.
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (
+          text !== "" &&
+          host !== null &&
+          !host.ownerDocument.execCommand("insertText", false, text)
+        )
+          options.send({ t: "text", tab: options.tab, insert: text });
+        return;
+      }
+      // Value fields and non-editable targets take only the text below.
+    }
     if (options.committedContenteditable && editingHost(event.target) !== null) return;
     const target = isElement(event.target) ? event.target : focused?.element;
     if (target !== undefined && isValueEchoField(target)) {
@@ -501,3 +526,18 @@ const NON_TEXT_INPUT_TYPES = new Set([
   "reset",
   "submit",
 ]);
+
+/**
+ * Files carried by a paste. Office apps add a picture rendition of copied text or cells; such a
+ * paste has HTML without any <img>, and that picture must not become an attachment.
+ */
+export function pastedFiles(data: DataTransfer | null): File[] {
+  if (data === null) return [];
+  const html = data.getData("text/html") ?? "";
+  if (html.trim() !== "" && !/<img[\s>]/i.test(html)) return [];
+  const fromItems = Array.from(data.items ?? [])
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null);
+  return fromItems.length > 0 ? fromItems : Array.from(data.files ?? []);
+}

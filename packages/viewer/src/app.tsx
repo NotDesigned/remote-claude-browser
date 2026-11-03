@@ -313,6 +313,49 @@ export function App() {
     });
     uploadRef.current = uploads;
     const scroll = createScrollFilter({ send: (message) => socket?.send(message) });
+    // Pasted images become attachments of the remote page: stage the files, then open the
+    // remote attachment input. Its `filepick` (also published over the socket) pairs with them.
+    const uploadPastedFiles = async (tab: TabId, files: File[], sid: string): Promise<void> => {
+      uploadRequestRef.current?.abort();
+      const request = new AbortController();
+      uploadRequestRef.current = request;
+      uploads.selectFiles(tab, files);
+      setUploadState({
+        tab,
+        phase: "uploading",
+        multiple: files.length > 1,
+        loaded: 0,
+        total: 0,
+        name: `正在把粘贴的${files.length > 1 ? ` ${files.length} 个文件` : "图片"}作为附件传到远端…`,
+      });
+      try {
+        const response = await fetch(`/s/${encodeURIComponent(sid)}/uploads/prepare`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ tab }),
+          signal: request.signal,
+        });
+        const result = (await response.json()) as Extract<Down, { t: "filepick" }> & {
+          error?: string;
+        };
+        if (disposed || request.signal.aborted) return;
+        if (!response.ok) throw new Error(result.error || "远端附件入口尚未就绪");
+        uploads.handlePick(result, sid);
+      } catch (error) {
+        if (disposed || request.signal.aborted) return;
+        uploads.clear();
+        setUploadState({
+          tab,
+          phase: "error",
+          multiple: false,
+          loaded: 0,
+          total: 0,
+          name: `粘贴的附件未能上传：${error instanceof Error ? error.message : "请重试"}`,
+        });
+      } finally {
+        if (uploadRequestRef.current === request) uploadRequestRef.current = null;
+      }
+    };
     const pipeline = new EventPipeline()
       .use(echo)
       .use(scroll)
@@ -379,6 +422,9 @@ export function App() {
           onFileSelection: (tab, input) => {
             if (driver) uploads.select(tab, input);
             else input.value = "";
+          },
+          onPasteFiles: (tab, files) => {
+            if (driver && sessionId !== null) void uploadPastedFiles(tab, files, sessionId);
           },
           scrollFilter: scroll,
         });
