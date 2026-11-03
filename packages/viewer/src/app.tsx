@@ -33,7 +33,9 @@ import { createFileUploadRelay, type FileUploadRelay, type UploadState } from ".
 import { createPresentationState } from "./presentation";
 import {
   ClientSessionError,
+  chatEntryUrl,
   clientChatUrl,
+  rememberViewMode,
   clientGatewayUrl,
   clientPageMode,
   clientReturnUrl,
@@ -80,6 +82,15 @@ async function replayFixture(path: string, mirror: Mirror, signal?: AbortSignal)
       seq: snapshotEnd + 2,
       data: tail,
     });
+  }
+}
+
+/** Accessing localStorage itself throws when site data is blocked; fall back to no memory. */
+function viewStorage(): Pick<Storage, "getItem" | "setItem"> {
+  try {
+    return window.localStorage;
+  } catch {
+    return { getItem: () => null, setItem: () => undefined };
   }
 }
 
@@ -184,6 +195,11 @@ export function App() {
         });
         const session = await requestClientSession(request, { signal: controller.signal });
         if (!active || !mountedRef.current || controller.signal.aborted) return;
+        const chatEntry = chatEntryUrl(new URL(window.location.href), session.sid, viewStorage());
+        if (chatEntry !== null) {
+          window.location.replace(chatEntry);
+          return;
+        }
         const currentUrl = new URL(window.location.href);
         currentUrl.searchParams.set("sid", session.sid);
         window.history.replaceState(
@@ -446,6 +462,8 @@ export function App() {
         }
         if (message.t === "px-capacity") setPixelAvailable(message.available);
         presentation.observe(message);
+        // Acknowledge receipt so the gateway paces frames to what this link actually delivers.
+        if (message.t === "px") socket?.send({ t: "px-ack", tab: message.tab });
         if (message.t === "px" || (message.t === "mode" && message.mode === "px")) {
           ensurePxView().handle(message);
         } else if (message.t === "mode") {
@@ -712,6 +730,8 @@ export function App() {
           disabled={activeTab === null}
           onChange={(event) => {
             const mode = event.currentTarget.value;
+            if (mode === "chat" || mode === "dom" || mode === "px")
+              rememberViewMode(viewStorage(), mode);
             if (mode === "chat") {
               window.location.assign(clientChatUrl(clientSession?.sid ?? null, activeTab));
             } else if (activeTab !== null && (mode === "dom" || mode === "px")) {

@@ -382,6 +382,10 @@ export function createWsServer(opts: WsServerOpts): WsServer {
           viewer.send(pong, encodeMsg(pong));
           return;
         }
+        if (msg.t === "px-ack") {
+          if (typeof msg.tab === "string") viewer.ackPx(msg.tab);
+          return;
+        }
         Promise.resolve(opts.onUp?.(viewer, msg, sessionId)).catch(() =>
           socket.close(1011, "handler failed"),
         );

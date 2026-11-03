@@ -10,6 +10,10 @@ import { encodeMsg, type Down, type TabId } from "@mirror/protocol";
 
 export const STALL_BYTES = 8 * 1024 * 1024;
 export const RESUME_BYTES = 1 * 1024 * 1024;
+/** Unacknowledged pixel frames allowed per tab; newer frames replace a single waiting one. */
+export const PX_MAX_IN_FLIGHT = 2;
+/** Without acknowledgements (lost ack, old viewer) resume sending after this long. */
+export const PX_ACK_TIMEOUT_MS = 2_000;
 const WS_OPEN = 1;
 
 export interface ViewerSocket {
@@ -20,6 +24,17 @@ export interface ViewerSocket {
 
 export interface ViewerConnOpts {
   drainPollMs?: number;
+  pxAckTimeoutMs?: number;
+  now?: () => number;
+}
+
+type PxMsg = Extract<Down, { t: "px" }>;
+
+interface PxFlow {
+  inFlight: number;
+  lastSentAt: number;
+  waiting?: { msg: PxMsg; serialized: string };
+  timer?: NodeJS.Timeout;
 }
 
 interface ReplayCursor {
@@ -34,6 +49,9 @@ export class ViewerConn {
   private stalled = false;
   private disposed = false;
   private beforeResync: (() => void) | undefined;
+  private readonly pxFlows = new Map<TabId, PxFlow>();
+  private readonly pxAckTimeoutMs: number;
+  private readonly now: () => number;
 
   constructor(
     readonly socket: ViewerSocket,
@@ -44,6 +62,8 @@ export class ViewerConn {
     if (!Number.isSafeInteger(this.drainPollMs) || this.drainPollMs < 1) {
       throw new RangeError("drainPollMs must be a positive safe integer");
     }
+    this.pxAckTimeoutMs = opts.pxAckTimeoutMs ?? PX_ACK_TIMEOUT_MS;
+    this.now = opts.now ?? Date.now;
   }
 
   get isStalled(): boolean {
@@ -65,6 +85,8 @@ export class ViewerConn {
       return false;
     }
     if (this.stalled && isDroppable(msg)) return false;
+    if (msg.t === "px") return this.sendPx(msg, serialized);
+    if (msg.t === "mode" || msg.t === "resync") this.resetPx(msg.tab);
 
     this.socket.send(serialized);
     this.advanceCursor(msg);
@@ -80,10 +102,82 @@ export class ViewerConn {
     }
   }
 
+  /** The viewer received a pixel frame for `tab`; release one slot and send the newest waiting. */
+  ackPx(tab: TabId): void {
+    const flow = this.pxFlows.get(tab);
+    if (flow === undefined) return;
+    flow.inFlight = Math.max(0, flow.inFlight - 1);
+    this.flushPx(tab, flow);
+  }
+
   dispose(): void {
     this.disposed = true;
+    for (const tab of [...this.pxFlows.keys()]) this.resetPx(tab);
     if (this.drainTimer !== null) clearTimeout(this.drainTimer);
     this.drainTimer = null;
+  }
+
+  private sendPx(msg: PxMsg, serialized: string): boolean {
+    let flow = this.pxFlows.get(msg.tab);
+    if (flow === undefined) {
+      flow = { inFlight: 0, lastSentAt: 0 };
+      this.pxFlows.set(msg.tab, flow);
+    }
+    if (this.pxSlotAvailable(flow)) {
+      this.writePx(flow, serialized);
+      return true;
+    }
+    // Only the newest picture matters; replace any frame that is still waiting.
+    flow.waiting = { msg, serialized };
+    this.schedulePxTimeout(msg.tab, flow);
+    return false;
+  }
+
+  private pxSlotAvailable(flow: PxFlow): boolean {
+    if (flow.inFlight < PX_MAX_IN_FLIGHT) return true;
+    if (this.now() - flow.lastSentAt < this.pxAckTimeoutMs) return false;
+    flow.inFlight = 0;
+    return true;
+  }
+
+  private writePx(flow: PxFlow, serialized: string): void {
+    flow.inFlight++;
+    flow.lastSentAt = this.now();
+    this.socket.send(serialized);
+  }
+
+  private flushPx(tab: TabId, flow: PxFlow): void {
+    if (flow.waiting === undefined || !this.isOpen()) return;
+    if (this.stalled) {
+      flow.waiting = undefined;
+      return;
+    }
+    if (!this.pxSlotAvailable(flow)) {
+      this.schedulePxTimeout(tab, flow);
+      return;
+    }
+    const { serialized } = flow.waiting;
+    flow.waiting = undefined;
+    if (flow.timer !== undefined) clearTimeout(flow.timer);
+    flow.timer = undefined;
+    this.writePx(flow, serialized);
+  }
+
+  /** A static page produces no further frames, so a waiting frame must not wait for one. */
+  private schedulePxTimeout(tab: TabId, flow: PxFlow): void {
+    if (flow.timer !== undefined || this.disposed) return;
+    const delay = Math.max(1, flow.lastSentAt + this.pxAckTimeoutMs - this.now());
+    flow.timer = setTimeout(() => {
+      flow.timer = undefined;
+      if (this.pxFlows.get(tab) === flow) this.flushPx(tab, flow);
+    }, delay);
+    flow.timer.unref?.();
+  }
+
+  private resetPx(tab: TabId): void {
+    const flow = this.pxFlows.get(tab);
+    if (flow?.timer !== undefined) clearTimeout(flow.timer);
+    this.pxFlows.delete(tab);
   }
 
   private markStalled(): void {

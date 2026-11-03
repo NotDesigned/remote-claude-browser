@@ -194,6 +194,12 @@ export type Up =
       url?: string;
     }
   | { t: "mode"; tab: TabId; mode: "dom" | "px" }
+  /**
+   * The viewer received one `px` frame. The gateway keeps at most a couple of frames in flight
+   * per viewer and replaces any newer waiting frame, so slow links show the latest picture
+   * instead of a growing queue hidden in proxy and TCP buffers.
+   */
+  | { t: "px-ack"; tab: TabId }
   | { t: "resync-req"; tab: TabId; reason: string }
   | { t: "driver-transfer"; to: string }
   /**
@@ -237,6 +243,7 @@ const UP_TAGS: ReadonlySet<string> = new Set([
   "scroll",
   "nav",
   "mode",
+  "px-ack",
   "resync-req",
   "driver-transfer",
   "rtc-sig",

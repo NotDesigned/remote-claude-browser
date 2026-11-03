@@ -200,3 +200,39 @@ function isUuid(value: string): boolean {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
+
+export type ViewMode = "chat" | "dom" | "px";
+export const VIEW_MODE_STORAGE_KEY = "mirror.view-mode";
+
+/** Text chat is the everyday view; DOM and pixel views are remembered when chosen explicitly. */
+export function preferredViewMode(storage: Pick<Storage, "getItem">): ViewMode {
+  try {
+    const value = storage.getItem(VIEW_MODE_STORAGE_KEY);
+    return value === "dom" || value === "px" ? value : "chat";
+  } catch {
+    return "chat";
+  }
+}
+
+export function rememberViewMode(storage: Pick<Storage, "setItem">, mode: ViewMode): void {
+  try {
+    storage.setItem(VIEW_MODE_STORAGE_KEY, mode);
+  } catch {
+    /* A blocked store only loses the preference. */
+  }
+}
+
+/**
+ * An entry without an explicit `mode` goes straight to text chat when that is the preferred
+ * view, so the everyday path never downloads a full DOM snapshot it would discard.
+ */
+export function chatEntryUrl(
+  pageUrl: URL,
+  sid: ClientSessionId,
+  storage: Pick<Storage, "getItem">,
+): string | null {
+  if (pageUrl.searchParams.has("mode") || pageUrl.searchParams.has("fixture")) return null;
+  return preferredViewMode(storage) === "chat"
+    ? clientChatUrl(sid, pageUrl.searchParams.get("tab"))
+    : null;
+}

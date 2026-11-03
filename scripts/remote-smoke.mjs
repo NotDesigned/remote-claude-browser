@@ -4,7 +4,8 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { chromium } from "playwright";
 
 const origin = process.env.SMOKE_ORIGIN || "https://claude.example.com";
-if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Run through pnpm test:remote to enforce A's resource budget");
+if (process.env.CLAUDE_LIMITED_TASK !== "1")
+  throw new Error("Run through pnpm test:remote to enforce A's resource budget");
 const env = Object.fromEntries(
   (await readFile("/etc/claude-browser/agent.env", "utf8"))
     .trim()
@@ -19,6 +20,8 @@ const browser = await chromium.launch({
   headless: true,
 });
 const context = await browser.newContext({ viewport: { width: 1360, height: 1000 } });
+// The root page opens text chat by default; these checks exercise the DOM view.
+await context.addInitScript(() => localStorage.setItem("mirror.view-mode", "dom"));
 const page = await context.newPage();
 const requests = [];
 const errors = [];

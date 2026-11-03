@@ -250,6 +250,8 @@ try {
     socket.on("close", () => clearInterval(frameTimer));
   });
   const page = await browser.newPage({ viewport: { width: 1100, height: 850 } });
+  // The root page opens text chat by default; these checks exercise the DOM view.
+  await page.addInitScript(() => localStorage.setItem("mirror.view-mode", "dom"));
   pixel = await page.evaluate(() => {
     const c = document.createElement("canvas");
     c.width = c.height = 2;

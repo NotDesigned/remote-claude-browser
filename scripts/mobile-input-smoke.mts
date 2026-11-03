@@ -218,6 +218,8 @@ try {
     hasTouch: true,
     deviceScaleFactor: 2,
   });
+  // The root page opens text chat by default; these checks exercise the DOM view.
+  await context.addInitScript(() => localStorage.setItem("mirror.view-mode", "dom"));
   const page = await context.newPage();
   page.on("pageerror", (error) => console.error("mobile fixture viewer error", error.message));
   await page.goto(origin);

@@ -19,8 +19,18 @@ const browserUrl = (mode = "dom") => {
   if (params.get("tab")) query.set("tab", params.get("tab"));
   return `/?${query}`;
 };
+const rememberView = (mode) => {
+  try {
+    localStorage.setItem("mirror.view-mode", mode);
+  } catch {
+    /* A blocked store only loses the preference. */
+  }
+};
+rememberView("chat");
 $("view-mode-select").onchange = (event) => {
-  if (event.target.value !== "chat") location.assign(browserUrl(event.target.value));
+  if (event.target.value === "chat") return;
+  rememberView(event.target.value);
+  location.assign(browserUrl(event.target.value));
 };
 let theme = localStorage.getItem("mirror.theme") === "dark" ? "dark" : "light";
 function applyTheme() {

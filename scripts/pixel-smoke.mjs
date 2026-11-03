@@ -147,6 +147,8 @@ const browser = await chromium.launch({
   headless: true,
 });
 const page = await browser.newPage({ viewport: { width: 1360, height: 1000 } });
+// The root page opens text chat by default; these checks exercise the DOM view.
+await page.addInitScript(() => localStorage.setItem("mirror.view-mode", "dom"));
 pixel = await page.evaluate(() => {
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = 2;
