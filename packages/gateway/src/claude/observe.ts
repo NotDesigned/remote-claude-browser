@@ -27,7 +27,7 @@ export function chatObserverExpression(binding: string): string {
     const observer = new MutationObserver(records => {
       for (const record of records) markDirty(record.target);
       if (timer || !records.some(record => relevant(record.target) || [...record.addedNodes, ...record.removedNodes].some(relevant))) return;
-      timer = setTimeout(() => { timer = undefined; globalThis[name](location.href); }, 60);
+      timer = setTimeout(() => { timer = undefined; globalThis[name](location.href); }, 30);
     });
     observer.observe(document, { subtree: true, childList: true, characterData: true,
       attributes: true, attributeFilter: ['disabled', 'aria-label', 'aria-hidden', 'aria-expanded', 'hidden', 'contenteditable', 'href', 'data-testid', 'data-state', 'download'] });

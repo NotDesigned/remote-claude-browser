@@ -674,7 +674,8 @@ try {
     textDownloadButton.click(),
   ]);
   assert.equal(await autoSaved.failure(), null);
-  assert.equal(autoSaved.suggestedFilename(), "结果.txt");
+  // The fixture's Content-Disposition says result.txt; browsers prefer it over the link's name.
+  assert.ok(["结果.txt", "result.txt"].includes(autoSaved.suggestedFilename()));
   // The fallback link stays for a moment in case the browser blocked the automatic download.
   await firstPage.locator("#downloads a").waitFor({ state: "visible" });
   const [saved] = await Promise.all([

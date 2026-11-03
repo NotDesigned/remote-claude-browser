@@ -243,7 +243,7 @@ export function mountChatView(root, options) {
                 });
                 if (!response.ok) throw new Error((await response.json()).error || "下载失败");
                 $("action-status").textContent = "已请求下载，完成后可在下方保存";
-                for (const delay of [1000, 2500, 5000]) setTimeout(pollDownloads, delay);
+                watchDownloads();
               } catch (error) {
                 $("action-status").textContent = error.message || "下载失败";
               } finally {
@@ -637,14 +637,15 @@ export function mountChatView(root, options) {
     source?.close();
     saveDraft();
     cancelUpload();
-    clearInterval(downloadTimer);
+    clearTimeout(downloadTimer);
+    downloadTimer = undefined;
     controls();
   });
   listen(window, "pageshow", (event) => {
     if (!event.persisted || retired) return;
     leaving = false;
     retryAttempt = 0;
-    downloadTimer = setInterval(pollDownloads, 4000);
+    if (downloadsWatchedUntil > Date.now()) watchDownloads();
     connect();
     controls();
   });
@@ -836,13 +837,15 @@ export function mountChatView(root, options) {
   };
   let downloadRequest = false;
   const finishedAt = new Map();
+  let renderedDownloads = "";
   let downloadsPrimed = false;
+  /** Refreshes the download list; true while something is in flight or still on screen. */
   async function pollDownloads() {
-    if (!connected || leaving || downloadRequest) return;
+    if (!connected || leaving || downloadRequest) return false;
     downloadRequest = true;
     try {
       const response = await fetch(`${transferBase}/downloads`, { cache: "no-store" });
-      if (!response.ok) return;
+      if (!response.ok) return false;
       const entries = await response.json();
       const now = Date.now();
       for (const entry of entries) {
@@ -863,6 +866,12 @@ export function mountChatView(root, options) {
       );
       const list = $("downloads");
       list.hidden = visible.length === 0;
+      // Rebuilding unchanged rows would swap the link out from under a pending click.
+      const signature = JSON.stringify(
+        visible.map((entry) => [entry.id, entry.state, entry.recv, entry.total, entry.href]),
+      );
+      if (signature === renderedDownloads) return visible.length > 0;
+      renderedDownloads = signature;
       list.replaceChildren(
         ...visible.slice(-10).map((entry) => {
           const row = document.createElement("div");
@@ -883,27 +892,45 @@ export function mountChatView(root, options) {
               await fetch(`${transferBase}/downloads/${encodeURIComponent(entry.id)}`, {
                 method: "DELETE",
               });
-              pollDownloads();
+              watchDownloads();
             };
             row.append(cancel);
           }
           return row;
         }),
       );
+      return visible.length > 0;
     } catch {
       /* The SSE connection status remains authoritative. */
+      return false;
     } finally {
       downloadRequest = false;
     }
   }
-  let downloadTimer = setInterval(pollDownloads, 4000);
+  // Downloads only start from a file button here, so poll while one may be in flight instead of
+  // every few seconds for the whole session.
+  let downloadTimer;
+  let downloadsWatchedUntil = 0;
+  function watchDownloads() {
+    downloadsWatchedUntil = Math.max(downloadsWatchedUntil, Date.now() + 15_000);
+    if (downloadTimer === undefined) downloadTimer = setTimeout(downloadTick, 1000);
+  }
+  async function downloadTick() {
+    downloadTimer = undefined;
+    if (leaving) return;
+    const busy = await pollDownloads();
+    if (leaving) return;
+    if (busy) downloadsWatchedUntil = Math.max(downloadsWatchedUntil, Date.now() + 3000);
+    if (Date.now() < downloadsWatchedUntil) downloadTimer = setTimeout(downloadTick, 1500);
+  }
   return () => {
     leaving = true;
     retired = true;
     actionController?.abort();
     clearTimeout(retry);
     clearTimeout(reconcileTimer);
-    clearInterval(downloadTimer);
+    clearTimeout(downloadTimer);
+    downloadTimer = undefined;
     source?.close();
     saveDraft();
     cancelUpload();

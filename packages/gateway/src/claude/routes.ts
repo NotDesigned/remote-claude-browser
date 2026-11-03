@@ -62,7 +62,9 @@ interface ActionBody {
   path?: unknown;
 }
 
-const CHAT_ACTIVE_POLL_MS = 160;
+// Samples reuse the isolated-world cache and re-read only changed messages, so a streaming
+// reply can be sampled this often without re-serializing the conversation.
+const CHAT_ACTIVE_POLL_MS = 100;
 const CHAT_IDLE_POLL_MS = 1000;
 const CHAT_FALLBACK_POLL_MS = 5000;
 
