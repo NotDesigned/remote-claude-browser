@@ -233,7 +233,8 @@ export interface WsServer {
   /** Revoke input/fanout and notify disconnection synchronously before closing the transport. */
   closeViewer(viewer: ViewerConn, code?: number, reason?: string): boolean;
   /** Keep this viewer, or revoke all for a chat handoff. Other SIDs are never affected. */
-  replaceSession(sessionId: string, keepViewer?: ViewerConn): void;
+  /** `spareKey`: the taking-over page's own key, closed but kept usable for its return. */
+  replaceSession(sessionId: string, keepViewer?: ViewerConn, spareKey?: string): void;
   close(): Promise<void>;
 }
 
@@ -303,14 +304,14 @@ export function createWsServer(opts: WsServerOpts): WsServer {
     socket.once("close", () => clearTimeout(deadline));
     return true;
   };
-  const replaceSession = (sid: string, keepViewer?: ViewerConn) => {
+  const replaceSession = (sid: string, keepViewer?: ViewerConn, spareKey?: string) => {
     assertSessionId(sid);
     if (keepViewer && (viewerSessions.get(keepViewer) !== sid || !viewerSockets.has(keepViewer)))
       throw new Error("replacement viewer does not belong to this session");
     if (!keepViewer) {
       // Chat can take control while an older WS is still awaiting async authorization.
       latestUpgrade.set(sid, ++nextUpgrade);
-      retireKey(sid, activeKeys.get(sid));
+      if (activeKeys.get(sid) !== spareKey) retireKey(sid, activeKeys.get(sid));
       activeKeys.delete(sid);
     }
     for (const [viewer] of [...viewerSockets]) {
@@ -319,7 +320,8 @@ export function createWsServer(opts: WsServerOpts): WsServer {
         viewer,
         VIEWER_REPLACED_CODE,
         "replaced",
-        !keepViewer || viewerKeys.get(viewer) !== viewerKeys.get(keepViewer),
+        (!keepViewer || viewerKeys.get(viewer) !== viewerKeys.get(keepViewer)) &&
+          (spareKey === undefined || viewerKeys.get(viewer) !== spareKey),
       );
     }
   };
@@ -512,7 +514,7 @@ export function resumeCursorsFor(request: IncomingMessage): ResumeCursor[] {
   }
 }
 
-function connectionKeyFor(request: IncomingMessage): string | undefined {
+export function connectionKeyFor(request: IncomingMessage): string | undefined {
   const key = new URL(request.url ?? "/", "http://gateway.invalid").searchParams.get(
     "connectionKey",
   );

@@ -35,7 +35,7 @@ import { createIdleReaper } from "./session/idle-reaper";
 import { createResourceSampler } from "./monitor/resources";
 import type { TargetRef, AgentLink } from "./types";
 import { createRoleManager } from "./ws/roles";
-import { createWsServer, resumeCursorsFor } from "./ws/server";
+import { connectionKeyFor, createWsServer, resumeCursorsFor } from "./ws/server";
 import type { ViewerConn } from "./ws/viewerconn";
 
 interface ClientRuntime {
@@ -219,7 +219,7 @@ export async function startClientGateway(): Promise<void> {
       const id = `viewer-${nextViewer++}`;
       viewerIds.set(viewer, id);
       viewers.set(id, { viewer, sid, owner: currentOwner(request)! });
-      chats.get(sid)?.disconnectController("replaced");
+      chats.get(sid)?.yieldTo(connectionKeyFor(request));
       idleReaper.touch(sid);
       const runtime = runtimes.get(sid)!;
       // A reconnect whose replay position is still buffered keeps its geometry agreement: the
@@ -808,7 +808,7 @@ export async function startClientGateway(): Promise<void> {
       isOwner: (request) => clientSessions.owns(currentOwner(request), sid),
       mirrorHasController: () =>
         [...viewers].some(([id, connection]) => connection.sid === sid && roles.isDriver(id)),
-      takeControl: () => ws.replaceSession(sid),
+      takeControl: (connectionKey) => ws.replaceSession(sid, undefined, connectionKey),
       ensureRuntime: () => ensureRuntime(sid).then(() => undefined),
       onNativeViewport: async (tab) => {
         const runtime = runtimes.get(sid);

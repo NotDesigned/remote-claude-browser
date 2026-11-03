@@ -26,8 +26,12 @@ interface Options {
   documentId: (tab: string) => number;
   /** For example /s/client-1; the legacy empty prefix keeps /api/claude routes unchanged. */
   routePrefix?: string;
-  /** Enables latest-page takeover; the caller synchronously revokes this workspace's old WS. */
-  takeControl?(): void;
+  /**
+   * Enables latest-page takeover; the caller synchronously revokes this workspace's old WS.
+   * `connectionKey` identifies the page: its own WebSocket is closed but not retired, so the
+   * same page can switch between chat and the browser views.
+   */
+  takeControl?(connectionKey: string): void;
   onControllerChange?(): void;
   /** Lazily creates the session's authoritative page when chat is opened directly. */
   ensureRuntime?(): Promise<void>;
@@ -252,7 +256,7 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
         if (lease)
           disconnectController(lease.connectionKey === connectionKey ? undefined : "replaced");
         lastConnectionKey = connectionKey;
-        options.takeControl();
+        options.takeControl(connectionKey);
       } else if (lease || options.mirrorHasController()) {
         return reply.code(409).send({ error: "请先关闭其他控制页面，再连接聊天视图" });
       }
@@ -599,6 +603,16 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
   return {
     hasController: () => !!lease,
     disconnectController,
+    /**
+     * A browser-view WebSocket took over. The same page (same key) simply leaves chat; any other
+     * page retires this chat connection for good.
+     */
+    yieldTo(connectionKey: string | undefined) {
+      const sameKey =
+        connectionKey !== undefined &&
+        connectionKey === (lease?.connectionKey ?? lastConnectionKey);
+      disconnectController(sameKey ? undefined : "replaced");
+    },
     close: () => {
       closed = true;
       disconnectController();
