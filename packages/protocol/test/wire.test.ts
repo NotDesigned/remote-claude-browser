@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { decodeDown, decodeUp, encodeMsg, Mod, type Down, type Up } from "../src/index";
+import {
+  decodeDown,
+  decodePxBinary,
+  decodeUp,
+  encodeMsg,
+  encodePxBinary,
+  Mod,
+  type Down,
+  type Up,
+} from "../src/index";
 
 describe("wire envelope", () => {
   it("round-trips representative Down messages", () => {
@@ -115,5 +124,22 @@ describe("wire envelope", () => {
     expect(Mod.Ctrl).toBe(2);
     expect(Mod.Meta).toBe(4);
     expect(Mod.Shift).toBe(8);
+  });
+});
+
+describe("binary pixel frames", () => {
+  it("round-trips the tab, size and JPEG bytes", () => {
+    const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]);
+    const frame = encodePxBinary("8F3A9C0D1E2B", 1280, 720, jpeg);
+    expect(frame.length).toBe(4 + 12 + 4 + jpeg.length);
+    const decoded = decodePxBinary(new Uint8Array(frame));
+    expect(decoded).toEqual({ tab: "8F3A9C0D1E2B", w: 1280, h: 720, jpeg });
+  });
+
+  it("rejects anything that is not a pixel frame", () => {
+    expect(decodePxBinary(new Uint8Array([0x7b, 0x22]))).toBeNull();
+    expect(decodePxBinary(new Uint8Array([0x50, 9, 0, 0, 0, 0, 0, 0]))).toBeNull();
+    const truncated = encodePxBinary("tab", 10, 10, new Uint8Array()).subarray(0, 6);
+    expect(decodePxBinary(truncated)).toBeNull();
   });
 });

@@ -10,6 +10,7 @@ import {
   decodeResumeCursors,
   decodeUp,
   encodeMsg,
+  encodePxBinary,
   type Down,
   type ResumeCursor,
   type Up,
@@ -175,7 +176,7 @@ export class Fanout {
   }
 
   private broadcastNow(sessionId: string | undefined, msg: Down): void {
-    const serialized = encodeMsg(msg);
+    const serialized = serializeDown(msg);
     for (const [viewer, viewerSessionId] of this.viewers) {
       if (viewerSessionId !== sessionId) continue;
       if (msg.t === "delta" && this.chaosDropRate > 0) {
@@ -503,6 +504,13 @@ export function createWsServer(opts: WsServerOpts): WsServer {
   };
 }
 
+/** Pixel frames travel as raw JPEG in a binary frame; every other message as JSON text. */
+export function serializeDown(msg: Down): string | Uint8Array {
+  if (msg.t === "px" && typeof msg.data === "string")
+    return encodePxBinary(msg.tab, msg.w, msg.h, Buffer.from(msg.data, "base64"));
+  return encodeMsg(msg);
+}
+
 /** Resume cursors a reconnecting viewer reported in its WebSocket URL. */
 export function resumeCursorsFor(request: IncomingMessage): ResumeCursor[] {
   try {
@@ -549,9 +557,9 @@ class DelayedViewerSocket implements ViewerSocket {
     // `ws` owns this counter; ViewerSocket keeps it writable only for the fan-out test double.
   }
 
-  send(data: string): void {
+  send(data: string | Uint8Array, options?: { compress?: boolean; binary?: boolean }): void {
     delay(this.delayMs, () => {
-      if (this.socket.readyState === this.socket.OPEN) this.socket.send(data);
+      if (this.socket.readyState === this.socket.OPEN) this.socket.send(data, options ?? {});
     });
   }
 }

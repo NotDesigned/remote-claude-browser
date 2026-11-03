@@ -4,7 +4,7 @@
  * There is deliberately no resume cursor: a reconnect asks the mirror to discard its local
  * state and the gateway supplies a fresh snapshot (D10).
  */
-import { decodeDown, encodeMsg, type Down, type Up } from "@mirror/protocol";
+import { decodeDown, decodePxBinary, encodeMsg, type Down, type Up } from "@mirror/protocol";
 
 export interface GatewaySocket {
   send(msg: Up): void;
@@ -18,6 +18,7 @@ export interface WebSocketLike {
   onopen: (() => void) | null;
   onmessage: ((event: { data: unknown }) => void) | null;
   onclose: ((event?: { code?: number }) => void) | null;
+  binaryType?: string;
   send(data: string): void;
   close(): void;
 }
@@ -96,6 +97,8 @@ export function connectGateway(
     if (resume === null) socketUrl.searchParams.delete("resume");
     else socketUrl.searchParams.set("resume", resume);
     const current = makeSocket(socketUrl.href);
+    // Pixel frames arrive as binary JPEG frames; read them as ArrayBuffers, not Blobs.
+    current.binaryType = "arraybuffer";
     socket = current;
 
     current.onopen = () => {
@@ -113,7 +116,10 @@ export function connectGateway(
     current.onmessage = (event) => {
       if (disposed || current !== socket) return;
       try {
-        const message = decodeDown(String(event.data));
+        const message =
+          event.data instanceof ArrayBuffer
+            ? pixelFrame(event.data)
+            : decodeDown(String(event.data));
         if (message.t === "pong") {
           const sentTs = pendingPings.get(message.id);
           if (sentTs !== undefined && sentTs === message.sentTs) {
@@ -165,5 +171,17 @@ export function connectGateway(
       socket = null;
       pending.length = 0;
     },
+  };
+}
+
+function pixelFrame(buffer: ArrayBuffer): Down {
+  const frame = decodePxBinary(buffer);
+  if (frame === null) throw new Error("Down: unknown binary frame");
+  return {
+    t: "px",
+    tab: frame.tab,
+    w: frame.w,
+    h: frame.h,
+    data: new Blob([frame.jpeg as Uint8Array<ArrayBuffer>], { type: "image/jpeg" }),
   };
 }

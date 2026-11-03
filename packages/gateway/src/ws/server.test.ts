@@ -6,6 +6,7 @@ import {
   type Down,
   type eventWithTime,
 } from "@mirror/protocol";
+import { decodeSent } from "./decode-sent.test-util";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import WebSocket from "ws";
@@ -20,8 +21,8 @@ class MockSocket implements ViewerSocket {
   bufferedAmount = 0;
   readonly messages: Down[] = [];
 
-  send(serialized: string): void {
-    this.messages.push(decodeDown(serialized));
+  send(serialized: string | Uint8Array): void {
+    this.messages.push(decodeSent(serialized));
   }
 }
 
@@ -97,7 +98,7 @@ describe("session-scoped WebSocket fanout", () => {
       { t: "snapshot", tab: "private", epoch: 1, seq: 1, data: [] },
       { t: "resync", tab: "private" },
       { t: "mode", tab: "private", mode: "px" },
-      { t: "px", tab: "private", data: "private-image", w: 1, h: 1 },
+      { t: "px", tab: "private", data: "privateImage", w: 1, h: 1 },
       { t: "rtc-sig", tab: "private", lane: "private-lane", from: "agent", payload: {} },
       {
         t: "download",

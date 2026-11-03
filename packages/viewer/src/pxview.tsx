@@ -156,10 +156,13 @@ function decodePxFrame(
   }
   const image = createImage();
   let live = true;
+  // Binary frames arrive as a JPEG Blob; JSON frames as base64 or a data: URL.
+  const objectUrl = typeof frame.data === "string" ? null : URL.createObjectURL(frame.data);
   const cancel = () => {
     live = false;
     image.onload = null;
     image.onerror = null;
+    if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
   };
   const complete = () => {
     if (!live) return;
@@ -181,7 +184,11 @@ function decodePxFrame(
     }
   };
   image.onerror = complete;
-  image.src = frame.data.startsWith("data:") ? frame.data : `data:image/jpeg;base64,${frame.data}`;
+  image.src =
+    objectUrl ??
+    (typeof frame.data === "string" && frame.data.startsWith("data:")
+      ? frame.data
+      : `data:image/jpeg;base64,${frame.data as string}`);
   return cancel;
 }
 

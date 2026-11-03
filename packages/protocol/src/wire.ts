@@ -111,8 +111,11 @@ export type Down =
   | { t: "mode"; tab: TabId; mode: "dom" | "px" }
   /** A shared browser permits one pixel stream; no other workspace identity is exposed. */
   | { t: "px-capacity"; available: boolean }
-  /** Pixel-fallback frame (base64 JPEG), viewport-sized. */
-  | { t: "px"; tab: TabId; data: string; w: number; h: number }
+  /**
+   * Pixel-fallback frame, viewport-sized. Base64 JPEG inside the gateway; on the wire it travels
+   * as a binary frame (see encodePxBinary), which the viewer decodes into a JPEG Blob.
+   */
+  | { t: "px"; tab: TabId; data: string | Blob; w: number; h: number }
   /**
    * One agent -> viewer WebRTC signaling lane. `lane` identifies a single Replayer generation;
    * the gateway delivers it only to the authenticated viewer that opened that lane.
@@ -330,4 +333,42 @@ export function decodeResumeCursors(raw: string | null | undefined): ResumeCurso
       cursors.push({ tab, epoch: epoch as number, nextSeq: nextSeq as number });
   }
   return cursors;
+}
+
+/**
+ * Binary pixel frames skip base64 (+33 %) and a pointless deflate pass over JPEG bytes:
+ * [0x50 'P'][version 1][tab length u16][tab UTF-8][width u16][height u16][JPEG bytes].
+ */
+const PX_BINARY_MAGIC = 0x50;
+const PX_BINARY_VERSION = 1;
+
+export function encodePxBinary(tab: TabId, w: number, h: number, jpeg: Uint8Array): Uint8Array {
+  const tabBytes = new TextEncoder().encode(tab);
+  if (tabBytes.length > 0xffff) throw new RangeError("tab id too long");
+  const frame = new Uint8Array(2 + 2 + tabBytes.length + 4 + jpeg.length);
+  const view = new DataView(frame.buffer);
+  frame[0] = PX_BINARY_MAGIC;
+  frame[1] = PX_BINARY_VERSION;
+  view.setUint16(2, tabBytes.length);
+  frame.set(tabBytes, 4);
+  const at = 4 + tabBytes.length;
+  view.setUint16(at, Math.max(0, Math.min(0xffff, Math.round(w))));
+  view.setUint16(at + 2, Math.max(0, Math.min(0xffff, Math.round(h))));
+  frame.set(jpeg, at + 4);
+  return frame;
+}
+
+/** Returns null for anything that is not a well-formed binary pixel frame. */
+export function decodePxBinary(
+  buffer: ArrayBuffer | Uint8Array,
+): { tab: TabId; w: number; h: number; jpeg: Uint8Array } | null {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  if (bytes.length < 8 || bytes[0] !== PX_BINARY_MAGIC || bytes[1] !== PX_BINARY_VERSION)
+    return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const tabLength = view.getUint16(2);
+  const at = 4 + tabLength;
+  if (bytes.length < at + 4) return null;
+  const tab = new TextDecoder().decode(bytes.subarray(4, at));
+  return { tab, w: view.getUint16(at), h: view.getUint16(at + 2), jpeg: bytes.subarray(at + 4) };
 }

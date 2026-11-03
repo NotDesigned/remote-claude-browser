@@ -5,6 +5,18 @@ import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+// Pixel frames arrive as binary WebSocket frames (see encodePxBinary); keep only their metadata.
+const pixelMessage = (raw) => {
+  const b = new Uint8Array(raw);
+  const n = (b[2] << 8) | b[3];
+  return {
+    t: "px",
+    tab: new TextDecoder().decode(b.subarray(4, 4 + n)),
+    w: (b[4 + n] << 8) | b[5 + n],
+    h: (b[6 + n] << 8) | b[7 + n],
+    data: "",
+  };
+};
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use limited-run.sh");
 const require = createRequire(new URL("../packages/gateway/package.json", import.meta.url));
 const WebSocket = require("ws");
@@ -113,8 +125,8 @@ async function allocate() {
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Owned workspace did not connect")), 20000);
     socket.on("error", reject);
-    socket.on("message", (raw) => {
-      const message = JSON.parse(String(raw));
+    socket.on("message", (raw, isBinary) => {
+      const message = isBinary ? pixelMessage(raw) : JSON.parse(String(raw));
       if (message.t === "hello") {
         assert.equal(message.sessionId, client.sid);
         clearTimeout(timer);

@@ -1,11 +1,11 @@
 import {
   EventType,
   IncrementalSource,
-  decodeDown,
   type AgentMsg,
   type Down,
   type eventWithTime,
 } from "@mirror/protocol";
+import { decodeSent } from "./ws/decode-sent.test-util";
 import type { Protocol } from "puppeteer-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -75,14 +75,14 @@ class MockBrowser {
 class MockSocket implements ViewerSocket {
   readyState = 1;
   bufferedAmount = 0;
-  readonly sent: string[] = [];
+  readonly sent: (string | Uint8Array)[] = [];
 
-  send(data: string): void {
+  send(data: string | Uint8Array): void {
     this.sent.push(data);
   }
 
   messages(): Down[] {
-    return this.sent.map((message) => decodeDown(message));
+    return this.sent.map((message) => decodeSent(message));
   }
 }
 
@@ -228,8 +228,8 @@ describe("createScreencast", () => {
     fastSocket.sent.splice(0);
     slowSocket.sent.splice(0);
     slowSocket.bufferedAmount = STALL_BYTES + 1;
-    browser.frame("cdp-1", frame(101, "jpeg-a"));
-    browser.frame("cdp-1", frame(102, "jpeg-b"));
+    browser.frame("cdp-1", frame(101, "jpegAAAA"));
+    browser.frame("cdp-1", frame(102, "jpegBBBB"));
 
     const acknowledgements = browser.calls.filter(
       ({ method }) => method === "Page.screencastFrameAck",
@@ -247,8 +247,8 @@ describe("createScreencast", () => {
       },
     ]);
     expect(fastSocket.messages().filter((message) => message.t === "px")).toEqual([
-      { t: "px", tab: "tab-1", data: "jpeg-a", w: 1280, h: 720 },
-      { t: "px", tab: "tab-1", data: "jpeg-b", w: 1280, h: 720 },
+      { t: "px", tab: "tab-1", data: "jpegAAAA", w: 1280, h: 720 },
+      { t: "px", tab: "tab-1", data: "jpegBBBB", w: 1280, h: 720 },
     ]);
     expect(slowSocket.messages().filter((message) => message.t === "px")).toEqual([]);
     expect(slow.isStalled).toBe(true);

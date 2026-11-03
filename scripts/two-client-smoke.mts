@@ -9,7 +9,14 @@ import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import type { Down, Up } from "../packages/protocol/src/index";
-import { encodeResumeCursors } from "../packages/protocol/src/index";
+import { decodePxBinary, encodeResumeCursors } from "../packages/protocol/src/index";
+
+/** Binary pixel frames carry raw JPEG; keep only the metadata the checks use. */
+function pixelDown(raw: Buffer): Down {
+  const frame = decodePxBinary(new Uint8Array(raw));
+  if (frame === null) throw new Error("unknown binary frame");
+  return { t: "px", tab: frame.tab, w: frame.w, h: frame.h, data: "" };
+}
 import { CHAT_EXPRESSION, fileDownloadExpression } from "../packages/gateway/src/claude/extract";
 
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Run through scripts/limited-run.sh");
@@ -110,8 +117,8 @@ class Viewer {
         headers: { Origin: origin, "x-mirror-e2e-owner": owner },
       },
     );
-    this.socket.on("message", (raw) => {
-      const message = JSON.parse(String(raw)) as Down;
+    this.socket.on("message", (raw, isBinary) => {
+      const message = isBinary ? pixelDown(raw as Buffer) : (JSON.parse(String(raw)) as Down);
       if (message.t === "hello") {
         this.viewerId = message.viewerId;
         this.driver = message.role === "driver";

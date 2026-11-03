@@ -1,6 +1,18 @@
 // Passive transport and event cadence diagnostics. Never sends remote control or reads text.
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+// Pixel frames arrive as binary WebSocket frames (see encodePxBinary); keep only their metadata.
+const pixelMessage = (raw) => {
+  const b = new Uint8Array(raw);
+  const n = (b[2] << 8) | b[3];
+  return {
+    t: "px",
+    tab: new TextDecoder().decode(b.subarray(4, 4 + n)),
+    w: (b[4 + n] << 8) | b[5 + n],
+    h: (b[6 + n] << 8) | b[7 + n],
+    data: "",
+  };
+};
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use limited-run.sh");
 const require = createRequire(new URL("../packages/gateway/package.json", import.meta.url));
 const WebSocket = require("ws"),
@@ -44,9 +56,9 @@ socket.on("open", () => {
     socket.send(JSON.stringify({ t: "ping", id, sentTs }));
   }, 250);
 });
-socket.on("message", (raw) => {
+socket.on("message", (raw, isBinary) => {
   const now = performance.now(),
-    m = JSON.parse(String(raw));
+    m = isBinary ? pixelMessage(raw) : JSON.parse(String(raw));
   if (m.t === "hello") role = m.role;
   if (m.t === "pong" && pending.has(m.id)) {
     rtts.push(now - pending.get(m.id));

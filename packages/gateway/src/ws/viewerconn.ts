@@ -19,7 +19,8 @@ const WS_OPEN = 1;
 export interface ViewerSocket {
   readonly readyState: number;
   bufferedAmount: number;
-  send(data: string): void;
+  /** Binary frames (pixels) are already compressed JPEG; `compress: false` skips deflate. */
+  send(data: string | Uint8Array, options?: { compress?: boolean; binary?: boolean }): void;
 }
 
 export interface ViewerConnOpts {
@@ -29,11 +30,13 @@ export interface ViewerConnOpts {
 }
 
 type PxMsg = Extract<Down, { t: "px" }>;
+/** JSON text, or a binary pixel frame. */
+export type Serialized = string | Uint8Array;
 
 interface PxFlow {
   inFlight: number;
   lastSentAt: number;
-  waiting?: { msg: PxMsg; serialized: string };
+  waiting?: { msg: PxMsg; serialized: Serialized };
   timer?: NodeJS.Timeout;
 }
 
@@ -76,7 +79,7 @@ export class ViewerConn {
   }
 
   /** Send a message already serialized once by the fan-out broadcaster. */
-  send(msg: Down, serialized: string): boolean {
+  send(msg: Down, serialized: Serialized): boolean {
     if (!this.isOpen()) return false;
     if (msg.t === "delta" && this.wasAlreadyReplayed(msg)) return false;
 
@@ -88,7 +91,7 @@ export class ViewerConn {
     if (msg.t === "px") return this.sendPx(msg, serialized);
     if (msg.t === "mode" || msg.t === "resync") this.resetPx(msg.tab);
 
-    this.socket.send(serialized);
+    this.write(serialized);
     this.advanceCursor(msg);
     return true;
   }
@@ -117,7 +120,7 @@ export class ViewerConn {
     this.drainTimer = null;
   }
 
-  private sendPx(msg: PxMsg, serialized: string): boolean {
+  private sendPx(msg: PxMsg, serialized: Serialized): boolean {
     let flow = this.pxFlows.get(msg.tab);
     if (flow === undefined) {
       flow = { inFlight: 0, lastSentAt: 0 };
@@ -140,10 +143,10 @@ export class ViewerConn {
     return true;
   }
 
-  private writePx(flow: PxFlow, serialized: string): void {
+  private writePx(flow: PxFlow, serialized: Serialized): void {
     flow.inFlight++;
     flow.lastSentAt = this.now();
-    this.socket.send(serialized);
+    this.write(serialized);
   }
 
   private flushPx(tab: TabId, flow: PxFlow): void {
@@ -178,6 +181,11 @@ export class ViewerConn {
     const flow = this.pxFlows.get(tab);
     if (flow?.timer !== undefined) clearTimeout(flow.timer);
     this.pxFlows.delete(tab);
+  }
+
+  private write(serialized: Serialized): void {
+    if (typeof serialized === "string") this.socket.send(serialized);
+    else this.socket.send(serialized, { compress: false, binary: true });
   }
 
   private markStalled(): void {
