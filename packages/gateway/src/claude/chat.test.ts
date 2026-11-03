@@ -25,6 +25,34 @@ describe("chat text transport", () => {
       history,
     );
   });
+  it("replaces a message whose thinking steps change, without touching its answer text", () => {
+    const base: ChatState = {
+      tab: "tab",
+      epoch: "doc",
+      url: "https://claude.ai/chat/a",
+      title: "Claude",
+      ready: true,
+      generating: true,
+      messages: [
+        {
+          id: "a",
+          role: "assistant",
+          text: "答案",
+          steps: [{ summary: "正在思考", state: "thinking" }],
+        },
+      ],
+      conversations: [],
+    };
+    const done = {
+      ...base,
+      messages: [{ ...base.messages[0]!, steps: [{ summary: "确定中心数字", state: "done" }] }],
+    };
+    expect(chatDelta(base, done)).toMatchObject({
+      type: "delta",
+      edits: [{ index: 0, message: done.messages[0] }],
+    });
+    expect(chatDelta(done, done)).toBeNull();
+  });
   it("reconstructs append, correction, deletion and Chinese/surrogate text", () => {
     for (const [before, after] of [
       ["", "你好"],

@@ -208,13 +208,20 @@ function render() {
       };
       const files = document.createElement("div");
       files.className = "message-files";
-      article.append(role, text, files, copy);
-      entry = { article, text, files, fileSignature: "" };
+      const steps = document.createElement("div");
+      steps.className = "message-steps";
+      article.append(role, steps, text, files, copy);
+      entry = { article, text, files, steps, fileSignature: "", stepSignature: "" };
       messageElements.set(key, entry);
     }
     if (entry.messageText !== message.text) {
       renderChatText(entry.text, message.text, message.role === "assistant");
       entry.messageText = message.text;
+    }
+    const stepSignature = JSON.stringify(message.steps || []);
+    if (entry.stepSignature !== stepSignature) {
+      entry.stepSignature = stepSignature;
+      renderSteps(entry.steps, message.steps || []);
     }
     const signature = JSON.stringify(message.files || []);
     if (entry.fileSignature !== signature) {
@@ -304,6 +311,53 @@ function render() {
     }
   }
   controls();
+}
+/**
+ * The remote page renders thinking, web search and tool use with the same status row; only its
+ * summary says which one it is ("Searched the web, read a page", "Used …", or a thought title).
+ */
+const SEARCH_STEP = /search|browse|read (a |\d+ )?pages?|fetch|搜索|浏览|网页|检索/i;
+const TOOL_STEP =
+  /^(used|using|ran|running|called|calling|executed|created|creating|edited|editing|viewed|analy[sz]ed|analy[sz]ing|connected|使用|运行|调用|执行|创建|编辑|查看|分析)/i;
+function stepKind(summary) {
+  if (SEARCH_STEP.test(summary)) return { id: "search", done: "搜索", active: "搜索中" };
+  if (TOOL_STEP.test(summary)) return { id: "tool", done: "工具", active: "工具调用中" };
+  return { id: "thinking", done: "思考", active: "思考中" };
+}
+/**
+ * Thinking and process rows from the remote page. Their detail exists remotely only while a row
+ * is expanded there, so a collapsed row shows its summary and says where to read the rest.
+ */
+function renderSteps(container, steps) {
+  const open = new Set(
+    [...container.querySelectorAll("details[open]")].map((item) => item.dataset.index),
+  );
+  container.replaceChildren(
+    ...steps.map((step, index) => {
+      const details = document.createElement("details");
+      details.className = "message-step";
+      details.dataset.index = String(index);
+      details.dataset.state = step.state || "";
+      if (open.has(String(index))) details.open = true;
+      const summary = document.createElement("summary");
+      const label = document.createElement("span");
+      label.className = "message-step-label";
+      const kind = stepKind(step.summary || "");
+      details.dataset.kind = kind.id;
+      label.textContent = step.state && step.state !== "done" ? kind.active : kind.done;
+      const title = document.createElement("span");
+      title.className = "message-step-title";
+      title.textContent = step.summary || "";
+      summary.append(label, title);
+      const body = document.createElement("div");
+      body.className = "message-step-body";
+      body.textContent =
+        step.text || "详细内容在远程页面中处于折叠状态，可切换到“页面”模式展开查看。";
+      if (!step.text) body.classList.add("message-step-hint");
+      details.append(summary, body);
+      return details;
+    }),
+  );
 }
 async function reconcilePending() {
   if (!pending) return;

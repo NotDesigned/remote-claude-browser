@@ -3,6 +3,8 @@ export interface ChatMessage {
   role: "user" | "assistant";
   text: string;
   files?: { id: string; name: string }[];
+  /** Thinking/process rows shown above the answer; `text` exists only while expanded remotely. */
+  steps?: { summary: string; text?: string; state: string }[];
 }
 
 export interface ChatState {
@@ -53,7 +55,8 @@ export function chatDelta(
         !previous ||
         previous.id !== message.id ||
         previous.role !== message.role ||
-        JSON.stringify(previous.files) !== JSON.stringify(message.files)
+        JSON.stringify(previous.files) !== JSON.stringify(message.files) ||
+        JSON.stringify(previous.steps) !== JSON.stringify(message.steps)
       ) {
         return [{ index, message }];
       }

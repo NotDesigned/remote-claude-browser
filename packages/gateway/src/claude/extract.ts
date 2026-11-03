@@ -7,7 +7,7 @@ const FILE_NAME = String.raw`(e) => (e.getAttribute('download') || (e.getAttribu
 
 /** Read message text without forcing layout or including accessibility duplicates and controls. */
 const MESSAGE_TEXT = String.raw`(element, rich = true) => {
-  const skip = 'button, script, style, svg, .sr-only, [aria-hidden="true"], [data-testid="message-actions"], [data-testid="user-message-actions"]';
+  const skip = 'button, script, style, svg, .sr-only, [aria-hidden="true"], [data-testid="message-actions"], [data-testid="user-message-actions"], [class~="group/status"]';
   const read = node => {
     if (node.nodeType === 3) {
       const text = node.textContent || '';
@@ -60,18 +60,40 @@ const MESSAGE_TEXT = String.raw`(element, rich = true) => {
   return read(body).replace(/\n{3,}/g, '\n\n').trim().slice(0, 1000000);
 }`;
 
+/**
+ * Thinking and other process rows (`group/status`) sit above the answer: a one-line summary,
+ * an expand button, and their detail only while expanded. They are reported separately so the
+ * summary never leaks into the answer text.
+ */
+const STATUS_STEPS = String.raw`(element) => [...element.querySelectorAll('[class~="group/status"]')]
+  .filter(s => !s.parentElement?.closest('[class~="group/status"]'))
+  .slice(0, 20)
+  .map(s => {
+    const header = s.firstElementChild;
+    const live = s.querySelector(':scope > [role="status"]');
+    const summary = ((live && live.textContent) || (header && header.textContent) || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    const text = [...s.children].filter(c => c !== header && c !== live).map(c => c.textContent || '').join('\n').trim().slice(0, 20000);
+    return text ? { summary, text, state: s.getAttribute('data-state') || '' } : { summary, state: s.getAttribute('data-state') || '' };
+  })
+  .filter(step => step.summary || step.text)`;
+
 /** Runs only in authoritative Chromium on B. No website scripts or HTML reach this UI. */
 export const CHAT_EXPRESSION = String.raw`(() => {
   const visible = e => !!e && e.isConnected && !e.closest('[hidden], [inert], [aria-hidden="true"]');
   const editor = [...document.querySelectorAll('.ProseMirror[contenteditable="true"], [contenteditable="true"][role="textbox"], textarea[placeholder]')].find(visible);
   const candidates = [...document.querySelectorAll(${JSON.stringify(MESSAGE_SELECTOR)})];
   const messageText = ${MESSAGE_TEXT};
-  const messages = candidates.filter(e => !candidates.some(p => p !== e && p.contains(e))).slice(-300).map((e, index) => ({
-    id: e.closest('[data-message-id]')?.getAttribute('data-message-id') || String(index),
-    role: e.matches('[data-testid="user-message"]') ? 'user' : 'assistant',
-    text: messageText(e, !e.matches('[data-testid="user-message"]')),
-    files: (${FILE_CONTROLS})(e).map((a, id) => ({ id: String(id), name: (${FILE_NAME})(a) }))
-  }));
+  const messages = candidates.filter(e => !candidates.some(p => p !== e && p.contains(e))).slice(-300).map((e, index) => {
+    const user = e.matches('[data-testid="user-message"]');
+    const steps = user ? [] : (${STATUS_STEPS})(e);
+    const message = {
+      id: e.closest('[data-message-id]')?.getAttribute('data-message-id') || String(index),
+      role: user ? 'user' : 'assistant',
+      text: messageText(e, !user),
+      files: (${FILE_CONTROLS})(e).map((a, id) => ({ id: String(id), name: (${FILE_NAME})(a) }))
+    };
+    return steps.length ? { ...message, steps } : message;
+  });
   const conversations = [...document.querySelectorAll('a[href^="/chat/"]')].map(e => ({path: new URL(e.href).pathname, title: (e.textContent || '').trim().slice(0, 150)})).filter(e => e.title && /^\/chat\/[a-zA-Z0-9-]+$/.test(e.path));
   const stop = [...document.querySelectorAll('button[aria-label], button[data-testid]')].find(e => /stop|停止/i.test((e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-testid') || '')) && visible(e));
   const editorText = ${editableText.toString()};
