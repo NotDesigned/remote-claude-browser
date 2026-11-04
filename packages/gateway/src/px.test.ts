@@ -305,10 +305,13 @@ describe("createScreencast", () => {
     it("reports frames per second at each stage", async () => {
       const { browser, published, encoders, controller } = await setup();
       browser.frame("cdp-1", frame(1, "AAAA"));
-      encoders[0]!.events.onChunk(Buffer.from([9]), true);
+      // One real frame, and the three repeats that flush it out of the encoder.
+      for (let chunk = 0; chunk < 4; chunk++)
+        encoders[0]!.events.onChunk(Buffer.from([9]), chunk === 0);
       await vi.advanceTimersByTimeAsync(1_000);
       expect(published.filter((message) => message.t === "px-stats").at(0)).toMatchObject({
         captureFps: 1,
+        encodeFps: 1,
         dropFps: 0,
       });
       controller.dispose();

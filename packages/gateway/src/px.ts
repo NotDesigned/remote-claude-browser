@@ -339,8 +339,9 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
               });
           },
           onChunk(data, key) {
-            if (state.video === video)
-              opts.publish({ t: "vid", tab, seq: state.videoSeq++, key, w, h, data });
+            if (state.video !== video) return;
+            state.stats.encoded++;
+            opts.publish({ t: "vid", tab, seq: state.videoSeq++, key, w, h, data });
           },
           onFailure(error) {
             if (state.video !== video) return;

@@ -110,6 +110,20 @@ export function createAccessGate(options: AccessGateOptions = {}): AccessGate {
 
   const preHandler: preHandlerAsyncHookHandler = async (request, reply) => {
     if (isPublicPath(request.raw.url) || hasValidDevice(request.raw)) return;
+    // No values or addresses: enough to tell a lost cookie from one the browser did not send.
+    const headers = request.headers;
+    console.warn(
+      "access gate rejected:",
+      JSON.stringify({
+        method: request.method,
+        path: new URL(request.raw.url ?? "/", "http://gateway.invalid").pathname.slice(0, 60),
+        cookie: readCookie(headers.cookie, ACCESS_COOKIE) === undefined ? "absent" : "invalid",
+        otherCookies: headers.cookie ? headers.cookie.split(";").length : 0,
+        fetchSite: headers["sec-fetch-site"],
+        fetchMode: headers["sec-fetch-mode"],
+        fetchDest: headers["sec-fetch-dest"],
+      }),
+    );
     if (request.method === "GET" || request.method === "HEAD") {
       await reply.code(302).header("location", "/gate").send();
       return;
