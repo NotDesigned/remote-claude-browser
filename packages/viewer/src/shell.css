@@ -460,6 +460,16 @@ body {
   background: var(--hover);
 }
 
+#shell .client-session-card {
+  color: var(--ink);
+  background: var(--surface);
+  border-color: var(--line);
+}
+#shell .client-session-card p,
+#shell .session-eyebrow {
+  color: var(--muted);
+}
+
 /* Native progress bars follow the accent instead of the platform blue. */
 #shell progress {
   accent-color: var(--accent);
