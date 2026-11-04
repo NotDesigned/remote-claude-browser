@@ -9,7 +9,12 @@ import {
   createCommandHandler,
   type CrossOriginIframeMirror,
 } from "./commands";
-import { CMD_FN_NAME, EventType, MIRROR_NODE_FN_NAME } from "@mirror/protocol";
+import {
+  CMD_FN_NAME,
+  EventType,
+  MIRROR_NODE_FN_NAME,
+  MIRROR_RECORD_CLASSES,
+} from "@mirror/protocol";
 import { createEmitter, type BindingFn, type RuntimeBindingHandle } from "./emit";
 import { installClosedShadowShim } from "./shadow";
 import {
@@ -189,6 +194,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
 
   function startRecording() {
     stopRecording = record({
+      ...MIRROR_RECORD_CLASSES,
       recordCrossOriginIframes: true,
       recordCanvas,
       ...(recordCanvas

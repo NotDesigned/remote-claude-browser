@@ -14,6 +14,7 @@ import {
   type eventWithTime,
   type ResumeCursor,
   type TabId,
+  MIRROR_RECORD_CLASSES,
 } from "@mirror/protocol";
 import { createServerClock, type ServerClock } from "./clock";
 import type { EventPipeline } from "./pipeline";
@@ -367,6 +368,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
       replayer = new Replayer(initialEvents, {
         root: mount,
         liveMode: true,
+        blockClass: MIRROR_RECORD_CLASSES.blockClass,
         // main.tsx installs script-src 'none' before any replay frame is created. This
         // rrweb option enables WebKit input callbacks in that CSP-protected document.
         UNSAFE_replayCanvas: true,

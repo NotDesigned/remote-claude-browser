@@ -51,6 +51,7 @@ const fakeRrweb = vi.hoisted(() => {
     readonly handlers = new Map<string, Set<() => void>>();
     readonly config: {
       insertStyleRules?: string[];
+      blockClass?: string;
       pauseAnimation?: boolean;
       liveMode?: boolean;
       useVirtualDom?: boolean;
@@ -318,6 +319,8 @@ describe("D10 recovery triggers", () => {
     expect(original.iframe.getAttribute("scrolling")).toBe("auto");
     expect(original.iframe.style.pointerEvents).toBe("auto");
     expect(original.config.insertStyleRules).toContain(REPLAY_CURSOR_PASSTHROUGH_RULE);
+    // A page's own rr-block marks must not paint solid boxes in the replay.
+    expect(original.config.blockClass).toBe("mirror-no-capture");
     expect(original.config.insertStyleRules).toEqual(
       expect.arrayContaining(REPLAY_THUMBNAIL_RULES),
     );
