@@ -183,7 +183,7 @@ const server = createServer(async (request, response) => {
                   id: "assistant",
                   role: "assistant",
                   text: String.raw`受控回复，支持中文附件。行内 $E=mc^2$ 与 \(\alpha+\beta\)。
-$$\frac{1}{2}+\int_0^1 x^2\,dx$$
+$$\frac{1}{2}+\int_0^1 x^2\,dx+d_{\text{model}}$$
 \[\begin{pmatrix}1&2\\3&4\end{pmatrix}\]`,
                   files: [{ id: "0", name: "结果.txt" }],
                 },
@@ -649,6 +649,13 @@ try {
     ].map((element) => getComputedStyle(element).fontFamily),
   );
   assert.equal(new Set(nativeFonts).size, 1);
+  // KaTeX's \\text{} spans also carry the class "text"; message styles must not reach them.
+  const subscript = await firstPage.evaluate(() => {
+    const math = document.querySelector("#messages .katex-display .katex");
+    const text = math.querySelector(".text");
+    return { math: parseFloat(getComputedStyle(math).fontSize), text: parseFloat(getComputedStyle(text).fontSize) };
+  });
+  assert.ok(subscript.text < subscript.math * 0.85, `\\text subscript is ${subscript.text}px in ${subscript.math}px math`);
   checks.formulasAndUnifiedFonts = true;
   await firstPage.locator("#attach").waitFor({ state: "visible" });
   await firstPage.waitForFunction(() => document.querySelector("#attach")?.disabled === false);

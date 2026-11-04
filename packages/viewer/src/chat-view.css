@@ -136,14 +136,14 @@
   margin-bottom: 10px;
   letter-spacing: 1.5px;
 }
-#chat-view .message .text {
+#chat-view .message > .text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.8;
   font-size: 15px;
   tab-size: 4;
 }
-#chat-view .message.user .text {
+#chat-view .message.user > .text {
   background: #f0ede6;
   border-radius: 12px;
   padding: 16px 20px;
@@ -251,7 +251,7 @@
 :root[data-theme="dark"] #chat-view .message {
   border-color: #403d37;
 }
-:root[data-theme="dark"] #chat-view .message.user .text,
+:root[data-theme="dark"] #chat-view .message.user > .text,
 :root[data-theme="dark"] #chat-view #notice {
   background: #3b3730;
 }
@@ -341,7 +341,7 @@
   color: inherit;
 }
 
-#chat-view .message .text {
+#chat-view .message > .text {
   font-family: var(--font-ui);
 }
 #chat-view .math-block {
@@ -354,17 +354,17 @@
 #chat-view .math-inline {
   white-space: normal;
 }
-#chat-view .message .text .katex {
+#chat-view .message > .text .katex {
   font-size: 1.08em;
 }
-#chat-view .message .text .katex-display {
+#chat-view .message > .text .katex-display {
   margin: 0.8em 0;
   text-align: left;
 }
-#chat-view .message .text .katex-display > .katex {
+#chat-view .message > .text .katex-display > .katex {
   text-align: left;
 }
-#chat-view .message .text .chat-code {
+#chat-view .message > .text .chat-code {
   margin: 0.6em 0;
   padding: 10px;
   overflow-x: auto;
@@ -409,62 +409,62 @@
 #chat-view .pending-message {
   opacity: 0.75;
 }
-#chat-view .message.assistant .text {
+#chat-view .message.assistant > .text {
   white-space: normal;
 }
-#chat-view .message .text p {
+#chat-view .message > .text p {
   margin: 0 0 0.8em;
 }
-#chat-view .message .text p:last-child {
+#chat-view .message > .text p:last-child {
   margin-bottom: 0;
 }
-#chat-view .message .text h1,
-#chat-view .message .text h2,
-#chat-view .message .text h3 {
+#chat-view .message > .text h1,
+#chat-view .message > .text h2,
+#chat-view .message > .text h3 {
   font-size: 1.15em;
   margin: 1em 0 0.5em;
 }
-#chat-view .message .text ul,
-#chat-view .message .text ol {
+#chat-view .message > .text ul,
+#chat-view .message > .text ol {
   padding-left: 1.6em;
 }
-#chat-view .message .text li {
+#chat-view .message > .text li {
   margin: 0.25em 0;
 }
-#chat-view .message .text blockquote {
+#chat-view .message > .text blockquote {
   margin: 0.7em 0;
   border-left: 3px solid #c9bfb0;
   padding-left: 12px;
 }
-#chat-view .message .text table {
+#chat-view .message > .text table {
   border-collapse: collapse;
   display: block;
   max-width: 100%;
   overflow-x: auto;
   margin: 0.8em 0;
 }
-#chat-view .message .text th,
-#chat-view .message .text td {
+#chat-view .message > .text th,
+#chat-view .message > .text td {
   border: 1px solid #b9b2a5;
   padding: 6px 10px;
   white-space: normal;
 }
-#chat-view .message .text a {
+#chat-view .message > .text a {
   color: #a35c3f;
   text-decoration: underline;
 }
-#chat-view .message .text pre {
+#chat-view .message > .text pre {
   padding: 12px;
   border-radius: 8px;
   overflow-x: auto;
   background: #00000008;
   white-space: pre;
 }
-#chat-view .message .text code {
+#chat-view .message > .text code {
   font-family: var(--font-ui);
   font-size: inherit;
 }
-#chat-view .message .text :not(pre) > code {
+#chat-view .message > .text :not(pre) > code {
   background: #00000008;
   padding: 1px 4px;
   border-radius: 4px;
