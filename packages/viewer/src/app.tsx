@@ -51,6 +51,7 @@ import { DOWNLOAD_NOTICE_MS, startClientDownload } from "./auto-download";
 
 /** A viewer that never gets input (for example a follower) must still see the page. */
 const MIRROR_SETTLE_TIMEOUT_MS = 5_000;
+const SESSION_CHECK_INTERVAL_MS = 5_000;
 
 function configuredResyncWindowMs(): number {
   const raw = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env
@@ -286,6 +287,36 @@ export function App() {
     const timer = setInterval(() => setStatusNow(Date.now()), 1_000);
     return () => clearInterval(timer);
   }, []);
+
+  // An open page outlives its session when the service restarts. While it cannot reconnect, check
+  // whether the session still exists, and start over with a live one if it does not.
+  const sessionUnreachable =
+    clientPhase === "ready" &&
+    clientSession !== null &&
+    (viewMode === "chat" ? chatStatus?.connected === false : connection === "closed");
+  useEffect(() => {
+    if (!sessionUnreachable || clientSession === null) return;
+    const sid = clientSession.sid;
+    const timer = setInterval(() => {
+      let clientKey: string;
+      try {
+        clientKey = prepareClientSession(
+          new URL(window.location.href),
+          window.sessionStorage,
+          () => {},
+        ).clientKey;
+      } catch {
+        return;
+      }
+      // Asking again returns this page's live session, a new one if the old one has ended.
+      void requestClientSession({ clientKey, sid })
+        .then((session) => {
+          if (session.sid !== sid) setBootstrapAttempt((current) => current + 1);
+        })
+        .catch(() => {});
+    }, SESSION_CHECK_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [sessionUnreachable, clientSession?.sid]);
 
   useEffect(() => {
     setStatusReachable(false);
@@ -1123,10 +1154,9 @@ export function App() {
                   {endFailure ? "重试结束" : "重试"}
                 </button>
               )}
-              {clientPhase === "error" &&
-                (clientError?.status === 401 || clientError?.status === 403) && (
-                  <a href="/gate">重新登录</a>
-                )}
+              {clientPhase === "error" && clientError?.status === 401 && (
+                <a href="/gate">重新登录</a>
+              )}
               {clientPhase === "error" && endFailure && clientSession !== null && (
                 <a href={clientReturnUrl(clientSession.sid)}>返回当前会话</a>
               )}

@@ -72,7 +72,7 @@ const CAPTURE_PRESETS: Record<
     maxWidth: 3840,
     maxHeight: 3840,
     jpeg: 80,
-    video: { jpeg: 85, everyNthFrame: 1, crf: 18 },
+    video: { jpeg: 80, everyNthFrame: 1, crf: 18 },
     everyNthFrame: 2,
     sharp: { format: "png" },
   },

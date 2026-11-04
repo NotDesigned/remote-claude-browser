@@ -78,7 +78,7 @@ export function ffmpegArguments(crf: number): string[] {
       "-vf",
       "scale=trunc(iw/2)*2:trunc(ih/2)*2:out_range=tv:out_color_matrix=bt709,format=yuv420p",
     ],
-    ...["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-crf", String(crf)],
+    ...["-c:v", "libx264", "-preset", "superfast", "-tune", "zerolatency", "-crf", String(crf)],
     ...["-threads", "3", "-g", "600", "-bf", "0", "-fps_mode", "passthrough"],
     ...["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709"],
     ...["-color_trc", "bt709"],

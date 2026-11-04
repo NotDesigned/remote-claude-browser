@@ -255,7 +255,7 @@ describe("createScreencast", () => {
       expect(browser.calls.find(({ method }) => method === "Page.startScreencast")?.params).toEqual(
         {
           format: "jpeg",
-          quality: 85,
+          quality: 80,
           everyNthFrame: 1,
           maxWidth: 3840,
           maxHeight: 3840,
