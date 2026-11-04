@@ -31,6 +31,8 @@ const ZOOM_POLL_MS = 50;
 const STATS_INTERVAL_MS = 1_000;
 /** Beyond this the held frame is pushed out; at 25 fps and up the next frame does it for free. */
 const VIDEO_FLUSH_MS = 40;
+/** 30 fps. Chromium can produce more, which only costs CPU this view has better uses for. */
+const VIDEO_MIN_FRAME_GAP_MS = 33;
 /** A page that never stops, such as a shimmer on one row, still gets sharp around that row. */
 const SHARP_MOTION_INTERVAL_MS = 3_000;
 /**
@@ -91,6 +93,7 @@ interface VideoStream {
   /** Frames in the encoder, oldest first: whether each one only repeats the one before it. */
   written: boolean[];
   flushed?: boolean;
+  lastFedAt?: number;
 }
 
 interface TabState {
@@ -336,19 +339,32 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     }, VIDEO_FLUSH_MS);
     video.flushTimer.unref?.();
   };
-  const feedVideo = (state: TabState, w: number, h: number): void => {
-    if (state.video?.w !== w || state.video.h !== h) startVideo(state, w, h);
-    const video = state.video;
-    if (!video || !state.lastJpeg) return;
+  const writeVideoFrame = (state: TabState, video: VideoStream): void => {
+    if (state.video !== video || !state.lastJpeg) return;
     // A frame dropped here costs nothing; one dropped after encoding would break the decoder.
     if (opts.backlogged?.() || video.encoder.busy?.()) {
       state.stats.dropped++;
     } else {
+      video.lastFedAt = Date.now();
       video.flushed = false;
       video.written.push(false);
       video.encoder.write(state.lastJpeg);
     }
     flushVideo(state, video);
+  };
+  const feedVideo = (state: TabState, w: number, h: number): void => {
+    if (state.video?.w !== w || state.video.h !== h) startVideo(state, w, h);
+    const video = state.video;
+    if (!video || !state.lastJpeg) return;
+    // Over the frame rate limit only the newest picture waits, and it still goes out on time.
+    const wait = (video.lastFedAt ?? 0) + VIDEO_MIN_FRAME_GAP_MS - Date.now();
+    clearTimeout(video.flushTimer);
+    if (wait > 0) {
+      video.flushTimer = setTimeout(() => writeVideoFrame(state, video), wait);
+      video.flushTimer.unref?.();
+      return;
+    }
+    writeVideoFrame(state, video);
   };
   /** A viewer that joined or lost its place needs a new stream beginning with a keyframe. */
   const restartVideo = (state: TabState): void => {

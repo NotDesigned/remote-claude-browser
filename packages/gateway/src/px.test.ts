@@ -300,9 +300,22 @@ describe("createScreencast", () => {
       const { browser, encoders, controller } = await setup();
       for (let index = 0; index < 5; index++) {
         browser.frame("cdp-1", frame(index, `FRAME${index}`));
-        await vi.advanceTimersByTimeAsync(30);
+        await vi.advanceTimersByTimeAsync(35);
       }
       expect(encoders[0]!.written).toHaveLength(5);
+      controller.dispose();
+    });
+
+    it("stays at 30 fps and still delivers the newest picture", async () => {
+      const { browser, encoders, controller } = await setup();
+      for (let index = 0; index < 60; index++) {
+        browser.frame("cdp-1", frame(index, `FRAME${String(index).padStart(2, "0")}`));
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      // Six hundred milliseconds of frames at a hundred per second.
+      expect(encoders[0]!.written.length).toBeLessThanOrEqual(19);
+      await vi.advanceTimersByTimeAsync(33);
+      expect(encoders[0]!.written.at(-1)).toBe(Buffer.from("FRAME59", "base64").toString("base64"));
       controller.dispose();
     });
 

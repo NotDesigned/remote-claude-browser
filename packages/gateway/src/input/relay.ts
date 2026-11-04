@@ -85,12 +85,28 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
   const relay = ((viewerId, msg) => {
     const generation = generations.get(msg.tab) ?? 0;
     const hover = msg.t === "ptr" && msg.kind === "move" && msg.buttons === 0;
+    const wheel = msg.t === "ptr" && msg.kind === "wheel";
     const pendingMove = pendingMoves.get(msg.tab);
-    if (hover && pendingMove?.viewerId === viewerId) {
+    if (hover && pendingMove?.viewerId === viewerId && pendingMove.msg.kind === "move") {
       pendingMove.msg = msg;
       return pendingMove.result;
     }
-    // A click, drag or editor update is a barrier. Later hover moves stay after that barrier.
+    // Each wheel event waits for the page. A trackpad sends far more of them than a busy page can
+    // take, so ones still waiting are added together rather than left to scroll for seconds on.
+    if (
+      wheel &&
+      pendingMove?.viewerId === viewerId &&
+      pendingMove.msg.kind === "wheel" &&
+      pendingMove.msg.mods === msg.mods
+    ) {
+      pendingMove.msg = {
+        ...msg,
+        dx: (pendingMove.msg.dx ?? 0) + (msg.dx ?? 0),
+        dy: (pendingMove.msg.dy ?? 0) + (msg.dy ?? 0),
+      };
+      return pendingMove.result;
+    }
+    // A click, drag or editor update is a barrier. Later moves and scrolls stay after that barrier.
     pendingMoves.delete(msg.tab);
     const prior = tabTails.get(msg.tab) ?? Promise.resolve();
     let move: ReturnType<typeof pendingMoves.get>;
@@ -98,7 +114,7 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
       if (move && pendingMoves.get(msg.tab) === move) pendingMoves.delete(msg.tab);
       return dispatch(viewerId, move?.msg ?? msg, generation);
     });
-    if (hover) {
+    if (hover || wheel) {
       move = { viewerId, msg, result };
       pendingMoves.set(msg.tab, move);
     }

@@ -82,6 +82,37 @@ function harness(
 }
 
 describe("InputRelay", () => {
+  it("adds up queued wheel events so a busy page does not fall behind", async () => {
+    let release!: (value: CmdRes) => void;
+    const h = harness({
+      rect: () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+      rectTimeoutMs: 1000,
+    });
+    const wheel = (dy: number) => ({ ...pointer("wheel"), buttons: 0, dx: 0, dy });
+    const first = h.relay("driver", wheel(10));
+    await vi.waitFor(() => expect(h.rectCalls()).toBe(1));
+    const queued = Array.from({ length: 50 }, () => h.relay("driver", wheel(2)));
+    const down = h.relay("driver", pointer("down"));
+    const later = h.relay("driver", wheel(5));
+    const answer = (reqId: number) =>
+      release({ reqId, ok: true, data: { x: 10, y: 20, w: 100, h: 80, visible: true } });
+    answer(1);
+    for (let call = 2; call <= 4; call++) {
+      await vi.waitFor(() => expect(h.rectCalls()).toBe(call));
+      answer(call);
+    }
+    await Promise.all([first, ...queued, down, later]);
+    expect(h.cdp.map(({ params }) => [params?.type, params?.deltaY])).toEqual([
+      ["mouseWheel", 10],
+      ["mouseWheel", 100],
+      ["mousePressed", undefined],
+      ["mouseWheel", 5],
+    ]);
+  });
+
   it("coalesces queued hover moves while preserving click barriers", async () => {
     let release!: (value: CmdRes) => void;
     const h = harness({
