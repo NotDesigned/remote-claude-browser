@@ -488,3 +488,17 @@ body {
 #shell progress {
   accent-color: var(--accent);
 }
+
+/* Switching from chat: hide the mirror (it keeps its size) until the viewport is agreed. */
+#mirror-host[data-settling="true"] > * {
+  visibility: hidden;
+}
+#mirror-host[data-settling="true"]::before {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 14px;
+  content: "正在同步页面…";
+}

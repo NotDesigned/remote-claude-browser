@@ -7,7 +7,7 @@
  * running in px mode (cheap; makes flip-back instant via fresh snapshot). Backpressure: drop
  * frames for stalled viewers, never queue (D4 rule applies to px too).
  */
-import type { Down, Up } from "@mirror/protocol";
+import type { Down, PxQuality, Up } from "@mirror/protocol";
 
 import type { BrowserHandle } from "./browser/launch";
 import type { TabHub } from "./hub/tabhub";
@@ -17,9 +17,14 @@ type ModeMsg = Extract<Up, { t: "mode" }>;
 type PixelFrame = Extract<Down, { t: "px" }>;
 const DEFAULT_COMMAND_TIMEOUT_MS = 3000;
 const DEFAULT_FIRST_FRAME_TIMEOUT_MS = 1500;
-const MAX_CAPTURE_WIDTH = 2560;
-const MAX_CAPTURE_HEIGHT = 1440;
-const JPEG_QUALITY = 80;
+const CAPTURE_PRESETS: Record<
+  PxQuality,
+  { maxWidth: number; maxHeight: number; jpeg: number; everyNthFrame: number }
+> = {
+  low: { maxWidth: 960, maxHeight: 540, jpeg: 50, everyNthFrame: 3 },
+  medium: { maxWidth: 1600, maxHeight: 900, jpeg: 65, everyNthFrame: 2 },
+  high: { maxWidth: 2560, maxHeight: 1440, jpeg: 80, everyNthFrame: 2 },
+};
 type ScreencastBrowser = Pick<
   BrowserHandle,
   "send" | "onAttached" | "onDetached" | "onSessionEvent"
@@ -69,6 +74,19 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     throw new TypeError("Pixel capacity requires both acquirePixel and releasePixel hooks");
   const tabs = new Map<string, TabState>();
   const sessions = new Map<string, TabState>();
+  // Chosen by the viewer; applies to every tab of this client session.
+  let quality: PxQuality = "high";
+  const screencastParams = (state: TabState) => {
+    const preset = CAPTURE_PRESETS[quality];
+    const viewport = state.hub.viewport;
+    return {
+      format: "jpeg",
+      quality: preset.jpeg,
+      everyNthFrame: preset.everyNthFrame,
+      maxWidth: Math.min(preset.maxWidth, frameDimension(viewport?.w, preset.maxWidth)),
+      maxHeight: Math.min(preset.maxHeight, frameDimension(viewport?.h, preset.maxHeight)),
+    };
+  };
   const commandTimeoutMs = checkedTimeout(opts.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS);
   const firstFrameTimeoutMs = checkedTimeout(
     opts.firstFrameTimeoutMs ?? DEFAULT_FIRST_FRAME_TIMEOUT_MS,
@@ -161,24 +179,25 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     state.fallback = fallback;
     fallback.promise = (async () => {
       try {
+        const preset = CAPTURE_PRESETS[quality];
         let viewport = state.hub.viewport;
         if (viewport === null) {
           const metrics = (await sendBounded(state, "Page.getLayoutMetrics")) as {
             cssLayoutViewport?: { clientWidth?: number; clientHeight?: number };
           };
           viewport = {
-            w: frameDimension(metrics.cssLayoutViewport?.clientWidth, MAX_CAPTURE_WIDTH),
-            h: frameDimension(metrics.cssLayoutViewport?.clientHeight, MAX_CAPTURE_HEIGHT),
+            w: frameDimension(metrics.cssLayoutViewport?.clientWidth, preset.maxWidth),
+            h: frameDimension(metrics.cssLayoutViewport?.clientHeight, preset.maxHeight),
             dpr: 1,
           };
         }
         if (!current(state, generation) || state.hub.mode !== "px" || state.lastFrame) return;
-        const w = frameDimension(viewport.w, MAX_CAPTURE_WIDTH);
-        const h = frameDimension(viewport.h, MAX_CAPTURE_HEIGHT);
+        const w = frameDimension(viewport.w, preset.maxWidth);
+        const h = frameDimension(viewport.h, preset.maxHeight);
         const dpr = Number.isFinite(viewport.dpr) && viewport.dpr > 0 ? viewport.dpr : 1;
         const screenshot = (await sendBounded(state, "Page.captureScreenshot", {
           format: "jpeg",
-          quality: JPEG_QUALITY,
+          quality: preset.jpeg,
           fromSurface: true,
           captureBeyondViewport: false,
           clip: {
@@ -186,7 +205,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
             y: 0,
             width: w,
             height: h,
-            scale: Math.min(1, MAX_CAPTURE_WIDTH / (w * dpr), MAX_CAPTURE_HEIGHT / (h * dpr)),
+            scale: Math.min(1, preset.maxWidth / (w * dpr), preset.maxHeight / (h * dpr)),
           },
         })) as { data?: unknown };
         if (!current(state, generation) || state.hub.mode !== "px" || state.lastFrame) return;
@@ -262,7 +281,11 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     },
   );
 
-  const applyMode = async (state: TabState, mode: "dom" | "px"): Promise<void> => {
+  const applyMode = async (
+    state: TabState,
+    mode: "dom" | "px",
+    qualityChanged = false,
+  ): Promise<void> => {
     if (!current(state)) return;
     if (mode === "px") {
       // A queued retry may follow a failed/finished transition that released its first lease.
@@ -275,6 +298,19 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
         if (current(state, bringToFrontGeneration)) report(error);
       });
       if (state.screencasting && state.hub.mode === "px") {
+        if (qualityChanged) {
+          // Keep showing the current picture; only the capture restarts with the new preset.
+          const generation = state.generation;
+          try {
+            await sendBounded(state, "Page.stopScreencast");
+            if (!current(state, generation)) return;
+            await sendBounded(state, "Page.startScreencast", screencastParams(state));
+          } catch (error) {
+            await returnToDom(state, generation, error);
+            return;
+          }
+          if (!current(state, generation)) return;
+        }
         opts.publish({ t: "mode", tab: state.target.targetId, mode: "px" });
         if (state.lastFrame) opts.publish(state.lastFrame);
         else void ensureFirstFrame(state, state.generation);
@@ -284,18 +320,11 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       clearFirstFrameTimer(state);
       state.fallback = undefined;
       delete state.lastFrame;
-      const viewport = state.hub.viewport;
       state.screencasting = true;
       // Until start is confirmed, keep the existing DOM lane available to the viewer.
       state.hub.mode = "dom";
       try {
-        await sendBounded(state, "Page.startScreencast", {
-          format: "jpeg",
-          quality: JPEG_QUALITY,
-          everyNthFrame: 2,
-          maxWidth: Math.min(MAX_CAPTURE_WIDTH, frameDimension(viewport?.w, MAX_CAPTURE_WIDTH)),
-          maxHeight: Math.min(MAX_CAPTURE_HEIGHT, frameDimension(viewport?.h, MAX_CAPTURE_HEIGHT)),
-        });
+        await sendBounded(state, "Page.startScreencast", screencastParams(state));
       } catch (error) {
         await returnToDom(state, generation, error);
         return;
@@ -356,9 +385,16 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
         return Promise.resolve();
       }
       const queueGeneration = state.queueGeneration;
+      // Untrusted wire value: anything but a known preset leaves the current one in place.
+      const requested =
+        typeof msg.quality === "string" && Object.hasOwn(CAPTURE_PRESETS, msg.quality)
+          ? msg.quality
+          : quality;
+      const qualityChanged = requested !== quality;
+      quality = requested;
       const operation = state.queue.then(async () => {
         if (!current(state) || state.queueGeneration !== queueGeneration) return;
-        await applyMode(state, msg.mode);
+        await applyMode(state, msg.mode, qualityChanged);
       });
       // Preserve serialization after a failed CDP command without hiding that failure from the
       // caller that requested this particular transition.

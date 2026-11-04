@@ -36,6 +36,11 @@ interface Options {
   /** Lazily creates the session's authoritative page when chat is opened directly. */
   ensureRuntime?(): Promise<void>;
   onNativeViewport?(tab: string): void | Promise<void>;
+  /**
+   * True when the tab is already wide enough for Claude's desktop layout. Chat then keeps that
+   * viewport, so returning to the browser views needs no remote relayout.
+   */
+  keepsDesktopLayout?(tab: string): boolean;
   testOrigin?: string;
 }
 
@@ -337,12 +342,13 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
             if (preparedSession !== documentKey) {
               await options.onNativeViewport?.(target.targetId);
               if (!canPoll()) return;
-              await boundedSend(target, "Emulation.setDeviceMetricsOverride", {
-                width: 1280,
-                height: 800,
-                deviceScaleFactor: 1,
-                mobile: false,
-              });
+              if (!options.keepsDesktopLayout?.(target.targetId))
+                await boundedSend(target, "Emulation.setDeviceMetricsOverride", {
+                  width: 1280,
+                  height: 800,
+                  deviceScaleFactor: 1,
+                  mobile: false,
+                });
               await boundedSend(target, "Page.bringToFront", {});
               preparedSession = documentKey;
               observer?.close();

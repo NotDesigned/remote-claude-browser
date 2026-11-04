@@ -30,6 +30,8 @@ import { createFileUploadRelay, type FileUploadRelay, type UploadState } from ".
 import { createPresentationState } from "./presentation";
 import {
   ClientSessionError,
+  PX_QUALITY_STORAGE_KEY,
+  preferredPxQuality,
   preferredViewMode,
   rememberViewMode,
   type ViewMode,
@@ -45,6 +47,9 @@ import "@rrweb/replay/dist/style.css";
 import "./app.css";
 import "./shell.css";
 import { DOWNLOAD_NOTICE_MS, startClientDownload } from "./auto-download";
+
+/** A viewer that never gets input (for example a follower) must still see the page. */
+const MIRROR_SETTLE_TIMEOUT_MS = 5_000;
 
 function configuredResyncWindowMs(): number {
   const raw = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env
@@ -163,6 +168,10 @@ export function App() {
   );
   const theme: "light" | "dark" =
     themePreference === "auto" ? (systemDark ? "dark" : "light") : themePreference;
+  const [pxQuality, setPxQuality] = useState(() => preferredPxQuality(viewStorage()));
+  // Coming from chat, the remote page may still have chat's geometry. Keep the mirror covered until
+  // this window's viewport is agreed, so the old layout never flashes before the real one.
+  const [settling, setSettling] = useState(false);
   const [chatStatus, setChatStatus] = useState<{ text: string; connected: boolean }>({
     text: "连接中",
     connected: false,
@@ -176,6 +185,16 @@ export function App() {
     // The chat view titles the page after the current conversation itself.
     if (viewMode !== "chat") document.title = activeTitle || "远程 Claude";
   }, [activeTitle, viewMode]);
+
+  useEffect(() => {
+    if (!settling) return;
+    if (inputReady) {
+      setSettling(false);
+      return;
+    }
+    const timer = setTimeout(() => setSettling(false), MIRROR_SETTLE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [settling, inputReady]);
 
   useEffect(() => {
     const query = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -677,7 +696,11 @@ export function App() {
               entryMode = null;
               const tab = message.tabs.find((item) => item.id === entryTab)?.id ?? active.id;
               if (tab !== active.id) socket?.send({ t: "nav", tab, action: "activate" });
-              socket?.send({ t: "mode", tab, mode: requestedMode });
+              socket?.send(
+                requestedMode === "px"
+                  ? { t: "mode", tab, mode: "px", quality: preferredPxQuality(viewStorage()) }
+                  : { t: "mode", tab, mode: "dom" },
+              );
             }
           }
         }
@@ -820,10 +843,15 @@ export function App() {
     }
     if (viewMode === "chat" || activeTab === null) {
       pendingModeRef.current = mode;
+      setSettling(viewMode === "chat");
       setViewMode(mode);
       return;
     }
-    socketRef.current?.send({ t: "mode", tab: activeTab, mode });
+    socketRef.current?.send(
+      mode === "px"
+        ? { t: "mode", tab: activeTab, mode, quality: pxQuality }
+        : { t: "mode", tab: activeTab, mode },
+    );
     setViewMode(mode);
   };
 
@@ -859,6 +887,14 @@ export function App() {
         }}
         theme={themePreference}
         onTheme={setThemePreference}
+        pxQuality={pxQuality}
+        onPxQuality={(quality) => {
+          setPxQuality(quality);
+          viewStorage().setItem(PX_QUALITY_STORAGE_KEY, quality);
+          // Applied right away in the pixel view, otherwise the next time it opens.
+          if (pixelMode && activeTab !== null)
+            socketRef.current?.send({ t: "mode", tab: activeTab, mode: "px", quality });
+        }}
         serverStatus={serverStatus}
         rttMs={browserView ? rttMs : null}
         sessionLabel={clientSession?.label ?? null}
@@ -930,6 +966,7 @@ export function App() {
         id="mirror-host"
         hidden={!browserView}
         data-input-ready={inputReady ? "true" : "false"}
+        data-settling={settling ? "true" : undefined}
         ref={hostRef}
       />
       {clientPhase !== "ready" && (

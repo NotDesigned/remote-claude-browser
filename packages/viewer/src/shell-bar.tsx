@@ -3,6 +3,7 @@
  * ⋯ menu. Browser chrome (tabs and address bar) can be hidden; the compact navigation then lives
  * here and the address in the menu.
  */
+import type { PxQuality } from "@mirror/protocol";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { normalizeNavigationUrl } from "./chrome/urlbar";
 import { SERVER_STATUS_STALE_MS, type ReceivedServerStatus } from "./server-status";
@@ -25,6 +26,8 @@ export interface ShellBarProps {
   onNav(action: "back" | "reload" | "go", url?: string): void;
   theme: ThemePreference;
   onTheme(theme: ThemePreference): void;
+  pxQuality: PxQuality;
+  onPxQuality(quality: PxQuality): void;
   serverStatus: ReceivedServerStatus | null;
   rttMs: number | null;
   sessionLabel: string | null;
@@ -208,6 +211,28 @@ export function ShellBar(props: ShellBarProps) {
               结束本会话{props.sessionLabel ? `（${props.sessionLabel}）` : ""}
             </button>
           )}
+          <div class="shell-menu-section" role="group" aria-label="画面清晰度">
+            <span>画面清晰度（越低越省流量）</span>
+            <div class="shell-menu-choices">
+              {(
+                [
+                  ["low", "低"],
+                  ["medium", "中"],
+                  ["high", "高"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  data-px-quality={value}
+                  aria-pressed={props.pxQuality === value}
+                  onClick={() => props.onPxQuality(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div class="shell-menu-section" role="group" aria-label="外观">
             <span>外观</span>
             <div class="shell-menu-choices">

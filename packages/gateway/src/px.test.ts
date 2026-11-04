@@ -129,6 +129,63 @@ function recordedHub(): TabHub {
 describe("createScreencast", () => {
   afterEach(() => vi.useRealTimers());
 
+  it("captures at the requested detail and restarts only the capture when it changes", async () => {
+    const browser = new MockBrowser();
+    const hub = new TabHub({ sessionId: "session", tabId: "tab-1" });
+    hub.viewport = { w: 1920, h: 1080, dpr: 1 };
+    const sent: Down[] = [];
+    const calls: { method: string; params?: Record<string, unknown> }[] = [];
+    const send: CdpSend = async (session, method, params) => {
+      calls.push({ method, params: params as Record<string, unknown> | undefined });
+      if (method === "Page.startScreencast") browser.frame(session, frame(1, "first"));
+      return {};
+    };
+    const controller = createScreencast({
+      browser: {
+        send,
+        onAttached: browser.onAttached.bind(browser),
+        onDetached: browser.onDetached.bind(browser),
+        onSessionEvent: browser.onSessionEvent.bind(browser),
+      },
+      hubFor: () => hub,
+      publish: (message) => sent.push(message),
+    });
+    browser.attach({ targetId: "tab-1", sessionId: "cdp-1", type: "page" });
+    const capture = () => calls.filter(({ method }) => /Page\.(start|stop)Screencast/.test(method));
+
+    await controller.handle({ t: "mode", tab: "tab-1", mode: "px", quality: "low" });
+    expect(capture()).toEqual([
+      {
+        method: "Page.startScreencast",
+        params: { format: "jpeg", quality: 50, everyNthFrame: 3, maxWidth: 960, maxHeight: 540 },
+      },
+    ]);
+
+    await controller.handle({ t: "mode", tab: "tab-1", mode: "px", quality: "high" });
+    expect(capture().slice(1)).toEqual([
+      { method: "Page.stopScreencast", params: undefined },
+      {
+        method: "Page.startScreencast",
+        params: { format: "jpeg", quality: 80, everyNthFrame: 2, maxWidth: 1920, maxHeight: 1080 },
+      },
+    ]);
+    expect(hub.mode).toBe("px");
+    expect(sent.filter((message) => message.t === "mode").at(-1)).toMatchObject({ mode: "px" });
+
+    // The same value, no value and an unknown value never restart the capture.
+    const before = capture().length;
+    await controller.handle({ t: "mode", tab: "tab-1", mode: "px", quality: "high" });
+    await controller.handle({ t: "mode", tab: "tab-1", mode: "px" });
+    await controller.handle({
+      t: "mode",
+      tab: "tab-1",
+      mode: "px",
+      quality: "constructor" as never,
+    });
+    expect(capture()).toHaveLength(before);
+    controller.dispose();
+  });
+
   it("keeps an early first frame and replays it on repeated pixel requests", async () => {
     const browser = new MockBrowser();
     const hub = new TabHub({ sessionId: "session", tabId: "tab-1" });

@@ -55,6 +55,9 @@ interface ClientRuntime {
   stop(): Promise<void>;
 }
 
+/** Claude keeps its conversation sidebar at this width, which chat mode reads history from. */
+const DESKTOP_LAYOUT_MIN_WIDTH = 1024;
+
 export async function startClientGateway(): Promise<void> {
   const e2e = process.env.MIRROR_E2E === "1";
   const managedProfile = !process.env.CHROME_USER_DATA_DIR;
@@ -810,6 +813,8 @@ export async function startClientGateway(): Promise<void> {
         [...viewers].some(([id, connection]) => connection.sid === sid && roles.isDriver(id)),
       takeControl: (connectionKey) => ws.replaceSession(sid, undefined, connectionKey),
       ensureRuntime: () => ensureRuntime(sid).then(() => undefined),
+      keepsDesktopLayout: (tab) =>
+        (runtimes.get(sid)?.tabs.hubFor(tab)?.viewport?.w ?? 0) >= DESKTOP_LAYOUT_MIN_WIDTH,
       onNativeViewport: async (tab) => {
         const runtime = runtimes.get(sid);
         if (!runtime) return;

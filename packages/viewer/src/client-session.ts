@@ -1,3 +1,4 @@
+import type { PxQuality } from "@mirror/protocol";
 export const CLIENT_KEY_STORAGE_KEY = "mirror.client-session.key";
 
 export type ClientSessionId =
@@ -212,5 +213,17 @@ export function rememberViewMode(storage: Pick<Storage, "setItem">, mode: ViewMo
     storage.setItem(VIEW_MODE_STORAGE_KEY, mode);
   } catch {
     /* A blocked store only loses the preference. */
+  }
+}
+
+export const PX_QUALITY_STORAGE_KEY = "mirror.px-quality";
+
+/** The picture detail chosen on this device; the sharpest one until someone asks for less. */
+export function preferredPxQuality(storage: Pick<Storage, "getItem">): PxQuality {
+  try {
+    const value = storage.getItem(PX_QUALITY_STORAGE_KEY);
+    return value === "low" || value === "medium" ? value : "high";
+  } catch {
+    return "high";
   }
 }

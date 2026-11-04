@@ -53,6 +53,9 @@ export interface PresenceEntry {
   name: string;
 }
 
+/** Pixel view detail, trading sharpness and frame rate for bandwidth. */
+export type PxQuality = "low" | "medium" | "high";
+
 export type SnapshotReason = "nav" | "viewport" | "trim" | "resync";
 
 /** Gateway -> viewer. */
@@ -201,7 +204,7 @@ export type Up =
       action: "go" | "back" | "fwd" | "reload" | "newtab" | "close" | "activate";
       url?: string;
     }
-  | { t: "mode"; tab: TabId; mode: "dom" | "px" }
+  | { t: "mode"; tab: TabId; mode: "dom" | "px"; quality?: PxQuality }
   /**
    * The viewer received one `px` frame. The gateway keeps at most a couple of frames in flight
    * per viewer and replaces any newer waiting frame, so slow links show the latest picture
