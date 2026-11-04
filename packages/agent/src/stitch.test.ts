@@ -7,6 +7,7 @@ import {
   installStitchReadyListener,
   installStitchSyncListener,
   isCrossOriginChild,
+  installStitchSyncForwarder,
   isHiddenBlankFrame,
 } from "./stitch";
 import { createRecordReadiness, type RecordReadiness } from "./commands";
@@ -171,9 +172,38 @@ describe("stitch-sync", () => {
   });
 });
 
+describe("installStitchSyncForwarder", () => {
+  it("passes the request to the frames below, and nothing else", () => {
+    const listeners = new Set<(event: MessageEvent) => void>();
+    const child = { postMessage: vi.fn() };
+    const target = {
+      frames: [child],
+      addEventListener: (_type: string, listener: (event: MessageEvent) => void) =>
+        listeners.add(listener),
+      removeEventListener: (_type: string, listener: (event: MessageEvent) => void) =>
+        listeners.delete(listener),
+    } as unknown as Window;
+    const fire = (data: unknown) => {
+      for (const listener of listeners) listener({ data } as MessageEvent);
+    };
+    const dispose = installStitchSyncForwarder(target);
+
+    fire({ type: "something-else" });
+    fire(null);
+    expect(child.postMessage).not.toHaveBeenCalled();
+
+    fire({ type: STITCH_SYNC_MESSAGE_TYPE });
+    expect(child.postMessage).toHaveBeenCalledWith({ type: STITCH_SYNC_MESSAGE_TYPE }, "*");
+
+    dispose();
+    expect(listeners.size).toBe(0);
+  });
+});
+
 describe("isHiddenBlankFrame", () => {
   const frame = (href: string, display: string | null, blocked = false) =>
     ({
+      parent: {},
       location: { href },
       get frameElement() {
         if (blocked) throw new Error("cross-origin");
@@ -181,11 +211,17 @@ describe("isHiddenBlankFrame", () => {
       },
     }) as unknown as Window;
 
-  it("recognises only a hidden blank frame", () => {
+  it("recognises a hidden blank frame, and one whose parent cannot reach it", () => {
     expect(isHiddenBlankFrame(frame("about:blank", "none"))).toBe(true);
+    expect(isHiddenBlankFrame(frame("about:blank", null))).toBe(true);
+    expect(isHiddenBlankFrame(frame("about:blank", "none", true))).toBe(true);
+  });
+
+  it("keeps recording anything that can have content", () => {
     expect(isHiddenBlankFrame(frame("about:blank", ""))).toBe(false);
-    expect(isHiddenBlankFrame(frame("about:blank", null))).toBe(false);
     expect(isHiddenBlankFrame(frame("https://a.test/", "none"))).toBe(false);
-    expect(isHiddenBlankFrame(frame("about:blank", "none", true))).toBe(false);
+    const top = { location: { href: "about:blank" } } as unknown as Window & { parent: unknown };
+    top.parent = top;
+    expect(isHiddenBlankFrame(top)).toBe(false);
   });
 });

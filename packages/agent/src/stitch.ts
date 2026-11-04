@@ -19,15 +19,17 @@ export interface StitchSyncDependencies {
 
 /**
  * rrweb briefly creates a hidden blank frame to read untouched prototypes. A recorder in it would
- * create another, each inside the last, hundreds deep. Nothing in such a frame is ever visible.
+ * create another, each inside the last, hundreds deep, and the replayer loses whole batches of
+ * changes to frames that are already gone. In a sandboxed parent the frame has its own origin and
+ * cannot see its element, but then the parent cannot write to it either, so it is empty for good.
  */
 export function isHiddenBlankFrame(target: Window = window): boolean {
-  if (target.location.href !== "about:blank") return false;
+  if (target.parent === target || target.location.href !== "about:blank") return false;
   try {
     const frame = target.frameElement as HTMLElement | null;
-    return frame?.style.display === "none";
+    return frame === null || frame.style.display === "none";
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -65,6 +67,19 @@ export function installStitchReadyListener(target: Window = window): () => void 
     (event.source as Window).postMessage({ type: STITCH_SYNC_MESSAGE_TYPE }, "*");
   };
 
+  target.addEventListener("message", onMessage);
+  return () => target.removeEventListener("message", onMessage);
+}
+
+/**
+ * A same-origin child has no recorder of its own, as the frame above records its document. Its
+ * cross-origin descendants still need the request, or they stay empty after a new snapshot.
+ */
+export function installStitchSyncForwarder(target: Window = window): () => void {
+  const onMessage = (event: MessageEvent): void => {
+    if ((event.data as { type?: unknown } | null)?.type === STITCH_SYNC_MESSAGE_TYPE)
+      broadcastStitchSync(target);
+  };
   target.addEventListener("message", onMessage);
   return () => target.removeEventListener("message", onMessage);
 }

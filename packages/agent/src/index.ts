@@ -31,6 +31,7 @@ import { record } from "@rrweb/record";
 import {
   broadcastStitchSync,
   installStitchReadyListener,
+  installStitchSyncForwarder,
   installStitchSyncListener,
   isCrossOriginChild,
   isHiddenBlankFrame,
@@ -171,6 +172,8 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
       onRecorderStarted: recordReadiness.onStarted,
       takeFullSnapshot: () => record.takeFullSnapshot(true),
     });
+  } else if (window !== window.top) {
+    installStitchSyncForwarder(window);
   }
 
   const commandHandler = createCommandHandler(emitter, {
