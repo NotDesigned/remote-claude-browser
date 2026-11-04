@@ -295,4 +295,72 @@ describe("ViewportAgreement", () => {
     expect(send).not.toHaveBeenCalled();
     agreement.dispose();
   });
+
+  describe("unchanged geometry", () => {
+    const setup = (hub: ViewportHub) => {
+      const send = vi.fn(async () => ({}));
+      const confirmViewport = vi.fn();
+      const agreement = createViewportAgreement({
+        send,
+        sessionFor: () => "session",
+        hubFor: () => hub,
+        isDriver: () => true,
+        confirmViewport,
+      });
+      return { send, confirmViewport, agreement };
+    };
+    const view = { t: "view", tab: "tab", w: 1360, h: 900, dpr: 1 } as const;
+
+    it("confirms a current snapshot without a device override or a new snapshot", async () => {
+      const requestSnapshot = vi.fn();
+      const { send, confirmViewport, agreement } = setup({
+        viewport: { w: 1360, h: 900, dpr: 1 },
+        epoch: 7,
+        requestSnapshot,
+        hasGeometry: () => true,
+      });
+      expect(agreement.handle("viewer", view)).toBe(true);
+      expect(confirmViewport).toHaveBeenCalledWith("viewer", "tab", { w: 1360, h: 900 });
+      expect(agreement.gate.allowsInput("viewer", "tab")).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      expect(send).not.toHaveBeenCalled();
+      expect(requestSnapshot).not.toHaveBeenCalled();
+      agreement.dispose();
+    });
+
+    it("waits for the restarting recorder's snapshot instead of requesting another", async () => {
+      const requestSnapshot = vi.fn();
+      const { send, confirmViewport, agreement } = setup({
+        viewport: { w: 1360, h: 900, dpr: 1 },
+        requestSnapshot,
+        hasGeometry: () => false,
+        expectRecorderSnapshot: () => true,
+      });
+      agreement.handle("viewer", view);
+      expect(confirmViewport).not.toHaveBeenCalled();
+      expect(agreement.gate.allowsInput("viewer", "tab")).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      expect(send).not.toHaveBeenCalled();
+      expect(requestSnapshot).not.toHaveBeenCalled();
+      agreement.noteSnapshot({ tab: "tab", epoch: 8, reason: "viewport" });
+      expect(agreement.handle("viewer", { t: "view-ack", tab: "tab", epoch: 8 })).toBe(true);
+      expect(agreement.gate.allowsInput("viewer", "tab")).toBe(true);
+      agreement.dispose();
+    });
+
+    it("negotiates as usual when the geometry changed", async () => {
+      const requestSnapshot = vi.fn();
+      const { send, confirmViewport, agreement } = setup({
+        viewport: { w: 800, h: 600, dpr: 1 },
+        requestSnapshot,
+        hasGeometry: () => true,
+      });
+      agreement.handle("viewer", view);
+      expect(confirmViewport).not.toHaveBeenCalled();
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      expect(send).toHaveBeenCalledOnce();
+      expect(requestSnapshot).toHaveBeenCalledWith("viewport");
+      agreement.dispose();
+    });
+  });
 });

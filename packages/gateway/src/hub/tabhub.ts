@@ -74,6 +74,9 @@ export class TabHub {
   private readonly needSnapshotListeners = new Set<NeedSnapshotListener>();
   private hasDocument = false;
   private snapshotRequested = false;
+  /** The recorder was stopped for native chat, so the cached snapshot no longer matches the page. */
+  private recorderPaused = false;
+  private recorderResumeTimer?: ReturnType<typeof setTimeout>;
   private snapshotRequestAttempt = 0;
   private snapshotRequestTimer: ReturnType<typeof setTimeout> | undefined;
   private snapshotRetryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -154,6 +157,7 @@ export class TabHub {
 
     if (event.type === EventType.FullSnapshot) {
       this.pendingFullSnapshot = event;
+      if (this.recorderResumeTimer !== undefined) this.clearRecorderPause();
       return this.openPendingSnapshot();
     }
 
@@ -200,7 +204,9 @@ export class TabHub {
         : [{ t: "delta", tab: this.tabId, epoch: this.epoch, seq: resume.nextSeq, data: tail }];
     }
     const payload: Down[] = [{ t: "resync", tab: this.tabId }];
-    if (this.meta === null || this.snapshot === null) return payload;
+    // The restarting recorder is about to deliver the real page; a stale copy would only be parsed
+    // and rebuilt once for nothing.
+    if (this.meta === null || this.snapshot === null || this.recorderPaused) return payload;
 
     payload.push({
       t: "snapshot",
@@ -223,6 +229,40 @@ export class TabHub {
     return payload;
   }
 
+  pauseRecorder(): void {
+    this.recorderPaused = true;
+  }
+
+  /** The recorder's restart emits a snapshot itself; ask for one only if it never arrives. */
+  resumeRecorder(fallbackMs = 1_500): void {
+    if (!this.recorderPaused || this.recorderResumeTimer !== undefined) return;
+    this.recorderResumeTimer = setTimeout(() => {
+      this.clearRecorderPause();
+      if (this.hasDocument) this.requestSnapshot("resync");
+    }, fallbackMs);
+    this.recorderResumeTimer.unref?.();
+  }
+
+  private clearRecorderPause(): void {
+    this.recorderPaused = false;
+    clearTimeout(this.recorderResumeTimer);
+    this.recorderResumeTimer = undefined;
+  }
+
+  /** The current replayable snapshot already has this geometry; no new one is needed for it. */
+  hasGeometry(w: number, h: number): boolean {
+    if (this.recorderPaused || this.snapshotRequested || this.snapshot === null) return false;
+    const meta = this.meta;
+    return meta?.type === EventType.Meta && meta.data.width === w && meta.data.height === h;
+  }
+
+  /** Labels the snapshot the restarting recorder will emit, instead of requesting another. */
+  expectRecorderSnapshot(reason: SnapshotReason): boolean {
+    if (!this.recorderPaused || !this.hasDocument) return false;
+    this.pendingSnapshotReason = reason;
+    return true;
+  }
+
   /** Fired when thresholds/docId change require a fresh FullSnapshot (caller sends the cmd). */
   onNeedSnapshot(cb: NeedSnapshotListener): void {
     this.needSnapshotListeners.add(cb);
@@ -231,6 +271,7 @@ export class TabHub {
   /** A dead renderer's cached document must never be offered as current page content. */
   invalidateDocument(): void {
     this.hasDocument = false;
+    this.clearRecorderPause();
     this.meta = null;
     this.snapshot = null;
     this.deltas = [];

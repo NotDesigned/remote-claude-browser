@@ -494,6 +494,7 @@ export async function startClientGateway(): Promise<void> {
       sessionFor: (tab) => targets.get(tab)?.sessionId,
       hubFor: (tab) => tabs.hubFor(tab),
       isDriver: (id) => roles.isDriver(id) && viewers.get(id)?.sid === sid,
+      confirmViewport: (_viewer, tab, { w, h }) => publish(sid, { t: "view-ok", tab, w, h }),
     });
     const input = createInputRelay({
       onValueStatus: (tab, failed) => publish(sid, { t: "input-status", tab, failed }),
@@ -570,6 +571,11 @@ export async function startClientGateway(): Promise<void> {
       async setRecording(enabled) {
         if (enabled && recordingEnabled) return;
         recordingEnabled = enabled;
+        for (const target of targets.keys()) {
+          const hub = tabs.hubFor(target);
+          if (enabled) hub?.resumeRecorder();
+          else hub?.pauseRecorder();
+        }
         const results = await Promise.allSettled(
           [...targets.keys()].map((target) => setTargetRecording(target, enabled)),
         );
@@ -825,6 +831,9 @@ export async function startClientGateway(): Promise<void> {
         const runtime = runtimes.get(sid);
         if (!runtime) return;
         runtime.viewport.resetTab(tab);
+        // Chat overrides a narrower viewport with its desktop layout, so that geometry is gone.
+        const hub = runtime.tabs.hubFor(tab);
+        if (hub && (hub.viewport?.w ?? 0) < DESKTOP_LAYOUT_MIN_WIDTH) hub.viewport = null;
         await runtime
           .setRecording(false)
           .catch((error) => report("native recorder pause failed", error));

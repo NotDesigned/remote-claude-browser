@@ -18,7 +18,10 @@ export type ViewportMsg = Extract<Up, { t: "view" } | { t: "view-ack" }>;
 
 export interface ViewportHub {
   viewport: { w: number; h: number; dpr: number } | null;
+  epoch?: number;
   requestSnapshot(reason: SnapshotReason): void;
+  hasGeometry?(w: number, h: number): boolean;
+  expectRecorderSnapshot?(reason: SnapshotReason): boolean;
 }
 
 export interface ViewportAgreementDeps {
@@ -26,6 +29,11 @@ export interface ViewportAgreementDeps {
   sessionFor(tabId: TabId): string | undefined;
   hubFor(tabId: TabId): ViewportHub | undefined;
   isDriver(viewerId: string): boolean;
+  /**
+   * Tells a viewer its unchanged geometry already holds, so it needs no viewport snapshot. Without
+   * this every `view` takes the full negotiation.
+   */
+  confirmViewport?(viewerId: string, tab: TabId, viewport: { w: number; h: number }): void;
   debounceMs?: number;
   /** Slightly longer than TabHub's default request timeout, then recurring until recovery. */
   snapshotRetryMs?: number;
@@ -76,6 +84,13 @@ export class ViewportInputGate {
     }
     viewerEpochs.set(tabId, epoch);
     return true;
+  }
+
+  /** The tab's current snapshot matches this viewer's unchanged geometry request. */
+  confirmGeometry(viewerId: string, tabId: TabId, epoch: number): void {
+    this.pendingTabs.delete(tabId);
+    if (!this.requiredEpochs.has(tabId)) this.requiredEpochs.set(tabId, epoch);
+    this.acknowledge(viewerId, tabId, this.requiredEpochs.get(tabId)!);
   }
 
   /**
@@ -147,7 +162,14 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
         h: msg.h,
         dpr: msg.dpr,
       };
-      const state = tabs.get(msg.tab) ?? {
+      const existing = tabs.get(msg.tab);
+      const settled =
+        !existing ||
+        (!existing.applying &&
+          !existing.inFlight &&
+          existing.debounceTimer === undefined &&
+          existing.desired.revision <= existing.appliedRevision);
+      const state = existing ?? {
         desired,
         appliedRevision: 0,
         applying: false,
@@ -156,6 +178,7 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
       state.desired = desired;
       tabs.set(msg.tab, state);
       resetTabs.delete(msg.tab);
+      if (settled && applyUnchanged(viewerId, msg, state)) return true;
       gate.beginViewportChange(msg.tab);
       scheduleApply(msg.tab, state);
       return true;
@@ -211,6 +234,29 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
       resetTabs.clear();
     },
   };
+
+  /** An unchanged viewport needs no device override, no debounce and no extra full snapshot. */
+  function applyUnchanged(
+    viewerId: string,
+    msg: Extract<ViewportMsg, { t: "view" }>,
+    state: TabNegotiation,
+  ): boolean {
+    const hub = deps.hubFor(msg.tab);
+    const applied = hub?.viewport;
+    if (!hub || !deps.confirmViewport || !sameViewport(applied, msg)) return false;
+    if (hub.hasGeometry?.(msg.w, msg.h)) {
+      state.appliedRevision = state.desired.revision;
+      gate.confirmGeometry(viewerId, msg.tab, hub.epoch ?? 0);
+      deps.confirmViewport(viewerId, msg.tab, { w: msg.w, h: msg.h });
+      return true;
+    }
+    if (!hub.expectRecorderSnapshot?.("viewport")) return false;
+    gate.beginViewportChange(msg.tab);
+    state.appliedRevision = state.desired.revision;
+    state.inFlight = true;
+    scheduleSnapshotRetry(msg.tab, state);
+    return true;
+  }
 
   function current(tabId: TabId, state: TabNegotiation): boolean {
     return !disposed && tabs.get(tabId) === state;
@@ -274,6 +320,13 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
     }, snapshotRetryMs);
     state.snapshotRetryTimer.unref?.();
   }
+}
+
+function sameViewport(
+  a: { w: number; h: number; dpr: number } | null | undefined,
+  b: { w: number; h: number; dpr: number },
+): boolean {
+  return !!a && a.w === b.w && a.h === b.h && a.dpr === b.dpr;
 }
 
 function clearDebounce(state: TabNegotiation): void {

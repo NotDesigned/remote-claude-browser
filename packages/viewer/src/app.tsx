@@ -595,6 +595,13 @@ export function App() {
           socket?.send({ t: "view-ack", tab: message.tab, epoch: message.epoch });
           inputStatus(true);
         }
+        if (
+          message.t === "view-ok" &&
+          driver &&
+          message.tab === currentTab &&
+          presentation.matchesViewport(message.tab, message.w, message.h)
+        )
+          inputStatus(true);
         if (message.t === "hello") {
           setInputFailures({});
           setPageStates({});

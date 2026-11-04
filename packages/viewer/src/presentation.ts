@@ -47,6 +47,9 @@ export function createPresentationState() {
     requested(tab: TabId, w: number, h: number, dpr = 1) {
       viewport = { tab, w, h, dpr };
     },
+    matchesViewport(tab: TabId, w: number, h: number) {
+      return viewport?.tab === tab && viewport.w === w && viewport.h === h;
+    },
     canAcknowledge(snapshot: Snapshot, activeTab: TabId | null, driver: boolean) {
       if (
         !driver ||
