@@ -29,7 +29,8 @@ const BURST_GAP_MS = 150;
 const ZOOM_SETTLE_MS = 1_500;
 const ZOOM_POLL_MS = 50;
 const STATS_INTERVAL_MS = 1_000;
-const VIDEO_FLUSH_MS = 15;
+/** Beyond this the held frame is pushed out; at 25 fps and up the next frame does it for free. */
+const VIDEO_FLUSH_MS = 40;
 /** A page that never stops, such as a shimmer on one row, still gets sharp around that row. */
 const SHARP_MOTION_INTERVAL_MS = 3_000;
 /**

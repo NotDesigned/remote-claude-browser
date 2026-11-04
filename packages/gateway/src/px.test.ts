@@ -287,7 +287,7 @@ describe("createScreencast", () => {
     it("pushes a frame out of the encoder when the next is not right behind it", async () => {
       const { browser, encoders, controller } = await setup();
       browser.frame("cdp-1", frame(1, "AAAA"));
-      await vi.advanceTimersByTimeAsync(14);
+      await vi.advanceTimersByTimeAsync(39);
       expect(encoders[0]!.written).toHaveLength(1);
       await vi.advanceTimersByTimeAsync(1);
       expect(encoders[0]!.written).toEqual(["AAAA", "AAAA"]);
@@ -300,7 +300,7 @@ describe("createScreencast", () => {
       const { browser, encoders, controller } = await setup();
       for (let index = 0; index < 5; index++) {
         browser.frame("cdp-1", frame(index, `FRAME${index}`));
-        await vi.advanceTimersByTimeAsync(10);
+        await vi.advanceTimersByTimeAsync(30);
       }
       expect(encoders[0]!.written).toHaveLength(5);
       controller.dispose();
@@ -309,7 +309,7 @@ describe("createScreencast", () => {
     it("marks repeated frames so the viewer can skip drawing them", async () => {
       const { browser, published, encoders, controller } = await setup();
       browser.frame("cdp-1", frame(1, "AAAA"));
-      await vi.advanceTimersByTimeAsync(15);
+      await vi.advanceTimersByTimeAsync(40);
       encoders[0]!.events.onChunk(Buffer.from([9]), true);
       encoders[0]!.events.onChunk(Buffer.from([8]), false);
       expect(published.flatMap((message) => (message.t === "vid" ? [message.repeat] : []))).toEqual(
@@ -321,7 +321,7 @@ describe("createScreencast", () => {
     it("reports frames per second at each stage", async () => {
       const { browser, published, encoders, controller } = await setup();
       browser.frame("cdp-1", frame(1, "AAAA"));
-      await vi.advanceTimersByTimeAsync(15);
+      await vi.advanceTimersByTimeAsync(40);
       // One real frame, and the repeat that pushed it out of the encoder.
       encoders[0]!.events.onChunk(Buffer.from([9]), true);
       encoders[0]!.events.onChunk(Buffer.from([8]), false);
