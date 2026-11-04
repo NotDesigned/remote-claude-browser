@@ -324,6 +324,13 @@ function rewriteAttributes(
 
   for (const [name, original] of Object.entries(value)) {
     const lowerName = name.toLowerCase();
+    // The replayer writes a frame's document itself. A sandbox without allow-same-origin keeps it
+    // out, srcdoc would replace what it wrote, and the frame inherits the replay's own sandbox.
+    if (lowerName === "sandbox" || lowerName === "srcdoc") {
+      delete output[name];
+      changed = true;
+      continue;
+    }
     // MediaSource object URLs are not image Blobs. Preserve their source kind so
     // the viewer's existing media compositor selects RTC rather than HTTP playback.
     if (

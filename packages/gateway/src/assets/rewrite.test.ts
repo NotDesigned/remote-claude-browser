@@ -100,6 +100,41 @@ describe("srcset parsing", () => {
 });
 
 describe("rrweb RewriteStage", () => {
+  it("leaves frames open to the replayer, which writes their documents itself", () => {
+    const stage = createRewriteStage(KEY);
+    const frame = {
+      type: 2,
+      id: 7,
+      tagName: "iframe",
+      attributes: { sandbox: "allow-scripts", srcdoc: "<p>x</p>", title: "Doc" },
+      childNodes: [],
+    };
+    const snapshot = stage(
+      event({ type: EventType.FullSnapshot, timestamp: 1, data: { node: frame } }),
+      CTX,
+    ) as unknown as { data: { node: { attributes: unknown } } };
+    expect(snapshot.data.node.attributes).toEqual({ title: "Doc" });
+
+    const later = stage(
+      event({
+        type: EventType.IncrementalSnapshot,
+        timestamp: 2,
+        data: {
+          source: IncrementalSource.Mutation,
+          adds: [{ parentId: 1, nextId: null, node: frame }],
+          attributes: [{ id: 7, attributes: { sandbox: "allow-scripts" } }],
+          removes: [],
+          texts: [],
+        },
+      }),
+      CTX,
+    ) as unknown as {
+      data: { adds: { node: { attributes: unknown } }[]; attributes: { attributes: unknown }[] };
+    };
+    expect(later.data.adds[0]!.node.attributes).toEqual({ title: "Doc" });
+    expect(later.data.attributes[0]!.attributes).toEqual({});
+  });
+
   it("preserves media-object sources for RTC in snapshots and later mutations", () => {
     const stage = createRewriteStage(KEY);
     const src = "blob:https://video.example/mse";

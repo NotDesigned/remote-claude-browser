@@ -33,6 +33,7 @@ import {
   installStitchReadyListener,
   installStitchSyncListener,
   isCrossOriginChild,
+  isHiddenBlankFrame,
 } from "./stitch";
 
 const LEGACY_GUARD = Symbol.for("@mirror/agent/installed");
@@ -118,6 +119,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   const clipboardWrite = captureClipboardWrite(navigator);
   const config = readAgentConfig(w[AGENT_CONFIG_KEY]);
   delete w[AGENT_CONFIG_KEY];
+  if (isHiddenBlankFrame()) return;
   // The checked-in default bundle remains usable by standalone agent fixtures. Production always
   // embeds fresh bridge names and never installs this named guard or the legacy command globals.
   const legacyBridge = config.bridge.bridgeKey === DEFAULT_AGENT_CONFIG.bridge.bridgeKey;

@@ -7,6 +7,7 @@ import {
   installStitchReadyListener,
   installStitchSyncListener,
   isCrossOriginChild,
+  isHiddenBlankFrame,
 } from "./stitch";
 import { createRecordReadiness, type RecordReadiness } from "./commands";
 
@@ -167,5 +168,24 @@ describe("stitch-sync", () => {
 
     expect(first.window.postMessage).toHaveBeenCalledOnce();
     expect(second.window.postMessage).toHaveBeenCalledOnce();
+  });
+});
+
+describe("isHiddenBlankFrame", () => {
+  const frame = (href: string, display: string | null, blocked = false) =>
+    ({
+      location: { href },
+      get frameElement() {
+        if (blocked) throw new Error("cross-origin");
+        return display === null ? null : { style: { display } };
+      },
+    }) as unknown as Window;
+
+  it("recognises only a hidden blank frame", () => {
+    expect(isHiddenBlankFrame(frame("about:blank", "none"))).toBe(true);
+    expect(isHiddenBlankFrame(frame("about:blank", ""))).toBe(false);
+    expect(isHiddenBlankFrame(frame("about:blank", null))).toBe(false);
+    expect(isHiddenBlankFrame(frame("https://a.test/", "none"))).toBe(false);
+    expect(isHiddenBlankFrame(frame("about:blank", "none", true))).toBe(false);
   });
 });

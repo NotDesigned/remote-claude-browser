@@ -17,6 +17,20 @@ export interface StitchSyncDependencies {
   now?: () => number;
 }
 
+/**
+ * rrweb briefly creates a hidden blank frame to read untouched prototypes. A recorder in it would
+ * create another, each inside the last, hundreds deep. Nothing in such a frame is ever visible.
+ */
+export function isHiddenBlankFrame(target: Window = window): boolean {
+  if (target.location.href !== "about:blank") return false;
+  try {
+    const frame = target.frameElement as HTMLElement | null;
+    return frame?.style.display === "none";
+  } catch {
+    return false;
+  }
+}
+
 export function isCrossOriginChild(target: Window = window): boolean {
   if (target.parent === target) return false;
 
