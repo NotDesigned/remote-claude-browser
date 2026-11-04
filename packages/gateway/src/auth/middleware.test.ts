@@ -28,7 +28,7 @@ describe("SEC-2 session middleware", () => {
     });
     expect(joined.statusCode).toBe(204);
     expect(joined.headers["set-cookie"]).toBe(
-      `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=600`,
+      `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
     );
     await app.close();
   });

@@ -3,7 +3,7 @@
  *
  * HMAC-signed invite tokens {sid, role, exp} (node:crypto, no JWT library). Minted by
  * scripts/invite.ts. Token travels in the URL FRAGMENT (never query — keeps it out of access
- * logs); the /join fragment bridge validates it and sets an HttpOnly SameSite=Strict cookie.
+ * logs); the /join fragment bridge validates it and sets an HttpOnly SameSite=Lax cookie.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 

@@ -70,7 +70,7 @@ export function createSessionGuard(options: SessionGuardOptions): SessionGuard {
         const maxAge = Math.max(0, invite.exp - now());
         reply.header(
           "set-cookie",
-          `${cookieName}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`,
+          `${cookieName}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`,
         );
         return reply.code(204).send();
       });

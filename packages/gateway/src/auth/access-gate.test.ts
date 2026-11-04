@@ -34,7 +34,7 @@ describe("ACCESS-GATE device front door", () => {
     const setCookie = response.headers["set-cookie"];
     expect(setCookie).toMatch(
       new RegExp(
-        `^${ACCESS_COOKIE}=[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${ACCESS_MAX_AGE_SECONDS}$`,
+        `^${ACCESS_COOKIE}=[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${ACCESS_MAX_AGE_SECONDS}$`,
       ),
     );
     expect(setCookie).not.toContain("owner-password");
@@ -219,7 +219,7 @@ describe("ACCESS-GATE device front door", () => {
         `${sessionGuard.cookieName}=${mintInvite(
           { sid: "dev", role: "driver", exp: Math.floor(NOW / 1_000) + 60 },
           SECRET,
-        )}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=60`,
+        )}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=60`,
       ],
     });
     app.addHook("preHandler", gate.preHandler);

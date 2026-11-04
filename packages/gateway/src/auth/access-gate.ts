@@ -184,7 +184,7 @@ export function createAccessGate(options: AccessGateOptions = {}): AccessGate {
         const token = mintAccessToken(Math.floor(requestTime / 1_000), secret);
         reply.header(
           "set-cookie",
-          `${ACCESS_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAgeSeconds}`,
+          `${ACCESS_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAgeSeconds}`,
         );
         for (const cookie of options.cookiesOnSuccess?.(request.raw) ?? []) {
           reply.header("set-cookie", cookie);

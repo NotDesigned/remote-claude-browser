@@ -135,7 +135,7 @@ async function main(): Promise<void> {
   const driverSessionCookie = (): string => {
     const exp = Math.floor(Date.now() / 1_000) + ACCESS_MAX_AGE_SECONDS;
     const token = mintInvite({ sid: SESSION_ID, role: "driver", exp }, sessionKey);
-    return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${ACCESS_MAX_AGE_SECONDS}`;
+    return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${ACCESS_MAX_AGE_SECONDS}`;
   };
   const accessGate = createAccessGate({
     // The loopback-only E2E harness bypasses the gate below and exposes direct CDP-driving

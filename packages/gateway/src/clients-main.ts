@@ -132,7 +132,7 @@ export async function startClientGateway(): Promise<void> {
         ? previous.sid
         : `device-${randomUUID()}`;
     const exp = Math.floor(Date.now() / 1000) + ACCESS_MAX_AGE_SECONDS;
-    return `${SESSION_COOKIE}=${mintInvite({ sid: owner, role: "driver", exp }, key)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${ACCESS_MAX_AGE_SECONDS}`;
+    return `${SESSION_COOKIE}=${mintInvite({ sid: owner, role: "driver", exp }, key)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${ACCESS_MAX_AGE_SECONDS}`;
   };
   const gate = createAccessGate({
     ...(e2e ? { password: "e2e-test-only" } : {}),
