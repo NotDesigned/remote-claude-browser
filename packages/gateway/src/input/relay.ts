@@ -232,7 +232,8 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
         await deps.send(sessionId, "Input.dispatchMouseEvent", {
           ...common,
           type: "mouseMoved",
-          button: "none",
+          // Chromium ends a drag, such as selecting text, on a move without its button.
+          button: heldButton(msg.buttons),
         });
         return true;
       case "wheel":
@@ -482,6 +483,14 @@ function mouseButton(button: 0 | 1 | 2 | undefined): "left" | "middle" | "right"
   if (button === 1) return "middle";
   if (button === 2) return "right";
   return "left";
+}
+
+/** The button a move carries, in the order of `MouseEvent.buttons`: left, right, middle. */
+function heldButton(buttons: number): "none" | "left" | "right" | "middle" {
+  if (buttons & 1) return "left";
+  if (buttons & 2) return "right";
+  if (buttons & 4) return "middle";
+  return "none";
 }
 
 function finiteOr(value: number | undefined, fallback: number): number {

@@ -24,7 +24,9 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
       if (options.placeFails) throw new Error("no such window");
     }),
     keepOnTop: vi.fn(async () => {}),
-    restore: vi.fn(async () => {}),
+    restore: vi.fn(async () => {
+      calls.push({ method: "restore window" });
+    }),
   };
   const published: Down[] = [];
   const errors: unknown[] = [];
@@ -33,6 +35,7 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
     browser: {
       send: (async (_session: string, method: string, params?: Record<string, unknown>) => {
         calls.push({ method, ...(params ? { params } : {}) });
+        if (method === "Runtime.evaluate") return { result: { value: options.dpr ?? 1 } };
         return {};
       }) as never,
       onAttached: (callback: (target: TargetRef) => void) => void (attached = callback),
@@ -43,9 +46,18 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
       ) => () => void,
     },
     hubFor: () => hub,
-    publish: (message) => published.push(message),
+    publish: (message) => {
+      published.push(message);
+      if (message.t === "mode") calls.push({ method: `mode ${message.mode}` });
+    },
     onError: (error) => errors.push(error),
     backlogged: () => backlog.value,
+    browserZoom: {
+      press: async (_target, level) => {
+        calls.push({ method: `press ${level}` });
+      },
+      forget: () => {},
+    },
     createVideoEncoder: () => ({ write: () => {}, close: () => {} }),
     grab: {
       window,
@@ -115,6 +127,31 @@ describe("screen grab", () => {
     expect(window.restore).toHaveBeenCalledWith("tab-1");
     expect(slots.released).toBe(1);
     expect(encoders[0]!.closed).toBe(true);
+    controller.dispose();
+  });
+
+  it("never lays the page out narrow, and shows it only once it is back in shape", async () => {
+    const { controller, calls } = setup({ dpr: 2 });
+    await controller.handle({ ...PX, quality: "sharp" });
+    const zoomed = calls.findIndex(({ method }) => method === "press 2");
+    const widened = calls.findIndex(
+      ({ method, params }) =>
+        method === "Emulation.setDeviceMetricsOverride" && params?.width === 2882,
+    );
+    expect(widened).toBeLessThan(zoomed);
+
+    calls.length = 0;
+    await controller.handle(DOM);
+    const order = calls
+      .map(({ method, params }) =>
+        method === "Emulation.setDeviceMetricsOverride"
+          ? `metrics ${String(params?.width)}`
+          : method,
+      )
+      .filter((step) => /^(press|metrics|mode|restore)/.test(step));
+    expect(order.indexOf("press 1")).toBeLessThan(order.indexOf("metrics 1441"));
+    expect(order.at(-1)).toBe("mode dom");
+    expect(order).toContain("restore window");
     controller.dispose();
   });
 

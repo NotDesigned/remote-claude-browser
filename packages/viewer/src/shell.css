@@ -93,7 +93,8 @@ body {
 /* Top bar */
 #shell-bar {
   position: relative;
-  z-index: 40;
+  /* Its menu opens over the status pill in the address bar below. */
+  z-index: 60;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;

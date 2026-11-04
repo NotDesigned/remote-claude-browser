@@ -323,9 +323,22 @@ describe("InputRelay", () => {
     }
   });
 
+  it.each([
+    [1, "left"],
+    [2, "right"],
+    [4, "middle"],
+  ] as const)(
+    "keeps held buttons %i on a drag, which would otherwise end it",
+    async (buttons, button) => {
+      const h = harness();
+      await h.relay("driver", { ...pointer("move"), buttons });
+      expect(h.cdp[0]?.params).toMatchObject({ type: "mouseMoved", button, buttons });
+    },
+  );
+
   it("forwards hover and the single wheel path through trusted CDP input", async () => {
     const h = harness();
-    await h.relay("driver", pointer("move"));
+    await h.relay("driver", { ...pointer("move"), buttons: 0 });
     await h.relay("driver", pointer("wheel"));
     expect(h.cdp.map(({ params }) => params)).toEqual([
       expect.objectContaining({ type: "mouseMoved", button: "none", x: 60, y: 40 }),

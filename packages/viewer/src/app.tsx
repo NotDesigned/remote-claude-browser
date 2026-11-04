@@ -100,6 +100,8 @@ function viewStorage(): Pick<Storage, "getItem" | "setItem"> {
   }
 }
 
+const PICTURE_HOLD_TIMEOUT_MS = 8_000;
+
 export function App() {
   const uploadRef = useRef<FileUploadRelay | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -176,6 +178,27 @@ export function App() {
   // Coming from chat, the remote page may still have chat's geometry. Keep the mirror covered until
   // this window's viewport is agreed, so the old layout never flashes before the real one.
   const [settling, setSettling] = useState(false);
+  // The page changes shape while the picture starts, which the mirror should not show.
+  const pictureHoldRef = useRef<{
+    tab: TabId;
+    messages: Down[];
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  const releasePictureHold = (replay: boolean) => {
+    const hold = pictureHoldRef.current;
+    if (!hold) return;
+    pictureHoldRef.current = null;
+    clearTimeout(hold.timer);
+    if (replay) for (const message of hold.messages) mirrorRef.current?.handle(message);
+  };
+  const holdMirrorForPicture = (tab: TabId) => {
+    releasePictureHold(true);
+    pictureHoldRef.current = {
+      tab,
+      messages: [],
+      timer: setTimeout(() => releasePictureHold(true), PICTURE_HOLD_TIMEOUT_MS),
+    };
+  };
   const [chatStatus, setChatStatus] = useState<{ text: string; connected: boolean }>({
     text: "连接中",
     connected: false,
@@ -643,7 +666,12 @@ export function App() {
         } else if (message.t === "mode") {
           pxView?.handle(message);
         }
-        if (presentation.shouldMirror(message, currentTab)) {
+        if (message.t === "mode" && pictureHoldRef.current?.tab === message.tab)
+          releasePictureHold(message.mode === "dom");
+        const hold = pictureHoldRef.current;
+        if (hold && presentation.shouldMirror(message, currentTab)) {
+          hold.messages.push(message);
+        } else if (presentation.shouldMirror(message, currentTab)) {
           mirror.handle(message);
         } else if (
           message.t === "snapshot" &&
@@ -934,6 +962,7 @@ export function App() {
       setViewMode(mode);
       return;
     }
+    if (mode === "px") holdMirrorForPicture(activeTab);
     socketRef.current?.send(
       mode === "px"
         ? { t: "mode", tab: activeTab, mode, quality: pxQuality, ...videoOption() }

@@ -64,6 +64,7 @@ const JPEG_EVERY_NTH_FRAME = 2;
 const SHARP_FRAME = { format: "png" } as const;
 /** How often the grab checks its window is still on top and its geometry is still wanted. */
 const GRAB_CHECK_MS = 250;
+const RESHAPE_WAIT_MS = 1_000;
 type ScreencastBrowser = Pick<
   BrowserHandle,
   "send" | "onAttached" | "onDetached" | "onSessionEvent"
@@ -221,9 +222,12 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   const syncZoom = async (state: TabState, zoom: number): Promise<void> => {
     if (!opts.browserZoom || zoom === state.hub.pixelZoom) return;
     try {
+      // The window is the larger of the two sizes in between, so the page never sees a narrow one.
+      const zoomingOut = zoom < state.hub.pixelZoom;
       state.hub.pixelZoom = zoom;
+      if (zoomingOut) await opts.browserZoom.press(state.target, zoom);
       await applyMetrics(state, zoom);
-      await opts.browserZoom.press(state.target, zoom);
+      if (!zoomingOut) await opts.browserZoom.press(state.target, zoom);
       if (zoom > 1 && !(await zoomTookEffect(state, zoom)))
         throw new Error(`Browser zoom ${zoom} did not take effect`);
     } catch (error) {
@@ -586,16 +590,30 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
         state.zoomChanging = false;
       });
   };
+  /** Takes the window and page out of the picture's zoom, slot and density. */
+  const undoPicture = async (state: TabState): Promise<void> => {
+    const grabbed = state.grabLeft !== undefined;
+    await syncZoom(state, 1);
+    await endGrab(state);
+    // Zoom stayed at 1 during the grab, so nothing above has returned the page its real density.
+    if (grabbed && state.hub.mode === "dom") await applyMetrics(state, 1);
+  };
   const returnToDom = async (
     state: TabState,
     generation: number,
     error?: unknown,
+    urgent = false,
   ): Promise<void> => {
     if (!current(state, generation)) return;
+    const reshaped = state.hub.pixelZoom > 1 || state.grabLeft !== undefined;
     const stop = invalidate(state);
     const restoredGeneration = state.generation;
     state.hub.mode = "dom";
     if (error !== undefined) report(error);
+    const undone = undoPicture(state).catch(report);
+    // The picture stays up while the page changes shape, unless the page has stopped responding.
+    if (reshaped && error === undefined && !urgent)
+      await Promise.race([undone, new Promise((resolve) => setTimeout(resolve, RESHAPE_WAIT_MS))]);
     // Restore the UI before awaiting best-effort cleanup of a potentially hung renderer.
     opts.publish({ t: "mode", tab: state.target.targetId, mode: "dom" });
     for (const down of state.hub.joinPayload()) opts.publish(down);
@@ -604,11 +622,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     } catch (cause) {
       if (current(state, restoredGeneration)) report(cause);
     }
-    const grabbed = state.grabLeft !== undefined;
-    await endGrab(state);
-    await syncZoom(state, 1);
-    // Zoom stayed at 1 during the grab, so nothing above has returned the page its real density.
-    if (grabbed && state.hub.mode === "dom") await applyMetrics(state, 1).catch(report);
+    await undone;
   };
   const ensureFirstFrame = (state: TabState, generation: number): Promise<void> => {
     if (!current(state, generation) || !state.screencasting || state.lastFrame || state.grabbing)
@@ -925,7 +939,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       state.queueGeneration++;
       state.queue = Promise.resolve();
       // returnToDom clears local state and publishes synchronously, before its bounded stop.
-      void returnToDom(state, state.generation).catch(report);
+      void returnToDom(state, state.generation, undefined, true).catch(report);
     },
     requestKeyframe(tabId) {
       const state = tabs.get(tabId);
