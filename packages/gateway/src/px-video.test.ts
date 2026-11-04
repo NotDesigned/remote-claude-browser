@@ -1,56 +1,67 @@
 import { describe, expect, it, vi } from "vitest";
-import { createFmp4Reader, ffmpegArguments } from "./px-video";
+import { createFlvReader, ffmpegArguments, multipartFrame } from "./px-video";
 
-const box = (type: string, body: Buffer) => {
-  const header = Buffer.alloc(8);
-  header.writeUInt32BE(8 + body.length);
-  header.write(type, 4, "latin1");
-  return Buffer.concat([header, body]);
+const tag = (type: number, body: Buffer) => {
+  const header = Buffer.alloc(11);
+  header[0] = type;
+  header.writeUIntBE(body.length, 1, 3);
+  return Buffer.concat([header, body, Buffer.alloc(4)]);
 };
-const sample = (...nals: number[][]) =>
-  Buffer.concat(
-    nals.flatMap((nal) => {
-      const length = Buffer.alloc(4);
-      length.writeUInt32BE(nal.length);
-      return [length, Buffer.from(nal)];
-    }),
-  );
-const avcC = Buffer.from([1, 0x64, 0x00, 0x1f, 0xff, 0xe1, 0, 0]);
+const video = (frameType: number, packetType: number, payload: number[]) =>
+  tag(9, Buffer.from([(frameType << 4) | 7, packetType, 0, 0, 0, ...payload]));
+const avcC = [1, 0x64, 0x00, 0x1f, 0xff, 0xe1, 0, 0];
 
-describe("fragmented MP4 reader", () => {
+describe("FLV reader", () => {
   const read = () => {
     const events = { onConfig: vi.fn(), onChunk: vi.fn() };
-    return { events, feed: createFmp4Reader(events) };
+    return { events, feed: createFlvReader(events) };
   };
   const stream = Buffer.concat([
-    box("ftyp", Buffer.from("isom")),
-    box("moov", Buffer.concat([Buffer.from("xxxx"), box("avcC", avcC)])),
-    box("moof", Buffer.from("ignored")),
-    box("mdat", sample([0x65, 1, 2])),
-    box("moof", Buffer.from("ignored")),
-    box("mdat", sample([0x06, 9], [0x41, 3])),
-    box("mfra", Buffer.from("ignored")),
+    Buffer.from("FLV\x01\x01\0\0\0\x09\0\0\0\0", "latin1"),
+    tag(18, Buffer.from("metadata")),
+    video(1, 0, avcC),
+    video(1, 1, [0, 0, 0, 1, 0x65]),
+    video(2, 1, [0, 0, 0, 1, 0x41, 9]),
   ]);
 
   it("reports the codec and one chunk per frame, marking keyframes", () => {
     const { events, feed } = read();
     feed(stream);
-    expect(events.onConfig).toHaveBeenCalledWith({ codec: "avc1.64001f", description: avcC });
+    expect(events.onConfig).toHaveBeenCalledWith({
+      codec: "avc1.64001f",
+      description: Buffer.from(avcC),
+    });
     expect(events.onChunk.mock.calls.map(([data, key]) => [data.length, key])).toEqual([
-      [7, true],
-      [12, false],
+      [5, true],
+      [6, false],
     ]);
   });
 
-  it("waits for a box that arrives in pieces", () => {
+  it("emits a frame as soon as it is complete, without waiting for the next", () => {
+    const { events, feed } = read();
+    feed(stream.subarray(0, stream.length - 1));
+    expect(events.onChunk).toHaveBeenCalledTimes(1);
+    feed(stream.subarray(stream.length - 1));
+    expect(events.onChunk).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits for a tag that arrives in pieces", () => {
     const { events, feed } = read();
     for (let at = 0; at < stream.length; at += 5) feed(stream.subarray(at, at + 5));
     expect(events.onChunk).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects a broken stream instead of waiting forever", () => {
+  it("rejects something else instead of waiting forever", () => {
     const { feed } = read();
-    expect(() => feed(Buffer.alloc(8))).toThrow("box size");
+    expect(() => feed(Buffer.alloc(16))).toThrow("FLV");
+  });
+});
+
+describe("multipart frames", () => {
+  it("state the length of the JPEG they carry", () => {
+    expect(multipartFrame(Buffer.from("abc")).toString()).toBe(
+      "--ffmpeg\r\nContent-type: image/jpeg\r\nContent-length: 3\r\n\r\nabc\r\n",
+    );
   });
 });
 
@@ -58,7 +69,8 @@ describe("ffmpeg arguments", () => {
   it("emit frames without reordering, at the requested quality", () => {
     const args = ffmpegArguments(18).join(" ");
     expect(args).toContain("-crf 18");
+    expect(args).toContain("-f mpjpeg");
+    expect(args).toContain("-f flv");
     expect(args).toContain("-bf 0");
-    expect(args).toContain("frag_every_frame");
   });
 });

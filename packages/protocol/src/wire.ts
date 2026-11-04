@@ -121,6 +121,8 @@ export type Down =
       tab: TabId;
       seq: number;
       key: boolean;
+      /** Decoded to stay in step with the stream, but shows nothing new. */
+      repeat?: boolean;
       w: number;
       h: number;
       data: Uint8Array;
@@ -385,7 +387,7 @@ export function encodeVidBinary(message: Extract<Down, { t: "vid" }>): Uint8Arra
   view.setUint16(at, Math.max(0, Math.min(0xffff, Math.round(message.w))));
   view.setUint16(at + 2, Math.max(0, Math.min(0xffff, Math.round(message.h))));
   view.setUint32(at + 4, message.seq);
-  frame[at + 8] = message.key ? 1 : 0;
+  frame[at + 8] = (message.key ? 1 : 0) | (message.repeat ? 2 : 0);
   frame.set(message.data, at + 9);
   return frame;
 }
@@ -407,7 +409,8 @@ export function decodeVidBinary(
     w: view.getUint16(at),
     h: view.getUint16(at + 2),
     seq: view.getUint32(at + 4),
-    key: bytes[at + 8] === 1,
+    key: (bytes[at + 8]! & 1) === 1,
+    repeat: (bytes[at + 8]! & 2) === 2,
     data: bytes.subarray(at + 9),
   };
 }

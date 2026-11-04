@@ -1,6 +1,7 @@
 /**
- * H.264 encoder for the pixel view: JPEG frames from the screencast go into ffmpeg, and one
- * length-prefixed access unit per frame comes back out of a fragmented MP4 stream.
+ * H.264 encoder for the pixel view. JPEG frames go into ffmpeg as multipart, whose frames state their
+ * own length, and come back as FLV tags, which do too. Other formats make ffmpeg wait for the next
+ * frame to find where one ends, which is two more frames of input delay.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
@@ -29,50 +30,57 @@ const MAX_QUEUED_INPUT_BYTES = 1024 * 1024;
 
 export type VideoEncoderFactory = (crf: number, events: VideoEncoderEvents) => VideoEncoder;
 
-/** Splits a fragmented MP4 stream into its configuration and one sample per fragment. */
-export function createFmp4Reader(
+/** Splits an FLV stream into its configuration and one H.264 frame per video tag. */
+export function createFlvReader(
   events: Pick<VideoEncoderEvents, "onConfig" | "onChunk">,
 ): (chunk: Buffer) => void {
+  const FILE_HEADER = 13;
+  const TAG_HEADER = 11;
+  const VIDEO_TAG = 9;
+  const VIDEO_HEADER = 5;
   let buffered: Buffer = Buffer.alloc(0);
-  let lengthSize = 4;
+  let started = false;
   return (chunk) => {
     buffered = buffered.length ? Buffer.concat([buffered, chunk]) : chunk;
-    while (buffered.length >= 8) {
-      const size = buffered.readUInt32BE(0);
-      if (size < 8) throw new Error("Unsupported MP4 box size");
-      if (buffered.length < size) return;
-      const type = buffered.toString("latin1", 4, 8);
-      const body = buffered.subarray(8, size);
-      if (type === "moov") {
-        const at = body.indexOf("avcC", 0, "latin1");
-        if (at < 4) throw new Error("Video stream has no avcC record");
-        const description = Buffer.from(body.subarray(at + 4, at - 4 + body.readUInt32BE(at - 4)));
-        lengthSize = (description[4]! & 3) + 1;
-        events.onConfig({
-          codec: `avc1.${description.subarray(1, 4).toString("hex")}`,
-          description,
-        });
-      } else if (type === "mdat") {
-        events.onChunk(Buffer.from(body), containsKeyframe(body, lengthSize));
+    if (!started) {
+      if (buffered.length < FILE_HEADER) return;
+      if (buffered.toString("latin1", 0, 3) !== "FLV") throw new Error("Not an FLV stream");
+      buffered = buffered.subarray(FILE_HEADER);
+      started = true;
+    }
+    while (buffered.length >= TAG_HEADER) {
+      const size = buffered.readUIntBE(1, 3);
+      const total = TAG_HEADER + size + 4;
+      if (buffered.length < total) return;
+      if (buffered[0] === VIDEO_TAG && size > VIDEO_HEADER) {
+        const video = buffered.subarray(TAG_HEADER, TAG_HEADER + size);
+        const payload = Buffer.from(video.subarray(VIDEO_HEADER));
+        if (video[1] === 0)
+          events.onConfig({
+            codec: `avc1.${payload.subarray(1, 4).toString("hex")}`,
+            description: payload,
+          });
+        else if (video[1] === 1) events.onChunk(payload, video[0]! >> 4 === 1);
       }
-      buffered = buffered.subarray(size);
+      buffered = buffered.subarray(total);
     }
   };
 }
 
-function containsKeyframe(sample: Buffer, lengthSize: number): boolean {
-  for (let at = 0; at + lengthSize < sample.length;) {
-    if ((sample[at + lengthSize]! & 0x1f) === 5) return true;
-    at += lengthSize + sample.readUIntBE(at, lengthSize);
-  }
-  return false;
+/** One JPEG as ffmpeg's multipart demuxer reads it. */
+export function multipartFrame(jpeg: Buffer): Buffer {
+  return Buffer.concat([
+    Buffer.from(`--ffmpeg\r\nContent-type: image/jpeg\r\nContent-length: ${jpeg.length}\r\n\r\n`),
+    jpeg,
+    Buffer.from("\r\n"),
+  ]);
 }
 
 export function ffmpegArguments(crf: number): string[] {
   return [
     ...["-hide_banner", "-loglevel", "error"],
     ...["-fflags", "nobuffer", "-flags", "low_delay", "-probesize", "32", "-analyzeduration", "0"],
-    ...["-f", "image2pipe", "-c:v", "mjpeg", "-i", "-"],
+    ...["-f", "mpjpeg", "-i", "-"],
     // JPEG is full-range; an unconverted stream would show washed-out text.
     ...[
       "-vf",
@@ -82,8 +90,7 @@ export function ffmpegArguments(crf: number): string[] {
     ...["-threads", "3", "-g", "600", "-bf", "0", "-fps_mode", "passthrough"],
     ...["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709"],
     ...["-color_trc", "bt709"],
-    ...["-flush_packets", "1", "-f", "mp4"],
-    ...["-movflags", "empty_moov+default_base_moof+frag_every_frame", "-"],
+    ...["-flush_packets", "1", "-f", "flv", "-flvflags", "no_duration_filesize", "-"],
   ];
 }
 
@@ -99,7 +106,7 @@ export const createFfmpegEncoder: VideoEncoderFactory = (crf, events) => {
     process.kill("SIGKILL");
     events.onFailure(error);
   };
-  const read = createFmp4Reader(events);
+  const read = createFlvReader(events);
   process.stdout.on("data", (chunk: Buffer) => {
     if (closed) return;
     try {
@@ -116,7 +123,7 @@ export const createFfmpegEncoder: VideoEncoderFactory = (crf, events) => {
   return {
     busy: () => process.stdin.writableLength > MAX_QUEUED_INPUT_BYTES,
     write(jpeg) {
-      if (!closed && process.stdin.writable) process.stdin.write(jpeg);
+      if (!closed && process.stdin.writable) process.stdin.write(multipartFrame(jpeg));
     },
     close() {
       if (closed) return;

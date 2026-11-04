@@ -284,37 +284,47 @@ describe("createScreencast", () => {
       controller.dispose();
     });
 
-    it("pushes the last frame out of the encoder once the picture goes quiet", async () => {
+    it("pushes a frame out of the encoder when the next is not right behind it", async () => {
       const { browser, encoders, controller } = await setup();
       browser.frame("cdp-1", frame(1, "AAAA"));
-      await vi.advanceTimersByTimeAsync(39);
+      await vi.advanceTimersByTimeAsync(14);
       expect(encoders[0]!.written).toHaveLength(1);
-      await vi.advanceTimersByTimeAsync(20);
-      expect(encoders[0]!.written).toEqual(["AAAA", "AAAA", "AAAA", "AAAA"]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(encoders[0]!.written).toEqual(["AAAA", "AAAA"]);
       await vi.advanceTimersByTimeAsync(1_000);
-      expect(encoders[0]!.written).toHaveLength(4);
+      expect(encoders[0]!.written).toHaveLength(2);
       controller.dispose();
     });
 
-    it("does not repeat frames between the frames of a slow moving picture", async () => {
+    it("does not repeat a frame when the next arrives first", async () => {
       const { browser, encoders, controller } = await setup();
-      for (let index = 0; index < 10; index++) {
+      for (let index = 0; index < 5; index++) {
         browser.frame("cdp-1", frame(index, `FRAME${index}`));
-        await vi.advanceTimersByTimeAsync(80);
+        await vi.advanceTimersByTimeAsync(10);
       }
-      // The first frames are still finding the pace; after that only real frames go in.
-      expect(encoders[0]!.written.length).toBeLessThanOrEqual(10 + 3);
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(encoders[0]!.written.at(-1)).toBe(encoders[0]!.written.at(-2));
+      expect(encoders[0]!.written).toHaveLength(5);
+      controller.dispose();
+    });
+
+    it("marks repeated frames so the viewer can skip drawing them", async () => {
+      const { browser, published, encoders, controller } = await setup();
+      browser.frame("cdp-1", frame(1, "AAAA"));
+      await vi.advanceTimersByTimeAsync(15);
+      encoders[0]!.events.onChunk(Buffer.from([9]), true);
+      encoders[0]!.events.onChunk(Buffer.from([8]), false);
+      expect(published.flatMap((message) => (message.t === "vid" ? [message.repeat] : []))).toEqual(
+        [false, true],
+      );
       controller.dispose();
     });
 
     it("reports frames per second at each stage", async () => {
       const { browser, published, encoders, controller } = await setup();
       browser.frame("cdp-1", frame(1, "AAAA"));
-      // One real frame, and the three repeats that flush it out of the encoder.
-      for (let chunk = 0; chunk < 4; chunk++)
-        encoders[0]!.events.onChunk(Buffer.from([9]), chunk === 0);
+      await vi.advanceTimersByTimeAsync(15);
+      // One real frame, and the repeat that pushed it out of the encoder.
+      encoders[0]!.events.onChunk(Buffer.from([9]), true);
+      encoders[0]!.events.onChunk(Buffer.from([8]), false);
       await vi.advanceTimersByTimeAsync(1_000);
       expect(published.filter((message) => message.t === "px-stats").at(0)).toMatchObject({
         captureFps: 1,

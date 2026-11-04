@@ -58,6 +58,7 @@ export function createVideoStream(options: VideoStreamOptions): VideoStream {
   let size = { w: 1, h: 1 };
   let failures: number[] = [];
   let closed = false;
+  const repeats = new Set<number>();
 
   const closeDecoder = () => {
     if (decoder !== null && decoder.state !== "closed") decoder.close();
@@ -83,12 +84,13 @@ export function createVideoStream(options: VideoStreamOptions): VideoStream {
   return {
     configure(message) {
       closeDecoder();
+      repeats.clear();
       waitingForKey = true;
       nextSeq = null;
       try {
         decoder = createDecoder({
           output(frame) {
-            if (closed) frame.close();
+            if (closed || repeats.delete(frame.timestamp)) frame.close();
             else options.onFrame(frame, size.w, size.h);
           },
           error: fail,
@@ -112,10 +114,12 @@ export function createVideoStream(options: VideoStreamOptions): VideoStream {
       waitingForKey = false;
       size = { w: message.w, h: message.h };
       try {
+        timestamp += 33_333;
+        if (message.repeat) repeats.add(timestamp);
         decoder.decode(
           createChunk({
             type: message.key ? "key" : "delta",
-            timestamp: (timestamp += 33_333),
+            timestamp,
             data: message.data,
           }),
         );

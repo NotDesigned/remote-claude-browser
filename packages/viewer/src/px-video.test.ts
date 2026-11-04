@@ -96,6 +96,19 @@ describe("video stream", () => {
     expect(onFrame).toHaveBeenCalledWith(picture, 800, 600);
   });
 
+  it("decodes a repeated frame without drawing it", () => {
+    const { stream, decoded, decoders, onFrame } = setup();
+    stream.configure(config);
+    stream.decode(frame(0, true));
+    stream.decode({ ...frame(1), repeat: true });
+    expect(decoded).toHaveLength(2);
+    const close = vi.fn();
+    decoders[0]!.init.output({ timestamp: 33_333, close: vi.fn() } as unknown as VideoFrame);
+    decoders[0]!.init.output({ timestamp: 66_666, close } as unknown as VideoFrame);
+    expect(onFrame).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("gives up after repeated decoder errors", () => {
     const { stream, decoders, onUnusable, requestKeyframe, advance } = setup();
     for (let attempt = 0; attempt < 3; attempt++) {
