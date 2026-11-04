@@ -329,6 +329,7 @@ export function App() {
     pendingModeRef.current = null;
     const entryTab = entryParams.get("tab");
     const presentation = createPresentationState();
+    const knownModes = new Map<TabId, "dom" | "px">();
     const autoStarted = new Set<string>();
     const dismissDownloadSoon = (id: string) => {
       const timer = setTimeout(() => {
@@ -686,6 +687,7 @@ export function App() {
         }
         if (message.t === "mode") {
           setModeByTab((current) => ({ ...current, [message.tab]: message.mode }));
+          knownModes.set(message.tab, message.mode);
           if (message.tab === currentTab)
             setViewMode((view) => (view === "chat" ? view : message.mode));
           if (message.mode === "dom" && message.tab === currentTab) scheduleViewport(0);
@@ -697,6 +699,12 @@ export function App() {
             const tabChanged = currentTab !== active.id;
             currentTab = active.id;
             setActiveTab(active.id);
+            // The gateway stops a tab's picture when another becomes active, without a message
+            // about the new one, so the view must follow what this tab is really showing.
+            if (tabChanged) {
+              const shown = knownModes.get(active.id) ?? entryMode ?? "dom";
+              setViewMode((view) => (view === "chat" ? view : shown));
+            }
             pxView?.selectTab(active.id);
             if (mirror.getActiveTab() !== null && mirror.getActiveTab() !== active.id) {
               mirror.selectTab(active.id);
@@ -884,7 +892,7 @@ export function App() {
       data-address={browserView && chromeVisible ? "shown" : "hidden"}
     >
       <ShellBar
-        viewMode={browserView ? (pixelMode ? "px" : viewMode) : "chat"}
+        viewMode={browserView ? (activeTab !== null && modeByTab[activeTab]) || viewMode : "chat"}
         onViewMode={changeView}
         pixelAvailable={pixelAvailable}
         status={shellStatus}
