@@ -26,19 +26,18 @@ export const CHAT_VIEW_MARKUP = `
       <span id="generation-status" role="status"></span><span id="action-status" role="status"></span>
     </div>
     <button id="resolve-pending" type="button" hidden>已核对远端页面，解除待确认状态</button>
-    <section id="transfer-status" role="status" hidden>
-      <span id="upload-status"></span>
-      <input id="file-picker" type="file" hidden />
-      <progress id="upload-progress" max="100" value="0" hidden></progress>
-      <button id="cancel-upload" type="button">取消上传</button>
-    </section>
     <section id="downloads" aria-label="下载文件" hidden></section>
     <form id="composer">
+      <section id="transfer-status" role="status" hidden>
+        <span id="upload-status"></span>
+        <input id="file-picker" type="file" hidden />
+        <progress id="upload-progress" max="100" value="0" hidden></progress>
+        <button id="cancel-upload" type="button">取消上传</button>
+      </section>
       <label class="sr-only" for="draft">消息</label>
-      <textarea id="draft" rows="3" maxlength="100000" placeholder="输入消息，Enter 发送，Shift + Enter 换行"></textarea>
+      <textarea id="draft" rows="2" maxlength="100000" placeholder="输入消息，Enter 发送，Shift + Enter 换行"></textarea>
       <div class="compose-footer">
         <button id="attach" type="button" disabled aria-label="添加附件">＋ 附件</button>
-        <span class="compose-hint">草稿保留在本机</span>
         <button type="button" id="stop" hidden>停止生成</button>
         <button type="submit" id="send" disabled>发送</button>
       </div>

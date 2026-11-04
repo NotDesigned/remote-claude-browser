@@ -103,6 +103,14 @@ for (const type of ["chat_math", "chat_math_block"]) {
     return `<span class="${display ? "math-block" : "math-inline"}">${html}</span>`;
   };
 }
+function codeBlock(code: string, info: string): string {
+  const language = info.trim().split(/\s+/)[0] ?? "";
+  const label = markdown.utils.escapeHtml(language || "代码");
+  return `<figure class="chat-code-block"><figcaption><span>${label}</span><button type="button" class="code-copy">复制</button></figcaption><pre><code>${markdown.utils.escapeHtml(code)}</code></pre></figure>`;
+}
+markdown.renderer.rules.fence = (tokens, index) =>
+  codeBlock(tokens[index]!.content, tokens[index]!.info);
+markdown.renderer.rules.code_block = (tokens, index) => codeBlock(tokens[index]!.content, "");
 markdown.renderer.rules.link_open = (tokens, index, options, _env, renderer) => {
   tokens[index]!.attrSet("target", "_blank");
   tokens[index]!.attrSet("rel", "noopener noreferrer");

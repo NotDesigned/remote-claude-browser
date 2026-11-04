@@ -20,7 +20,13 @@ const MESSAGE_TEXT = String.raw`(element, rich = true) => {
     }
     if (node.matches(skip)) return '';
     const tick = String.fromCharCode(96);
-    if (node.tagName === 'PRE') return '\n' + tick.repeat(3) + '\n' + (node.querySelector('code')?.textContent || node.textContent || '') + '\n' + tick.repeat(3) + '\n';
+    if (node.tagName === 'PRE') {
+      const code = node.querySelector('code');
+      const body = code?.textContent || node.textContent || '';
+      const language = (code?.getAttribute('class') || '').match(/language-([\w+#.-]+)/)?.[1] || '';
+      const fence = tick.repeat(Math.max(3, ...(body.match(/\x60+/g) || []).map(run => run.length + 1)));
+      return '\n' + fence + language + '\n' + body.replace(/\n$/, '') + '\n' + fence + '\n';
+    }
     if (node.tagName === 'CODE' && node.parentElement?.tagName !== 'PRE') return tick + (node.textContent || '') + tick;
     if (node.tagName === 'BR') return '\n';
     const text = [...node.childNodes].map(read).join('');
@@ -78,7 +84,7 @@ const STATUS_STEPS = String.raw`(element) => [...element.querySelectorAll('[clas
     const header = s.firstElementChild;
     const live = s.querySelector(':scope > [role="status"]');
     const summary = ((live && live.textContent) || (header && header.textContent) || '').replace(/\s+/g, ' ').trim().slice(0, 300);
-    const text = [...s.children].filter(c => c !== header && c !== live).map(c => c.textContent || '').join('\n').trim().slice(0, 20000);
+    const text = [...s.children].filter(c => c !== header && c !== live).map(c => messageText(c, false)).filter(Boolean).join('\n').trim().slice(0, 20000);
     return text ? { summary, text, state: s.getAttribute('data-state') || '' } : { summary, state: s.getAttribute('data-state') || '' };
   })
   .filter(step => step.summary || step.text)`;
@@ -136,6 +142,21 @@ export function buttonExpression(kind: "send" | "stop", click = false): string {
     ${click ? "e.click(); return true;" : ""}
     e.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     const r = e.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2};
+  })()`;
+}
+
+/** Opens one thinking/process row on the remote page; its detail then syncs like any change. */
+export function stepExpandExpression(messageIndex: number, stepIndex: number): string {
+  return `(() => {
+    const candidates = [...document.querySelectorAll(${JSON.stringify(MESSAGE_SELECTOR)})];
+    const messages = candidates.filter(e => !candidates.some(p => p !== e && p.contains(e))).slice(-300);
+    const message = messages[${messageIndex}];
+    const step = message && [...message.querySelectorAll('[class~="group/status"]')]
+      .filter(s => !s.parentElement?.closest('[class~="group/status"]'))[${stepIndex}];
+    const toggle = step && step.querySelector('button[aria-expanded]');
+    if (!toggle) return false;
+    if (toggle.getAttribute('aria-expanded') !== 'true') toggle.click();
+    return true;
   })()`;
 }
 

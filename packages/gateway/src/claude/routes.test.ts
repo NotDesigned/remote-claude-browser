@@ -6,7 +6,7 @@ import { Script } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 import type { BrowserHandle } from "../browser/launch";
 import { registerClaudeChat } from "./routes";
-import { buttonExpression } from "./extract";
+import { buttonExpression, stepExpandExpression } from "./extract";
 
 function optionsFor(sid: string, profileDir: string, routePrefix = `/s/${sid}`) {
   const browser: BrowserHandle = {
@@ -129,6 +129,73 @@ describe("session-prefixed Claude chat", () => {
           .mocked(options.browser.send)
           .mock.calls.some(([, method]) => method === "Input.insertText"),
       ).toBe(false);
+    } finally {
+      chat.close();
+      await reader?.cancel();
+      await app.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("opens a remote process row only for the current controller and document", async () => {
+    const root = await mkdtemp(join(tmpdir(), "claude-step-"));
+    const app = Fastify();
+    const options = optionsFor("client-1", root);
+    let clickable = true;
+    vi.mocked(options.browser.send).mockImplementation(async (_session, method, params) => {
+      if (method !== "Runtime.evaluate") return {};
+      if (params?.expression === stepExpandExpression(2, 1))
+        return { result: { value: clickable } };
+      return {
+        result: {
+          value: {
+            url: "https://claude.ai/new",
+            title: "Step test",
+            ready: true,
+            generating: false,
+            messages: [],
+            conversations: [],
+          },
+        },
+      };
+    });
+    const chat = await registerClaudeChat(app, { ...options, takeControl: () => {} });
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const address = await app.listen({ host: "127.0.0.1", port: 0 });
+      const response = await fetch(address + "/s/client-1/api/claude/events?connectionKey=step", {
+        headers: { "x-test-owner": "client-1" },
+      });
+      reader = response.body!.getReader();
+      let initialFrame = "";
+      while (!initialFrame.includes("\n\n")) {
+        const chunk = await reader.read();
+        if (chunk.done) throw new Error("SSE ended before the initial snapshot");
+        initialFrame += new TextDecoder().decode(chunk.value);
+      }
+      const initial = JSON.parse(initialFrame.split("\n\n")[0]!.slice(6));
+      const expand = (payload: Record<string, unknown>, owner = "client-1") =>
+        app.inject({
+          method: "POST",
+          url: "/s/client-1/api/claude/step",
+          headers: { "x-test-owner": owner },
+          payload: {
+            controller: initial.controller,
+            epoch: initial.state.epoch,
+            message: 2,
+            step: 1,
+            ...payload,
+          },
+        });
+      expect((await expand({})).statusCode).toBe(204);
+      clickable = false;
+      expect((await expand({})).statusCode).toBe(409);
+      clickable = true;
+      expect((await expand({}, "client-2")).statusCode).toBe(403);
+      expect((await expand({ controller: "someone-else" })).statusCode).toBe(409);
+      expect((await expand({ epoch: "old-document" })).statusCode).toBe(409);
+      expect((await expand({ message: "1;alert(1)" })).statusCode).toBe(400);
+      expect((await expand({ step: -1 })).statusCode).toBe(400);
     } finally {
       chat.close();
       await reader?.cancel();
@@ -545,6 +612,7 @@ describe("chat page takeover handling", () => {
           value: "",
           disabled: false,
           readOnly: false,
+          style: {},
           addEventListener: () => undefined,
         });
       return nodes.get(id)!;

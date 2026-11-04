@@ -69,6 +69,8 @@ export function mountChatView(root, options) {
   let creatingConversation = false;
   let openingNew = false;
   let draftEditedBeforeReady = false;
+  let statusTimer;
+  let sizedDraft = null;
   const draft = $("draft");
   draft.value = localStorage.getItem(legacyDraftKey) || "";
   const messages = $("messages");
@@ -125,6 +127,18 @@ export function mountChatView(root, options) {
     },
     { passive: true },
   );
+  messages.addEventListener("click", async (event) => {
+    const button = event.target.closest?.(".code-copy");
+    if (!button) return;
+    const code = button.closest(".chat-code-block")?.querySelector("code");
+    try {
+      await navigator.clipboard.writeText(code?.textContent ?? "");
+      button.textContent = "已复制";
+    } catch {
+      button.textContent = "请选中复制";
+    }
+    setTimeout(() => (button.textContent = "复制"), 1500);
+  });
   $("jump-latest").onclick = () => {
     following = true;
     messages.scrollTop = messages.scrollHeight;
@@ -162,6 +176,7 @@ export function mountChatView(root, options) {
       !!uploadController ||
       preparingUpload;
     if (leaving) cancelUpload();
+    if (draft.value !== sizedDraft) sizeDraft();
     $("generation-status").textContent = busy
       ? "正在提交…"
       : pending
@@ -171,6 +186,21 @@ export function mountChatView(root, options) {
           : connected && state?.ready
             ? "就绪"
             : "等待同步";
+    $("generation-status").hidden = $("generation-status").textContent === "就绪";
+  }
+  /** Short confirmations clear themselves instead of lingering above the composer. */
+  function transientStatus(text) {
+    $("action-status").textContent = text;
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => {
+      if ($("action-status").textContent === text) $("action-status").textContent = "";
+    }, 3000);
+  }
+  /** The composer grows with its text up to its CSS maximum. */
+  function sizeDraft() {
+    sizedDraft = draft.value;
+    draft.style.height = "auto";
+    draft.style.height = `${draft.scrollHeight}px`;
   }
   function setRetryVisible(visible) {
     $("retry-chat").hidden = !visible;
@@ -182,6 +212,8 @@ export function mountChatView(root, options) {
     const keep = new Set();
     for (const [index, message] of state.messages.entries()) {
       const key = `${index}:${message.id}:${message.role}`;
+      const streaming =
+        state.generating && message.role === "assistant" && index === state.messages.length - 1;
       keep.add(key);
       let entry = messageElements.get(key);
       if (!entry) {
@@ -211,6 +243,7 @@ export function mountChatView(root, options) {
         entry = { article, text, files, steps, fileSignature: "", stepSignature: "" };
         messageElements.set(key, entry);
       }
+      entry.article.toggleAttribute("data-streaming", streaming);
       if (entry.messageText !== message.text) {
         renderChatText(entry.text, message.text, message.role === "assistant");
         entry.messageText = message.text;
@@ -218,7 +251,7 @@ export function mountChatView(root, options) {
       const stepSignature = JSON.stringify(message.steps || []);
       if (entry.stepSignature !== stepSignature) {
         entry.stepSignature = stepSignature;
-        renderSteps(entry.steps, message.steps || []);
+        renderSteps(entry.steps, message.steps || [], index, message.id);
       }
       const signature = JSON.stringify(message.files || []);
       if (entry.fileSignature !== signature) {
@@ -242,7 +275,7 @@ export function mountChatView(root, options) {
                   }),
                 });
                 if (!response.ok) throw new Error((await response.json()).error || "下载失败");
-                $("action-status").textContent = "已请求下载，完成后可在下方保存";
+                transientStatus("已请求下载，完成后会自动开始");
                 watchDownloads();
               } catch (error) {
                 $("action-status").textContent = error.message || "下载失败";
@@ -317,6 +350,16 @@ export function mountChatView(root, options) {
   const SEARCH_STEP = /search|browse|read (a |\d+ )?pages?|fetch|搜索|浏览|网页|检索/i;
   const TOOL_STEP =
     /^(used|using|ran|running|called|calling|executed|created|creating|edited|editing|viewed|analy[sz]ed|analy[sz]ing|connected|使用|运行|调用|执行|创建|编辑|查看|分析)/i;
+  const STEP_LOADING = "正在加载详细内容…";
+  const STEP_UNAVAILABLE = "这一行暂时无法在聊天中展开，可切换到“页面”模式查看。";
+  const stepRequests = new Map();
+  const STEP_ICONS = {
+    search:
+      '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
+    tool: '<svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.6-.7-.7-2.6z"/></svg>',
+    thinking:
+      '<svg viewBox="0 0 24 24"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z"/></svg>',
+  };
   function stepKind(summary) {
     if (SEARCH_STEP.test(summary)) return { id: "search", done: "搜索", active: "搜索中" };
     if (TOOL_STEP.test(summary)) return { id: "tool", done: "工具", active: "工具调用中" };
@@ -326,36 +369,70 @@ export function mountChatView(root, options) {
    * Thinking and process rows from the remote page. Their detail exists remotely only while a row
    * is expanded there, so a collapsed row shows its summary and says where to read the rest.
    */
-  function renderSteps(container, steps) {
+  function renderSteps(container, steps, messageIndex, messageId) {
     const open = new Set(
       [...container.querySelectorAll("details[open]")].map((item) => item.dataset.index),
     );
     container.replaceChildren(
       ...steps.map((step, index) => {
+        const kind = stepKind(step.summary || "");
         const details = document.createElement("details");
         details.className = "message-step";
         details.dataset.index = String(index);
         details.dataset.state = step.state || "";
+        details.dataset.kind = kind.id;
         if (open.has(String(index))) details.open = true;
         const summary = document.createElement("summary");
+        const icon = document.createElement("span");
+        icon.className = "message-step-icon";
+        icon.setAttribute("aria-hidden", "true");
+        icon.innerHTML = STEP_ICONS[kind.id];
         const label = document.createElement("span");
         label.className = "message-step-label";
-        const kind = stepKind(step.summary || "");
-        details.dataset.kind = kind.id;
         label.textContent = step.state && step.state !== "done" ? kind.active : kind.done;
         const title = document.createElement("span");
         title.className = "message-step-title";
         title.textContent = step.summary || "";
-        summary.append(label, title);
+        summary.append(icon, label, title);
         const body = document.createElement("div");
         body.className = "message-step-body";
+        const key = `${messageId}:${index}`;
         body.textContent =
-          step.text || "详细内容在远程页面中处于折叠状态，可切换到“页面”模式展开查看。";
-        if (!step.text) body.classList.add("message-step-hint");
+          step.text || (stepRequests.get(key) === "failed" ? STEP_UNAVAILABLE : STEP_LOADING);
         details.append(summary, body);
+        details.addEventListener("toggle", () => {
+          if (details.open && !step.text) expandStep(key, messageIndex, index, container);
+        });
         return details;
       }),
     );
+  }
+  /** The detail exists remotely only while a row is open there, so open it once on demand. */
+  async function expandStep(key, messageIndex, stepIndex, container) {
+    if (stepRequests.has(key)) return;
+    stepRequests.set(key, "pending");
+    const fail = () => {
+      stepRequests.set(key, "failed");
+      const body = container.querySelector(`details[data-index="${stepIndex}"] .message-step-body`);
+      if (body?.textContent === STEP_LOADING) body.textContent = STEP_UNAVAILABLE;
+    };
+    try {
+      const response = await fetch(`${apiBase}/step`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          controller,
+          epoch: state?.epoch,
+          message: messageIndex,
+          step: stepIndex,
+        }),
+      });
+      if (!response.ok) throw new Error("step unavailable");
+      // A row may open empty; do not leave it loading forever.
+      setTimeout(fail, 6000);
+    } catch {
+      fail();
+    }
   }
   async function reconcilePending() {
     if (!pending) return;
@@ -413,7 +490,7 @@ export function mountChatView(root, options) {
       saveDraft();
     }
     clearPending();
-    $("action-status").textContent = "远端已确认";
+    transientStatus("远端已确认");
   }
   function connect() {
     if (leaving || !sid) {
@@ -580,7 +657,7 @@ export function mountChatView(root, options) {
       if (response.ok && result.status === "confirmed") {
         confirmPending();
         cancelUpload();
-        $("action-status").textContent = "远端已确认";
+        transientStatus("远端已确认");
       } else if (!response.ok) {
         // Precondition failures occur before execution. Preserve the draft either way.
         if (result.started === false || response.status === 400 || response.status === 403) {
@@ -684,6 +761,7 @@ export function mountChatView(root, options) {
   const resizeChat = () => {
     if (window.visualViewport?.scale === 1)
       root.style.setProperty("--chat-height", `${window.visualViewport.height}px`);
+    sizeDraft();
     if (following) messages.scrollTop = messages.scrollHeight;
   };
   listen(window.visualViewport, "resize", resizeChat);
@@ -821,7 +899,7 @@ export function mountChatView(root, options) {
         offset += file.size;
       }
       uploadPick = null;
-      $("upload-progress").value = 100;
+      $("upload-progress").hidden = true;
       transferStatus(`已上传 ${files.length} 个附件，请等待官网处理完成后发送`);
       $("cancel-upload").textContent = "关闭";
     } catch (error) {
@@ -855,7 +933,6 @@ export function mountChatView(root, options) {
         // Ones that finished before the view opened are only offered, never re-downloaded.
         if (downloadsPrimed && entry.state === "done" && entry.href) {
           startClientDownload(entry.href, entry.name);
-          $("action-status").textContent = `已开始下载 ${entry.name}`;
         }
       }
       downloadsPrimed = true;
@@ -926,6 +1003,7 @@ export function mountChatView(root, options) {
   return () => {
     leaving = true;
     retired = true;
+    clearTimeout(statusTimer);
     actionController?.abort();
     clearTimeout(retry);
     clearTimeout(reconcileTimer);

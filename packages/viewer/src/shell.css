@@ -18,6 +18,8 @@
   --busy: #b26b12;
   --bad: #b3392f;
   --focus: #a35c3f;
+  --bubble: #f0ede6;
+  --code-bg: rgb(60 50 30 / 5%);
   --shellbar-height: 56px;
   --chrome-border: var(--line);
   --chrome-ink: var(--ink);
@@ -43,6 +45,8 @@
   --busy: #e0a55a;
   --bad: #ef8a80;
   --focus: #d48c6d;
+  --bubble: #35312b;
+  --code-bg: rgb(255 255 255 / 6%);
 }
 
 body {

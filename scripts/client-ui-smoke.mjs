@@ -184,7 +184,13 @@ const server = createServer(async (request, response) => {
                   role: "assistant",
                   text: String.raw`受控回复，支持中文附件。行内 $E=mc^2$ 与 \(\alpha+\beta\)。
 $$\frac{1}{2}+\int_0^1 x^2\,dx+d_{\text{model}}$$
-\[\begin{pmatrix}1&2\\3&4\end{pmatrix}\]`,
+\[\begin{pmatrix}1&2\\3&4\end{pmatrix}\]
+
+${"```"}python
+def f(x):
+    return x
+${"```"}`,
+                  steps: [{ summary: "Searched the web, read a page", state: "done" }],
                   files: [{ id: "0", name: "结果.txt" }],
                 },
               ],
@@ -649,13 +655,53 @@ try {
     ].map((element) => getComputedStyle(element).fontFamily),
   );
   assert.equal(new Set(nativeFonts).size, 1);
+  const presentation = await firstPage.evaluate(() => {
+    const block = document.querySelector("#messages .chat-code-block");
+    const code = block?.querySelector("code");
+    return {
+      language: block?.querySelector("figcaption span")?.textContent,
+      codeFont: code && getComputedStyle(code).fontFamily,
+      code: code?.textContent,
+      stepIcon: !!document.querySelector("#messages .message-step[data-kind='search'] svg"),
+      idleHidden: document.querySelector("#generation-status")?.hidden,
+      resize: getComputedStyle(document.querySelector("#draft")).resize,
+    };
+  });
+  assert.equal(presentation.language, "python");
+  assert.match(presentation.codeFont, /mono/i);
+  assert.equal(presentation.code, "def f(x):\n    return x\n");
+  assert.equal(presentation.stepIcon, true);
+  assert.equal(presentation.idleHidden, true);
+  assert.equal(presentation.resize, "none");
+  // Opening a collapsed row asks the remote page for its detail.
+  const stepRequest = firstPage.waitForRequest((request) =>
+    request.url().endsWith("/api/claude/step"),
+  );
+  await firstPage.locator("#messages .message-step summary").click();
+  assert.deepEqual(
+    (({ message, step }) => ({ message, step }))((await stepRequest).postDataJSON()),
+    { message: 0, step: 0 },
+  );
+  await firstPage.locator("#messages .message-step summary").click();
+  const draftBox = firstPage.locator("#draft");
+  const draftBefore = (await draftBox.boundingBox()).height;
+  await draftBox.fill("第一行\n第二行\n第三行\n第四行\n第五行\n第六行");
+  assert.ok((await draftBox.boundingBox()).height > draftBefore, "composer grows with its text");
+  await draftBox.fill("");
+  assert.equal((await draftBox.boundingBox()).height, draftBefore, "composer shrinks back");
   // KaTeX's \\text{} spans also carry the class "text"; message styles must not reach them.
   const subscript = await firstPage.evaluate(() => {
     const math = document.querySelector("#messages .katex-display .katex");
     const text = math.querySelector(".text");
-    return { math: parseFloat(getComputedStyle(math).fontSize), text: parseFloat(getComputedStyle(text).fontSize) };
+    return {
+      math: parseFloat(getComputedStyle(math).fontSize),
+      text: parseFloat(getComputedStyle(text).fontSize),
+    };
   });
-  assert.ok(subscript.text < subscript.math * 0.85, `\\text subscript is ${subscript.text}px in ${subscript.math}px math`);
+  assert.ok(
+    subscript.text < subscript.math * 0.85,
+    `\\text subscript is ${subscript.text}px in ${subscript.math}px math`,
+  );
   checks.formulasAndUnifiedFonts = true;
   await firstPage.locator("#attach").waitFor({ state: "visible" });
   await firstPage.waitForFunction(() => document.querySelector("#attach")?.disabled === false);

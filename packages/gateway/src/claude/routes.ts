@@ -13,6 +13,7 @@ import {
   EDITOR_FOCUS_EXPRESSION,
   buttonExpression,
   fileDownloadExpression,
+  stepExpandExpression,
 } from "./extract";
 
 interface Options {
@@ -602,6 +603,40 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
         true,
       );
       if (!ok) return reply.code(409).send({ error: "下载入口已改变，请重试" });
+      return reply.code(204).send();
+    },
+  );
+
+  app.post<{ Body: { controller?: string; epoch?: string; message?: number; step?: number } }>(
+    apiPath("/step"),
+    { preHandler: options.preHandler, bodyLimit: 4096 },
+    async (request, reply) => {
+      reply.header("cache-control", "no-store");
+      const origin = process.env.MIRROR_PUBLIC_ORIGIN;
+      if (!options.isOwner(request.raw) || (origin && request.headers.origin !== origin))
+        return reply.code(403).send({ error: "权限无效" });
+      const body = request.body ?? {};
+      const current = lease;
+      if (!current?.state || body.controller !== current.id || options.mirrorHasController())
+        return reply.code(409).send({ error: "请等待文字聊天重新连接" });
+      const target = targetFor(current.state.tab);
+      if (
+        !target ||
+        !Number.isSafeInteger(body.message) ||
+        !Number.isSafeInteger(body.step) ||
+        body.message! < 0 ||
+        body.step! < 0
+      )
+        return reply.code(400).send({ error: "参数无效" });
+      if (body.epoch !== current.state.epoch)
+        return reply.code(409).send({ error: "页面已切换，请重试" });
+      const ok = await evaluate<boolean>(
+        target,
+        stepExpandExpression(body.message!, body.step!),
+        true,
+      ).catch(() => false);
+      if (!ok) return reply.code(409).send({ error: "这一行没有可展开的内容" });
+      current.wake?.();
       return reply.code(204).send();
     },
   );
