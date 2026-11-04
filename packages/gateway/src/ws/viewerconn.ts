@@ -260,5 +260,5 @@ export class ViewerConn {
 }
 
 function isDroppable(msg: Down): boolean {
-  return msg.t === "delta" || msg.t === "px";
+  return msg.t === "delta" || msg.t === "px" || msg.t === "vid";
 }

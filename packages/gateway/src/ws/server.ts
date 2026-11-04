@@ -11,6 +11,7 @@ import {
   decodeUp,
   encodeMsg,
   encodePxBinary,
+  encodeVidBinary,
   MAX_KNOWN_SHEETS,
   SHEET_HASH,
   type Down,
@@ -513,6 +514,7 @@ export function createWsServer(opts: WsServerOpts): WsServer {
 
 /** Pixel frames travel as raw JPEG in a binary frame; every other message as JSON text. */
 export function serializeDown(msg: Down): string | Uint8Array {
+  if (msg.t === "vid") return encodeVidBinary(msg);
   if (msg.t === "px" && typeof msg.data === "string")
     return encodePxBinary(msg.tab, msg.w, msg.h, Buffer.from(msg.data, "base64"));
   return encodeMsg(msg);

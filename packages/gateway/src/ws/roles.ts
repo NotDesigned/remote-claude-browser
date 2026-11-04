@@ -81,6 +81,7 @@ const DRIVER_ONLY_TAGS: ReadonlySet<Up["t"]> = new Set([
   "scroll",
   "nav",
   "mode",
+  "vid-key",
   "clip",
 ]);
 

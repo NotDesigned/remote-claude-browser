@@ -2,7 +2,8 @@
  * Gateway side of the pixel fallback.
  * (Viewer half P2-PX-V = viewer/src/pxview.tsx, viewer domain.)
  *
- * Per-tab mode toggle: Page.startScreencast (jpeg q80, viewport-sized) -> `px` Down msgs.
+ * Per-tab mode toggle: Page.startScreencast (JPEG) -> H.264 `vid` Down msgs where the viewer can
+ * decode them, or `px` JPEG frames where it cannot. A still page also gets one sharp `px` frame.
  * ALWAYS ack frames (Page.screencastFrameAck) or the screencast stalls. Keep the recorder
  * running in px mode (cheap; makes flip-back instant via fresh snapshot). Backpressure: drop
  * frames for stalled viewers, never queue (D4 rule applies to px too).
@@ -12,6 +13,7 @@ import type { Down, PxQuality, Up } from "@mirror/protocol";
 import type { BrowserHandle } from "./browser/launch";
 import type { TabHub } from "./hub/tabhub";
 import type { TargetRef } from "./types";
+import { createFfmpegEncoder, type VideoEncoder, type VideoEncoderFactory } from "./px-video";
 
 type ModeMsg = Extract<Up, { t: "mode" }>;
 type PixelFrame = Extract<Down, { t: "px" }>;
@@ -23,10 +25,9 @@ const SHARP_MIN_INTERVAL_MS = 1_500;
 const SHARP_MAX_INTERVAL_MS = 30_000;
 /** Frames closer than this are real activity, unlike a lone blinking caret. */
 const BURST_GAP_MS = 150;
-/** Fastest rate of device-resolution frames, which also waits on how long each one takes. */
-const DEVICE_FRAME_MIN_INTERVAL_MS = 100;
-/** Only compared with the previous frame to see whether anything changed; never displayed. */
-const CHANGE_SIGNAL_JPEG = 50;
+const VIDEO_QUIET_MS = 40;
+const VIDEO_FLUSH_GAP_MS = 5;
+const VIDEO_FLUSH_FRAMES = 3;
 /** A page that never stops, such as a shimmer on one row, still gets sharp around that row. */
 const SHARP_MOTION_INTERVAL_MS = 3_000;
 /**
@@ -39,17 +40,24 @@ const CAPTURE_PRESETS: Record<
     maxWidth: number;
     maxHeight: number;
     jpeg: number;
-    /** Lossless moving frames keep text clean, for far more traffic than JPEG. */
-    lossless?: boolean;
+    /** H.264 replaces JPEG where the viewer can decode it. */
+    video: { jpeg: number; everyNthFrame: number; crf: number };
     everyNthFrame: number;
     sharp?: { format: "png" | "webp"; quality?: number };
   }
 > = {
-  low: { maxWidth: 1280, maxHeight: 1280, jpeg: 50, everyNthFrame: 3 },
+  low: {
+    maxWidth: 1280,
+    maxHeight: 1280,
+    jpeg: 50,
+    video: { jpeg: 60, everyNthFrame: 3, crf: 28 },
+    everyNthFrame: 3,
+  },
   medium: {
     maxWidth: 1920,
     maxHeight: 1920,
     jpeg: 65,
+    video: { jpeg: 75, everyNthFrame: 2, crf: 23 },
     everyNthFrame: 2,
     sharp: { format: "webp", quality: 90 },
   },
@@ -57,7 +65,7 @@ const CAPTURE_PRESETS: Record<
     maxWidth: 3840,
     maxHeight: 3840,
     jpeg: 80,
-    lossless: true,
+    video: { jpeg: 85, everyNthFrame: 1, crf: 18 },
     everyNthFrame: 2,
     sharp: { format: "png" },
   },
@@ -74,6 +82,9 @@ export interface ScreencastOpts {
   onError?: (error: unknown) => void;
   commandTimeoutMs?: number;
   firstFrameTimeoutMs?: number;
+  /** A viewer cannot keep up, so frames should wait rather than be encoded and queued. */
+  backlogged?(): boolean;
+  createVideoEncoder?: VideoEncoderFactory;
   /** Supply both hooks to track pixel ownership. Acquisition must be synchronous. */
   acquirePixel?(tabId: string): boolean;
   /** Called after stop completes or its bounded deadline, including reset/dispose paths. */
@@ -84,8 +95,17 @@ export interface ScreencastController {
   handle(msg: ModeMsg): Promise<void>;
   /** Synchronously invalidate this tab's pixel work, including a hung mode queue. */
   reset(tabId: string): void;
+  /** The viewer's decoder needs a new stream beginning with a keyframe. */
+  requestKeyframe(tabId: string): void;
   modeFor(tabId: string): "dom" | "px" | undefined;
   dispose(): void;
+}
+
+interface VideoStream {
+  w: number;
+  h: number;
+  encoder: VideoEncoder;
+  flushTimer?: ReturnType<typeof setTimeout>;
 }
 
 interface TabState {
@@ -103,9 +123,9 @@ interface TabState {
   lastFrameAt: number;
   lastSharpAt: number;
   sharpInFlight: boolean;
-  sharpCaptureMs: number;
-  deviceFrames: boolean;
-  deviceFrameTimer?: ReturnType<typeof setTimeout>;
+  video?: VideoStream;
+  videoSeq: number;
+  lastJpeg?: Buffer;
   frameCount: number;
   lastCastData?: string;
   fallback?: { generation: number; promise: Promise<void> };
@@ -125,23 +145,16 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   const sessions = new Map<string, TabState>();
   // Chosen by the viewer; applies to every tab of this client session.
   let quality: PxQuality = "high";
-  /**
-   * Chromium's screencast stops at CSS pixels, so at a higher density it would look softer whenever
-   * the page moves. There it only reports that the picture changed, and every frame the viewer sees
-   * is a device-resolution screenshot, moving or not.
-   */
-  const usesDeviceFrames = (state: TabState): boolean =>
-    !!CAPTURE_PRESETS[quality].lossless && (state.hub.viewport?.dpr ?? 1) > 1;
-  const screencastParams = (state: TabState) => {
+  let videoWanted = false;
+  // ffmpeg is missing or keeps failing: this session stays on JPEG frames.
+  let videoBroken = false;
+  const screencastParams = () => {
     const preset = CAPTURE_PRESETS[quality];
-    state.deviceFrames = usesDeviceFrames(state);
+    const video = videoWanted && !videoBroken;
     return {
-      ...(state.deviceFrames
-        ? { format: "jpeg", quality: CHANGE_SIGNAL_JPEG }
-        : preset.lossless
-          ? { format: "png" }
-          : { format: "jpeg", quality: preset.jpeg }),
-      everyNthFrame: preset.everyNthFrame,
+      format: "jpeg",
+      quality: video ? preset.video.jpeg : preset.jpeg,
+      everyNthFrame: video ? preset.video.everyNthFrame : preset.everyNthFrame,
       maxWidth: preset.maxWidth,
       maxHeight: preset.maxHeight,
     };
@@ -180,23 +193,20 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     state.firstFrameTimer = undefined;
     clearTimeout(state.sharpTimer);
     state.sharpTimer = undefined;
-    clearTimeout(state.deviceFrameTimer);
-    state.deviceFrameTimer = undefined;
   };
   /** Replaces the last JPEG with a frame fit for reading once the page has stopped changing. */
   const captureSharp = async (
     state: TabState,
     generation: number,
     duringMotion: boolean,
-  ): Promise<boolean> => {
+  ): Promise<void> => {
     const sharp = CAPTURE_PRESETS[quality].sharp;
     const viewport = state.hub.viewport;
     const seen = state.frameCount;
-    if (!sharp || !viewport || !state.screencasting || state.hub.mode !== "px") return false;
-    if (!current(state, generation) || state.sharpInFlight) return false;
+    if (!sharp || !viewport || !state.screencasting || state.hub.mode !== "px") return;
+    if (!current(state, generation) || state.sharpInFlight) return;
     state.sharpInFlight = true;
-    const startedAt = Date.now();
-    state.lastSharpAt = startedAt;
+    state.lastSharpAt = Date.now();
     try {
       const shot = (await sendBounded(state, "Page.captureScreenshot", {
         ...sharp,
@@ -207,10 +217,9 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       })) as { data?: unknown };
       // On a still page a newer frame means this picture is out of date and schedules its own.
       // On a moving page the viewer patches whatever keeps changing back over it.
-      state.sharpCaptureMs = Date.now() - startedAt;
-      if (!current(state, generation) || state.hub.mode !== "px") return true;
-      if (!duringMotion && state.frameCount !== seen) return true;
-      if (typeof shot.data !== "string" || shot.data.length === 0) return true;
+      if (!current(state, generation) || state.hub.mode !== "px") return;
+      if (!duringMotion && state.frameCount !== seen) return;
+      if (typeof shot.data !== "string" || shot.data.length === 0) return;
       state.lastFrame = {
         t: "px",
         tab: state.target.targetId,
@@ -226,24 +235,77 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     } finally {
       state.sharpInFlight = false;
     }
-    return true;
   };
-  /** One frame at a time, and always one more if the page changed while taking the last. */
-  const requestDeviceFrame = (state: TabState): void => {
-    if (state.deviceFrameTimer !== undefined || state.sharpInFlight) return;
-    const generation = state.generation;
-    const interval = Math.max(DEVICE_FRAME_MIN_INTERVAL_MS, state.sharpCaptureMs * 1.25);
-    state.deviceFrameTimer = setTimeout(
+  const stopVideo = (state: TabState): void => {
+    const video = state.video;
+    if (!video) return;
+    state.video = undefined;
+    clearTimeout(video.flushTimer);
+    video.encoder.close();
+  };
+  const startVideo = (state: TabState, w: number, h: number): void => {
+    stopVideo(state);
+    const tab = state.target.targetId;
+    const video: VideoStream = {
+      w,
+      h,
+      encoder: (opts.createVideoEncoder ?? createFfmpegEncoder)(
+        CAPTURE_PRESETS[quality].video.crf,
+        {
+          onConfig({ codec, description }) {
+            if (state.video === video)
+              opts.publish({
+                t: "vid-cfg",
+                tab,
+                codec,
+                description: description.toString("base64"),
+              });
+          },
+          onChunk(data, key) {
+            if (state.video === video)
+              opts.publish({ t: "vid", tab, seq: state.videoSeq++, key, w, h, data });
+          },
+          onFailure(error) {
+            if (state.video !== video) return;
+            state.video = undefined;
+            clearTimeout(video.flushTimer);
+            videoBroken = true;
+            report(error);
+          },
+        },
+      ),
+    };
+    state.video = video;
+  };
+  /**
+   * ffmpeg holds back its last frames until more input arrives. When the picture goes quiet, the
+   * same frame is fed again to push out the real one.
+   */
+  const flushVideo = (state: TabState, video: VideoStream, remaining: number): void => {
+    clearTimeout(video.flushTimer);
+    video.flushTimer = setTimeout(
       () => {
-        state.deviceFrameTimer = undefined;
-        const seen = state.frameCount;
-        void captureSharp(state, generation, true).then(() => {
-          if (state.frameCount !== seen && current(state, generation)) requestDeviceFrame(state);
-        });
+        if (state.video !== video || !state.lastJpeg) return;
+        video.encoder.write(state.lastJpeg);
+        if (remaining > 1) flushVideo(state, video, remaining - 1);
       },
-      Math.max(0, state.lastSharpAt + interval - Date.now()),
+      remaining === VIDEO_FLUSH_FRAMES ? VIDEO_QUIET_MS : VIDEO_FLUSH_GAP_MS,
     );
-    state.deviceFrameTimer.unref?.();
+    video.flushTimer.unref?.();
+  };
+  const feedVideo = (state: TabState, w: number, h: number): void => {
+    if (state.video?.w !== w || state.video.h !== h) startVideo(state, w, h);
+    const video = state.video;
+    if (!video || !state.lastJpeg) return;
+    // A frame dropped here costs nothing; one dropped after encoding would break the decoder.
+    if (!opts.backlogged?.()) video.encoder.write(state.lastJpeg);
+    flushVideo(state, video, VIDEO_FLUSH_FRAMES);
+  };
+  /** A viewer that joined or lost its place needs a new stream beginning with a keyframe. */
+  const restartVideo = (state: TabState): void => {
+    if (!videoWanted || videoBroken || !state.lastJpeg || !state.lastFrame) return;
+    startVideo(state, state.lastFrame.w, state.lastFrame.h);
+    feedVideo(state, state.lastFrame.w, state.lastFrame.h);
   };
   const noteMotionFrame = (state: TabState): void => {
     const now = Date.now();
@@ -259,8 +321,6 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     state.frameCount++;
     const preset = CAPTURE_PRESETS[quality];
     if (!preset.sharp) return;
-    // Chromium's frames stop at CSS pixels. At 1:1 a lossless one is already as sharp as can be.
-    if (preset.lossless && (state.hub.viewport?.dpr ?? 1) <= 1) return;
     const generation = state.generation;
     const whenStill = Math.max(now + SHARP_IDLE_MS, state.sharpNotBefore);
     const motionDue = state.lastSharpAt + SHARP_MOTION_INTERVAL_MS;
@@ -276,6 +336,8 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   };
   const invalidate = (state: TabState): boolean => {
     const wasScreencasting = state.screencasting;
+    stopVideo(state);
+    delete state.lastJpeg;
     state.generation++;
     clearFirstFrameTimer(state);
     state.fallback = undefined;
@@ -337,11 +399,6 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   const ensureFirstFrame = (state: TabState, generation: number): Promise<void> => {
     if (!current(state, generation) || !state.screencasting || state.lastFrame)
       return Promise.resolve();
-    if (state.deviceFrames)
-      return captureSharp(state, generation, true).then(async (attempted) => {
-        if (attempted && !state.lastFrame && current(state, generation))
-          await returnToDom(state, generation, new Error("Pixel frame capture returned no image"));
-      });
     if (state.fallback?.generation === generation) return state.fallback.promise;
     clearFirstFrameTimer(state);
     const fallback = { generation, promise: Promise.resolve() };
@@ -415,25 +472,16 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       // Taking a sharp frame can make Chromium repeat the same picture. It must not replace it.
       if (state.lastFrame && event.data === state.lastCastData) return;
       state.lastCastData = event.data;
-      // The viewer's density can change while casting, for example on another monitor.
-      if (usesDeviceFrames(state) !== state.deviceFrames) {
-        state.deviceFrames = usesDeviceFrames(state);
-        state.queue = state.queue.then(() => applyMode(state, "px", true)).catch(report);
-      }
-      if (state.deviceFrames) {
-        clearTimeout(state.firstFrameTimer);
-        state.firstFrameTimer = undefined;
-        state.frameCount++;
-        requestDeviceFrame(state);
-        return;
-      }
       const viewport = state.hub.viewport;
       const w = frameDimension(viewport?.w, event.metadata.deviceWidth);
       const h = frameDimension(viewport?.h, event.metadata.deviceHeight);
       state.lastFrame = { t: "px", tab: state.target.targetId, data: event.data, w, h };
       clearFirstFrameTimer(state);
       noteMotionFrame(state);
-      if (state.hub.mode === "px") opts.publish(state.lastFrame);
+      if (videoWanted && !videoBroken && state.hub.mode === "px") {
+        state.lastJpeg = Buffer.from(event.data, "base64");
+        feedVideo(state, w, h);
+      } else if (state.hub.mode === "px") opts.publish(state.lastFrame);
       // Retain one bounded latest frame for repeated mode requests on static pages.
       // ViewerConn still drops delivery to stalled viewers rather than queueing frames.
     },
@@ -480,10 +528,11 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
         if (qualityChanged) {
           // Keep showing the current picture; only the capture restarts with the new preset.
           const generation = state.generation;
+          stopVideo(state);
           try {
             await sendBounded(state, "Page.stopScreencast");
             if (!current(state, generation)) return;
-            await sendBounded(state, "Page.startScreencast", screencastParams(state));
+            await sendBounded(state, "Page.startScreencast", screencastParams());
           } catch (error) {
             await returnToDom(state, generation, error);
             return;
@@ -493,6 +542,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
         opts.publish({ t: "mode", tab: state.target.targetId, mode: "px" });
         if (state.lastFrame) opts.publish(state.lastFrame);
         else void ensureFirstFrame(state, state.generation);
+        restartVideo(state);
         return;
       }
       const generation = ++state.generation;
@@ -503,7 +553,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       // Until start is confirmed, keep the existing DOM lane available to the viewer.
       state.hub.mode = "dom";
       try {
-        await sendBounded(state, "Page.startScreencast", screencastParams(state));
+        await sendBounded(state, "Page.startScreencast", screencastParams());
       } catch (error) {
         await returnToDom(state, generation, error);
         return;
@@ -554,8 +604,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       lastFrameAt: 0,
       lastSharpAt: 0,
       sharpInFlight: false,
-      sharpCaptureMs: 0,
-      deviceFrames: false,
+      videoSeq: 0,
       frameCount: 0,
     };
     tabs.set(target.targetId, state);
@@ -578,8 +627,10 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
         typeof msg.quality === "string" && Object.hasOwn(CAPTURE_PRESETS, msg.quality)
           ? msg.quality
           : quality;
-      const qualityChanged = requested !== quality;
+      const videoRequested = msg.mode === "px" && msg.video !== undefined ? msg.video : videoWanted;
+      const qualityChanged = requested !== quality || videoRequested !== videoWanted;
       quality = requested;
+      videoWanted = videoRequested;
       const operation = state.queue.then(async () => {
         if (!current(state) || state.queueGeneration !== queueGeneration) return;
         await applyMode(state, msg.mode, qualityChanged);
@@ -596,6 +647,10 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       state.queue = Promise.resolve();
       // returnToDom clears local state and publishes synchronously, before its bounded stop.
       void returnToDom(state, state.generation).catch(report);
+    },
+    requestKeyframe(tabId) {
+      const state = tabs.get(tabId);
+      if (state && current(state) && state.hub.mode === "px") restartVideo(state);
     },
     modeFor(tabId) {
       return tabs.get(tabId)?.hub.mode;

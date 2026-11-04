@@ -8,6 +8,7 @@ import {
 import { decodeSent } from "./ws/decode-sent.test-util";
 import type { Protocol } from "puppeteer-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { VideoEncoderEvents } from "./px-video";
 
 import type { FlatSessionEventMap } from "./browser/launch";
 import { TabHub } from "./hub/tabhub";
@@ -129,6 +130,127 @@ function recordedHub(): TabHub {
 describe("createScreencast", () => {
   afterEach(() => vi.useRealTimers());
 
+  describe("video frames", () => {
+    const setup = async (backlogged = () => false) => {
+      vi.useFakeTimers();
+      const browser = new MockBrowser();
+      const hub = recordedHub();
+      const published: Down[] = [];
+      const encoders: {
+        crf: number;
+        written: string[];
+        closed: boolean;
+        events: VideoEncoderEvents;
+      }[] = [];
+      const controller = createScreencast({
+        browser,
+        hubFor: () => hub,
+        publish: (message) => published.push(message),
+        backlogged,
+        createVideoEncoder: (crf, events) => {
+          const encoder = { crf, written: [] as string[], closed: false, events };
+          encoders.push(encoder);
+          return {
+            write: (jpeg) => encoder.written.push(jpeg.toString("base64")),
+            close: () => {
+              encoder.closed = true;
+            },
+          };
+        },
+      });
+      browser.attach({ targetId: "tab-1", sessionId: "cdp-1", type: "page" });
+      await controller.handle({
+        t: "mode",
+        tab: "tab-1",
+        mode: "px",
+        quality: "high",
+        video: true,
+      });
+      return { browser, hub, published, encoders, controller };
+    };
+
+    it("encodes frames instead of sending JPEG, at a higher capture rate", async () => {
+      const { browser, published, encoders, controller } = await setup();
+      expect(browser.calls.find(({ method }) => method === "Page.startScreencast")?.params).toEqual(
+        {
+          format: "jpeg",
+          quality: 85,
+          everyNthFrame: 1,
+          maxWidth: 3840,
+          maxHeight: 3840,
+        },
+      );
+      browser.frame("cdp-1", frame(1, "AAAA"));
+      expect(encoders[0]!.crf).toBe(18);
+      expect(encoders[0]!.written).toEqual(["AAAA"]);
+      expect(published.some((message) => message.t === "px")).toBe(false);
+
+      encoders[0]!.events.onConfig({ codec: "avc1.64001f", description: Buffer.from([1]) });
+      encoders[0]!.events.onChunk(Buffer.from([9]), true);
+      encoders[0]!.events.onChunk(Buffer.from([8]), false);
+      expect(published.filter((message) => message.t !== "mode")).toMatchObject([
+        { t: "vid-cfg", codec: "avc1.64001f", description: "AQ==" },
+        { t: "vid", seq: 0, key: true, w: 1280, h: 720 },
+        { t: "vid", seq: 1, key: false },
+      ]);
+      controller.dispose();
+    });
+
+    it("pushes the last frame out of the encoder once the picture goes quiet", async () => {
+      const { browser, encoders, controller } = await setup();
+      browser.frame("cdp-1", frame(1, "AAAA"));
+      await vi.advanceTimersByTimeAsync(39);
+      expect(encoders[0]!.written).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(encoders[0]!.written).toEqual(["AAAA", "AAAA", "AAAA", "AAAA"]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(encoders[0]!.written).toHaveLength(4);
+      controller.dispose();
+    });
+
+    it("drops frames before encoding while a viewer cannot keep up", async () => {
+      let behind = true;
+      const { browser, encoders, controller } = await setup(() => behind);
+      browser.frame("cdp-1", frame(1, "AAAA"));
+      expect(encoders[0]!.written).toEqual([]);
+      behind = false;
+      browser.frame("cdp-1", frame(2, "BBBB"));
+      expect(encoders[0]!.written).toEqual(["BBBB"]);
+      controller.dispose();
+    });
+
+    it("starts a new stream on request and when the page size changes", async () => {
+      const { browser, hub, encoders, controller } = await setup();
+      browser.frame("cdp-1", frame(1, "AAAA"));
+      controller.requestKeyframe("tab-1");
+      expect(encoders).toHaveLength(2);
+      expect(encoders[0]!.closed).toBe(true);
+      expect(encoders[1]!.written).toEqual(["AAAA"]);
+      hub.viewport = { w: 800, h: 600, dpr: 1 };
+      browser.frame("cdp-1", frame(2, "BBBB"));
+      expect(encoders).toHaveLength(3);
+      controller.dispose();
+    });
+
+    it("falls back to JPEG when the encoder fails", async () => {
+      const { browser, published, encoders, controller } = await setup();
+      browser.frame("cdp-1", frame(1, "AAAA"));
+      encoders[0]!.events.onFailure(new Error("ffmpeg missing"));
+      browser.frame("cdp-1", frame(2, "BBBB"));
+      expect(published.at(-1)).toMatchObject({ t: "px", data: "BBBB" });
+      expect(encoders).toHaveLength(1);
+      controller.dispose();
+    });
+
+    it("stops the encoder when leaving the picture", async () => {
+      const { browser, encoders, controller } = await setup();
+      browser.frame("cdp-1", frame(1, "AAAA"));
+      await controller.handle({ t: "mode", tab: "tab-1", mode: "dom" });
+      expect(encoders[0]!.closed).toBe(true);
+      controller.dispose();
+    });
+  });
+
   describe("sharp frames", () => {
     const setup = async (dpr = 2, requested: "high" | "medium" = "medium") => {
       vi.useFakeTimers();
@@ -149,50 +271,6 @@ describe("createScreencast", () => {
       const shots = () => browser.calls.filter(({ method }) => method === "Page.captureScreenshot");
       return { browser, frames, shots, controller };
     };
-
-    it("needs no extra frame when moving PNGs already have every device pixel", async () => {
-      const { browser, shots, controller } = await setup(1, "high");
-      browser.frame("cdp-1", frame(1, "moving"));
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(shots()).toHaveLength(0);
-      controller.dispose();
-    });
-
-    describe("at a high density", () => {
-      it("only ever shows device-resolution frames, moving or not", async () => {
-        const { browser, frames, shots, controller } = await setup(2, "high");
-        browser.frame("cdp-1", frame(1, "signal"));
-        await vi.advanceTimersByTimeAsync(0);
-        expect(shots()[0]!.params).toMatchObject({ format: "png", optimizeForSpeed: true });
-        expect(frames().map((message) => message.t === "px" && message.data)).toEqual(["PNGDATA"]);
-        controller.dispose();
-      });
-
-      it("ignores a repeated picture", async () => {
-        const { browser, shots, controller } = await setup(2, "high");
-        browser.frame("cdp-1", frame(1, "signal"));
-        await vi.advanceTimersByTimeAsync(0);
-        browser.frame("cdp-1", frame(2, "signal"));
-        await vi.advanceTimersByTimeAsync(5_000);
-        expect(shots()).toHaveLength(1);
-        controller.dispose();
-      });
-
-      it("limits its rate and still shows the final change", async () => {
-        const { browser, shots, controller } = await setup(2, "high");
-        for (let index = 0; index < 20; index++) {
-          browser.frame("cdp-1", frame(index, `signal-${index}`));
-          await vi.advanceTimersByTimeAsync(50);
-        }
-        // Twenty changes in a second, at no more than one frame per 100ms.
-        expect(shots().length).toBeLessThanOrEqual(11);
-        const taken = shots().length;
-        browser.frame("cdp-1", frame(99, "signal-final"));
-        await vi.advanceTimersByTimeAsync(500);
-        expect(shots().length).toBeGreaterThan(taken);
-        controller.dispose();
-      });
-    });
 
     it("sends one sharp frame once the page has been still", async () => {
       const { browser, frames, shots, controller } = await setup();
@@ -275,7 +353,7 @@ describe("createScreencast", () => {
       { method: "Page.stopScreencast", params: undefined },
       {
         method: "Page.startScreencast",
-        params: { format: "png", everyNthFrame: 2, maxWidth: 3840, maxHeight: 3840 },
+        params: { format: "jpeg", quality: 80, everyNthFrame: 2, maxWidth: 3840, maxHeight: 3840 },
       },
     ]);
     expect(hub.mode).toBe("px");
@@ -348,7 +426,8 @@ describe("createScreencast", () => {
       sessionId: "cdp-1",
       method: "Page.startScreencast",
       params: {
-        format: "png",
+        format: "jpeg",
+        quality: 80,
         everyNthFrame: 2,
         maxWidth: 3840,
         maxHeight: 3840,

@@ -8,6 +8,7 @@ import {
   MAX_KNOWN_SHEETS,
   decodeDown,
   decodePxBinary,
+  decodeVidBinary,
   encodeMsg,
   resolveSheetRefs,
   type Down,
@@ -217,6 +218,8 @@ export function connectGateway(
 }
 
 function pixelFrame(buffer: ArrayBuffer): Down {
+  const video = decodeVidBinary(buffer);
+  if (video !== null) return video;
   const frame = decodePxBinary(buffer);
   if (frame === null) throw new Error("Down: unknown binary frame");
   // Moving pictures are JPEG; a still page gets a PNG or WebP that is sharper for text.

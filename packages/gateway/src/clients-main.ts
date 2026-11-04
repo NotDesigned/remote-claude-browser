@@ -64,6 +64,8 @@ interface ClientRuntime {
 /** Claude keeps its conversation sidebar at this width, which chat mode reads history from. */
 const DESKTOP_LAYOUT_MIN_WIDTH = 1024;
 const RECORDER_RESTART_WAIT_MS = 1_000;
+/** Frames wait before encoding beyond this, since a viewer cannot skip one once it is encoded. */
+const VIDEO_BACKLOG_BYTES = 512 * 1024;
 
 export async function startClientGateway(): Promise<void> {
   const e2e = process.env.MIRROR_E2E === "1";
@@ -531,6 +533,11 @@ export async function startClientGateway(): Promise<void> {
       publish: (message) => publish(sid, message),
       acquirePixel: (tab) => pixelCapacity.acquire(sid, tab),
       releasePixel: (tab) => pixelCapacity.release(sid, tab),
+      backlogged: () =>
+        [...viewers.values()].some(
+          (connection) =>
+            connection.sid === sid && connection.viewer.socket.bufferedAmount > VIDEO_BACKLOG_BYTES,
+        ),
       onError: (error) => report("client picture failed", error),
     });
     recovery = createRendererRecovery({
@@ -691,6 +698,10 @@ export async function startClientGateway(): Promise<void> {
     if (message.t === "resync-req") {
       ws.fanout.flushSession(runtime.sid);
       runtime.tabs.hubFor(message.tab)?.requestSnapshot("resync");
+      return;
+    }
+    if (message.t === "vid-key") {
+      runtime.pixels.requestKeyframe(message.tab);
       return;
     }
     if (message.t === "mode") {

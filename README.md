@@ -72,7 +72,7 @@ B 已升级为 4 个逻辑 CPU、4 GB 内存，浏览器的内存软上限为 30
 
 ## 构建、测试与部署
 
-前置条件：A 安装 Node 22.23.1 以上的 22.x、pnpm 9.15.9、systemd、Caddy，并可通过 `ssh remote-server` 连接 B。B 已安装 Node 22、Chrome、Xvfb、字体及网络隔离工具，准备好非 root 服务用户、Profile 目录和 `/etc/claude-browser/agent.env`。
+前置条件：A 安装 Node 22.23.1 以上的 22.x、pnpm 9.15.9、systemd、Caddy，并可通过 `ssh remote-server` 连接 B。B 已安装 Node 22、Chrome、Xvfb、ffmpeg（画面模式的 H.264 编码，缺失时退回 JPEG）、字体及网络隔离工具，准备好非 root 服务用户、Profile 目录和 `/etc/claude-browser/agent.env`。
 
 首次使用维护入口前，在 A 安装资源 slice：
 

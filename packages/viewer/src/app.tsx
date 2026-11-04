@@ -20,6 +20,7 @@ import {
 } from "./chrome/downloads";
 import { createPxView, type PxView } from "./pxview";
 import { HudLayer } from "./hud";
+import { videoOption } from "./px-video";
 import { pollServerStatus, receiveServerStatus, type ReceivedServerStatus } from "./server-status";
 import { ShellBar, resourceWarning, type ThemePreference } from "./shell-bar";
 import { ChatHost } from "./chat-host";
@@ -583,7 +584,12 @@ export function App() {
         presentation.observe(message);
         // Acknowledge receipt so the gateway paces frames to what this link actually delivers.
         if (message.t === "px") socket?.send({ t: "px-ack", tab: message.tab });
-        if (message.t === "px" || (message.t === "mode" && message.mode === "px")) {
+        if (
+          message.t === "px" ||
+          message.t === "vid" ||
+          message.t === "vid-cfg" ||
+          (message.t === "mode" && message.mode === "px")
+        ) {
           ensurePxView().handle(message);
         } else if (message.t === "mode") {
           pxView?.handle(message);
@@ -717,7 +723,13 @@ export function App() {
               if (tab !== active.id) socket?.send({ t: "nav", tab, action: "activate" });
               socket?.send(
                 requestedMode === "px"
-                  ? { t: "mode", tab, mode: "px", quality: preferredPxQuality(viewStorage()) }
+                  ? {
+                      t: "mode",
+                      tab,
+                      mode: "px",
+                      quality: preferredPxQuality(viewStorage()),
+                      ...videoOption(),
+                    }
                   : { t: "mode", tab, mode: "dom" },
               );
               if (pendingUrlRef.current !== null) {
@@ -877,7 +889,7 @@ export function App() {
     }
     socketRef.current?.send(
       mode === "px"
-        ? { t: "mode", tab: activeTab, mode, quality: pxQuality }
+        ? { t: "mode", tab: activeTab, mode, quality: pxQuality, ...videoOption() }
         : { t: "mode", tab: activeTab, mode },
     );
     setViewMode(mode);
@@ -921,7 +933,13 @@ export function App() {
           viewStorage().setItem(PX_QUALITY_STORAGE_KEY, quality);
           // Applied right away in the pixel view, otherwise the next time it opens.
           if (pixelMode && activeTab !== null)
-            socketRef.current?.send({ t: "mode", tab: activeTab, mode: "px", quality });
+            socketRef.current?.send({
+              t: "mode",
+              tab: activeTab,
+              mode: "px",
+              quality,
+              ...videoOption(),
+            });
         }}
         serverStatus={serverStatus}
         rttMs={browserView ? rttMs : null}

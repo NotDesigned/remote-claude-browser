@@ -6,6 +6,7 @@
  * Returning to dom removes an owned canvas; P2-PX-G immediately follows the mode message with a
  * canonical join snapshot, which rebuilds a fresh Replayer.
  */
+import { createVideoStream, videoOption, type VideoStream } from "./px-video";
 import { GRID_COLUMNS, changedTiles, type TileGrid } from "./px-tiles";
 import { Mod, type Down, type TabId, type Up } from "@mirror/protocol";
 import { attachPxKeyboard } from "./px-ime";
@@ -13,6 +14,7 @@ import { createTouchMouseFilter } from "./input/pointer";
 
 type ModeMessage = Extract<Down, { t: "mode" }>;
 type PxFrame = Extract<Down, { t: "px" }>;
+type VideoMessage = Extract<Down, { t: "vid-cfg" | "vid" }>;
 type PointerMessage = Extract<Up, { t: "ptr" }>;
 
 export interface PxViewOptions {
@@ -24,7 +26,7 @@ export interface PxViewOptions {
 }
 
 export interface PxView {
-  handle(message: ModeMessage | PxFrame): void;
+  handle(message: ModeMessage | PxFrame | VideoMessage): void;
   selectTab(tab: TabId): void;
   getCanvas(): HTMLCanvasElement | null;
   destroy(): void;
@@ -37,6 +39,42 @@ export function createPxView(options: PxViewOptions): PxView {
   let detachInput = () => {};
   let painter: ReturnType<typeof createPxFramePainter> | null = null;
   let destroyed = false;
+  let video: VideoStream | null = null;
+
+  const closeVideo = () => {
+    video?.close();
+    video = null;
+  };
+  const videoStream = (): VideoStream =>
+    (video ??= createVideoStream({
+      onFrame(frame, w, h) {
+        try {
+          if (activeTab === null || destroyed) return;
+          const target = enterPx(activeTab);
+          const context = target.getContext("2d");
+          if (context)
+            paintPicture(
+              target,
+              context,
+              frame,
+              frame.displayWidth,
+              frame.displayHeight,
+              w,
+              h,
+              false,
+            );
+        } finally {
+          frame.close();
+        }
+      },
+      requestKeyframe() {
+        if (activeTab !== null) options.send({ t: "vid-key", tab: activeTab });
+      },
+      onUnusable() {
+        if (activeTab !== null)
+          options.send({ t: "mode", tab: activeTab, mode: "px", video: false });
+      },
+    }));
 
   const removeCanvas = () => {
     painter?.dispose();
@@ -76,15 +114,21 @@ export function createPxView(options: PxViewOptions): PxView {
         if (message.tab !== activeTab) return;
         // A mode announcement alone must not disturb rrweb's live iframe or its document-set
         // observers. Pixel mode claims the shared host only when an actual frame is available.
-        if (message.mode === "dom" && canvas !== null) enterDom(message.tab);
+        if (message.mode === "dom") {
+          closeVideo();
+          if (canvas !== null) enterDom(message.tab);
+        } else if (videoOption().video) videoStream().needKeyframe();
         return;
       }
       if (message.tab !== activeTab || modes.get(message.tab) !== "px") return;
+      if (message.t === "vid-cfg") return videoStream().configure(message);
+      if (message.t === "vid") return videoStream().decode(message);
       enterPx(message.tab);
       painter?.enqueue(message);
     },
     selectTab(tab) {
       if (destroyed || tab === activeTab) return;
+      closeVideo();
       removeCanvas();
       activeTab = tab;
     },
@@ -92,6 +136,7 @@ export function createPxView(options: PxViewOptions): PxView {
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      closeVideo();
       removeCanvas();
       modes.clear();
       activeTab = null;
@@ -152,20 +197,73 @@ function logicalSize(canvas: HTMLCanvasElement): { width: number; height: number
   return logicalSizes.get(canvas) ?? { width: canvas.width, height: canvas.height };
 }
 
-function imageGrid(canvas: HTMLCanvasElement, image: HTMLImageElement): TileGrid | null {
+function pictureGrid(
+  canvas: HTMLCanvasElement,
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+): TileGrid | null {
   try {
     const columns = GRID_COLUMNS;
-    const rows = Math.max(1, Math.round((columns * image.naturalHeight) / image.naturalWidth));
+    const rows = Math.max(1, Math.round((columns * height) / width));
     const small = canvas.ownerDocument.createElement("canvas");
     small.width = columns;
     small.height = rows;
     const context = small.getContext("2d", { willReadFrequently: true });
     if (!context) return null;
-    context.drawImage(image, 0, 0, columns, rows);
+    context.drawImage(source, 0, 0, columns, rows);
     return { columns, rows, pixels: context.getImageData(0, 0, columns, rows).data };
   } catch {
     return null;
   }
+}
+
+/**
+ * Draws one picture. The canvas holds every device pixel received, while page coordinates stay in
+ * `logicalWidth`/`logicalHeight`. Moving frames stop at CSS pixels and a still page's sharp frame has
+ * every device pixel, so the larger canvas stays while the two show the same page shape.
+ */
+function paintPicture(
+  canvas: HTMLCanvasElement,
+  context: CanvasRenderingContext2D,
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+  logicalWidth: number,
+  logicalHeight: number,
+  sharp: boolean,
+): void {
+  logicalSizes.set(canvas, {
+    width: positiveDimension(logicalWidth),
+    height: positiveDimension(logicalHeight),
+  });
+  const sameShape =
+    canvas.height > 0 && Math.abs(canvas.width / canvas.height - width / height) < 0.01;
+  const previous = sameShape ? sharpGrids.get(canvas) : undefined;
+  const grid = previous || sharp ? pictureGrid(canvas, source, width, height) : null;
+  // Any frame below the canvas's resolution patches it rather than replacing it.
+  const lowerResolution = !sharp || width < canvas.width;
+  const tiles = lowerResolution && previous && grid ? changedTiles(previous, grid) : null;
+  if (tiles && grid && tiles.length <= (grid.columns * grid.rows) / 4) {
+    // A small change, such as a blinking caret, leaves the sharp picture around it intact.
+    const tileWidth = canvas.width / grid.columns;
+    const tileHeight = canvas.height / grid.rows;
+    const toSource = width / canvas.width;
+    for (const { column, row } of tiles) {
+      const x = Math.floor(column * tileWidth);
+      const y = Math.floor(row * tileHeight);
+      const w = Math.ceil(tileWidth);
+      const h = Math.ceil(tileHeight);
+      context.drawImage(source, x * toSource, y * toSource, w * toSource, h * toSource, x, y, w, h);
+    }
+    sharpGrids.set(canvas, grid);
+    return;
+  }
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  context.drawImage(source, 0, 0, width, height);
+  if (sharp && grid) sharpGrids.set(canvas, grid);
+  else sharpGrids.delete(canvas);
 }
 
 function decodePxFrame(
@@ -199,42 +297,16 @@ function decodePxFrame(
     try {
       // Resizing clears the canvas, even when assigned its current dimensions. Keep the last
       // painted frame until a replacement is decoded, then resize and draw in the same task.
-      // The canvas holds every device pixel received; page coordinates stay in `frame.w`/`h`.
-      logicalSizes.set(canvas, {
-        width: positiveDimension(frame.w),
-        height: positiveDimension(frame.h),
-      });
-      const width = positiveDimension(image.naturalWidth || frame.w);
-      const height = positiveDimension(image.naturalHeight || frame.h);
-      // Chromium's moving frames are limited to CSS pixels, while a still page's sharp frame has
-      // every device pixel. Keep the larger canvas while the two show the same page shape.
-      const sameShape =
-        canvas.height > 0 && Math.abs(canvas.width / canvas.height - width / height) < 0.01;
-      const previous = sameShape ? sharpGrids.get(canvas) : undefined;
-      const grid = previous || frame.sharp ? imageGrid(canvas, image) : null;
-      // Any frame below the canvas's resolution patches it rather than replacing it, PNG included.
-      const lowerResolution = !frame.sharp || width < canvas.width;
-      const tiles = lowerResolution && previous && grid ? changedTiles(previous, grid) : null;
-      if (tiles && tiles.length <= (grid!.columns * grid!.rows) / 4) {
-        // A small change, such as a blinking caret, leaves the sharp picture around it intact.
-        const tileWidth = canvas.width / grid!.columns;
-        const tileHeight = canvas.height / grid!.rows;
-        const toImage = width / canvas.width;
-        for (const { column, row } of tiles) {
-          const x = Math.floor(column * tileWidth);
-          const y = Math.floor(row * tileHeight);
-          const w = Math.ceil(tileWidth);
-          const h = Math.ceil(tileHeight);
-          context.drawImage(image, x * toImage, y * toImage, w * toImage, h * toImage, x, y, w, h);
-        }
-        sharpGrids.set(canvas, grid!);
-      } else {
-        if (canvas.width !== width) canvas.width = width;
-        if (canvas.height !== height) canvas.height = height;
-        context.drawImage(image, 0, 0, width, height);
-        if (frame.sharp && grid) sharpGrids.set(canvas, grid);
-        else sharpGrids.delete(canvas);
-      }
+      paintPicture(
+        canvas,
+        context,
+        image,
+        positiveDimension(image.naturalWidth || frame.w),
+        positiveDimension(image.naturalHeight || frame.h),
+        frame.w,
+        frame.h,
+        frame.sharp === true,
+      );
     } finally {
       complete();
     }

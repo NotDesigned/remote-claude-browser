@@ -364,6 +364,10 @@ async function main(): Promise<void> {
       }
       return;
     }
+    if (msg.t === "vid-key") {
+      screencast?.requestKeyframe(msg.tab);
+      return;
+    }
     if (msg.t === "mode") {
       await screencast?.handle(msg);
       return;

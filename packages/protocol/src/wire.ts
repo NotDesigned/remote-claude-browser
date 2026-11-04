@@ -113,6 +113,18 @@ export type Down =
   | { t: "resync"; tab: TabId }
   | { t: "input-status"; tab: TabId; failed: boolean }
   | { t: "mode"; tab: TabId; mode: "dom" | "px" }
+  /** Starts or restarts the pixel view's video stream; a keyframe follows. */
+  | { t: "vid-cfg"; tab: TabId; codec: string; description: string }
+  /** One H.264 frame, as a binary frame on the wire. `seq` reveals a dropped frame. */
+  | {
+      t: "vid";
+      tab: TabId;
+      seq: number;
+      key: boolean;
+      w: number;
+      h: number;
+      data: Uint8Array;
+    }
   /** A stylesheet that following snapshots refer to by this hash (see sheets.ts). */
   | { t: "css"; hash: string; text: string }
   /** The requested geometry already matches the current snapshot; input may start. */
@@ -209,7 +221,10 @@ export type Up =
       action: "go" | "back" | "fwd" | "reload" | "newtab" | "close" | "activate";
       url?: string;
     }
-  | { t: "mode"; tab: TabId; mode: "dom" | "px"; quality?: PxQuality }
+  /** `video` says this browser can decode H.264 frames, which replace JPEG frames. */
+  | { t: "mode"; tab: TabId; mode: "dom" | "px"; quality?: PxQuality; video?: boolean }
+  /** The video decoder lost its place and needs a new stream from a keyframe. */
+  | { t: "vid-key"; tab: TabId }
   /**
    * The viewer received one `px` frame. The gateway keeps at most a couple of frames in flight
    * per viewer and replaces any newer waiting frame, so slow links show the latest picture
@@ -240,6 +255,7 @@ const DOWN_TAGS: ReadonlySet<string> = new Set([
   "server-status",
   "view-ok",
   "css",
+  "vid-cfg",
   "px",
   "rtc-sig",
   "download",
@@ -262,6 +278,7 @@ const UP_TAGS: ReadonlySet<string> = new Set([
   "nav",
   "mode",
   "px-ack",
+  "vid-key",
   "resync-req",
   "driver-transfer",
   "rtc-sig",
@@ -349,6 +366,49 @@ export function decodeResumeCursors(raw: string | null | undefined): ResumeCurso
  * Binary pixel frames skip base64 (+33 %) and a pointless deflate pass over JPEG bytes:
  * [0x50 'P'][version 1][tab length u16][tab UTF-8][width u16][height u16][JPEG bytes].
  */
+const VID_BINARY_MAGIC = 0x56;
+const VID_BINARY_VERSION = 1;
+
+export function encodeVidBinary(message: Extract<Down, { t: "vid" }>): Uint8Array {
+  const tabBytes = new TextEncoder().encode(message.tab);
+  if (tabBytes.length > 0xffff) throw new RangeError("tab id too long");
+  const frame = new Uint8Array(4 + tabBytes.length + 9 + message.data.length);
+  const view = new DataView(frame.buffer);
+  frame[0] = VID_BINARY_MAGIC;
+  frame[1] = VID_BINARY_VERSION;
+  view.setUint16(2, tabBytes.length);
+  frame.set(tabBytes, 4);
+  const at = 4 + tabBytes.length;
+  view.setUint16(at, Math.max(0, Math.min(0xffff, Math.round(message.w))));
+  view.setUint16(at + 2, Math.max(0, Math.min(0xffff, Math.round(message.h))));
+  view.setUint32(at + 4, message.seq);
+  frame[at + 8] = message.key ? 1 : 0;
+  frame.set(message.data, at + 9);
+  return frame;
+}
+
+/** Returns null for anything that is not a well-formed binary video frame. */
+export function decodeVidBinary(
+  buffer: ArrayBuffer | Uint8Array,
+): Extract<Down, { t: "vid" }> | null {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  if (bytes.length < 4 || bytes[0] !== VID_BINARY_MAGIC || bytes[1] !== VID_BINARY_VERSION)
+    return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const tabLength = view.getUint16(2);
+  const at = 4 + tabLength;
+  if (bytes.length < at + 9) return null;
+  return {
+    t: "vid",
+    tab: new TextDecoder().decode(bytes.subarray(4, at)),
+    w: view.getUint16(at),
+    h: view.getUint16(at + 2),
+    seq: view.getUint32(at + 4),
+    key: bytes[at + 8] === 1,
+    data: bytes.subarray(at + 9),
+  };
+}
+
 const PX_BINARY_MAGIC = 0x50;
 const PX_BINARY_VERSION = 1;
 
