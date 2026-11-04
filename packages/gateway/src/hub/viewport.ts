@@ -1,7 +1,7 @@
 /**
  * Gateway viewport agreement.
  *
- * Driver `view` messages lock input immediately, debounce for 300ms, apply Chromium device
+ * Driver `view` messages lock input immediately, debounce bursts for 300ms, apply Chromium device
  * metrics, and force a viewport snapshot. Only an acknowledgement of the final viewport epoch
  * unlocks that viewer. Nav/trim/resync epochs never perturb the geometry gate (H3).
  */
@@ -128,6 +128,7 @@ interface RequestedViewport {
 
 interface TabNegotiation {
   desired: RequestedViewport;
+  lastViewAt: number;
   appliedRevision: number;
   applying: boolean;
   inFlight: boolean;
@@ -155,9 +156,12 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
       if (msg.t === "view-ack") return gate.acknowledge(viewerId, msg.tab, msg.epoch);
       if (!deps.isDriver(viewerId) || !isValidViewport(msg)) return false;
 
+      // Only a burst of changes needs debouncing; a lone request applies at once.
+      const previous = tabs.get(msg.tab)?.lastViewAt;
+      const inBurst = previous !== undefined && now() - previous < debounceMs;
       const desired: RequestedViewport = {
         revision: ++nextRevision,
-        requestedAt: now(),
+        requestedAt: inBurst ? now() : now() - debounceMs,
         w: msg.w,
         h: msg.h,
         dpr: msg.dpr,
@@ -171,11 +175,13 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
           existing.desired.revision <= existing.appliedRevision);
       const state = existing ?? {
         desired,
+        lastViewAt: now(),
         appliedRevision: 0,
         applying: false,
         inFlight: false,
       };
       state.desired = desired;
+      state.lastViewAt = now();
       tabs.set(msg.tab, state);
       resetTabs.delete(msg.tab);
       if (settled && applyUnchanged(viewerId, msg, state)) return true;

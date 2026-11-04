@@ -182,6 +182,14 @@ describe("ViewportAgreement", () => {
       expect(agreement.handle("follower", { t: "view", tab: "t1", w: 500, h: 400, dpr: 1 })).toBe(
         false,
       );
+      // A lone request applies at once; the debounce below covers the burst that follows it.
+      agreement.handle("driver", { t: "view", tab: "t1", w: 600, h: 450, dpr: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toHaveLength(1);
+      agreement.noteSnapshot({ tab: "t1", epoch: 1, reason: "viewport" });
+      calls.length = 0;
+      reasons.length = 0;
+
       expect(agreement.handle("driver", { t: "view", tab: "t1", w: 700, h: 500, dpr: 1 })).toBe(
         true,
       );

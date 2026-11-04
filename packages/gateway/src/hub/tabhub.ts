@@ -126,6 +126,9 @@ export class TabHub {
       if (!msg.isTop) return [];
       if (this.hasDocument && msg.docId === this.docId) return [];
 
+      // A viewport agreement in progress still needs its snapshot from the new document.
+      const owesViewport =
+        this.pendingSnapshotReason === "viewport" || this.queuedSnapshotReason === "viewport";
       this.hasDocument = true;
       this.docId = msg.docId;
       this.meta = null;
@@ -141,6 +144,7 @@ export class TabHub {
       this.clearSnapshotRetry(true);
       this.clearSnapshotRequest();
       this.requestSnapshot("nav");
+      if (owesViewport) this.queuedSnapshotReason = "viewport";
       return [];
     }
 

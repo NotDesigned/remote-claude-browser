@@ -75,6 +75,21 @@ function assertJoinInvariant(hub: TabHub): void {
   expect(hub.seq).toBe(batched.seq + batched.data.length - 1);
 }
 
+describe("TabHub viewport across navigation", () => {
+  it("still delivers a viewport snapshot when a new document interrupts the request", () => {
+    const hub = new TabHub({ sessionId: "session", tabId: "tab" });
+    hub.ingest(hello(1));
+    hub.ingest(rrweb(1, meta(1)));
+    hub.ingest(rrweb(1, full(1)));
+    hub.requestSnapshot("viewport");
+    hub.ingest(hello(2));
+    hub.ingest(rrweb(2, meta(2)));
+    expect(snapshotMessage(hub.ingest(rrweb(2, full(2)))).reason).toBe("nav");
+    hub.ingest(rrweb(2, meta(2)));
+    expect(snapshotMessage(hub.ingest(rrweb(2, full(2)))).reason).toBe("viewport");
+  });
+});
+
 describe("TabHub recorder pause", () => {
   const ready = () => {
     const hub = new TabHub({ sessionId: "session", tabId: "tab" });
