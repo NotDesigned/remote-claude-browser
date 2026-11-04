@@ -136,7 +136,10 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   // A cross-origin child's snapshot is the only way its fonts reach the replay.
   const fontCapture = installFontCapture(window, {
     onLateFont: () => {
-      if (isCrossOriginChild() && recordReadiness.isStarted()) record.takeFullSnapshot(true);
+      if (!isCrossOriginChild() || !recordReadiness.isStarted()) return;
+      record.takeFullSnapshot(true);
+      // That replaced the nodes of the frames below, which have to report again.
+      broadcastStitchSync();
     },
   });
 
