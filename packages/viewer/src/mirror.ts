@@ -29,6 +29,7 @@ import {
   type CanvasRtcMessage,
   type CanvasRtcOptions,
 } from "./media/canvas-rtc";
+import { REPLAY_THUMBNAIL_RULES } from "./replay-thumbnails";
 
 type Snapshot = Extract<Down, { t: "snapshot" }>;
 type Delta = Extract<Down, { t: "delta" }>;
@@ -372,7 +373,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
         mouseTail: false,
         // rrweb inserts these rules into the replay document again after every FullSnapshot.
         // Keep replay cursor chrome visible, but permanently remove it from hit testing.
-        insertStyleRules: [REPLAY_CURSOR_PASSTHROUGH_RULE],
+        insertStyleRules: [REPLAY_CURSOR_PASSTHROUGH_RULE, ...REPLAY_THUMBNAIL_RULES],
         // Old join-buffer deltas are applied synchronously. rrweb's virtual-DOM optimization
         // otherwise waits for a replay Flush event that live addEvent() does not emit.
         useVirtualDom: false,

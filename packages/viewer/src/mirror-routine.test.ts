@@ -1,3 +1,4 @@
+import { REPLAY_THUMBNAIL_RULES } from "./replay-thumbnails";
 import type { eventWithTime } from "@mirror/protocol";
 import { EventType, IncrementalSource } from "@mirror/protocol";
 import { vi, describe, expect, it } from "vitest";
@@ -317,6 +318,9 @@ describe("D10 recovery triggers", () => {
     expect(original.iframe.getAttribute("scrolling")).toBe("auto");
     expect(original.iframe.style.pointerEvents).toBe("auto");
     expect(original.config.insertStyleRules).toContain(REPLAY_CURSOR_PASSTHROUGH_RULE);
+    expect(original.config.insertStyleRules).toEqual(
+      expect.arrayContaining(REPLAY_THUMBNAIL_RULES),
+    );
     expect(original.cursorStyle).toMatchObject({ pointerEvents: "none", priority: "important" });
 
     mirror.handle({
