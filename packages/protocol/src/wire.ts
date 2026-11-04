@@ -194,7 +194,7 @@ export type Up =
       /** Wheel deltas. */
       dx?: number;
       dy?: number;
-      clicks?: 1 | 2;
+      clicks?: 1 | 2 | 3;
     }
   | { t: "key"; tab: TabId; kind: "down" | "up"; key: string; code: string; mods: Mods }
   /** IME commit + paste ONLY (D3/D5) -> Input.insertText. */

@@ -24,13 +24,6 @@ export function TabStrip({ tabs, chromeByTab = {}, send, onActivate }: TabStripP
 
   return (
     <nav id="tabstrip" aria-label="Browser tabs">
-      <span className="tabstrip-brand" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" focusable="false">
-          <rect x="3" y="4" width="18" height="14" rx="3" />
-          <path d="M8 21h8m-4-3v3M3 9h18" />
-        </svg>
-        <span>远程浏览器</span>
-      </span>
       <div className="tabstrip-tabs">
         <div role="tablist">
           {tabs.map((tab) => {

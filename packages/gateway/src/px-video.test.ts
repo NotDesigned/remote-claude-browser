@@ -80,7 +80,7 @@ describe("ffmpegGrabArguments", () => {
     const args = ffmpegGrabArguments(16, { left: 1280, width: 2160, height: 1350 }, ":99").join(
       " ",
     );
-    expect(args).toContain("-f x11grab -draw_mouse 0 -framerate 30");
+    expect(args).toContain("-f x11grab -draw_mouse 0 -framerate 24");
     expect(args).toContain("-video_size 2160x1350 -i :99+1280,0");
     expect(args).toContain("mpdecimate=hi=0:lo=0:frac=0:max=0");
     expect(args).toContain("out_color_matrix=bt709");

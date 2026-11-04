@@ -92,10 +92,12 @@ export function Hud({
         title="网络往返延迟（RTT）和当前下载速度。延迟不包含页面处理、回放缓冲和图像绘制耗时"
       >
         <span class="hud-state-dot" aria-hidden="true" />
-        <span>
+        <span class="hud-summary-text">
           {roundedRtt === null ? "RTT —" : `RTT ${roundedRtt} ms`}
-          {speedBps === null ? "" : ` · ${formatSpeed(speedBps)}`}
-          {pixelMode && frames ? ` · ${frames.display} fps` : ""}
+          <span class="hud-summary-extra">
+            {speedBps === null ? "" : ` · ${formatSpeed(speedBps)}`}
+            {pixelMode && frames ? ` · ${frames.display} fps` : ""}
+          </span>
         </span>
         {stormTabs.length > 0 && <strong class="hud-storm-pill">同步较多</strong>}
         <svg

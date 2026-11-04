@@ -355,6 +355,8 @@ export function attachPxInput(options: PxInputOptions): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const keyboard = attachPxKeyboard(options);
   const mouseFilter = createTouchMouseFilter(now);
+  const page = options.canvas.ownerDocument;
+  let dragging = false;
   let touch: {
     startX: number;
     startY: number;
@@ -377,7 +379,7 @@ export function attachPxInput(options: PxInputOptions): () => void {
       button: mouseButton(event.button),
       buttons: event.buttons,
       mods: eventMods(event),
-      clicks: event.detail >= 2 ? 2 : 1,
+      clicks: event.detail >= 3 ? 3 : event.detail === 2 ? 2 : 1,
       ...(kind === "wheel" ? { dx: event.deltaX ?? 0, dy: event.deltaY ?? 0 } : {}),
     });
   };
@@ -389,10 +391,17 @@ export function attachPxInput(options: PxInputOptions): () => void {
     lastMoveAt = now();
     sendPointer(event, "move");
   };
+  /** A press or release acts where the page last saw the pointer, so the page must be told first. */
+  const sendPendingMove = () => {
+    if (timer !== null) cancel(timer);
+    flushMove();
+  };
   const onMove = (event: MouseEvent) => {
     if (!event.isTrusted || mouseFilter.ignore(event)) return;
+    // Dragging follows the pointer closely, as a selection ends where the page last saw it.
+    const interval = event.buttons === 0 ? 50 : 20;
     const elapsed = now() - lastMoveAt;
-    if (elapsed >= 50) {
+    if (elapsed >= interval) {
       if (timer !== null) cancel(timer);
       timer = null;
       trailing = null;
@@ -400,21 +409,40 @@ export function attachPxInput(options: PxInputOptions): () => void {
       sendPointer(event, "move");
     } else {
       trailing = event;
-      if (timer === null) timer = schedule(flushMove, Math.max(0, 50 - elapsed));
+      if (timer === null) timer = schedule(flushMove, Math.max(0, interval - elapsed));
     }
   };
   const onDown = (event: MouseEvent) => {
     if (!event.isTrusted || mouseFilter.ignore(event)) return;
     event.preventDefault();
     keyboard.focus(event);
+    sendPendingMove();
     sendPointer(event, "down");
+    // The button can come up anywhere, and the page should keep following until it does.
+    if (!dragging) {
+      dragging = true;
+      page.addEventListener("mousemove", onDragMove);
+    }
+  };
+  const onDragMove = (event: MouseEvent) => {
+    if (event.target !== options.canvas) onMove(event);
+  };
+  const stopDragging = () => {
+    dragging = false;
+    page.removeEventListener("mousemove", onDragMove);
   };
   const onUp = (event: MouseEvent) => {
-    if (event.isTrusted && !mouseFilter.ignore(event)) sendPointer(event, "up");
+    if (!event.isTrusted || mouseFilter.ignore(event)) return;
+    const wasDragging = dragging;
+    if (event.buttons === 0) stopDragging();
+    if (event.target !== options.canvas && !wasDragging) return;
+    sendPendingMove();
+    sendPointer(event, "up");
   };
   const onWheel = (event: WheelEvent) => {
     if (!event.isTrusted) return;
     event.preventDefault();
+    sendPendingMove();
     sendPointer(event, "wheel");
   };
   const onContextMenu = (event: MouseEvent) => {
@@ -519,7 +547,8 @@ export function attachPxInput(options: PxInputOptions): () => void {
 
   options.canvas.addEventListener("mousemove", onMove);
   options.canvas.addEventListener("mousedown", onDown);
-  options.canvas.addEventListener("mouseup", onUp);
+  // Not on the canvas alone: a selection often ends outside it.
+  page.addEventListener("mouseup", onUp);
   options.canvas.addEventListener("wheel", onWheel, { passive: false });
   options.canvas.addEventListener("contextmenu", onContextMenu);
   const touchOptions = { passive: false } as const;
@@ -530,7 +559,8 @@ export function attachPxInput(options: PxInputOptions): () => void {
   return () => {
     options.canvas.removeEventListener("mousemove", onMove);
     options.canvas.removeEventListener("mousedown", onDown);
-    options.canvas.removeEventListener("mouseup", onUp);
+    page.removeEventListener("mouseup", onUp);
+    stopDragging();
     options.canvas.removeEventListener("wheel", onWheel);
     keyboard.dispose();
     options.canvas.removeEventListener("contextmenu", onContextMenu);

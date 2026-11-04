@@ -287,7 +287,7 @@ describe("createScreencast", () => {
     it("pushes a frame out of the encoder when the next is not right behind it", async () => {
       const { browser, encoders, controller } = await setup();
       browser.frame("cdp-1", frame(1, "AAAA"));
-      await vi.advanceTimersByTimeAsync(39);
+      await vi.advanceTimersByTimeAsync(49);
       expect(encoders[0]!.written).toHaveLength(1);
       await vi.advanceTimersByTimeAsync(1);
       expect(encoders[0]!.written).toEqual(["AAAA", "AAAA"]);
@@ -300,21 +300,21 @@ describe("createScreencast", () => {
       const { browser, encoders, controller } = await setup();
       for (let index = 0; index < 5; index++) {
         browser.frame("cdp-1", frame(index, `FRAME${index}`));
-        await vi.advanceTimersByTimeAsync(35);
+        await vi.advanceTimersByTimeAsync(45);
       }
       expect(encoders[0]!.written).toHaveLength(5);
       controller.dispose();
     });
 
-    it("stays at 30 fps and still delivers the newest picture", async () => {
+    it("stays at 24 fps and still delivers the newest picture", async () => {
       const { browser, encoders, controller } = await setup();
       for (let index = 0; index < 60; index++) {
         browser.frame("cdp-1", frame(index, `FRAME${String(index).padStart(2, "0")}`));
         await vi.advanceTimersByTimeAsync(10);
       }
       // Six hundred milliseconds of frames at a hundred per second.
-      expect(encoders[0]!.written.length).toBeLessThanOrEqual(19);
-      await vi.advanceTimersByTimeAsync(33);
+      expect(encoders[0]!.written.length).toBeLessThanOrEqual(15);
+      await vi.advanceTimersByTimeAsync(42);
       expect(encoders[0]!.written.at(-1)).toBe(Buffer.from("FRAME59", "base64").toString("base64"));
       controller.dispose();
     });
@@ -322,7 +322,7 @@ describe("createScreencast", () => {
     it("marks repeated frames so the viewer can skip drawing them", async () => {
       const { browser, published, encoders, controller } = await setup();
       browser.frame("cdp-1", frame(1, "AAAA"));
-      await vi.advanceTimersByTimeAsync(40);
+      await vi.advanceTimersByTimeAsync(50);
       encoders[0]!.events.onChunk(Buffer.from([9]), true);
       encoders[0]!.events.onChunk(Buffer.from([8]), false);
       expect(published.flatMap((message) => (message.t === "vid" ? [message.repeat] : []))).toEqual(
@@ -334,7 +334,7 @@ describe("createScreencast", () => {
     it("reports frames per second at each stage", async () => {
       const { browser, published, encoders, controller } = await setup();
       browser.frame("cdp-1", frame(1, "AAAA"));
-      await vi.advanceTimersByTimeAsync(40);
+      await vi.advanceTimersByTimeAsync(50);
       // One real frame, and the repeat that pushed it out of the encoder.
       encoders[0]!.events.onChunk(Buffer.from([9]), true);
       encoders[0]!.events.onChunk(Buffer.from([8]), false);

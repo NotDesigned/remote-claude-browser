@@ -20,7 +20,7 @@
   --focus: #a35c3f;
   --bubble: #f0ede6;
   --code-bg: rgb(60 50 30 / 5%);
-  --shellbar-height: 56px;
+  --shellbar-height: 44px;
   --chrome-border: var(--line);
   --chrome-ink: var(--ink);
   --chrome-muted: var(--muted);
@@ -66,7 +66,8 @@ body {
 #shell > * {
   flex: none;
 }
-#shell[data-tabs="hidden"] {
+#shell {
+  /* The tabs share the top bar. */
   --tabstrip-height: 0px;
 }
 #shell[data-address="hidden"] {
@@ -94,11 +95,11 @@ body {
   position: relative;
   z-index: 40;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   height: var(--shellbar-height);
-  padding: 0 12px;
+  padding: 0 8px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
   box-sizing: border-box;
@@ -113,7 +114,6 @@ body {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
-.shell-bar-start,
 .shell-bar-end {
   display: flex;
   align-items: center;
@@ -124,10 +124,15 @@ body {
   justify-content: flex-end;
   gap: 8px;
 }
-.shell-brand {
-  font-size: 16px;
-  font-weight: 600;
-  white-space: nowrap;
+.shell-bar-tabs {
+  min-width: 0;
+  overflow: hidden;
+}
+#shell #shell-bar #tabstrip {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 .shell-icon {
   display: inline-flex;
@@ -162,41 +167,25 @@ body {
 .shell-icon circle {
   fill: currentColor;
 }
-.shell-address {
-  min-width: 0;
-  max-width: 280px;
-  height: 34px;
-  padding: 0 12px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 17px;
-  background: var(--sunken);
-  color: var(--muted);
-  font-size: 13px;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
 
 /* View switch */
 .shell-views {
   display: flex;
   gap: 2px;
-  padding: 3px;
+  padding: 2px;
   border: 1px solid var(--line);
-  border-radius: 11px;
+  border-radius: 10px;
   background: var(--sunken);
 }
 .shell-views button {
-  min-width: 64px;
-  height: 34px;
-  padding: 0 16px;
+  min-width: 52px;
+  height: 30px;
+  padding: 0 12px;
   border: 0;
   border-radius: 8px;
   background: transparent;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 13px;
   cursor: pointer;
 }
 .shell-views button[aria-pressed="true"] {
@@ -415,23 +404,13 @@ body {
 
 @media (max-width: 760px) {
   #shell-bar {
-    grid-template-columns: auto minmax(0, 1fr) auto;
     gap: 6px;
     padding: 0 6px;
   }
-  .shell-brand,
-  .shell-wide-only,
   .shell-status-text {
     display: none;
   }
-  .shell-bar-start:empty {
-    display: none;
-  }
-  .shell-views {
-    justify-content: stretch;
-  }
   .shell-views button {
-    flex: 1;
     min-width: 0;
     padding: 0 8px;
   }

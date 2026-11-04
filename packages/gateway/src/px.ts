@@ -39,10 +39,10 @@ const BURST_GAP_MS = 150;
 const ZOOM_SETTLE_MS = 1_500;
 const ZOOM_POLL_MS = 50;
 const STATS_INTERVAL_MS = 1_000;
-/** Beyond this the held frame is pushed out; at 25 fps and up the next frame does it for free. */
-const VIDEO_FLUSH_MS = 40;
-/** 30 fps. Chromium can produce more, which only costs CPU this view has better uses for. */
-const VIDEO_MIN_FRAME_GAP_MS = 33;
+/** Beyond this the held frame is pushed out; at full frame rate the next frame does it for free. */
+const VIDEO_FLUSH_MS = 50;
+/** 24 fps. Chromium can produce more, which only costs CPU this view has better uses for. */
+const VIDEO_MIN_FRAME_GAP_MS = 42;
 /** A page that never stops, such as a shimmer on one row, still gets sharp around that row. */
 const SHARP_MOTION_INTERVAL_MS = 3_000;
 /**

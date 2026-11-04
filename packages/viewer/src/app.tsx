@@ -163,9 +163,6 @@ export function App() {
   // A claude.ai link clicked in chat: opened in the remote browser once the page view connects.
   const pendingUrlRef = useRef<string | null>(null);
   const pageKey = useRef(globalThis.crypto.randomUUID()).current;
-  const [chromeVisible, setChromeVisible] = useState(
-    () => viewStorage().getItem("mirror.browser-chrome") !== "hidden",
-  );
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => {
     const stored = viewStorage().getItem("mirror.theme");
     return stored === "light" || stored === "dark" ? stored : "auto";
@@ -910,9 +907,7 @@ export function App() {
                 : "重新连接中";
 
   const browserView = viewMode !== "chat";
-  const showTabs = browserView && (chromeVisible || tabs.length > 1);
   const activeChrome = activeTab === null ? null : (chromeByTab[activeTab] ?? null);
-  const activeUrl = activeChrome?.url ?? tabs.find((tab) => tab.id === activeTab)?.url ?? null;
   const shellStatus: { text: string; tone: "ok" | "busy" | "bad" } =
     clientPhase !== "ready"
       ? { text: connectionLabel, tone: clientPhase === "starting" ? "busy" : "bad" }
@@ -952,31 +947,13 @@ export function App() {
       id="shell"
       data-theme={theme}
       data-view={browserView ? "browser" : "chat"}
-      data-tabs={showTabs ? "shown" : "hidden"}
-      data-address={browserView && chromeVisible ? "shown" : "hidden"}
+      data-address={browserView ? "shown" : "hidden"}
     >
       <ShellBar
         viewMode={browserView ? (activeTab !== null && modeByTab[activeTab]) || viewMode : "chat"}
         onViewMode={changeView}
         pixelAvailable={pixelAvailable}
         status={shellStatus}
-        chromeVisible={chromeVisible}
-        onToggleChrome={() =>
-          setChromeVisible((visible) => {
-            viewStorage().setItem("mirror.browser-chrome", visible ? "hidden" : "shown");
-            return !visible;
-          })
-        }
-        url={browserView ? activeUrl : null}
-        canBack={!!activeChrome?.canBack}
-        onNav={(action, url) => {
-          if (activeTab === null) return;
-          socketRef.current?.send(
-            url === undefined
-              ? { t: "nav", tab: activeTab, action }
-              : { t: "nav", tab: activeTab, action, url },
-          );
-        }}
         theme={themePreference}
         onTheme={setThemePreference}
         pxQuality={pxQuality}
@@ -1003,7 +980,20 @@ export function App() {
             ? () => void closeClientSession()
             : undefined
         }
-      />
+      >
+        {browserView && (
+          <TabStrip
+            tabs={tabs}
+            chromeByTab={chromeByTab}
+            onActivate={(tab) => {
+              pxViewRef.current?.selectTab(tab);
+              if (modeByTab[tab] !== "px") mirrorRef.current?.selectTab(tab);
+              setActiveTab(tab);
+            }}
+            send={(message) => socketRef.current?.send(message)}
+          />
+        )}
+      </ShellBar>
       <div id="shell-banners">
         {warning && (
           <p class="shell-banner" data-tone="warn" role="status">
@@ -1034,19 +1024,7 @@ export function App() {
           />
         )}
       </div>
-      {showTabs && (
-        <TabStrip
-          tabs={tabs}
-          chromeByTab={chromeByTab}
-          onActivate={(tab) => {
-            pxViewRef.current?.selectTab(tab);
-            if (modeByTab[tab] !== "px") mirrorRef.current?.selectTab(tab);
-            setActiveTab(tab);
-          }}
-          send={(message) => socketRef.current?.send(message)}
-        />
-      )}
-      {browserView && chromeVisible && (
+      {browserView && (
         <UrlBar
           tab={activeTab}
           chrome={activeChrome}
@@ -1164,7 +1142,7 @@ export function App() {
           </div>
         </section>
       )}
-      {clientPhase === "ready" && browserView && chromeVisible && (
+      {clientPhase === "ready" && browserView && (
         <HudLayer
           connection={connection}
           rttMs={rttMs}

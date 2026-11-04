@@ -6,6 +6,8 @@ import { createPxView } from "./pxview";
 type Listener = (event: never) => void;
 
 interface FakeDocument {
+  addEventListener(type: string, listener: Listener): void;
+  removeEventListener(type: string, listener: Listener): void;
   activeElement: FakeCanvas | FakeTextarea | null;
   createElement(name: string): FakeCanvas | FakeTextarea;
   body: { appendChild(input: FakeTextarea): FakeTextarea };
@@ -52,6 +54,7 @@ class FakeImage {
 class FakeCanvas {
   readonly dataset: Record<string, string> = {};
   readonly listeners = new Map<string, Set<Listener>>();
+  readonly documentListeners = new Map<string, Set<Listener>>();
   className = "";
   tabIndex = -1;
   private intrinsicWidth = 300;
@@ -103,8 +106,16 @@ class FakeCanvas {
   removeEventListener(type: string, listener: Listener) {
     this.listeners.get(type)?.delete(listener);
   }
+  /** Events bubble up to the document, as they do from a real canvas. */
   fire(type: string, event: object) {
-    for (const listener of this.listeners.get(type) ?? []) listener(event as never);
+    const dispatched = { target: this, ...event } as never;
+    for (const listener of this.listeners.get(type) ?? []) listener(dispatched);
+    for (const listener of this.documentListeners.get(type) ?? []) listener(dispatched);
+  }
+  /** An event over the page around the picture. */
+  fireOutside(type: string, event: object) {
+    const dispatched = { target: { outside: true }, ...event } as never;
+    for (const listener of this.documentListeners.get(type) ?? []) listener(dispatched);
   }
   remove() {
     if (this.parent?.child === this) this.parent.child = null;
@@ -119,6 +130,14 @@ class FakeContainer {
   readonly inputs = new Set<FakeTextarea>();
   replaceCount = 0;
   readonly ownerDocument: FakeDocument = {
+    addEventListener: (type, listener) => {
+      const listeners = this.canvas.documentListeners.get(type) ?? new Set();
+      listeners.add(listener);
+      this.canvas.documentListeners.set(type, listeners);
+    },
+    removeEventListener: (type, listener) => {
+      this.canvas.documentListeners.get(type)?.delete(listener);
+    },
     activeElement: null,
     createElement: (name: string) => {
       if (name === "canvas") return this.canvas;
@@ -201,6 +220,56 @@ function pixelInputFixture() {
   const input = [...container.inputs][0]!;
   return { container, view, input, sent };
 }
+
+describe("selecting text in the picture", () => {
+  const kinds = (sent: Up[]) =>
+    sent.flatMap((message) => (message.t === "ptr" ? [[message.kind, message.vx]] : []));
+
+  it("tells the page where the pointer ended before releasing", () => {
+    vi.useFakeTimers();
+    try {
+      const { container, view, sent } = pixelInputFixture();
+      container.canvas.fire("mousedown", mouse({ clientX: 110 }));
+      container.canvas.fire("mousemove", mouse({ clientX: 150 }));
+      container.canvas.fire("mousemove", mouse({ clientX: 170 }));
+      container.canvas.fire("mouseup", mouse({ clientX: 170, buttons: 0 }));
+      expect(kinds(sent)).toEqual([
+        ["down", 200],
+        ["move", 280],
+        ["move", 320],
+        ["up", 320],
+      ]);
+      view.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps following a drag outside the picture until the button comes up", () => {
+    const { container, view, sent } = pixelInputFixture();
+    const outside = { clientX: 5000 };
+    container.canvas.fireOutside("mousemove", mouse(outside));
+    expect(sent).toHaveLength(0);
+
+    container.canvas.fire("mousedown", mouse());
+    container.canvas.fireOutside("mousemove", mouse(outside));
+    container.canvas.fireOutside("mouseup", mouse({ ...outside, buttons: 0 }));
+    expect(kinds(sent).map(([kind]) => kind)).toEqual(["down", "move", "up"]);
+
+    sent.length = 0;
+    container.canvas.fireOutside("mousemove", mouse(outside));
+    container.canvas.fireOutside("mouseup", mouse({ ...outside, buttons: 0 }));
+    expect(sent).toHaveLength(0);
+    view.destroy();
+  });
+
+  it("passes a triple click on, which selects a paragraph", () => {
+    const { container, view, sent } = pixelInputFixture();
+    container.canvas.fire("mousedown", mouse({ detail: 3 }));
+    expect(sent.at(-1)).toMatchObject({ t: "ptr", kind: "down", clicks: 3 });
+    view.destroy();
+  });
+});
 
 describe("P2 viewer pixel fallback", () => {
   it("forwards scaled touch pans to the original scroll target without clicking or opening IME", () => {

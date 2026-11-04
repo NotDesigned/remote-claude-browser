@@ -28,7 +28,7 @@ export interface VideoEncoder {
 
 const MAX_QUEUED_INPUT_BYTES = 1024 * 1024;
 
-const GRAB_FPS = 30;
+const GRAB_FPS = 24;
 
 export type VideoEncoderFactory = (crf: number, events: VideoEncoderEvents) => VideoEncoder;
 

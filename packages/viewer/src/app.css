@@ -56,18 +56,6 @@ body,
   border-bottom: 1px solid var(--chrome-border);
 }
 
-.tabstrip-brand {
-  display: inline-flex;
-  gap: 7px;
-  align-items: center;
-  padding-right: 6px;
-  color: #696560;
-  font-size: 11px;
-  font-weight: 650;
-  white-space: nowrap;
-}
-
-.tabstrip-brand svg,
 .tab-favicon-placeholder svg,
 .tab-close svg,
 #new-tab svg,
@@ -219,7 +207,8 @@ body,
   grid-template-columns: 30px 30px 30px minmax(0, 1fr);
   gap: 4px;
   align-items: center;
-  padding: 6px 164px 6px 12px;
+  /* Room for the status pill at its longest: RTT, speed and frame rate. */
+  padding: 6px 248px 6px 12px;
   background: #fafaf9;
   border-bottom: 1px solid var(--chrome-border);
 }
@@ -611,7 +600,8 @@ body,
 
 .connection-hud {
   position: relative;
-  width: 148px;
+  width: max-content;
+  min-width: 148px;
   border: 1px solid #e3e0dc;
   border-radius: 9px;
   background: #f3f1ee;
@@ -634,6 +624,12 @@ body,
 
 .connection-hud > summary:hover {
   background: #ebe7e3;
+}
+
+.hud-summary-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .hud-chevron {
@@ -820,14 +816,6 @@ body,
     overflow-x: auto;
   }
 
-  .tabstrip-brand {
-    padding-right: 0;
-  }
-
-  .tabstrip-brand > span {
-    display: none;
-  }
-
   .browser-tab {
     min-width: 100px;
   }
@@ -846,6 +834,12 @@ body,
 
   .connection-hud {
     width: 108px;
+    min-width: 0;
+  }
+
+  /* The panel still has these. */
+  .hud-summary-extra {
+    display: none;
   }
 
   .hud-storm-pill {

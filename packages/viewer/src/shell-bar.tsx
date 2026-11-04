@@ -1,12 +1,11 @@
 /**
- * The unified page's single top bar: view switch (聊天 / 页面 / 画面), connection status and the
- * ⋯ menu. Browser chrome (tabs and address bar) can be hidden; the compact navigation then lives
- * here and the address in the menu.
+ * The unified page's single top bar: view switch (聊天 / 页面 / 画面), the browser's tabs when it is
+ * showing, connection status and the ⋯ menu.
  */
 import type { PxQuality } from "@mirror/protocol";
 import { formatSpeed } from "./hud";
+import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { normalizeNavigationUrl } from "./chrome/urlbar";
 import { SERVER_STATUS_STALE_MS, type ReceivedServerStatus } from "./server-status";
 import type { ViewMode } from "./client-session";
 
@@ -19,12 +18,8 @@ export interface ShellBarProps {
   /** False when the shared browser cannot start another pixel stream. */
   pixelAvailable: boolean;
   status: { text: string; tone: StatusTone };
-  chromeVisible: boolean;
-  onToggleChrome(): void;
-  /** Current remote address in the browser views; null in chat or before a tab exists. */
-  url: string | null;
-  canBack: boolean;
-  onNav(action: "back" | "reload" | "go", url?: string): void;
+  /** The browser's tabs, between the view switch and the status. */
+  children?: ComponentChildren;
   theme: ThemePreference;
   onTheme(theme: ThemePreference): void;
   pxQuality: PxQuality;
@@ -45,13 +40,9 @@ const VIEWS: { mode: ViewMode; label: string; title: string }[] = [
 
 export function ShellBar(props: ShellBarProps) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [address, setAddress] = useState(props.url ?? "");
   const menuRef = useRef<HTMLDivElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
-  const browserView = props.viewMode !== "chat";
-  const compactNav = browserView && !props.chromeVisible;
 
-  useEffect(() => setAddress(props.url ?? ""), [props.url, menuOpen]);
   useEffect(() => {
     if (!menuOpen) return;
     const onKey = (event: KeyboardEvent) => {
@@ -83,44 +74,6 @@ export function ShellBar(props: ShellBarProps) {
 
   return (
     <header id="shell-bar">
-      <div class="shell-bar-start">
-        {compactNav ? (
-          <>
-            <button
-              type="button"
-              class="shell-icon"
-              aria-label="后退"
-              disabled={!props.canBack}
-              onClick={() => props.onNav("back")}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="m14 6-6 6 6 6" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              class="shell-icon shell-wide-only"
-              aria-label="刷新"
-              onClick={() => props.onNav("reload")}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="M20 10a8 8 0 1 0-2 8M20 4v6h-6" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              class="shell-address shell-wide-only"
-              title={props.url ?? ""}
-              onClick={() => setMenuOpen(true)}
-            >
-              {displayUrl(props.url)}
-            </button>
-          </>
-        ) : (
-          <span class="shell-brand">远程 Claude</span>
-        )}
-      </div>
-
       <div class="shell-views" role="group" aria-label="视图">
         {VIEWS.map((view) => (
           <button
@@ -136,6 +89,8 @@ export function ShellBar(props: ShellBarProps) {
           </button>
         ))}
       </div>
+
+      <div class="shell-bar-tabs">{props.children}</div>
 
       <div class="shell-bar-end">
         <span
@@ -167,38 +122,6 @@ export function ShellBar(props: ShellBarProps) {
 
       {menuOpen && (
         <div id="shell-menu" ref={menuRef} role="dialog" aria-label="更多">
-          {browserView && (
-            <form
-              class="shell-menu-address"
-              onSubmit={(event) => {
-                event.preventDefault();
-                const url = normalizeNavigationUrl(address);
-                if (url === null) return;
-                props.onNav("go", url);
-                setMenuOpen(false);
-              }}
-            >
-              <label for="shell-menu-url">网址</label>
-              <input
-                id="shell-menu-url"
-                type="text"
-                value={address}
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellcheck={false}
-                onInput={(event) => setAddress(event.currentTarget.value)}
-              />
-            </form>
-          )}
-          <button
-            type="button"
-            class="shell-menu-switch"
-            aria-pressed={props.chromeVisible}
-            onClick={props.onToggleChrome}
-          >
-            <span>页面和画面模式显示标签栏和地址栏</span>
-            <span class="shell-switch" aria-hidden="true" />
-          </button>
           <a class="shell-menu-item" href="/?new=1" target="_blank" rel="noopener">
             打开另一个独立会话
           </a>
@@ -215,7 +138,7 @@ export function ShellBar(props: ShellBarProps) {
             </button>
           )}
           <div class="shell-menu-section" role="group" aria-label="画面清晰度">
-            <span>画面模式：越清晰，动起来帧率越低</span>
+            <span>画面模式：越清晰，服务器负担越重</span>
             <div class="shell-menu-choices">
               {(
                 [
@@ -302,16 +225,6 @@ export function ShellBar(props: ShellBarProps) {
       )}
     </header>
   );
-}
-
-function displayUrl(url: string | null): string {
-  if (!url) return "未打开网页";
-  try {
-    const parsed = new URL(url);
-    return `${parsed.host}${parsed.pathname === "/" ? "" : parsed.pathname}`;
-  } catch {
-    return url;
-  }
 }
 
 /** Resource pressure worth telling every user about, rather than only in the menu. */
