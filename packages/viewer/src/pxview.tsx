@@ -206,20 +206,24 @@ function decodePxFrame(
       });
       const width = positiveDimension(image.naturalWidth || frame.w);
       const height = positiveDimension(image.naturalHeight || frame.h);
-      const previous =
-        canvas.width === width && canvas.height === height ? sharpGrids.get(canvas) : undefined;
+      // Chromium's moving frames are limited to CSS pixels, while a still page's sharp frame has
+      // every device pixel. Keep the larger canvas while the two show the same page shape.
+      const sameShape =
+        canvas.height > 0 && Math.abs(canvas.width / canvas.height - width / height) < 0.01;
+      const previous = sameShape ? sharpGrids.get(canvas) : undefined;
       const grid = previous || frame.sharp ? imageGrid(canvas, image) : null;
       const tiles = !frame.sharp && previous && grid ? changedTiles(previous, grid) : null;
       if (tiles && tiles.length <= (grid!.columns * grid!.rows) / 4) {
         // A small change, such as a blinking caret, leaves the sharp picture around it intact.
-        const tileWidth = width / grid!.columns;
-        const tileHeight = height / grid!.rows;
+        const tileWidth = canvas.width / grid!.columns;
+        const tileHeight = canvas.height / grid!.rows;
+        const toImage = width / canvas.width;
         for (const { column, row } of tiles) {
           const x = Math.floor(column * tileWidth);
           const y = Math.floor(row * tileHeight);
           const w = Math.ceil(tileWidth);
           const h = Math.ceil(tileHeight);
-          context.drawImage(image, x, y, w, h, x, y, w, h);
+          context.drawImage(image, x * toImage, y * toImage, w * toImage, h * toImage, x, y, w, h);
         }
         sharpGrids.set(canvas, grid!);
       } else {

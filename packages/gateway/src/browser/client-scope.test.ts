@@ -455,6 +455,13 @@ describe("shared-browser client scopes", () => {
               session: true,
               size: 10,
             },
+            {
+              name: "__Host-ant_trusted_device",
+              value: "fixture-device",
+              domain: "claude.ai",
+              path: "/",
+              secure: true,
+            },
           ],
         };
       return original(method, params);
@@ -489,6 +496,14 @@ describe("shared-browser client scopes", () => {
         domain: ".claude.ai",
         path: "/",
         httpOnly: true,
+      },
+      // A __Host- cookie may not name a domain, or it would not reach the new workspace.
+      {
+        name: "__Host-ant_trusted_device",
+        value: "fixture-device",
+        url: "https://claude.ai/",
+        path: "/",
+        secure: true,
       },
     ]);
     expect(

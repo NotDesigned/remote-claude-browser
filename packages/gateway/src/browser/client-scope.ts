@@ -186,7 +186,7 @@ export function createClientBrowserPool(
       (cookie) => state.initialCookies?.get(cookieIdentity(cookie)) !== JSON.stringify(cookie),
     );
     if (changed.length === 0) return true;
-    await poolSend("Storage.setCookies", { cookies: changed });
+    await poolSend("Storage.setCookies", { cookies: settableCookies(changed) });
     for (const cookie of changed)
       state.initialCookies.set(cookieIdentity(cookie), JSON.stringify(cookie));
     return true;
@@ -214,7 +214,10 @@ export function createClientBrowserPool(
       };
       if (loginValue(cookieParameters(own.cookies ?? [])) === login) continue;
       const site = shared.filter(isSiteCookie);
-      await poolSend("Storage.setCookies", { browserContextId: id, cookies: site });
+      await poolSend("Storage.setCookies", {
+        browserContextId: id,
+        cookies: settableCookies(site),
+      });
       for (const cookie of site)
         state.initialCookies?.set(cookieIdentity(cookie), JSON.stringify(cookie));
       options.onLoginShared?.(sid);
@@ -321,8 +324,21 @@ export function createClientBrowserPool(
             cookies.map((cookie) => [cookieIdentity(cookie), JSON.stringify(cookie)]),
           );
           state.loginSeen = loginValue(cookies);
-          if (cookies.length)
-            await rootSend("Storage.setCookies", { browserContextId: id, cookies });
+          if (cookies.length) {
+            await rootSend("Storage.setCookies", {
+              browserContextId: id,
+              cookies: settableCookies(cookies),
+            });
+            const copied = (await rootSend("Storage.getCookies", {
+              browserContextId: id,
+            })) as { cookies?: Record<string, unknown>[] };
+            const present = new Set((copied.cookies ?? []).map((cookie) => cookie.name));
+            const missing = cookies
+              .map((cookie) => cookie.name)
+              .filter((name) => !present.has(name));
+            // Names only. A lost device cookie makes the site register this session as a new device.
+            if (missing.length) console.warn("client cookies not copied:", missing.join(", "));
+          }
           if (options.downloadDir)
             await rootSend("Browser.setDownloadBehavior", {
               behavior: "allowAndName",
@@ -586,6 +602,22 @@ function cookieParameters(cookies: Record<string, unknown>[]): Record<string, un
       fields.filter((field) => cookie[field] !== undefined).map((field) => [field, cookie[field]]),
     ),
   );
+}
+
+/**
+ * A host-only cookie (no leading dot) must be set by URL. Naming its domain asks for a domain
+ * cookie, which `__Host-` cookies such as Claude's trusted-device mark are not allowed to be.
+ */
+function settableCookies(cookies: Record<string, unknown>[]): Record<string, unknown>[] {
+  return cookies.map((cookie) => {
+    if (typeof cookie.domain !== "string" || cookie.domain.startsWith(".")) return cookie;
+    const { domain, ...rest } = cookie;
+    const scheme = cookie.secure === false ? "http" : "https";
+    return {
+      ...rest,
+      url: `${scheme}://${domain}${typeof cookie.path === "string" ? cookie.path : "/"}`,
+    };
+  });
 }
 
 function isSiteCookie(cookie: Record<string, unknown>): boolean {
