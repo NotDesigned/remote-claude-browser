@@ -22,6 +22,7 @@ export interface ViewportHub {
   requestSnapshot(reason: SnapshotReason): void;
   hasGeometry?(w: number, h: number): boolean;
   expectRecorderSnapshot?(reason: SnapshotReason): boolean;
+  readonly recorderAwaitsRestart?: boolean;
 }
 
 export interface ViewportAgreementDeps {
@@ -34,6 +35,8 @@ export interface ViewportAgreementDeps {
    * this every `view` takes the full negotiation.
    */
   confirmViewport?(viewerId: string, tab: TabId, viewport: { w: number; h: number }): void;
+  /** Restarts a stopped recorder, whose first snapshot then carries the applied geometry. */
+  restartRecorder?(tab: TabId): void;
   debounceMs?: number;
   /** Slightly longer than TabHub's default request timeout, then recurring until recovery. */
   snapshotRetryMs?: number;
@@ -300,7 +303,10 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
       state.appliedRevision = desired.revision;
       state.inFlight = true;
       scheduleSnapshotRetry(tabId, state);
-      hub.requestSnapshot("viewport");
+      if (deps.restartRecorder && hub.recorderAwaitsRestart) {
+        hub.expectRecorderSnapshot?.("viewport");
+        deps.restartRecorder(tabId);
+      } else hub.requestSnapshot("viewport");
     } catch {
       if (!current(tabId, state)) return;
       // Keep input locked and retry the latest request. A detached tab simply has no session on

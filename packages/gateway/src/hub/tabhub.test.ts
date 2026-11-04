@@ -108,7 +108,9 @@ describe("TabHub recorder pause", () => {
     expect(hub.joinPayload().map((message) => message.t)).toEqual(["resync"]);
     expect(hub.hasGeometry(1280, 720)).toBe(false);
     expect(hub.expectRecorderSnapshot("viewport")).toBe(true);
+    expect(hub.recorderAwaitsRestart).toBe(true);
     hub.resumeRecorder();
+    expect(hub.recorderAwaitsRestart).toBe(false);
     hub.ingest(rrweb(1, meta(2)));
     expect(snapshotMessage(hub.ingest(rrweb(1, full(2)))).reason).toBe("viewport");
     expect(requested).not.toHaveBeenCalled();

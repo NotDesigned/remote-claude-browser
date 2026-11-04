@@ -143,6 +143,10 @@ describe("chat transcript deltas", () => {
     });
   });
 
+  it("skips a row that kept its object between samples", () => {
+    expect(chatDelta(base, { ...base })).toBeNull();
+  });
+
   it("reports attachment and history changes", () => {
     expect(
       chatDelta(base, { ...base, attachments: [{ name: "a", removable: true }] }),

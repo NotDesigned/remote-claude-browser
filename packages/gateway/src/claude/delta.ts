@@ -61,6 +61,8 @@ export function chatDelta(
   const edits = after.messages.flatMap<{ index: number; message?: ChatMessage; edit?: TextEdit }>(
     (message, index) => {
       const previous = before.messages[index];
+      // Rows that are not mounted keep their object from one sample to the next.
+      if (previous === message) return [];
       if (
         !previous ||
         previous.id !== message.id ||

@@ -3,6 +3,8 @@ import { renderChatText } from "./chat-render";
 import { CHAT_VIEW_MARKUP } from "./chat-markup";
 import { DOWNLOAD_NOTICE_MS, startClientDownload } from "./auto-download";
 
+const RENDER_MAX_INTERVAL_MS = 1000;
+
 /**
  * Text chat, mounted inside the unified page. Returns a dispose function that closes the chat
  * stream, stops every timer and removes every global listener, so the page can switch between
@@ -71,6 +73,9 @@ export function mountChatView(root, options) {
   let draftEditedBeforeReady = false;
   let statusTimer;
   let attachmentSignature = "";
+  let renderTimer;
+  let lastRenderAt = 0;
+  let lastRenderCost = 0;
   let sizedDraft = null;
   const draft = $("draft");
   draft.value = localStorage.getItem(legacyDraftKey) || "";
@@ -257,7 +262,30 @@ export function mountChatView(root, options) {
       }),
     );
   }
+  /**
+   * Streaming replies are parsed whole, so the rate follows what a render really costs here: at
+   * most about a fifth of the main thread goes to it, however long the reply or slow the device.
+   */
+  function scheduleRender() {
+    if (renderTimer !== undefined) return;
+    const wait =
+      lastRenderAt + Math.min(RENDER_MAX_INTERVAL_MS, lastRenderCost * 4) - performance.now();
+    if (wait <= 0) render();
+    else
+      renderTimer = setTimeout(() => {
+        renderTimer = undefined;
+        if (state && !leaving) render();
+      }, wait);
+  }
   function render() {
+    clearTimeout(renderTimer);
+    renderTimer = undefined;
+    const startedAt = performance.now();
+    renderNow();
+    lastRenderAt = performance.now();
+    lastRenderCost = lastRenderAt - startedAt;
+  }
+  function renderNow() {
     document.title = state.title || "Claude";
     activateDraft();
     const list = $("messages");
@@ -306,8 +334,13 @@ export function mountChatView(root, options) {
         };
         messageElements.set(key, entry);
       }
-      entry.article.hidden = !!message.pending;
       entry.article.toggleAttribute("data-streaming", streaming);
+      if (list.children[index] !== entry.article)
+        list.insertBefore(entry.article, list.children[index] || null);
+      // A delta keeps every other message's object, so a long transcript costs nothing here.
+      if (entry.message === message && entry.messageText === message.text) continue;
+      entry.message = message;
+      entry.article.hidden = !!message.pending;
       if (entry.messageText !== message.text) {
         renderChatText(entry.text, message.text, message.role === "assistant");
         entry.messageText = message.text;
@@ -356,8 +389,6 @@ export function mountChatView(root, options) {
           }),
         );
       }
-      if (list.children[index] !== entry.article)
-        list.insertBefore(entry.article, list.children[index] || null);
     }
     for (const [key, entry] of messageElements)
       if (!keep.has(key)) {
@@ -716,7 +747,7 @@ export function mountChatView(root, options) {
           history: data.history,
           conversations: data.conversations ?? state.conversations,
         });
-        render();
+        scheduleRender();
       } else if (data.type === "unavailable") {
         state = null;
         $("notice").hidden = false;
@@ -1129,6 +1160,7 @@ export function mountChatView(root, options) {
   }
   return () => {
     leaving = true;
+    clearTimeout(renderTimer);
     retired = true;
     clearTimeout(statusTimer);
     actionController?.abort();

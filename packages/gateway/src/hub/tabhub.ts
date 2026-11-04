@@ -268,6 +268,11 @@ export class TabHub {
     return true;
   }
 
+  /** True while the recorder is stopped and its restart has not been asked for yet. */
+  get recorderAwaitsRestart(): boolean {
+    return this.recorderPaused && this.recorderResumeTimer === undefined;
+  }
+
   /** Fired when thresholds/docId change require a fresh FullSnapshot (caller sends the cmd). */
   onNeedSnapshot(cb: NeedSnapshotListener): void {
     this.needSnapshotListeners.add(cb);

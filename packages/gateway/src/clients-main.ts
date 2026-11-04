@@ -56,12 +56,14 @@ interface ClientRuntime {
   recovery: ReturnType<typeof createRendererRecovery>;
   uploads: Awaited<ReturnType<typeof createUploadManager>>;
   setRecording(enabled: boolean): Promise<void>;
+  resumeRecordingForViewer(): void;
   rtc?: ReturnType<typeof createRtcSignalRelay>;
   stop(): Promise<void>;
 }
 
 /** Claude keeps its conversation sidebar at this width, which chat mode reads history from. */
 const DESKTOP_LAYOUT_MIN_WIDTH = 1024;
+const RECORDER_RESTART_WAIT_MS = 1_000;
 
 export async function startClientGateway(): Promise<void> {
   const e2e = process.env.MIRROR_E2E === "1";
@@ -246,9 +248,7 @@ export async function startClientGateway(): Promise<void> {
         send: (message, serialized) => viewer.send(message, serialized),
         resumed,
       });
-      void runtime
-        .setRecording(true)
-        .catch((error) => report("client recorder resume failed", error));
+      runtime.resumeRecordingForViewer();
       viewer.send(
         {
           t: "mode",
@@ -439,6 +439,15 @@ export async function startClientGateway(): Promise<void> {
       targets = new Map<string, TargetRef>(),
       metadata = new Map<string, BrowserTargetInfo>();
     let recordingEnabled = true;
+    let recordingRestart: ReturnType<typeof setTimeout> | undefined;
+    const resumeRecording = () => {
+      clearTimeout(recordingRestart);
+      recordingRestart = undefined;
+      void runtimes
+        .get(sid)
+        ?.setRecording(true)
+        .catch((error) => report("client recorder resume failed", error));
+    };
     let recordingWork = Promise.resolve();
     const setTargetRecording = (targetId: string, enabled: boolean) => {
       const task = recordingWork.then(async () => {
@@ -495,6 +504,7 @@ export async function startClientGateway(): Promise<void> {
       hubFor: (tab) => tabs.hubFor(tab),
       isDriver: (id) => roles.isDriver(id) && viewers.get(id)?.sid === sid,
       confirmViewport: (_viewer, tab, { w, h }) => publish(sid, { t: "view-ok", tab, w, h }),
+      restartRecorder: () => resumeRecording(),
     });
     const input = createInputRelay({
       onValueStatus: (tab, failed) => publish(sid, { t: "input-status", tab, failed }),
@@ -568,7 +578,21 @@ export async function startClientGateway(): Promise<void> {
       navigation,
       recovery,
       uploads,
+      // Chat replaced a narrow viewport: the recorder restarts once the viewer's geometry is back,
+      // so its first snapshot is usable. The timeout covers a viewer that never asks for one.
+      resumeRecordingForViewer() {
+        const tab = tabs.activeTabId;
+        const hub = tab ? tabs.hubFor(tab) : undefined;
+        if (hub?.viewport !== null || !hub.recorderAwaitsRestart) return resumeRecording();
+        clearTimeout(recordingRestart);
+        recordingRestart = setTimeout(resumeRecording, RECORDER_RESTART_WAIT_MS);
+        recordingRestart.unref?.();
+      },
       async setRecording(enabled) {
+        if (!enabled) {
+          clearTimeout(recordingRestart);
+          recordingRestart = undefined;
+        }
         if (enabled && recordingEnabled) return;
         recordingEnabled = enabled;
         for (const target of targets.keys()) {
