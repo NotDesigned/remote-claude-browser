@@ -1056,6 +1056,27 @@ export function App() {
           />
         )}
       </ShellBar>
+      {browserView ? (
+        <UrlBar
+          tab={activeTab}
+          chrome={activeChrome}
+          fallbackUrl={tabs.find((tab) => tab.id === activeTab)?.url ?? ""}
+          send={(message) => socketRef.current?.send(message)}
+        />
+      ) : (
+        <UrlBar
+          tab={CHAT_TAB}
+          chrome={null}
+          fallbackUrl={chatLocation.url}
+          send={(message) => {
+            // The address leads to the remote browser; chat only ever shows a conversation.
+            if (message.action === "reload") window.location.reload();
+            if (message.action !== "go") return;
+            pendingUrlRef.current = message.url ?? null;
+            changeView("dom", false);
+          }}
+        />
+      )}
       <div id="shell-banners">
         {warning && (
           <p class="shell-banner" data-tone="warn" role="status">
@@ -1086,27 +1107,6 @@ export function App() {
           />
         )}
       </div>
-      {browserView ? (
-        <UrlBar
-          tab={activeTab}
-          chrome={activeChrome}
-          fallbackUrl={tabs.find((tab) => tab.id === activeTab)?.url ?? ""}
-          send={(message) => socketRef.current?.send(message)}
-        />
-      ) : (
-        <UrlBar
-          tab={CHAT_TAB}
-          chrome={null}
-          fallbackUrl={chatLocation.url}
-          send={(message) => {
-            // The address leads to the remote browser; chat only ever shows a conversation.
-            if (message.action === "reload") window.location.reload();
-            if (message.action !== "go") return;
-            pendingUrlRef.current = message.url ?? null;
-            changeView("dom", false);
-          }}
-        />
-      )}
       {!browserView && clientPhase === "ready" && clientSession !== null && (
         <ChatHost
           sid={clientSession.sid}
