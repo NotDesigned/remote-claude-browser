@@ -28,6 +28,7 @@ import { captureMediaKeySystemAccess, installVideoDrmMonitor } from "./video";
 import { captureClipboardWrite, installClipboardHooks } from "./clipboard";
 import { canStartCanvasSnapshotWorker } from "./canvas-snapshot";
 import { record } from "@rrweb/record";
+import { addFontsToSnapshot, installFontCapture } from "./font-capture";
 import {
   broadcastStitchSync,
   installStitchReadyListener,
@@ -132,6 +133,12 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
 
   // Must precede record() so rrweb's shadow observer and initial snapshot use the retained roots.
   installClosedShadowShim();
+  // A cross-origin child's snapshot is the only way its fonts reach the replay.
+  const fontCapture = installFontCapture(window, {
+    onLateFont: () => {
+      if (isCrossOriginChild() && recordReadiness.isStarted()) record.takeFullSnapshot(true);
+    },
+  });
 
   // Per-document epoch (D1): random uint32, minted once per document.
   const docId = crypto.getRandomValues(new Uint32Array(1))[0]!;
@@ -229,7 +236,10 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
             // rrweb processes this initial snapshot in both top-level and cross-origin child
             // recorders. Waiting snapshot commands resume in a microtask, after rrweb finishes the
             // current startup call stack and flips its internal recording flag.
-            if (event.type === EventType.FullSnapshot) recordReadiness.markStarted();
+            if (event.type === EventType.FullSnapshot) {
+              addFontsToSnapshot(event.data.node, fontCapture.css());
+              recordReadiness.markStarted();
+            }
             return event;
           },
         },
