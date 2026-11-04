@@ -23,6 +23,8 @@ const SHARP_MIN_INTERVAL_MS = 1_500;
 const SHARP_MAX_INTERVAL_MS = 30_000;
 /** Frames closer than this are real activity, unlike a lone blinking caret. */
 const BURST_GAP_MS = 150;
+/** A page that never stops, such as a shimmer on one row, still gets sharp around that row. */
+const SHARP_MOTION_INTERVAL_MS = 3_000;
 /**
  * Limits are in device pixels and square, so a portrait phone keeps its full width. Chromium only
  * scales down, so a smaller browser simply gets its own resolution.
@@ -92,6 +94,8 @@ interface TabState {
   sharpNotBefore: number;
   lastSharpInputAt: number;
   lastFrameAt: number;
+  lastSharpAt: number;
+  sharpInFlight: boolean;
   frameCount: number;
   lastCastData?: string;
   fallback?: { generation: number; promise: Promise<void> };
@@ -157,12 +161,18 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     state.sharpTimer = undefined;
   };
   /** Replaces the last JPEG with a frame fit for reading once the page has stopped changing. */
-  const captureSharp = async (state: TabState, generation: number): Promise<void> => {
+  const captureSharp = async (
+    state: TabState,
+    generation: number,
+    duringMotion: boolean,
+  ): Promise<void> => {
     const sharp = CAPTURE_PRESETS[quality].sharp;
     const viewport = state.hub.viewport;
     const seen = state.frameCount;
     if (!sharp || !viewport || !state.screencasting || state.hub.mode !== "px") return;
-    if (!current(state, generation)) return;
+    if (!current(state, generation) || state.sharpInFlight) return;
+    state.sharpInFlight = true;
+    state.lastSharpAt = Date.now();
     try {
       const shot = (await sendBounded(state, "Page.captureScreenshot", {
         ...sharp,
@@ -171,9 +181,10 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
         captureBeyondViewport: false,
         clip: screenshotClip(viewport.w, viewport.h, viewport.dpr),
       })) as { data?: unknown };
-      // A newer frame means this picture is out of date; that frame schedules its own.
-      if (!current(state, generation) || state.hub.mode !== "px" || state.frameCount !== seen)
-        return;
+      // On a still page a newer frame means this picture is out of date and schedules its own.
+      // On a moving page the viewer patches whatever keeps changing back over it.
+      if (!current(state, generation) || state.hub.mode !== "px") return;
+      if (!duringMotion && state.frameCount !== seen) return;
       if (typeof shot.data !== "string" || shot.data.length === 0) return;
       state.lastFrame = {
         t: "px",
@@ -187,13 +198,16 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       opts.publish(state.lastFrame);
     } catch (error) {
       if (current(state, generation)) report(error);
+    } finally {
+      state.sharpInFlight = false;
     }
   };
   const noteMotionFrame = (state: TabState): void => {
     const now = Date.now();
+    const bursting = now - state.lastFrameAt < BURST_GAP_MS;
     // A blinking caret must not cost a full lossless picture every half second, while typing or
     // scrolling should turn sharp again straight away.
-    if (now - state.lastFrameAt < BURST_GAP_MS || state.hub.lastInputAt > state.lastSharpInputAt) {
+    if (bursting || state.hub.lastInputAt > state.lastSharpInputAt) {
       state.sharpBackoffMs = SHARP_MIN_INTERVAL_MS / 2;
       state.sharpNotBefore = 0;
       state.lastSharpInputAt = state.hub.lastInputAt;
@@ -202,12 +216,15 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     state.frameCount++;
     if (!CAPTURE_PRESETS[quality].sharp) return;
     const generation = state.generation;
+    const whenStill = Math.max(now + SHARP_IDLE_MS, state.sharpNotBefore);
+    const motionDue = state.lastSharpAt + SHARP_MOTION_INTERVAL_MS;
+    const duringMotion = bursting && motionDue < whenStill;
     state.sharpTimer = setTimeout(
       () => {
         state.sharpTimer = undefined;
-        void captureSharp(state, generation);
+        void captureSharp(state, generation, duringMotion);
       },
-      Math.max(SHARP_IDLE_MS, state.sharpNotBefore - now),
+      Math.max(0, (duringMotion ? motionDue : whenStill) - now),
     );
     state.sharpTimer.unref?.();
   };
@@ -472,6 +489,8 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       sharpNotBefore: 0,
       lastSharpInputAt: 0,
       lastFrameAt: 0,
+      lastSharpAt: 0,
+      sharpInFlight: false,
       frameCount: 0,
     };
     tabs.set(target.targetId, state);

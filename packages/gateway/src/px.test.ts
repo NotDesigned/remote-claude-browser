@@ -167,15 +167,18 @@ describe("createScreencast", () => {
       controller.dispose();
     });
 
-    it("waits while the page keeps changing", async () => {
-      const { browser, shots, controller } = await setup();
-      for (let index = 0; index < 5; index++) {
+    it("stays sharp around a part of the page that never stops moving", async () => {
+      const { browser, frames, shots, controller } = await setup();
+      for (let index = 0; index < 70; index++) {
         browser.frame("cdp-1", frame(index, `moving-${index}`));
         await vi.advanceTimersByTimeAsync(100);
       }
-      expect(shots()).toHaveLength(0);
-      await vi.advanceTimersByTimeAsync(350);
-      expect(shots()).toHaveLength(1);
+      // One soon after the motion starts, then about every three seconds of it.
+      expect(shots().length).toBeGreaterThanOrEqual(2);
+      expect(shots().length).toBeLessThanOrEqual(4);
+      expect(frames().some((message) => message.t === "px" && message.data === "PNGDATA")).toBe(
+        true,
+      );
       controller.dispose();
     });
 
