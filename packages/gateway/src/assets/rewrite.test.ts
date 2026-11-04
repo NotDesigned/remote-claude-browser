@@ -100,6 +100,27 @@ describe("srcset parsing", () => {
 });
 
 describe("rrweb RewriteStage", () => {
+  it("keeps the viewer's spell checker out of a mirrored editor", () => {
+    const stage = createRewriteStage(KEY);
+    const snapshot = stage(
+      event({
+        type: EventType.FullSnapshot,
+        timestamp: 1,
+        data: {
+          node: {
+            type: 2,
+            id: 7,
+            tagName: "div",
+            attributes: { contenteditable: "true" },
+            childNodes: [],
+          },
+        },
+      }),
+      CTX,
+    ) as unknown as { data: { node: { attributes: unknown } } };
+    expect(snapshot.data.node.attributes).toEqual({ contenteditable: "true", spellcheck: "false" });
+  });
+
   it("leaves frames open to the replayer, which writes their documents itself", () => {
     const stage = createRewriteStage(KEY);
     const frame = {

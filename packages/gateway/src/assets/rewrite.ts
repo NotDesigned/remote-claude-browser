@@ -331,6 +331,11 @@ function rewriteAttributes(
       changed = true;
       continue;
     }
+    // The viewer's browser would underline a mirrored editor's text with its own spell checker.
+    if (lowerName === "contenteditable") {
+      output.spellcheck = "false";
+      changed = true;
+    }
     // MediaSource object URLs are not image Blobs. Preserve their source kind so
     // the viewer's existing media compositor selects RTC rather than HTTP playback.
     if (
