@@ -2,8 +2,10 @@
  * Gateway side of the pixel fallback.
  * (Viewer half P2-PX-V = viewer/src/pxview.tsx, viewer domain.)
  *
- * Per-tab mode toggle: Page.startScreencast (JPEG) -> H.264 `vid` Down msgs where the viewer can
- * decode them, or `px` JPEG frames where it cannot. A still page also gets one sharp `px` frame.
+ * Per-tab mode toggle. A viewer that can decode H.264 gets `vid` Down msgs read straight off the X
+ * display, which leaves the page at full speed. Only one client's window can be on the display, so
+ * the others use Page.startScreencast (JPEG) -> `vid`, or `px` JPEG frames where H.264 cannot be
+ * decoded. A still screencast also gets one sharp `px` frame.
  * ALWAYS ack frames (Page.screencastFrameAck) or the screencast stalls. Keep the recorder
  * running in px mode (cheap; makes flip-back instant via fresh snapshot). Backpressure: drop
  * frames for stalled viewers, never queue (D4 rule applies to px too).
@@ -14,7 +16,15 @@ import type { BrowserHandle } from "./browser/launch";
 import type { TabHub } from "./hub/tabhub";
 import type { TargetRef } from "./types";
 import { zoomLevelFor, type BrowserZoom } from "./browser/browser-zoom";
-import { createFfmpegEncoder, type VideoEncoder, type VideoEncoderFactory } from "./px-video";
+import type { PixelWindow } from "./browser/pixel-window";
+import {
+  createFfmpegEncoder,
+  createGrabEncoder,
+  type GrabEncoderFactory,
+  type VideoEncoder,
+  type VideoEncoderEvents,
+  type VideoEncoderFactory,
+} from "./px-video";
 
 type ModeMsg = Extract<Up, { t: "mode" }>;
 type PixelFrame = Extract<Down, { t: "px" }>;
@@ -52,10 +62,22 @@ const VIDEO_CRF = 16;
 /** Without the encoder every frame goes to the viewer, so fewer of them are taken. */
 const JPEG_EVERY_NTH_FRAME = 2;
 const SHARP_FRAME = { format: "png" } as const;
+/** How often the grab checks its window is still on top and its geometry is still wanted. */
+const GRAB_CHECK_MS = 250;
 type ScreencastBrowser = Pick<
   BrowserHandle,
   "send" | "onAttached" | "onDetached" | "onSessionEvent"
 >;
+
+/** Reading pictures off the X display, where each client needs a free slot of the screen. */
+export interface ScreenGrab {
+  window: PixelWindow;
+  /** The left edge of this client's slot, or null when the screen is full. */
+  acquire(): number | null;
+  release(): void;
+  available(): boolean;
+  createEncoder?: GrabEncoderFactory;
+}
 
 export interface ScreencastOpts {
   browser: ScreencastBrowser;
@@ -69,6 +91,7 @@ export interface ScreencastOpts {
   createVideoEncoder?: VideoEncoderFactory;
   /** Lets the highest quality reach device resolution; without it frames stop at CSS pixels. */
   browserZoom?: BrowserZoom;
+  grab?: ScreenGrab;
   /** Supply both hooks to track pixel ownership. Acquisition must be synchronous. */
   acquirePixel?(tabId: string): boolean;
   /** Called after stop completes or its bounded deadline, including reset/dispose paths. */
@@ -94,6 +117,14 @@ interface VideoStream {
   written: boolean[];
   flushed?: boolean;
   lastFedAt?: number;
+  /** A grab encoder cannot skip input, so a viewer that fell behind needs a new stream. */
+  lost?: boolean;
+}
+
+interface GrabState {
+  w: number;
+  h: number;
+  zoom: number;
 }
 
 interface TabState {
@@ -112,6 +143,11 @@ interface TabState {
   lastSharpAt: number;
   sharpInFlight: boolean;
   video?: VideoStream;
+  /** Left edge of the held slot, from when it is claimed until the window is back. */
+  grabLeft?: number | undefined;
+  /** What the running grab shows. Absent when pictures come from the screencast. */
+  grabbing?: GrabState;
+  grabChecking?: boolean;
   zoomChanging?: boolean;
   stats: { captured: number; encoded: number; dropped: number };
   videoSeq: number;
@@ -139,6 +175,8 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   // ffmpeg is missing or keeps failing: this session stays on JPEG frames.
   let videoBroken = false;
   let zoomBroken = false;
+  // The display or its window cannot be used: this session stays on the screencast.
+  let grabBroken = false;
   const screencastParams = () => ({
     format: "jpeg",
     quality: FRAME_JPEG_QUALITY,
@@ -159,7 +197,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     await sendBounded(state, "Emulation.setDeviceMetricsOverride", {
       width: Math.round(viewport.w * zoom),
       height: Math.round(viewport.h * zoom),
-      deviceScaleFactor: zoom > 1 ? 1 : viewport.dpr,
+      deviceScaleFactor: zoom > 1 || state.hub.pixelGrabbing ? 1 : viewport.dpr,
       mobile: false,
     });
   };
@@ -294,34 +332,55 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   const startVideo = (state: TabState, w: number, h: number): void => {
     stopVideo(state);
     const tab = state.target.targetId;
+    const grabbing = state.grabbing;
+    const events: VideoEncoderEvents = {
+      onConfig({ codec, description }) {
+        if (state.video === video)
+          opts.publish({
+            t: "vid-cfg",
+            tab,
+            codec,
+            description: description.toString("base64"),
+          });
+      },
+      onChunk(data, key) {
+        if (state.video !== video) return;
+        if (grabbing) {
+          state.stats.captured++;
+          if (video.lost || opts.backlogged?.()) {
+            video.lost = true;
+            state.stats.dropped++;
+            return;
+          }
+        }
+        const repeat = video.written.shift() === true;
+        if (!repeat) state.stats.encoded++;
+        opts.publish({ t: "vid", tab, seq: state.videoSeq++, key, repeat, w, h, data });
+      },
+      onFailure(error) {
+        if (state.video !== video) return;
+        state.video = undefined;
+        clearTimeout(video.flushTimer);
+        report(error);
+        if (!grabbing) {
+          videoBroken = true;
+          return;
+        }
+        grabBroken = true;
+        reapply(state);
+      },
+    };
     const video: VideoStream = {
       w,
       h,
       written: [],
-      encoder: (opts.createVideoEncoder ?? createFfmpegEncoder)(VIDEO_CRF, {
-        onConfig({ codec, description }) {
-          if (state.video === video)
-            opts.publish({
-              t: "vid-cfg",
-              tab,
-              codec,
-              description: description.toString("base64"),
-            });
-        },
-        onChunk(data, key) {
-          if (state.video !== video) return;
-          const repeat = video.written.shift() === true;
-          if (!repeat) state.stats.encoded++;
-          opts.publish({ t: "vid", tab, seq: state.videoSeq++, key, repeat, w, h, data });
-        },
-        onFailure(error) {
-          if (state.video !== video) return;
-          state.video = undefined;
-          clearTimeout(video.flushTimer);
-          videoBroken = true;
-          report(error);
-        },
-      }),
+      encoder: grabbing
+        ? (opts.grab?.createEncoder ?? createGrabEncoder)(
+            VIDEO_CRF,
+            { left: state.grabLeft ?? 0, ...grabSize(w, h, grabbing.zoom) },
+            events,
+          )
+        : (opts.createVideoEncoder ?? createFfmpegEncoder)(VIDEO_CRF, events),
     };
     state.video = video;
   };
@@ -368,6 +427,10 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   };
   /** A viewer that joined or lost its place needs a new stream beginning with a keyframe. */
   const restartVideo = (state: TabState): void => {
+    if (state.grabbing) {
+      startVideo(state, state.grabbing.w, state.grabbing.h);
+      return;
+    }
     if (!videoWanted || videoBroken || !state.lastJpeg || !state.lastFrame) return;
     startVideo(state, state.lastFrame.w, state.lastFrame.h);
     feedVideo(state, state.lastFrame.w, state.lastFrame.h);
@@ -441,6 +504,80 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   const stopQuietly = (state: TabState, stop = true): void => {
     void stopAndRelease(state, stop).catch(() => undefined);
   };
+  /** Gives the display back, with the window as it was. Safe to call when it is not held. */
+  const endGrab = async (state: TabState): Promise<void> => {
+    if (state.grabLeft === undefined) return;
+    state.grabLeft = undefined;
+    delete state.grabbing;
+    state.hub.pixelGrabbing = false;
+    try {
+      await opts.grab?.window.restore(state.target.targetId);
+    } catch (error) {
+      if (!disposed) report(error);
+    } finally {
+      opts.grab?.release();
+    }
+  };
+  const canGrab = (state: TabState): boolean => {
+    const viewport = state.hub.viewport;
+    return !!(
+      opts.grab &&
+      viewport &&
+      videoWanted &&
+      !videoBroken &&
+      !grabBroken &&
+      viewport.w <= MAX_FRAME_SIDE &&
+      viewport.h <= MAX_FRAME_SIDE
+    );
+  };
+  /** Puts the window on the display and starts reading it. Throws if any of that fails. */
+  const beginGrab = async (state: TabState): Promise<void> => {
+    state.hub.pixelGrabbing = true;
+    await syncZoom(state, zoomWanted(state));
+    const zoom = state.hub.pixelZoom;
+    await applyMetrics(state, zoom);
+    const viewport = state.hub.viewport!;
+    const { width, height } = grabSize(viewport.w, viewport.h, zoom);
+    await opts.grab!.window.place(state.target.targetId, state.grabLeft!, width, height);
+    // The tab left the pixel view during that, and already gave its slot back.
+    if (state.grabLeft === undefined) {
+      await opts.grab!.window.restore(state.target.targetId);
+      return;
+    }
+    delete state.lastFrame;
+    delete state.lastJpeg;
+    state.grabbing = { w: viewport.w, h: viewport.h, zoom };
+    startVideo(state, viewport.w, viewport.h);
+  };
+  const beginCapture = async (state: TabState): Promise<void> => {
+    if (canGrab(state)) state.grabLeft ??= opts.grab!.acquire() ?? undefined;
+    if (canGrab(state) && state.grabLeft !== undefined) {
+      try {
+        await beginGrab(state);
+        return;
+      } catch (error) {
+        grabBroken = true;
+        report(error);
+      }
+    }
+    if (state.grabLeft !== undefined) {
+      await endGrab(state);
+      if (state.hub.viewport) await applyMetrics(state, state.hub.pixelZoom);
+    }
+    await syncZoom(state, zoomWanted(state));
+    await sendBounded(state, "Page.startScreencast", screencastParams());
+  };
+  /** Starts this tab's capture over with whatever it should be using now. */
+  const reapply = (state: TabState): void => {
+    if (state.zoomChanging) return;
+    state.zoomChanging = true;
+    state.queue = state.queue
+      .then(() => applyMode(state, "px", true))
+      .catch(report)
+      .finally(() => {
+        state.zoomChanging = false;
+      });
+  };
   const returnToDom = async (
     state: TabState,
     generation: number,
@@ -459,10 +596,14 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     } catch (cause) {
       if (current(state, restoredGeneration)) report(cause);
     }
+    const grabbed = state.grabLeft !== undefined;
+    await endGrab(state);
     await syncZoom(state, 1);
+    // Zoom stayed at 1 during the grab, so nothing above has returned the page its real density.
+    if (grabbed && state.hub.mode === "dom") await applyMetrics(state, 1).catch(report);
   };
   const ensureFirstFrame = (state: TabState, generation: number): Promise<void> => {
-    if (!current(state, generation) || !state.screencasting || state.lastFrame)
+    if (!current(state, generation) || !state.screencasting || state.lastFrame || state.grabbing)
       return Promise.resolve();
     if (state.fallback?.generation === generation) return state.fallback.promise;
     clearFirstFrameTimer(state);
@@ -510,7 +651,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   };
   const watchFirstFrame = (state: TabState, generation: number): void => {
     clearFirstFrameTimer(state);
-    if (!current(state, generation) || state.lastFrame) return;
+    if (!current(state, generation) || state.lastFrame || state.grabbing) return;
     state.firstFrameTimer = setTimeout(() => {
       state.firstFrameTimer = undefined;
       if (current(state, generation)) void ensureFirstFrame(state, generation);
@@ -539,13 +680,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
         !state.zoomChanging &&
         zoomWanted(state) !== state.hub.pixelZoom
       ) {
-        state.zoomChanging = true;
-        state.queue = state.queue
-          .then(() => applyMode(state, "px", true))
-          .catch(report)
-          .finally(() => {
-            state.zoomChanging = false;
-          });
+        reapply(state);
       }
       // Taking a sharp frame can make Chromium repeat the same picture. It must not replace it.
       if (state.lastFrame && event.data === state.lastCastData) return;
@@ -612,9 +747,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
           try {
             await sendBounded(state, "Page.stopScreencast");
             if (!current(state, generation)) return;
-            await syncZoom(state, zoomWanted(state));
-            if (!current(state, generation)) return;
-            await sendBounded(state, "Page.startScreencast", screencastParams());
+            await beginCapture(state);
           } catch (error) {
             await returnToDom(state, generation, error);
             return;
@@ -624,11 +757,10 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
         opts.publish({ t: "mode", tab: state.target.targetId, mode: "px" });
         if (state.lastFrame) opts.publish(state.lastFrame);
         else void ensureFirstFrame(state, state.generation);
-        restartVideo(state);
+        // A capture that just started already begins with a keyframe.
+        if (!qualityChanged || !state.grabbing) restartVideo(state);
         return;
       }
-      await syncZoom(state, zoomWanted(state));
-      if (!current(state)) return;
       const generation = ++state.generation;
       clearFirstFrameTimer(state);
       state.fallback = undefined;
@@ -637,7 +769,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       // Until start is confirmed, keep the existing DOM lane available to the viewer.
       state.hub.mode = "dom";
       try {
-        await sendBounded(state, "Page.startScreencast", screencastParams());
+        await beginCapture(state);
       } catch (error) {
         await returnToDom(state, generation, error);
         return;
@@ -664,6 +796,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     sessions.delete(target.sessionId);
     opts.browserZoom?.forget(target.targetId);
     stopQuietly(state, invalidate(state));
+    void endGrab(state);
   });
 
   opts.browser.onAttached((target) => {
@@ -675,6 +808,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     if (previous !== undefined) {
       sessions.delete(previous.target.sessionId);
       stopQuietly(previous, invalidate(previous));
+      void endGrab(previous);
     }
     const state: TabState = {
       target,
@@ -712,6 +846,41 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     }
   }, STATS_INTERVAL_MS);
   statsTimer.unref?.();
+
+  const checkGrab = (state: TabState): void => {
+    if (!state.screencasting || state.hub.mode !== "px" || state.zoomChanging) return;
+    const { grabbing, video } = state;
+    if (!grabbing) {
+      // A slot came free, or this tab now has the viewport it needs to use one.
+      if (canGrab(state) && opts.grab!.available()) reapply(state);
+      return;
+    }
+    const viewport = state.hub.viewport;
+    if (
+      !canGrab(state) ||
+      viewport!.w !== grabbing.w ||
+      viewport!.h !== grabbing.h ||
+      zoomWanted(state) !== grabbing.zoom
+    ) {
+      reapply(state);
+      return;
+    }
+    if (video?.lost && !opts.backlogged?.()) restartVideo(state);
+    if (state.grabChecking) return;
+    state.grabChecking = true;
+    void opts
+      .grab!.window.keepOnTop(state.target.targetId)
+      .catch(report)
+      .finally(() => {
+        state.grabChecking = false;
+      });
+  };
+  const grabTimer = opts.grab
+    ? setInterval(() => {
+        for (const state of tabs.values()) checkGrab(state);
+      }, GRAB_CHECK_MS)
+    : undefined;
+  grabTimer?.unref?.();
 
   return {
     handle(msg) {
@@ -761,14 +930,24 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       if (disposed) return;
       disposed = true;
       clearInterval(statsTimer);
+      clearInterval(grabTimer);
       unsubscribeFrame();
       unsubscribeNavigation();
       for (const state of tabs.values()) {
         stopQuietly(state, invalidate(state));
+        void endGrab(state);
       }
       tabs.clear();
       sessions.clear();
     },
+  };
+}
+
+/** The encoder needs even sides. Losing the odd row costs less than scaling every line. */
+function grabSize(w: number, h: number, zoom: number): { width: number; height: number } {
+  return {
+    width: Math.floor((w * zoom) / 2) * 2,
+    height: Math.floor((h * zoom) / 2) * 2,
   };
 }
 

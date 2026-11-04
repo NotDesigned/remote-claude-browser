@@ -194,6 +194,33 @@ describe("shared-browser client scopes", () => {
     pool.dispose();
   });
 
+  it("lets a client move only its own window", async () => {
+    const browser = new FakeBrowser(),
+      pool = createClientBrowserPool(browser),
+      a = pool.scope("a"),
+      b = pool.scope("b");
+    browser.create = async () => {
+      browser.attach(page("created"));
+      return { targetId: "created" };
+    };
+    await a.sendBrowser!("Target.createTarget", { url: "about:blank" });
+    browser.sendBrowser.mockResolvedValue({ windowId: 7 });
+    await expect(
+      b.sendBrowser!("Browser.getWindowForTarget", { targetId: "created" }),
+    ).rejects.toThrow("does not belong");
+    const move = { windowId: 7, bounds: { left: 0, top: 0 } };
+    await expect(a.sendBrowser!("Browser.setWindowBounds", move)).rejects.toThrow(
+      "does not belong",
+    );
+    await a.sendBrowser!("Browser.getWindowForTarget", { targetId: "created" });
+    await a.sendBrowser!("Browser.setWindowBounds", move);
+    expect(browser.sendBrowser).toHaveBeenCalledWith("Browser.setWindowBounds", move);
+    await expect(b.sendBrowser!("Browser.setWindowBounds", move)).rejects.toThrow(
+      "does not belong",
+    );
+    pool.dispose();
+  });
+
   it("claims create-ack-before-attach and late parent metadata without another client's events", async () => {
     const browser = new FakeBrowser(),
       pool = createClientBrowserPool(browser),

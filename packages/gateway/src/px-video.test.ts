@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createFlvReader, ffmpegArguments, multipartFrame } from "./px-video";
+import { createFlvReader, ffmpegArguments, ffmpegGrabArguments, multipartFrame } from "./px-video";
 
 const tag = (type: number, body: Buffer) => {
   const header = Buffer.alloc(11);
@@ -72,5 +72,18 @@ describe("ffmpeg arguments", () => {
     expect(args).toContain("-f mpjpeg");
     expect(args).toContain("-f flv");
     expect(args).toContain("-bf 0");
+  });
+});
+
+describe("ffmpegGrabArguments", () => {
+  it("reads its strip of the display without the pointer, and skips unchanged pictures", () => {
+    const args = ffmpegGrabArguments(16, { left: 1280, width: 2160, height: 1350 }, ":99").join(
+      " ",
+    );
+    expect(args).toContain("-f x11grab -draw_mouse 0 -framerate 30");
+    expect(args).toContain("-video_size 2160x1350 -i :99+1280,0");
+    expect(args).toContain("mpdecimate=hi=0:lo=0:frac=0:max=0");
+    expect(args).toContain("out_color_matrix=bt709");
+    expect(args).toContain("-crf 16");
   });
 });

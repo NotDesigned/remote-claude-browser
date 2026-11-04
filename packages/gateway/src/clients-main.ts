@@ -27,6 +27,7 @@ import { createRendererRecovery } from "./browser/recovery";
 import { createDownloadManager, registerDownloadRoutes } from "./downloads";
 import { createUploadManager, registerUploadRoutes } from "./uploads";
 import { createBrowserZoom } from "./browser/browser-zoom";
+import { createGrabSlots, createPixelWindow } from "./browser/pixel-window";
 import { createViewportAgreement } from "./hub/viewport";
 import { createInputRelay, type InputMsg } from "./input/relay";
 import { createScreencast } from "./px";
@@ -79,7 +80,8 @@ export async function startClientGateway(): Promise<void> {
         userDataDir: profile,
         executablePath: process.env.CHROME_PATH,
         headful: process.env.CHROME_HEADFUL === "1",
-        args: ["--disable-dev-shm-usage"],
+        // The display is much larger than a window needs to be outside the pixel view.
+        args: ["--disable-dev-shm-usage", "--window-size=1050,980"],
       });
   const pool = createClientBrowserPool(browser, {
     isolatedStorage: true,
@@ -313,6 +315,12 @@ export async function startClientGateway(): Promise<void> {
     if (message.t === "snapshot") runtimes.get(sid)?.viewport.noteSnapshot(message);
     ws.fanout.publishToSession(sid, message);
   }
+  const grabSlots = createGrabSlots();
+  const displayGrabbable =
+    process.env.CHROME_HEADFUL === "1" &&
+    !!process.env.DISPLAY &&
+    !process.env.BROWSER_CDP_URL &&
+    process.env.MIRROR_SCREEN_GRAB !== "0";
   const pixelCapacity = createPixelCapacity({
     maxActive: Infinity,
     onChange() {
@@ -551,6 +559,16 @@ export async function startClientGateway(): Promise<void> {
             connection.sid === sid && connection.viewer.socket.bufferedAmount > VIDEO_BACKLOG_BYTES,
         ),
       browserZoom,
+      ...(displayGrabbable && scoped.sendBrowser
+        ? {
+            grab: {
+              window: createPixelWindow({ sendBrowser: scoped.sendBrowser }),
+              acquire: () => grabSlots.acquire(sid),
+              release: () => grabSlots.release(sid),
+              available: () => grabSlots.available(),
+            },
+          }
+        : {}),
       onError: (error) => report("client picture failed", error),
     });
     recovery = createRendererRecovery({

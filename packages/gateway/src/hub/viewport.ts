@@ -20,6 +20,7 @@ export interface ViewportHub {
   viewport: { w: number; h: number; dpr: number } | null;
   epoch?: number;
   pixelZoom?: number;
+  pixelGrabbing?: boolean;
   requestSnapshot(reason: SnapshotReason): void;
   hasGeometry?(w: number, h: number): boolean;
   expectRecorderSnapshot?(reason: SnapshotReason): boolean;
@@ -298,7 +299,7 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
       await deps.send(sessionId, "Emulation.setDeviceMetricsOverride", {
         width: Math.round(desired.w * zoom),
         height: Math.round(desired.h * zoom),
-        deviceScaleFactor: zoom > 1 ? 1 : desired.dpr,
+        deviceScaleFactor: zoom > 1 || hub.pixelGrabbing ? 1 : desired.dpr,
         mobile: false,
       });
       if (!current(tabId, state)) return;

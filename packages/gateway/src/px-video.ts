@@ -1,7 +1,7 @@
 /**
- * H.264 encoder for the pixel view. JPEG frames go into ffmpeg as multipart, whose frames state their
- * own length, and come back as FLV tags, which do too. Other formats make ffmpeg wait for the next
- * frame to find where one ends, which is two more frames of input delay.
+ * H.264 encoder for the pixel view. Pictures come from the X display directly, or as JPEG frames in
+ * multipart, whose frames state their own length. They leave as FLV tags, which do too. Other formats
+ * make ffmpeg wait for the next frame to find where one ends, which is two more frames of input delay.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
@@ -28,7 +28,22 @@ export interface VideoEncoder {
 
 const MAX_QUEUED_INPUT_BYTES = 1024 * 1024;
 
+const GRAB_FPS = 30;
+
 export type VideoEncoderFactory = (crf: number, events: VideoEncoderEvents) => VideoEncoder;
+
+/** The part of the screen to read, starting at its top edge. */
+export interface GrabRegion {
+  left: number;
+  width: number;
+  height: number;
+}
+
+export type GrabEncoderFactory = (
+  crf: number,
+  region: GrabRegion,
+  events: VideoEncoderEvents,
+) => VideoEncoder;
 
 /** Splits an FLV stream into its configuration and one H.264 frame per video tag. */
 export function createFlvReader(
@@ -76,29 +91,44 @@ export function multipartFrame(jpeg: Buffer): Buffer {
   ]);
 }
 
+/** JPEG and the display are both full-range; an unconverted stream would show washed-out text. */
+const TO_VIDEO_COLORS =
+  "scale=trunc(iw/2)*2:trunc(ih/2)*2:out_range=tv:out_color_matrix=bt709,format=yuv420p";
+
+const encodingArguments = (crf: number, filter: string): string[] => [
+  ...["-vf", filter],
+  ...["-c:v", "libx264", "-preset", "superfast", "-tune", "zerolatency", "-crf", String(crf)],
+  ...["-threads", "3", "-g", "600", "-bf", "0", "-fps_mode", "passthrough"],
+  ...["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709"],
+  ...["-color_trc", "bt709"],
+  ...["-flush_packets", "1", "-f", "flv", "-flvflags", "no_duration_filesize", "-"],
+];
+
 export function ffmpegArguments(crf: number): string[] {
   return [
     ...["-hide_banner", "-loglevel", "error"],
     ...["-fflags", "nobuffer", "-flags", "low_delay", "-probesize", "32", "-analyzeduration", "0"],
     ...["-f", "mpjpeg", "-i", "-"],
-    // JPEG is full-range; an unconverted stream would show washed-out text.
-    ...[
-      "-vf",
-      "scale=trunc(iw/2)*2:trunc(ih/2)*2:out_range=tv:out_color_matrix=bt709,format=yuv420p",
-    ],
-    ...["-c:v", "libx264", "-preset", "superfast", "-tune", "zerolatency", "-crf", String(crf)],
-    ...["-threads", "3", "-g", "600", "-bf", "0", "-fps_mode", "passthrough"],
-    ...["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709"],
-    ...["-color_trc", "bt709"],
-    ...["-flush_packets", "1", "-f", "flv", "-flvflags", "no_duration_filesize", "-"],
+    ...encodingArguments(crf, TO_VIDEO_COLORS),
   ];
 }
 
-export const createFfmpegEncoder: VideoEncoderFactory = (crf, events) => {
+export function ffmpegGrabArguments(crf: number, region: GrabRegion, display: string): string[] {
+  return [
+    ...["-hide_banner", "-loglevel", "error"],
+    ...["-fflags", "nobuffer", "-flags", "low_delay"],
+    ...["-f", "x11grab", "-draw_mouse", "0", "-framerate", String(GRAB_FPS)],
+    ...["-video_size", `${region.width}x${region.height}`, "-i", `${display}+${region.left},0`],
+    // Only a picture that changed at all goes on, so a still page costs nothing to send or show.
+    ...encodingArguments(crf, `${TO_VIDEO_COLORS},mpdecimate=hi=0:lo=0:frac=0:max=0`),
+  ];
+}
+
+const startFfmpeg = (args: string[], events: VideoEncoderEvents): VideoEncoder => {
   let closed = false;
   const process: ChildProcessWithoutNullStreams = spawn(
     globalThis.process.env.MIRROR_FFMPEG ?? "ffmpeg",
-    ffmpegArguments(crf),
+    args,
   );
   const fail = (error: Error) => {
     if (closed) return;
@@ -131,4 +161,13 @@ export const createFfmpegEncoder: VideoEncoderFactory = (crf, events) => {
       process.kill("SIGKILL");
     },
   };
+};
+
+export const createFfmpegEncoder: VideoEncoderFactory = (crf, events) =>
+  startFfmpeg(ffmpegArguments(crf), events);
+
+export const createGrabEncoder: GrabEncoderFactory = (crf, region, events) => {
+  const display = globalThis.process.env.DISPLAY;
+  if (!display) throw new Error("Grabbing the screen needs a display");
+  return startFfmpeg(ffmpegGrabArguments(crf, region, display), events);
 };

@@ -76,6 +76,8 @@ export class TabHub {
   private hasDocument = false;
   /** Browser zoom the pixel view is using; the page sees the same geometry either way. */
   pixelZoom = 1;
+  /** The pixel view reads the page off the display, where only browser zoom can add density. */
+  pixelGrabbing = false;
   private snapshotRequested = false;
   /** The recorder was stopped for native chat, so the cached snapshot no longer matches the page. */
   private recorderPaused = false;

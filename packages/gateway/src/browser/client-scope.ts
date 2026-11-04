@@ -255,6 +255,7 @@ export function createClientBrowserPool(
     const ownsTarget = (targetId: string) =>
       owners.get(targetId) === sid && !retiredTargets.has(targetId);
     const ownTargets = () => [...targets.values()].filter((target) => ownsTarget(target.targetId));
+    const ownWindows = new Set<unknown>();
     const track = (off: () => void) => {
       let subscribed = true;
       const unsubscribe = () => {
@@ -472,6 +473,23 @@ export function createClientBrowserPool(
           if (typeof id !== "string" || !ownsTarget(id) || targets.get(id)?.type !== "page")
             throw new Error("Page does not belong to this client");
           return rootSend(method, { targetId: id });
+        }
+        if (method === "Browser.getWindowForTarget") {
+          const id = params.targetId;
+          if (typeof id !== "string" || !ownsTarget(id))
+            throw new Error("Page does not belong to this client");
+          const found = (await rootSend(method, { targetId: id })) as { windowId: number };
+          ownWindows.add(found.windowId);
+          return found;
+        }
+        if (
+          method === "Browser.getWindowBounds" ||
+          method === "Browser.setWindowBounds" ||
+          method === "Browser.setContentsSize"
+        ) {
+          if (!ownWindows.has(params.windowId as number))
+            throw new Error("Window does not belong to this client");
+          return rootSend(method, params);
         }
         throw new Error(`Browser command is not available in a client scope: ${method}`);
       },
