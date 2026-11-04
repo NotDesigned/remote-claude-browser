@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { BrowserHandle, BrowserTargetInfo } from "../browser/launch";
 import type { TargetRef } from "../types";
 import { SECURITY_HEADERS } from "../security-headers";
-import { chatDelta, type ChatState } from "./delta";
+import { chatDelta, type ChatMessage, type ChatState } from "./delta";
 import { ActionLedger } from "./ledger";
 import { observeChat } from "./observe";
 import {
@@ -15,6 +15,9 @@ import {
   fileDownloadExpression,
   cardOpenExpression,
   stepExpandExpression,
+  attachmentRemoveExpression,
+  rowScrollExpression,
+  SCROLL_HOME_EXPRESSION,
 } from "./extract";
 
 interface Options {
@@ -59,6 +62,19 @@ interface Lease {
   wake?(): void;
   /** The chat observer's isolated world, where reads use the per-message cache. */
   readContext?(): number | undefined;
+  /** Sends being confirmed; reading older rows waits so it cannot look like the new message. */
+  acting?: number;
+  /** The document whose older rows could not all be read. */
+  historyStalledEpoch?: string;
+}
+interface ClickBody {
+  controller?: string;
+  epoch?: string;
+  message?: number;
+  step?: number;
+  card?: number;
+  attachment?: number;
+  name?: string;
 }
 interface ActionBody {
   id?: unknown;
@@ -72,6 +88,9 @@ interface ActionBody {
 // Samples reuse the isolated-world cache and re-read only changed messages, so a streaming
 // reply can be sampled this often without re-serializing the conversation.
 const CHAT_ACTIVE_POLL_MS = 100;
+/** Pace of reading older transcript rows, which gives the page time to mount each new range. */
+const CHAT_WALK_STEP_MS = 250;
+const CHAT_WALK_MAX_STALLS = 20;
 const CHAT_IDLE_POLL_MS = 1000;
 const CHAT_FALLBACK_POLL_MS = 5000;
 
@@ -197,6 +216,7 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
         return false;
       }
     });
+  let transcript: { epoch: string; messages: ChatMessage[] } | undefined;
   const sample = async (target: TargetRef, lease?: Lease): Promise<ChatState> => {
     const contextId = lease?.readContext?.();
     let state: Omit<ChatState, "tab" | "epoch">;
@@ -208,15 +228,42 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
       state = await evaluate(target, CHAT_EXPRESSION);
     }
     if (new URL(state.url).origin !== siteOrigin) throw new Error("请在“页面”模式打开 Claude");
+    const epoch = `${boot}:${target.targetId}:${options.documentId(target.targetId)}:${state.url}`;
+    // Rows read earlier stay known after they unmount, also across chat reconnects.
+    const known = transcript?.epoch === epoch ? transcript.messages : [];
+    const messages = state.messages.map((message, index) =>
+      message.pending && known[index] && !known[index].pending ? known[index] : message,
+    );
+    transcript = { epoch, messages };
+    const unread = messages.filter((message) => message.pending).length;
     return {
       ...state,
+      messages,
       tab: target.targetId,
-      epoch: `${boot}:${target.targetId}:${options.documentId(target.targetId)}:${state.url}`,
+      epoch,
+      ...(unread
+        ? {
+            history: {
+              loaded: messages.length - unread,
+              total: messages.length,
+              ...(lease?.historyStalledEpoch === epoch ? { stalled: true } : {}),
+            },
+          }
+        : {}),
     };
+  };
+  /** Mounts a virtualized row so a control inside it can be clicked. */
+  const mountRow = async (target: TargetRef, row: number): Promise<void> => {
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const result = await evaluate<string>(target, rowScrollExpression(row));
+      if (result !== "moved") return;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
   };
   const send = (current: Lease, event: Record<string, unknown>) => {
     if (!isCurrent(current)) return;
-    if (current.response.writableLength > 512 * 1024) {
+    // A long transcript is one large snapshot; a slow phone link must not lose it for that.
+    if (current.response.writableLength > 8 * 1024 * 1024) {
       current.response.destroy();
       return;
     }
@@ -293,14 +340,62 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
       let observer: ReturnType<typeof observeChat> | undefined;
       let polling = false,
         dirty = false,
+        walking = false,
         sampledAt = 0;
       const schedule = (delay: number) => {
         if (!isCurrent(current)) return;
         clearTimeout(timer);
         timer = setTimeout(() => void poll(), delay);
       };
+      /** Reads older transcript rows, one remote scroll per poll, then scrolls back. */
+      let walk = { epoch: "", loaded: 0, stalled: 0, at: 0, moved: false, gaveUp: false };
+      let walkTarget: TargetRef | undefined;
+      const returnHome = async () => {
+        const contextId = observer?.contextId();
+        if (!walk.moved || !walkTarget || contextId === undefined) return;
+        walk.moved = false;
+        await evaluate(walkTarget, SCROLL_HOME_EXPRESSION, false, contextId).catch(() => {});
+      };
+      const walkHistory = async (target: TargetRef, state: ChatState): Promise<boolean> => {
+        if (walk.epoch !== state.epoch)
+          walk = { epoch: state.epoch, loaded: 0, stalled: 0, at: 0, moved: false, gaveUp: false };
+        const contextId = observer?.contextId();
+        const row = state.messages.map((message) => !!message.pending).lastIndexOf(true);
+        if (
+          row < 0 ||
+          walk.gaveUp ||
+          state.generating ||
+          current.acting ||
+          contextId === undefined
+        ) {
+          await returnHome();
+          return false;
+        }
+        if (Date.now() - walk.at < CHAT_WALK_STEP_MS) return true;
+        walk.at = Date.now();
+        const loaded = state.history?.loaded ?? 0;
+        walk.stalled = loaded > walk.loaded ? 0 : walk.stalled + 1;
+        walk.loaded = Math.max(walk.loaded, loaded);
+        const result =
+          walk.stalled > CHAT_WALK_MAX_STALLS
+            ? "none"
+            : await evaluate<string>(target, rowScrollExpression(row), false, contextId).catch(
+                () => "moved",
+              );
+        if (result === "none") {
+          walk.gaveUp = true;
+          current.historyStalledEpoch = state.epoch;
+          await returnHome();
+          current.wake?.();
+          return false;
+        }
+        walkTarget = target;
+        walk.moved = true;
+        return true;
+      };
       current.stopWatching = () => {
         clearTimeout(timer);
+        void returnHome();
         observer?.close();
       };
       current.readContext = () => observer?.contextId();
@@ -369,6 +464,7 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
             metrics.pollStage = "sampled";
             if (!canPoll()) return;
             publishState(current, state);
+            walking = await walkHistory(target, state);
           }
         } catch (error) {
           metrics.pollErrors++;
@@ -389,11 +485,13 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
         }
         if (lease === current && !closed)
           schedule(
-            dirty
-              ? CHAT_ACTIVE_POLL_MS
-              : observer?.available()
-                ? CHAT_FALLBACK_POLL_MS
-                : CHAT_IDLE_POLL_MS,
+            walking
+              ? CHAT_WALK_STEP_MS
+              : dirty
+                ? CHAT_ACTIVE_POLL_MS
+                : observer?.available()
+                  ? CHAT_FALLBACK_POLL_MS
+                  : CHAT_IDLE_POLL_MS,
           );
       };
       reply.raw.on("close", () => {
@@ -467,6 +565,7 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
         return reply.code(400).send({ error: "会话路径无效", started: false });
       const text = typeof body.text === "string" ? body.text : "";
       const path = body.type === "switch" ? (body.path as string) : "/new";
+      current.acting = (current.acting ?? 0) + 1;
       try {
         const result = await ledger.run(
           body.id,
@@ -570,6 +669,9 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
         return { id: result.id, status: result.status };
       } catch {
         return reply.code(409).send({ error: "操作记录冲突或存储不可用，请核对远端页面" });
+      } finally {
+        current.acting! -= 1;
+        current.wake?.();
       }
     },
   );
@@ -598,6 +700,7 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
         !file
       )
         return reply.code(409).send({ error: "文件列表已改变，请重试" });
+      await mountRow(target, body.message!);
       const ok = await evaluate<boolean>(
         target,
         fileDownloadExpression(body.message!, Number(file.id), file.name),
@@ -608,16 +711,13 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
     },
   );
 
-  /** Clicks one control of one message on the remote page, for the current controller only. */
+  /** Clicks one control on the remote page, for the current controller only. */
   const remoteClickRoute = (
     path: string,
-    field: "step" | "card",
-    expression: (message: number, index: number) => string,
+    click: (body: ClickBody) => { row?: number; expression: string } | undefined,
     unavailable: string,
   ) =>
-    app.post<{
-      Body: { controller?: string; epoch?: string; message?: number; step?: number; card?: number };
-    }>(
+    app.post<{ Body: ClickBody }>(
       apiPath(path),
       { preHandler: options.preHandler, bodyLimit: 4096 },
       async (request, reply) => {
@@ -630,27 +730,45 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
         if (!current?.state || body.controller !== current.id || options.mirrorHasController())
           return reply.code(409).send({ error: "请等待文字聊天重新连接" });
         const target = targetFor(current.state.tab);
-        const index = body[field];
-        if (
-          !target ||
-          !Number.isSafeInteger(body.message) ||
-          !Number.isSafeInteger(index) ||
-          body.message! < 0 ||
-          index! < 0
-        )
-          return reply.code(400).send({ error: "参数无效" });
+        const action = click(body);
+        if (!target || !action) return reply.code(400).send({ error: "参数无效" });
         if (body.epoch !== current.state.epoch)
           return reply.code(409).send({ error: "页面已切换，请重试" });
-        const ok = await evaluate<boolean>(target, expression(body.message!, index!), true).catch(
-          () => false,
-        );
+        const ok = await (async () => {
+          if (action.row !== undefined) await mountRow(target, action.row);
+          return evaluate<boolean>(target, action.expression, true);
+        })().catch(() => false);
         if (!ok) return reply.code(409).send({ error: unavailable });
         current.wake?.();
         return reply.code(204).send();
       },
     );
-  remoteClickRoute("/step", "step", stepExpandExpression, "这一行没有可展开的内容");
-  remoteClickRoute("/card", "card", cardOpenExpression, "这张卡片暂时无法打开");
+  const isIndex = (value: unknown): value is number =>
+    Number.isSafeInteger(value) && (value as number) >= 0;
+  remoteClickRoute(
+    "/step",
+    ({ message, step }) =>
+      isIndex(message) && isIndex(step)
+        ? { row: message, expression: stepExpandExpression(message, step) }
+        : undefined,
+    "这一行没有可展开的内容",
+  );
+  remoteClickRoute(
+    "/card",
+    ({ message, card }) =>
+      isIndex(message) && isIndex(card)
+        ? { row: message, expression: cardOpenExpression(message, card) }
+        : undefined,
+    "这张卡片暂时无法打开",
+  );
+  remoteClickRoute(
+    "/attachment",
+    ({ attachment, name }) =>
+      isIndex(attachment) && typeof name === "string" && name.length <= 200
+        ? { expression: attachmentRemoveExpression(attachment, name) }
+        : undefined,
+    "附件列表已改变，请重试",
+  );
 
   app.get(apiPath("/metrics"), { preHandler: options.preHandler }, async (_request, reply) =>
     reply.header("cache-control", "no-store").send(metrics),

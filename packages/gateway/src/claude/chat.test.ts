@@ -117,6 +117,42 @@ describe("chat text transport", () => {
   });
 });
 
+describe("chat transcript deltas", () => {
+  const base: ChatState = {
+    tab: "t",
+    epoch: "e",
+    url: "https://claude.ai/chat/a",
+    title: "",
+    ready: true,
+    generating: false,
+    conversations: [],
+    messages: [
+      { id: "r0", role: "assistant", text: "", pending: true },
+      { id: "r1", role: "assistant", text: "尾部" },
+    ],
+  };
+
+  it("sends only the row that was just read", () => {
+    const after: ChatState = {
+      ...base,
+      messages: [{ id: "r0", role: "assistant", text: "较早" }, base.messages[1]!],
+    };
+    expect(chatDelta(base, after)).toMatchObject({
+      type: "delta",
+      edits: [{ index: 0, message: { id: "r0", text: "较早" } }],
+    });
+  });
+
+  it("reports attachment and history changes", () => {
+    expect(
+      chatDelta(base, { ...base, attachments: [{ name: "a", removable: true }] }),
+    ).toMatchObject({ attachments: [{ name: "a", removable: true }] });
+    expect(chatDelta(base, { ...base, history: { loaded: 1, total: 2 } })).toMatchObject({
+      history: { loaded: 1, total: 2 },
+    });
+  });
+});
+
 describe("durable action receipts", () => {
   it("persists a pre-execution failure without executing a replay", async () => {
     const dir = await mkdtemp(join(tmpdir(), "claude-not-started-"));

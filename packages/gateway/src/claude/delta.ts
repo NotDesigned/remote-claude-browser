@@ -7,6 +7,8 @@ export interface ChatMessage {
   steps?: { summary: string; text?: string; state: string }[];
   /** Documents and artifacts attached to the reply, such as a Claude Docs card. */
   cards?: { title: string; subtitle: string; openable: boolean }[];
+  /** A virtualized transcript row that has not been read yet. */
+  pending?: boolean;
 }
 
 export interface ChatState {
@@ -20,6 +22,10 @@ export interface ChatState {
   draft?: string;
   generating: boolean;
   messages: ChatMessage[];
+  /** Files waiting in the remote composer. */
+  attachments?: { name: string; removable: boolean }[];
+  /** Present while some older transcript rows are unread; `stalled` means reading gave up. */
+  history?: { loaded: number; total: number; stalled?: boolean };
   conversations: { path: string; title: string }[];
 }
 
@@ -59,6 +65,7 @@ export function chatDelta(
         !previous ||
         previous.id !== message.id ||
         previous.role !== message.role ||
+        previous.pending !== message.pending ||
         JSON.stringify(previous.files) !== JSON.stringify(message.files) ||
         JSON.stringify(previous.steps) !== JSON.stringify(message.steps) ||
         JSON.stringify(previous.cards) !== JSON.stringify(message.cards)
@@ -76,6 +83,8 @@ export function chatDelta(
     ready: after.ready,
     draft: after.draft,
     generating: after.generating,
+    attachments: after.attachments,
+    history: after.history,
     conversations: after.conversations,
   };
   const prior = {
@@ -85,6 +94,8 @@ export function chatDelta(
     ready: before.ready,
     draft: before.draft,
     generating: before.generating,
+    attachments: before.attachments,
+    history: before.history,
     conversations: before.conversations,
   };
   if (

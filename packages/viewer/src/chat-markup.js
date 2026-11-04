@@ -23,7 +23,7 @@ export const CHAT_VIEW_MARKUP = `
     <div id="messages" aria-label="对话内容"></div>
     <button id="jump-latest" type="button" hidden>回到最新消息 ↓</button>
     <div class="chat-status">
-      <span id="generation-status" role="status"></span><span id="action-status" role="status"></span>
+      <span id="generation-status" role="status"></span><span id="action-status" role="status"></span><span id="history-status" role="status"></span>
     </div>
     <button id="resolve-pending" type="button" hidden>已核对远端页面，解除待确认状态</button>
     <section id="downloads" aria-label="下载文件" hidden></section>
@@ -34,6 +34,7 @@ export const CHAT_VIEW_MARKUP = `
         <progress id="upload-progress" max="100" value="0" hidden></progress>
         <button id="cancel-upload" type="button">取消上传</button>
       </section>
+      <ul id="attachments" aria-label="已添加的附件" hidden></ul>
       <label class="sr-only" for="draft">消息</label>
       <textarea id="draft" rows="2" maxlength="100000" placeholder="输入消息，Enter 发送，Shift + Enter 换行"></textarea>
       <div class="compose-footer">

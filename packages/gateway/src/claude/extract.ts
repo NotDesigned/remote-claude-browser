@@ -2,6 +2,14 @@ import { editableText } from "@mirror/protocol";
 
 const MESSAGE_SELECTOR =
   '[data-testid="user-message"], [data-testid="assistant-message"], .font-claude-response';
+/**
+ * Claude virtualizes long transcripts: only rows near the viewport exist in the DOM, each with an
+ * absolute `data-index`. A message's position in chat state is that row number when rows exist.
+ */
+const ROW_SELECTOR = '[data-testid="transcript-row"]';
+const SCROLLER_SELECTOR = "[data-autoscroll-container]";
+const ATTACHMENT_SELECTOR = '[data-cds-composer-attachments] [data-testid="file-thumbnail"]';
+const ATTACHMENT_REMOVE_SELECTOR = "button[data-cds-attachment-remove]";
 const FILE_CONTROLS = String.raw`(e) => [...e.querySelectorAll('a[href], [data-testid="file-card-block"] button[aria-label]')].filter(a => a.tagName === 'BUTTON' ? /^(download\b|下载)/i.test(a.getAttribute('aria-label') || '') : a.hasAttribute('download') || /^(blob:|sandbox:)|download|attachment|\/files\//i.test(a.getAttribute('href') || '')).slice(0, 20)`;
 const FILE_NAME = String.raw`(e) => (e.getAttribute('download') || (e.getAttribute('aria-label') || '').replace(/^(download\b|下载)\s*/i, '') || e.textContent || '下载文件').trim().slice(0, 200)`;
 
@@ -121,11 +129,12 @@ export const CHAT_EXPRESSION = String.raw`(() => {
   // Sign-in and logout pages reuse the reply typography for marketing copy; never read them as chat.
   const signedOut = /^\/(login|logout|oauth|auth|magic-link)(\/|$)/i.test(location.pathname);
   const candidates = signedOut ? [] : [...document.querySelectorAll(${JSON.stringify(MESSAGE_SELECTOR)})];
+  const tops = candidates.filter(e => !candidates.some(p => p !== e && p.contains(e)));
   const messageText = ${MESSAGE_TEXT};
   // In the observer's isolated world a cache keeps each message's serialized content until a
   // mutation inside that message marks it dirty, so streaming re-reads only the changing reply.
   const cache = globalThis.${CHAT_CACHE_GLOBAL};
-  const messages = candidates.filter(e => !candidates.some(p => p !== e && p.contains(e))).slice(-300).map((e, index) => {
+  const read = e => {
     const user = e.matches('[data-testid="user-message"]');
     let content = cache && !cache.dirty.has(e) ? cache.entries.get(e) : undefined;
     if (!content) {
@@ -139,17 +148,49 @@ export const CHAT_EXPRESSION = String.raw`(() => {
       };
       if (cache) { cache.entries.set(e, content); cache.dirty.delete(e); }
     }
-    return {
-      id: e.closest('[data-message-id]')?.getAttribute('data-message-id') || String(index),
-      role: user ? 'user' : 'assistant',
-      ...content
-    };
+    return { role: user ? 'user' : 'assistant', ...content };
+  };
+  const rowElement = e => e.closest(${JSON.stringify(ROW_SELECTOR)});
+  const rowNumbers = tops.map(e => { const value = rowElement(e)?.getAttribute('data-index'); return value && /^\d+$/.test(value) ? Number(value) : -1; });
+  const rowed = rowNumbers.length > 0 && !rowNumbers.includes(-1) && new Set(rowNumbers).size === rowNumbers.length;
+  // Moving between conversations can leave the old rows mounted for a moment under the new URL.
+  if (cache) {
+    if (cache.seenPath !== location.pathname) { cache.stale = cache.seenPath === undefined ? undefined : cache.seen; cache.seenPath = location.pathname; }
+    cache.seen = new WeakSet(tops);
+  }
+  const stale = e => {
+    if (!cache || !cache.stale || !cache.stale.has(e)) return false;
+    if (!cache.dirty.has(e)) return true;
+    cache.stale.delete(e);
+    return false;
+  };
+  const rowedMessages = () => {
+    const known = [];
+    let total = 0;
+    tops.forEach((e, index) => {
+      if (stale(e)) return;
+      const row = rowNumbers[index];
+      const size = Number(rowElement(e).querySelector('[role="article"]')?.getAttribute('aria-setsize')) || 0;
+      total = Math.max(total, size, row + 1);
+      known[row] = { id: 'r' + row, ...read(e) };
+    });
+    // Rows that are not mounted stay as placeholders, so every index is the absolute row number.
+    return Array.from({ length: Math.min(total, 5000) }, (_, row) => known[row] || { id: 'r' + row, role: 'assistant', text: '', pending: true });
+  };
+  const messages = rowed ? rowedMessages() : tops.slice(-300).map((e, index) => ({
+    id: e.closest('[data-message-id]')?.getAttribute('data-message-id') || String(index),
+    ...read(e)
+  }));
+  const attachments = [...document.querySelectorAll(${JSON.stringify(ATTACHMENT_SELECTOR)})].slice(0, 20).map(tile => {
+    const remove = tile.querySelector(${JSON.stringify(ATTACHMENT_REMOVE_SELECTOR)});
+    const name = ((remove?.getAttribute('aria-label') || '').replace(/^(remove|删除|移除)\s*/i, '') || tile.textContent || '附件').trim().slice(0, 200);
+    return { name, removable: !!remove };
   });
   const conversations = [...document.querySelectorAll('a[href^="/chat/"]')].map(e => ({path: new URL(e.href).pathname, title: (e.textContent || '').trim().slice(0, 150)})).filter(e => e.title && /^\/chat\/[a-zA-Z0-9-]+$/.test(e.path));
   const stop = [...document.querySelectorAll('button[aria-label], button[data-testid]')].find(e => /stop|停止/i.test((e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-testid') || '')) && visible(e));
   const editorText = ${editableText.toString()};
   const draft = editor ? ('value' in editor ? editor.value : editorText(editor)) : '';
-  return {url: location.href, title: document.title, signedOut, ready: !signedOut && !!editor, draft: draft.trim() ? draft.slice(0, 100000) : '', generating: !!stop, messages, conversations: [...new Map(conversations.map(e => [e.path,e])).values()].slice(0,100)};
+  return {url: location.href, title: document.title, signedOut, ready: !signedOut && !!editor, draft: draft.trim() ? draft.slice(0, 100000) : '', generating: !!stop, messages, attachments, conversations: [...new Map(conversations.map(e => [e.path,e])).values()].slice(0,100)};
 })()`;
 
 export const EDITOR_FOCUS_EXPRESSION = `(() => {
@@ -172,12 +213,56 @@ export function buttonExpression(kind: "send" | "stop", click = false): string {
   })()`;
 }
 
+/** Finds one message by chat-state index: its row when virtualized, else its mounted position. */
+const findMessage = (index: number) => `(() => {
+  const within = scope => {
+    const candidates = [...scope.querySelectorAll(${JSON.stringify(MESSAGE_SELECTOR)})];
+    return candidates.filter(e => !candidates.some(p => p !== e && p.contains(e)));
+  };
+  if (!document.querySelector(${JSON.stringify(ROW_SELECTOR)})) return within(document).slice(-300)[${index}];
+  const row = document.querySelector(${JSON.stringify(`${ROW_SELECTOR}[data-index="`)} + ${index} + '"]');
+  return row ? within(row)[0] : undefined;
+})()`;
+
+/**
+ * Moves the remote transcript one step towards a row. "mounted" means the row exists now, "moved"
+ * means look again shortly, and "none" means this page has no virtualized transcript. The step
+ * places the nearest mounted row at the far edge of the viewport, so a very tall row cannot stall it.
+ */
+export function rowScrollExpression(row: number): string {
+  return `(() => {
+    const scroller = document.querySelector(${JSON.stringify(SCROLLER_SELECTOR)});
+    const rows = [...document.querySelectorAll(${JSON.stringify(ROW_SELECTOR)})]
+      .map(element => ({ element, index: Number(element.getAttribute('data-index')) }))
+      .filter(item => Number.isInteger(item.index))
+      .sort((a, b) => a.index - b.index);
+    if (!scroller || !rows.length) return 'none';
+    if (rows.some(item => item.index === ${row})) return 'mounted';
+    const cache = globalThis.${CHAT_CACHE_GLOBAL};
+    if (cache && cache.home === undefined) cache.home = scroller.scrollHeight - scroller.scrollTop;
+    const top = scroller.getBoundingClientRect().top;
+    scroller.scrollTop += ${row} < rows[0].index
+      ? rows[0].element.getBoundingClientRect().top - top - scroller.clientHeight * 0.9
+      : rows[rows.length - 1].element.getBoundingClientRect().bottom - top - scroller.clientHeight * 0.1;
+    return 'moved';
+  })()`;
+}
+
+/** Returns the transcript to where it was before reading older rows. */
+export const SCROLL_HOME_EXPRESSION = `(() => {
+  const cache = globalThis.${CHAT_CACHE_GLOBAL};
+  const scroller = document.querySelector(${JSON.stringify(SCROLLER_SELECTOR)});
+  if (!cache || cache.home === undefined) return false;
+  if (scroller) scroller.scrollTop = scroller.scrollHeight - cache.home;
+  cache.home = undefined;
+  return true;
+})()`;
+
 /** Opens a document or artifact card on the remote page. */
 export function cardOpenExpression(messageIndex: number, cardIndex: number): string {
   return `(() => {
-    const candidates = [...document.querySelectorAll(${JSON.stringify(MESSAGE_SELECTOR)})];
-    const messages = candidates.filter(e => !candidates.some(p => p !== e && p.contains(e))).slice(-300);
-    const card = messages[${messageIndex}] && [...messages[${messageIndex}].querySelectorAll('[data-file-row-card]')][${cardIndex}];
+    const message = ${findMessage(messageIndex)};
+    const card = message && [...message.querySelectorAll('[data-file-row-card]')][${cardIndex}];
     const open = card && card.querySelector('[data-testid="frame-card-open"]');
     if (!open) return false;
     open.click();
@@ -188,9 +273,7 @@ export function cardOpenExpression(messageIndex: number, cardIndex: number): str
 /** Opens one thinking/process row on the remote page; its detail then syncs like any change. */
 export function stepExpandExpression(messageIndex: number, stepIndex: number): string {
   return `(() => {
-    const candidates = [...document.querySelectorAll(${JSON.stringify(MESSAGE_SELECTOR)})];
-    const messages = candidates.filter(e => !candidates.some(p => p !== e && p.contains(e))).slice(-300);
-    const message = messages[${messageIndex}];
+    const message = ${findMessage(messageIndex)};
     const step = message && [...message.querySelectorAll('[class~="group/status"]')]
       .filter(s => !s.parentElement?.closest('[class~="group/status"]'))[${stepIndex}];
     const toggle = step && step.querySelector('button[aria-expanded]');
@@ -206,11 +289,22 @@ export function fileDownloadExpression(
   expectedName: string,
 ): string {
   return `(() => {
-    const candidates = [...document.querySelectorAll(${JSON.stringify(MESSAGE_SELECTOR)})];
-    const messages = candidates.filter(e => !candidates.some(p => p !== e && p.contains(e))).slice(-300);
-    const e = messages[${messageIndex}];
+    const e = ${findMessage(messageIndex)};
     const a = e && (${FILE_CONTROLS})(e)[${fileIndex}];
     if (!a || a.disabled || (${FILE_NAME})(a) !== ${JSON.stringify(expectedName)}) return false;
     a.click(); return true;
+  })()`;
+}
+
+/** Removes one attachment from the remote composer, unless the list has changed underneath it. */
+export function attachmentRemoveExpression(index: number, expectedName: string): string {
+  return String.raw`(() => {
+    const tile = document.querySelectorAll(${JSON.stringify(ATTACHMENT_SELECTOR)})[${index}];
+    const remove = tile && tile.querySelector(${JSON.stringify(ATTACHMENT_REMOVE_SELECTOR)});
+    if (!remove) return false;
+    const name = ((remove.getAttribute('aria-label') || '').replace(/^(remove|删除|移除)\s*/i, '') || tile.textContent || '附件').trim().slice(0, 200);
+    if (name !== ${JSON.stringify(expectedName)}) return false;
+    remove.click();
+    return true;
   })()`;
 }

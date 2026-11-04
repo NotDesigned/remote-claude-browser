@@ -193,7 +193,10 @@ ${"```"}`,
                   steps: [{ summary: "Searched the web, read a page", state: "done" }],
                   files: [{ id: "0", name: "结果.txt" }],
                 },
+                { id: "r1", role: "assistant", text: "", pending: true },
               ],
+              attachments: [{ name: "传错了.txt", removable: true }],
+              history: { loaded: 1, total: 2 },
               conversations: [],
             },
           })}\n\n`,
@@ -683,6 +686,18 @@ try {
     { message: 0, step: 0 },
   );
   await firstPage.locator("#messages .message-step summary").click();
+  // An unread transcript row stays out of sight, with its progress shown instead.
+  assert.equal(await firstPage.locator("#messages .message:visible").count(), 1);
+  assert.match(await firstPage.locator("#history-status").textContent(), /1\/2/);
+  // A wrongly added file can be removed from the remote composer.
+  const removeRequest = firstPage.waitForRequest((request) =>
+    request.url().endsWith("/api/claude/attachment"),
+  );
+  await firstPage.locator('#attachments button[aria-label="移除附件 传错了.txt"]').click();
+  assert.deepEqual(
+    (({ attachment, name }) => ({ attachment, name }))((await removeRequest).postDataJSON()),
+    { attachment: 0, name: "传错了.txt" },
+  );
   const draftBox = firstPage.locator("#draft");
   const draftBefore = (await draftBox.boundingBox()).height;
   await draftBox.fill("第一行\n第二行\n第三行\n第四行\n第五行\n第六行");

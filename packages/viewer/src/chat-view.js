@@ -70,6 +70,7 @@ export function mountChatView(root, options) {
   let openingNew = false;
   let draftEditedBeforeReady = false;
   let statusTimer;
+  let attachmentSignature = "";
   let sizedDraft = null;
   const draft = $("draft");
   draft.value = localStorage.getItem(legacyDraftKey) || "";
@@ -212,6 +213,50 @@ export function mountChatView(root, options) {
   function setRetryVisible(visible) {
     $("retry-chat").hidden = !visible;
   }
+  /** Files in the remote composer, each removable there through the gateway. */
+  function renderAttachments() {
+    const attachments = state.attachments || [];
+    const signature = JSON.stringify(attachments);
+    if (signature === attachmentSignature) return;
+    attachmentSignature = signature;
+    const list = $("attachments");
+    list.hidden = !attachments.length;
+    list.replaceChildren(
+      ...attachments.map((attachment, index) => {
+        const item = document.createElement("li");
+        const name = document.createElement("span");
+        name.textContent = attachment.name;
+        item.append(name);
+        if (attachment.removable) {
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.textContent = "×";
+          remove.setAttribute("aria-label", `移除附件 ${attachment.name}`);
+          remove.onclick = async () => {
+            remove.disabled = true;
+            try {
+              const response = await fetch(`${apiBase}/attachment`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                  controller,
+                  epoch: state.epoch,
+                  attachment: index,
+                  name: attachment.name,
+                }),
+              });
+              if (!response.ok) throw new Error((await response.json()).error || "移除失败");
+            } catch (error) {
+              remove.disabled = false;
+              $("action-status").textContent = error.message || "移除失败";
+            }
+          };
+          item.append(remove);
+        }
+        return item;
+      }),
+    );
+  }
   function render() {
     document.title = state.title || "Claude";
     activateDraft();
@@ -261,6 +306,7 @@ export function mountChatView(root, options) {
         };
         messageElements.set(key, entry);
       }
+      entry.article.hidden = !!message.pending;
       entry.article.toggleAttribute("data-streaming", streaming);
       if (entry.messageText !== message.text) {
         renderChatText(entry.text, message.text, message.role === "assistant");
@@ -329,6 +375,13 @@ export function mountChatView(root, options) {
       pendingArticle.querySelector(".text").textContent = pendingDetails.text;
       if (pendingArticle.parentElement !== list) list.append(pendingArticle);
     } else pendingArticle.remove();
+    renderAttachments();
+    const history = state.history;
+    $("history-status").textContent = !history
+      ? ""
+      : history.stalled
+        ? `有 ${history.total - history.loaded} 条较早的消息没有读到，可切换到“页面”模式查看`
+        : `正在读取较早的消息（${history.loaded}/${history.total}）`;
     if (following) list.scrollTop = list.scrollHeight;
     $("jump-latest").hidden = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
     const notice = $("notice");
@@ -659,6 +712,8 @@ export function mountChatView(root, options) {
           ready: data.ready,
           draft: data.draft,
           generating: data.generating,
+          attachments: data.attachments,
+          history: data.history,
           conversations: data.conversations ?? state.conversations,
         });
         render();
