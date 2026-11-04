@@ -184,8 +184,8 @@ describe("createScreencast", () => {
           browser.frame("cdp-1", frame(index, `signal-${index}`));
           await vi.advanceTimersByTimeAsync(50);
         }
-        // Twenty changes in a second, at no more than one frame per 200ms.
-        expect(shots().length).toBeLessThanOrEqual(6);
+        // Twenty changes in a second, at no more than one frame per 100ms.
+        expect(shots().length).toBeLessThanOrEqual(11);
         const taken = shots().length;
         browser.frame("cdp-1", frame(99, "signal-final"));
         await vi.advanceTimersByTimeAsync(500);

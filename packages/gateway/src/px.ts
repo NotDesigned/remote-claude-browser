@@ -24,7 +24,7 @@ const SHARP_MAX_INTERVAL_MS = 30_000;
 /** Frames closer than this are real activity, unlike a lone blinking caret. */
 const BURST_GAP_MS = 150;
 /** Fastest rate of device-resolution frames, which also waits on how long each one takes. */
-const DEVICE_FRAME_MIN_INTERVAL_MS = 200;
+const DEVICE_FRAME_MIN_INTERVAL_MS = 100;
 /** Only compared with the previous frame to see whether anything changed; never displayed. */
 const CHANGE_SIGNAL_JPEG = 50;
 /** A page that never stops, such as a shimmer on one row, still gets sharp around that row. */
@@ -232,7 +232,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   const requestDeviceFrame = (state: TabState): void => {
     if (state.deviceFrameTimer !== undefined || state.sharpInFlight) return;
     const generation = state.generation;
-    const interval = Math.max(DEVICE_FRAME_MIN_INTERVAL_MS, state.sharpCaptureMs * 2);
+    const interval = Math.max(DEVICE_FRAME_MIN_INTERVAL_MS, state.sharpCaptureMs * 1.25);
     state.deviceFrameTimer = setTimeout(
       () => {
         state.deviceFrameTimer = undefined;
