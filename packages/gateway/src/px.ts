@@ -28,7 +28,11 @@ const SHARP_MAX_INTERVAL_MS = 30_000;
 const BURST_GAP_MS = 150;
 const ZOOM_SETTLE_MS = 1_500;
 const ZOOM_POLL_MS = 50;
+const STATS_INTERVAL_MS = 1_000;
 const VIDEO_QUIET_MS = 40;
+/** Frames further apart than this are separate changes rather than a moving picture. */
+const VIDEO_RUN_GAP_MS = 500;
+const VIDEO_QUIET_GAPS = 1.5;
 const VIDEO_FLUSH_GAP_MS = 5;
 const VIDEO_FLUSH_FRAMES = 3;
 /** A page that never stops, such as a shimmer on one row, still gets sharp around that row. */
@@ -111,6 +115,8 @@ interface VideoStream {
   h: number;
   encoder: VideoEncoder;
   flushTimer?: ReturnType<typeof setTimeout>;
+  lastFedAt?: number;
+  frameGapMs: number;
 }
 
 interface TabState {
@@ -130,6 +136,7 @@ interface TabState {
   sharpInFlight: boolean;
   video?: VideoStream;
   zoomChanging?: boolean;
+  stats: { captured: number; encoded: number; repeated: number; dropped: number };
   videoSeq: number;
   lastJpeg?: Buffer;
   frameCount: number;
@@ -318,6 +325,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     const video: VideoStream = {
       w,
       h,
+      frameGapMs: 0,
       encoder: (opts.createVideoEncoder ?? createFfmpegEncoder)(
         CAPTURE_PRESETS[quality].video.crf,
         {
@@ -347,18 +355,21 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     state.video = video;
   };
   /**
-   * ffmpeg holds back its last frames until more input arrives. When the picture goes quiet, the
-   * same frame is fed again to push out the real one.
+   * ffmpeg holds back its last frames until more input arrives. Once the picture has really gone
+   * quiet, which depends on how fast frames have been coming, the same frame is fed again to push
+   * out the real one. Doing this between frames would multiply the encoder's work.
    */
   const flushVideo = (state: TabState, video: VideoStream, remaining: number): void => {
     clearTimeout(video.flushTimer);
+    const quietMs = Math.max(VIDEO_QUIET_MS, video.frameGapMs * VIDEO_QUIET_GAPS);
     video.flushTimer = setTimeout(
       () => {
         if (state.video !== video || !state.lastJpeg) return;
         video.encoder.write(state.lastJpeg);
+        state.stats.repeated++;
         if (remaining > 1) flushVideo(state, video, remaining - 1);
       },
-      remaining === VIDEO_FLUSH_FRAMES ? VIDEO_QUIET_MS : VIDEO_FLUSH_GAP_MS,
+      remaining === VIDEO_FLUSH_FRAMES ? quietMs : VIDEO_FLUSH_GAP_MS,
     );
     video.flushTimer.unref?.();
   };
@@ -366,8 +377,17 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     if (state.video?.w !== w || state.video.h !== h) startVideo(state, w, h);
     const video = state.video;
     if (!video || !state.lastJpeg) return;
+    const now = Date.now();
+    if (video.lastFedAt) {
+      // Only an ongoing run of frames sets the pace; a pause is what the flush is waiting for.
+      const gap = now - video.lastFedAt;
+      if (gap < VIDEO_RUN_GAP_MS)
+        video.frameGapMs = video.frameGapMs ? video.frameGapMs * 0.7 + gap * 0.3 : gap;
+    }
+    video.lastFedAt = now;
     // A frame dropped here costs nothing; one dropped after encoding would break the decoder.
     if (!opts.backlogged?.() && !video.encoder.busy?.()) video.encoder.write(state.lastJpeg);
+    else state.stats.dropped++;
     flushVideo(state, video, VIDEO_FLUSH_FRAMES);
   };
   /** A viewer that joined or lost its place needs a new stream beginning with a keyframe. */
@@ -557,6 +577,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       // Taking a sharp frame can make Chromium repeat the same picture. It must not replace it.
       if (state.lastFrame && event.data === state.lastCastData) return;
       state.lastCastData = event.data;
+      state.stats.captured++;
       const viewport = state.hub.viewport;
       const w = frameDimension(viewport?.w, event.metadata.deviceWidth);
       const h = frameDimension(viewport?.h, event.metadata.deviceHeight);
@@ -696,11 +717,29 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       lastSharpAt: 0,
       sharpInFlight: false,
       videoSeq: 0,
+      stats: { captured: 0, encoded: 0, repeated: 0, dropped: 0 },
       frameCount: 0,
     };
     tabs.set(target.targetId, state);
     sessions.set(target.sessionId, state);
   });
+
+  const statsTimer = setInterval(() => {
+    for (const state of tabs.values()) {
+      const { captured, encoded, repeated, dropped } = state.stats;
+      state.stats = { captured: 0, encoded: 0, repeated: 0, dropped: 0 };
+      if (state.hub.mode !== "px" || !state.video) continue;
+      opts.publish({
+        t: "px-stats",
+        tab: state.target.targetId,
+        captureFps: captured,
+        // Frames repeated to flush the encoder are not new pictures.
+        encodeFps: Math.max(0, encoded - repeated),
+        dropFps: dropped,
+      });
+    }
+  }, STATS_INTERVAL_MS);
+  statsTimer.unref?.();
 
   return {
     handle(msg) {
@@ -749,6 +788,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     dispose() {
       if (disposed) return;
       disposed = true;
+      clearInterval(statsTimer);
       unsubscribeFrame();
       unsubscribeNavigation();
       for (const state of tabs.values()) {

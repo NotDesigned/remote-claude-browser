@@ -32,6 +32,7 @@ export interface ShellBarProps {
   serverStatus: ReceivedServerStatus | null;
   rttMs: number | null;
   speedBps: number | null;
+  frameRate: number | null;
   sessionLabel: string | null;
   onEndSession?(): void;
 }
@@ -290,6 +291,10 @@ export function ShellBar(props: ShellBarProps) {
               <div>
                 <dt>速度</dt>
                 <dd>{formatSpeed(props.speedBps)}</dd>
+              </div>
+              <div>
+                <dt>帧率</dt>
+                <dd>{props.frameRate === null ? "—" : `${props.frameRate} fps`}</dd>
               </div>
             </dl>
           </div>

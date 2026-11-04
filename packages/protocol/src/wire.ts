@@ -125,6 +125,8 @@ export type Down =
       h: number;
       data: Uint8Array;
     }
+  /** Frames per second at each stage on the gateway, for diagnosing a slow picture. */
+  | { t: "px-stats"; tab: TabId; captureFps: number; encodeFps: number; dropFps: number }
   /** A stylesheet that following snapshots refer to by this hash (see sheets.ts). */
   | { t: "css"; hash: string; text: string }
   /** The requested geometry already matches the current snapshot; input may start. */
@@ -256,6 +258,7 @@ const DOWN_TAGS: ReadonlySet<string> = new Set([
   "view-ok",
   "css",
   "vid-cfg",
+  "px-stats",
   "px",
   "rtc-sig",
   "download",

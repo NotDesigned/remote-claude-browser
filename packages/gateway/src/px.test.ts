@@ -289,6 +289,31 @@ describe("createScreencast", () => {
       controller.dispose();
     });
 
+    it("does not repeat frames between the frames of a slow moving picture", async () => {
+      const { browser, encoders, controller } = await setup();
+      for (let index = 0; index < 10; index++) {
+        browser.frame("cdp-1", frame(index, `FRAME${index}`));
+        await vi.advanceTimersByTimeAsync(80);
+      }
+      // The first frames are still finding the pace; after that only real frames go in.
+      expect(encoders[0]!.written.length).toBeLessThanOrEqual(10 + 3);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(encoders[0]!.written.at(-1)).toBe(encoders[0]!.written.at(-2));
+      controller.dispose();
+    });
+
+    it("reports frames per second at each stage", async () => {
+      const { browser, published, encoders, controller } = await setup();
+      browser.frame("cdp-1", frame(1, "AAAA"));
+      encoders[0]!.events.onChunk(Buffer.from([9]), true);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(published.filter((message) => message.t === "px-stats").at(0)).toMatchObject({
+        captureFps: 1,
+        dropFps: 0,
+      });
+      controller.dispose();
+    });
+
     it("drops frames before encoding while a viewer cannot keep up", async () => {
       let behind = true;
       const { browser, encoders, controller } = await setup(() => behind);

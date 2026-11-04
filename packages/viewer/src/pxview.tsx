@@ -23,6 +23,8 @@ export interface PxViewOptions {
   onEnterPx(tab: TabId): void;
   onEnterDom?(tab: TabId): void;
   createImage?: () => HTMLImageElement;
+  /** A picture reached the canvas. */
+  onPaint?(): void;
 }
 
 export interface PxView {
@@ -52,6 +54,7 @@ export function createPxView(options: PxViewOptions): PxView {
           if (activeTab === null || destroyed) return;
           const target = enterPx(activeTab);
           const context = target.getContext("2d");
+          options.onPaint?.();
           if (context)
             paintPicture(
               target,

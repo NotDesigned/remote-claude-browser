@@ -19,7 +19,7 @@ import {
   updateDownloads,
 } from "./chrome/downloads";
 import { createPxView, type PxView } from "./pxview";
-import { HudLayer } from "./hud";
+import { HudLayer, type FrameRates } from "./hud";
 import { videoOption } from "./px-video";
 import { pollServerStatus, receiveServerStatus, type ReceivedServerStatus } from "./server-status";
 import { ShellBar, resourceWarning, type ThemePreference } from "./shell-bar";
@@ -141,6 +141,7 @@ export function App() {
   const [resyncByTab, setResyncByTab] = useState<Record<TabId, ResyncTabState | undefined>>({});
   const [rttMs, setRttMs] = useState<number | null>(null);
   const [speedBps, setSpeedBps] = useState<number | null>(null);
+  const [frameRates, setFrameRates] = useState<FrameRates | null>(null);
   const [peakSpeedBps, setPeakSpeedBps] = useState<number | null>(null);
   const [bufferMs, setBufferMs] = useState(DEFAULT_LIVE_BUFFER_MS);
   const [viewerId, setViewerId] = useState<string | null>(null);
@@ -501,14 +502,25 @@ export function App() {
       },
     });
     mirrorRef.current = mirror;
+    let paintedFrames = 0;
+    let gatewayFrames = { capture: 0, encode: 0, drop: 0 };
+    const frameRateTimer = setInterval(() => {
+      const display = paintedFrames;
+      paintedFrames = 0;
+      setFrameRates({ ...gatewayFrames, display });
+    }, 1_000);
     const ensurePxView = (): PxView => {
       if (pxView !== null) return pxView;
       pxView = createPxView({
         container: host,
         send: (message) => {
-          if (driver && inputsReady) socket?.send(message);
+          // Asking for a keyframe is about the picture, so it does not wait for input to unlock.
+          if (driver && (inputsReady || message.t === "vid-key")) socket?.send(message);
         },
         onEnterPx: () => mirror.teardown(),
+        onPaint: () => {
+          paintedFrames++;
+        },
       });
       if (currentTab !== null) pxView.selectTab(currentTab);
       pxViewRef.current = pxView;
@@ -525,6 +537,7 @@ export function App() {
     const cleanup = () => {
       if (disposed) return;
       disposed = true;
+      clearInterval(frameRateTimer);
       controller.abort();
       driver = false;
       inputsReady = false;
@@ -581,6 +594,14 @@ export function App() {
           return;
         }
         if (message.t === "px-capacity") setPixelAvailable(message.available);
+        if (message.t === "px-stats") {
+          gatewayFrames = {
+            capture: message.captureFps,
+            encode: message.encodeFps,
+            drop: message.dropFps,
+          };
+          return;
+        }
         presentation.observe(message);
         // Acknowledge receipt so the gateway paces frames to what this link actually delivers.
         if (message.t === "px") socket?.send({ t: "px-ack", tab: message.tab });
@@ -944,6 +965,7 @@ export function App() {
         serverStatus={serverStatus}
         rttMs={browserView ? rttMs : null}
         speedBps={browserView ? speedBps : null}
+        frameRate={browserView && pixelMode ? (frameRates?.display ?? null) : null}
         sessionLabel={clientSession?.label ?? null}
         onEndSession={
           clientSession !== null && clientPhase === "ready"
@@ -1123,6 +1145,7 @@ export function App() {
           resyncByTab={resyncByTab}
           speedBps={speedBps}
           peakSpeedBps={peakSpeedBps}
+          frames={frameRates}
         />
       )}
       <aside id="transfer-panels" aria-label="文件与剪贴板" hidden={!browserView}>

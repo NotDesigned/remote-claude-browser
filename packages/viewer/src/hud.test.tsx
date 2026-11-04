@@ -61,6 +61,28 @@ const props: HudProps = {
   peakSpeedBps: 3 * 1024 * 1024,
 };
 
+describe("frame rates", () => {
+  const frames = { capture: 15, encode: 14, drop: 1, display: 13 };
+  const pixelProps = {
+    ...props,
+    activeTab: "tab-1",
+    modeByTab: { "tab-1": "px" as const },
+    frames,
+  };
+
+  it("shows every stage in the pixel view", () => {
+    const text = textContent(Hud(pixelProps));
+    expect(text).toContain("13 fps");
+    expect(text).toContain("采集帧率15 fps");
+    expect(text).toContain("编码帧率14 fps");
+    expect(text).toContain("丢弃帧率1 fps");
+  });
+
+  it("stays out of the page view", () => {
+    expect(textContent(Hud({ ...props, modeByTab: {}, frames }))).not.toContain("fps");
+  });
+});
+
 describe("formatSpeed", () => {
   it("picks a readable unit", () => {
     expect(formatSpeed(null)).toBe("—");

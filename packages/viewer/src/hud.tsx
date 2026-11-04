@@ -15,6 +15,15 @@ export interface HudProps {
   resyncByTab: Readonly<Record<TabId, ResyncTabState | undefined>>;
   speedBps: number | null;
   peakSpeedBps: number | null;
+  frames?: FrameRates | null;
+}
+
+/** Pictures per second reaching each stage of the pixel view. */
+export interface FrameRates {
+  capture: number;
+  encode: number;
+  drop: number;
+  display: number;
 }
 
 /** Network speeds in the unit people read them in, or a dash before the first measurement. */
@@ -43,6 +52,7 @@ export function Hud({
   resyncByTab,
   speedBps,
   peakSpeedBps,
+  frames,
 }: HudProps) {
   const states = Object.values(resyncByTab).filter(
     (state): state is ResyncTabState => state !== undefined,
@@ -85,6 +95,7 @@ export function Hud({
         <span>
           {roundedRtt === null ? "RTT —" : `RTT ${roundedRtt} ms`}
           {speedBps === null ? "" : ` · ${formatSpeed(speedBps)}`}
+          {pixelMode && frames ? ` · ${frames.display} fps` : ""}
         </span>
         {stormTabs.length > 0 && <strong class="hud-storm-pill">同步较多</strong>}
         <svg
@@ -119,6 +130,26 @@ export function Hud({
             <dt>最高速度</dt>
             <dd>{formatSpeed(peakSpeedBps)}</dd>
           </div>
+          {pixelMode && frames && (
+            <>
+              <div>
+                <dt>显示帧率</dt>
+                <dd>{frames.display} fps</dd>
+              </div>
+              <div>
+                <dt>采集帧率</dt>
+                <dd>{frames.capture} fps</dd>
+              </div>
+              <div>
+                <dt>编码帧率</dt>
+                <dd>{frames.encode} fps</dd>
+              </div>
+              <div>
+                <dt>丢弃帧率</dt>
+                <dd>{frames.drop} fps</dd>
+              </div>
+            </>
+          )}
           <div>
             <dt>页面重新同步</dt>
             <dd>{totalResyncs} 次</dd>
