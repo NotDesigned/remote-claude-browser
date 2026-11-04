@@ -130,7 +130,7 @@ describe("createScreencast", () => {
   afterEach(() => vi.useRealTimers());
 
   describe("sharp frames", () => {
-    const setup = async (dpr = 2) => {
+    const setup = async (dpr = 2, requested: "high" | "medium" = "medium") => {
       vi.useFakeTimers();
       const browser = new MockBrowser();
       browser.respond = async (_session, method) =>
@@ -144,28 +144,64 @@ describe("createScreencast", () => {
         publish: (message) => published.push(message),
       });
       browser.attach({ targetId: "tab-1", sessionId: "cdp-1", type: "page" });
-      await controller.handle({ t: "mode", tab: "tab-1", mode: "px", quality: "high" });
+      await controller.handle({ t: "mode", tab: "tab-1", mode: "px", quality: requested });
       const frames = () => published.filter((message) => message.t === "px");
       const shots = () => browser.calls.filter(({ method }) => method === "Page.captureScreenshot");
       return { browser, frames, shots, controller };
     };
 
     it("needs no extra frame when moving PNGs already have every device pixel", async () => {
-      const { browser, shots, controller } = await setup(1);
+      const { browser, shots, controller } = await setup(1, "high");
       browser.frame("cdp-1", frame(1, "moving"));
       await vi.advanceTimersByTimeAsync(5_000);
       expect(shots()).toHaveLength(0);
       controller.dispose();
     });
 
-    it("sends one lossless frame once the page has been still", async () => {
+    describe("at a high density", () => {
+      it("only ever shows device-resolution frames, moving or not", async () => {
+        const { browser, frames, shots, controller } = await setup(2, "high");
+        browser.frame("cdp-1", frame(1, "signal"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(shots()[0]!.params).toMatchObject({ format: "png", optimizeForSpeed: true });
+        expect(frames().map((message) => message.t === "px" && message.data)).toEqual(["PNGDATA"]);
+        controller.dispose();
+      });
+
+      it("ignores a repeated picture", async () => {
+        const { browser, shots, controller } = await setup(2, "high");
+        browser.frame("cdp-1", frame(1, "signal"));
+        await vi.advanceTimersByTimeAsync(0);
+        browser.frame("cdp-1", frame(2, "signal"));
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(shots()).toHaveLength(1);
+        controller.dispose();
+      });
+
+      it("limits its rate and still shows the final change", async () => {
+        const { browser, shots, controller } = await setup(2, "high");
+        for (let index = 0; index < 20; index++) {
+          browser.frame("cdp-1", frame(index, `signal-${index}`));
+          await vi.advanceTimersByTimeAsync(50);
+        }
+        // Twenty changes in a second, at no more than one frame per 200ms.
+        expect(shots().length).toBeLessThanOrEqual(6);
+        const taken = shots().length;
+        browser.frame("cdp-1", frame(99, "signal-final"));
+        await vi.advanceTimersByTimeAsync(500);
+        expect(shots().length).toBeGreaterThan(taken);
+        controller.dispose();
+      });
+    });
+
+    it("sends one sharp frame once the page has been still", async () => {
       const { browser, frames, shots, controller } = await setup();
       browser.frame("cdp-1", frame(1, "moving"));
       expect(frames().at(-1)).toMatchObject({ data: "moving" });
       await vi.advanceTimersByTimeAsync(349);
       expect(shots()).toHaveLength(0);
       await vi.advanceTimersByTimeAsync(1);
-      expect(shots()[0]!.params).toMatchObject({ format: "png", optimizeForSpeed: true });
+      expect(shots()[0]!.params).toMatchObject({ format: "webp", optimizeForSpeed: true });
       expect(frames().at(-1)).toMatchObject({ data: "PNGDATA", w: 1280, h: 720 });
 
       // Chromium repeating the same picture must not put the JPEG back.
@@ -290,7 +326,7 @@ describe("createScreencast", () => {
   it("toggles px/dom, acks every frame, drops backpressured frames, and leaves rrweb recording", async () => {
     const browser = new MockBrowser();
     const hub = new TabHub({ sessionId: "session", tabId: "tab-1" });
-    hub.viewport = { w: 1280, h: 720, dpr: 2 };
+    hub.viewport = { w: 1280, h: 720, dpr: 1 };
     const fanout = new Fanout();
     const fastSocket = new MockSocket();
     const slowSocket = new MockSocket();
@@ -527,22 +563,22 @@ describe("createScreencast", () => {
       commandTimeoutMs: 100,
     });
     browser.attach({ targetId: "tab-1", sessionId: "cdp-1", type: "page" });
-    await controller.handle({ t: "mode", tab: "tab-1", mode: "px" });
+    await controller.handle({ t: "mode", tab: "tab-1", mode: "px", quality: "medium" });
     expect(sent.map((message) => message.t)).toEqual(["mode"]);
     await vi.advanceTimersByTimeAsync(20);
     expect(sent.at(-1)).toEqual({ t: "px", tab: "tab-1", data: "fallback-jpeg", w: 4000, h: 2000 });
     expect(browser.calls.find(({ method }) => method === "Page.captureScreenshot")?.params).toEqual(
       {
         format: "jpeg",
-        quality: 80,
+        quality: 65,
         fromSurface: true,
         captureBeyondViewport: false,
-        clip: { x: 0, y: 0, width: 4000, height: 2000, scale: 0.48 },
+        clip: { x: 0, y: 0, width: 4000, height: 2000, scale: 0.24 },
       },
     );
     expect(
       browser.calls.find(({ method }) => method === "Page.startScreencast")?.params,
-    ).toMatchObject({ maxWidth: 3840, maxHeight: 3840 });
+    ).toMatchObject({ maxWidth: 1920, maxHeight: 1920 });
     await vi.advanceTimersByTimeAsync(10000);
     await controller.handle({ t: "mode", tab: "tab-1", mode: "px" });
     expect(browser.calls.filter(({ method }) => method === "Page.captureScreenshot")).toHaveLength(

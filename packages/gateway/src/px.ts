@@ -23,6 +23,10 @@ const SHARP_MIN_INTERVAL_MS = 1_500;
 const SHARP_MAX_INTERVAL_MS = 30_000;
 /** Frames closer than this are real activity, unlike a lone blinking caret. */
 const BURST_GAP_MS = 150;
+/** Fastest rate of device-resolution frames, which also waits on how long each one takes. */
+const DEVICE_FRAME_MIN_INTERVAL_MS = 200;
+/** Only compared with the previous frame to see whether anything changed; never displayed. */
+const CHANGE_SIGNAL_JPEG = 50;
 /** A page that never stops, such as a shimmer on one row, still gets sharp around that row. */
 const SHARP_MOTION_INTERVAL_MS = 3_000;
 /**
@@ -99,6 +103,9 @@ interface TabState {
   lastFrameAt: number;
   lastSharpAt: number;
   sharpInFlight: boolean;
+  sharpCaptureMs: number;
+  deviceFrames: boolean;
+  deviceFrameTimer?: ReturnType<typeof setTimeout>;
   frameCount: number;
   lastCastData?: string;
   fallback?: { generation: number; promise: Promise<void> };
@@ -118,10 +125,22 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   const sessions = new Map<string, TabState>();
   // Chosen by the viewer; applies to every tab of this client session.
   let quality: PxQuality = "high";
-  const screencastParams = () => {
+  /**
+   * Chromium's screencast stops at CSS pixels, so at a higher density it would look softer whenever
+   * the page moves. There it only reports that the picture changed, and every frame the viewer sees
+   * is a device-resolution screenshot, moving or not.
+   */
+  const usesDeviceFrames = (state: TabState): boolean =>
+    !!CAPTURE_PRESETS[quality].lossless && (state.hub.viewport?.dpr ?? 1) > 1;
+  const screencastParams = (state: TabState) => {
     const preset = CAPTURE_PRESETS[quality];
+    state.deviceFrames = usesDeviceFrames(state);
     return {
-      ...(preset.lossless ? { format: "png" } : { format: "jpeg", quality: preset.jpeg }),
+      ...(state.deviceFrames
+        ? { format: "jpeg", quality: CHANGE_SIGNAL_JPEG }
+        : preset.lossless
+          ? { format: "png" }
+          : { format: "jpeg", quality: preset.jpeg }),
       everyNthFrame: preset.everyNthFrame,
       maxWidth: preset.maxWidth,
       maxHeight: preset.maxHeight,
@@ -161,20 +180,23 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     state.firstFrameTimer = undefined;
     clearTimeout(state.sharpTimer);
     state.sharpTimer = undefined;
+    clearTimeout(state.deviceFrameTimer);
+    state.deviceFrameTimer = undefined;
   };
   /** Replaces the last JPEG with a frame fit for reading once the page has stopped changing. */
   const captureSharp = async (
     state: TabState,
     generation: number,
     duringMotion: boolean,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     const sharp = CAPTURE_PRESETS[quality].sharp;
     const viewport = state.hub.viewport;
     const seen = state.frameCount;
-    if (!sharp || !viewport || !state.screencasting || state.hub.mode !== "px") return;
-    if (!current(state, generation) || state.sharpInFlight) return;
+    if (!sharp || !viewport || !state.screencasting || state.hub.mode !== "px") return false;
+    if (!current(state, generation) || state.sharpInFlight) return false;
     state.sharpInFlight = true;
-    state.lastSharpAt = Date.now();
+    const startedAt = Date.now();
+    state.lastSharpAt = startedAt;
     try {
       const shot = (await sendBounded(state, "Page.captureScreenshot", {
         ...sharp,
@@ -185,9 +207,10 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       })) as { data?: unknown };
       // On a still page a newer frame means this picture is out of date and schedules its own.
       // On a moving page the viewer patches whatever keeps changing back over it.
-      if (!current(state, generation) || state.hub.mode !== "px") return;
-      if (!duringMotion && state.frameCount !== seen) return;
-      if (typeof shot.data !== "string" || shot.data.length === 0) return;
+      state.sharpCaptureMs = Date.now() - startedAt;
+      if (!current(state, generation) || state.hub.mode !== "px") return true;
+      if (!duringMotion && state.frameCount !== seen) return true;
+      if (typeof shot.data !== "string" || shot.data.length === 0) return true;
       state.lastFrame = {
         t: "px",
         tab: state.target.targetId,
@@ -203,6 +226,24 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     } finally {
       state.sharpInFlight = false;
     }
+    return true;
+  };
+  /** One frame at a time, and always one more if the page changed while taking the last. */
+  const requestDeviceFrame = (state: TabState): void => {
+    if (state.deviceFrameTimer !== undefined || state.sharpInFlight) return;
+    const generation = state.generation;
+    const interval = Math.max(DEVICE_FRAME_MIN_INTERVAL_MS, state.sharpCaptureMs * 2);
+    state.deviceFrameTimer = setTimeout(
+      () => {
+        state.deviceFrameTimer = undefined;
+        const seen = state.frameCount;
+        void captureSharp(state, generation, true).then(() => {
+          if (state.frameCount !== seen && current(state, generation)) requestDeviceFrame(state);
+        });
+      },
+      Math.max(0, state.lastSharpAt + interval - Date.now()),
+    );
+    state.deviceFrameTimer.unref?.();
   };
   const noteMotionFrame = (state: TabState): void => {
     const now = Date.now();
@@ -296,6 +337,11 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   const ensureFirstFrame = (state: TabState, generation: number): Promise<void> => {
     if (!current(state, generation) || !state.screencasting || state.lastFrame)
       return Promise.resolve();
+    if (state.deviceFrames)
+      return captureSharp(state, generation, true).then(async (attempted) => {
+        if (attempted && !state.lastFrame && current(state, generation))
+          await returnToDom(state, generation, new Error("Pixel frame capture returned no image"));
+      });
     if (state.fallback?.generation === generation) return state.fallback.promise;
     clearFirstFrameTimer(state);
     const fallback = { generation, promise: Promise.resolve() };
@@ -369,6 +415,18 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       // Taking a sharp frame can make Chromium repeat the same picture. It must not replace it.
       if (state.lastFrame && event.data === state.lastCastData) return;
       state.lastCastData = event.data;
+      // The viewer's density can change while casting, for example on another monitor.
+      if (usesDeviceFrames(state) !== state.deviceFrames) {
+        state.deviceFrames = usesDeviceFrames(state);
+        state.queue = state.queue.then(() => applyMode(state, "px", true)).catch(report);
+      }
+      if (state.deviceFrames) {
+        clearTimeout(state.firstFrameTimer);
+        state.firstFrameTimer = undefined;
+        state.frameCount++;
+        requestDeviceFrame(state);
+        return;
+      }
       const viewport = state.hub.viewport;
       const w = frameDimension(viewport?.w, event.metadata.deviceWidth);
       const h = frameDimension(viewport?.h, event.metadata.deviceHeight);
@@ -425,7 +483,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
           try {
             await sendBounded(state, "Page.stopScreencast");
             if (!current(state, generation)) return;
-            await sendBounded(state, "Page.startScreencast", screencastParams());
+            await sendBounded(state, "Page.startScreencast", screencastParams(state));
           } catch (error) {
             await returnToDom(state, generation, error);
             return;
@@ -445,7 +503,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       // Until start is confirmed, keep the existing DOM lane available to the viewer.
       state.hub.mode = "dom";
       try {
-        await sendBounded(state, "Page.startScreencast", screencastParams());
+        await sendBounded(state, "Page.startScreencast", screencastParams(state));
       } catch (error) {
         await returnToDom(state, generation, error);
         return;
@@ -496,6 +554,8 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       lastFrameAt: 0,
       lastSharpAt: 0,
       sharpInFlight: false,
+      sharpCaptureMs: 0,
+      deviceFrames: false,
       frameCount: 0,
     };
     tabs.set(target.targetId, state);
