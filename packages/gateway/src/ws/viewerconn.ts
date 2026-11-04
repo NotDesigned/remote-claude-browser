@@ -6,6 +6,7 @@
  * current snapshot. Check bufferedAmount BEFORE send, not after. Slow viewers cost O(1) memory
  * and never affect other viewers. The rule applies to px frames too (P2-PX): drop, never queue.
  */
+import { encodeWithInlineSheets, sheetsOf } from "../hub/snapshot-sheets";
 import { encodeMsg, type Down, type TabId } from "@mirror/protocol";
 
 export const STALL_BYTES = 8 * 1024 * 1024;
@@ -27,9 +28,12 @@ export interface ViewerConnOpts {
   drainPollMs?: number;
   pxAckTimeoutMs?: number;
   now?: () => number;
+  /** Stylesheet hashes this client already holds; undefined when it wants them inline. */
+  knownSheets?: Iterable<string>;
 }
 
 type PxMsg = Extract<Down, { t: "px" }>;
+type SnapshotDown = Extract<Down, { t: "snapshot" }>;
 /** JSON text, or a binary pixel frame. */
 export type Serialized = string | Uint8Array;
 
@@ -49,6 +53,7 @@ export class ViewerConn {
   private readonly cursors = new Map<TabId, ReplayCursor>();
   private readonly drainPollMs: number;
   private drainTimer: NodeJS.Timeout | null = null;
+  private readonly knownSheets: Set<string> | undefined;
   private stalled = false;
   private disposed = false;
   private beforeResync: (() => void) | undefined;
@@ -67,6 +72,7 @@ export class ViewerConn {
     }
     this.pxAckTimeoutMs = opts.pxAckTimeoutMs ?? PX_ACK_TIMEOUT_MS;
     this.now = opts.now ?? Date.now;
+    this.knownSheets = opts.knownSheets ? new Set(opts.knownSheets) : undefined;
   }
 
   get isStalled(): boolean {
@@ -91,16 +97,29 @@ export class ViewerConn {
     if (msg.t === "px") return this.sendPx(msg, serialized);
     if (msg.t === "mode" || msg.t === "resync") this.resetPx(msg.tab);
 
-    this.write(serialized);
+    this.write(msg.t === "snapshot" ? this.snapshotFrame(msg, serialized) : serialized);
     this.advanceCursor(msg);
     return true;
+  }
+
+  /** Sends the stylesheets this client lacks, then returns the snapshot frame that refers to them. */
+  private snapshotFrame(msg: SnapshotDown, serialized?: Serialized): Serialized {
+    const sheets = sheetsOf(msg);
+    if (!sheets) return serialized ?? encodeMsg(msg);
+    if (!this.knownSheets) return encodeWithInlineSheets(msg);
+    for (const [hash, text] of sheets) {
+      if (this.knownSheets.has(hash)) continue;
+      this.knownSheets.add(hash);
+      this.write(encodeMsg({ t: "css", hash, text }));
+    }
+    return serialized ?? encodeMsg(msg);
   }
 
   /** Initial join and drain recovery share the hub's canonical resync path. */
   sendJoinPayload(): void {
     if (!this.isOpen()) return;
     for (const msg of this.getJoinPayload()) {
-      this.socket.send(encodeMsg(msg));
+      this.socket.send(msg.t === "snapshot" ? this.snapshotFrame(msg) : encodeMsg(msg));
       this.advanceCursor(msg);
     }
   }

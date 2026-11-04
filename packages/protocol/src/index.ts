@@ -11,3 +11,4 @@ export * from "./agent";
 export * from "./chunk";
 export * from "./wire";
 export * from "./editable";
+export * from "./sheets";

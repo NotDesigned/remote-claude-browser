@@ -11,6 +11,8 @@ import {
   decodeUp,
   encodeMsg,
   encodePxBinary,
+  MAX_KNOWN_SHEETS,
+  SHEET_HASH,
   type Down,
   type ResumeCursor,
   type Up,
@@ -370,7 +372,10 @@ export function createWsServer(opts: WsServerOpts): WsServer {
     };
     const viewerSocket: ViewerSocket =
       oneWayDelayMs === 0 ? socket : new DelayedViewerSocket(socket, oneWayDelayMs);
-    const viewer = new ViewerConn(viewerSocket, joinPayload, opts.viewerConn);
+    const viewer = new ViewerConn(viewerSocket, joinPayload, {
+      ...opts.viewerConn,
+      knownSheets: knownSheetsFor(request),
+    });
     viewerSessions.set(viewer, sessionId);
     viewerSockets.set(viewer, socket);
     if (connectionKey) viewerKeys.set(viewer, connectionKey);
@@ -520,6 +525,16 @@ export function resumeCursorsFor(request: IncomingMessage): ResumeCursor[] {
   } catch {
     return [];
   }
+}
+
+/** Hashes a client holds; a client that omits the parameter gets stylesheets inline. */
+function knownSheetsFor(request: IncomingMessage): string[] | undefined {
+  const value = new URL(request.url ?? "/", "http://gateway.invalid").searchParams.get("sheets");
+  if (value === null) return undefined;
+  return value
+    .split(",")
+    .filter((hash) => SHEET_HASH.test(hash))
+    .slice(0, MAX_KNOWN_SHEETS);
 }
 
 export function connectionKeyFor(request: IncomingMessage): string | undefined {

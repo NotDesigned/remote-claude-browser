@@ -33,6 +33,11 @@ interface RewriteContext {
   tabId: string;
   baseUrl?: string;
   assetUrl?: (url: string) => string;
+  rewriteSheet?: (
+    css: string,
+    baseUrl: string | undefined,
+    toProxy: (url: string) => string,
+  ) => string;
   tags?: Map<number, string>;
   styleTextIds?: Set<number>;
 }
@@ -42,6 +47,9 @@ interface Replacement {
   end: number;
   value: string;
 }
+
+const MEMOIZED_SHEET_LENGTH = 16 * 1024;
+const MAX_MEMOIZED_SHEETS = 16;
 
 export function createRewriteStage(serverKey: Buffer): RewriteStage {
   if (!Buffer.isBuffer(serverKey) || serverKey.length !== 32) {
@@ -65,6 +73,25 @@ export function createRewriteStage(serverKey: Buffer): RewriteStage {
     return result;
   };
 
+  // A snapshot re-reads megabytes of unchanged stylesheet; rewriting it blocks the event loop.
+  const sheets = new Map<string, string>();
+  let sheetBase: string | undefined;
+  const rewriteSheet = (
+    css: string,
+    baseUrl: string | undefined,
+    toProxy: (url: string) => string,
+  ) => {
+    if (css.length < MEMOIZED_SHEET_LENGTH) return rewriteCssText(css, toProxy, baseUrl);
+    if (sheetBase !== baseUrl) sheets.clear();
+    sheetBase = baseUrl;
+    const known = sheets.get(css);
+    if (known !== undefined) return known;
+    const rewritten = rewriteCssText(css, toProxy, baseUrl);
+    if (sheets.size >= MAX_MEMOIZED_SHEETS) sheets.delete(sheets.keys().next().value!);
+    sheets.set(css, rewritten);
+    return rewritten;
+  };
+
   return (event, ctx) => {
     if (event.type === EventType.FullSnapshot) {
       tags.clear();
@@ -84,6 +111,7 @@ export function createRewriteStage(serverKey: Buffer): RewriteStage {
       tabId: ctx.tabId,
       baseUrl: documentUrls.get(documentKey),
       assetUrl: (url) => assetUrl(url, ctx),
+      rewriteSheet,
       tags,
       styleTextIds,
     });
@@ -259,11 +287,7 @@ function rewriteSerializedNode(
     else ctx.styleTextIds?.delete(node.id);
   }
   if (node.type === NODE_TEXT && insideStyle && typeof node.textContent === "string") {
-    const textContent = rewriteCssText(
-      node.textContent,
-      (url) => proxyUrl(url, key, ctx),
-      ctx.baseUrl,
-    );
+    const textContent = rewriteSheetIn(ctx, node.textContent, key);
     return textContent === node.textContent ? value : { ...node, textContent };
   }
 
@@ -321,7 +345,7 @@ function rewriteAttributes(
     } else if (lowerName === "style") {
       rewritten = rewriteStyleAttribute(original, key, ctx);
     } else if (lowerName === "_csstext" && typeof original === "string") {
-      rewritten = rewriteCssText(original, (url) => proxyUrl(url, key, ctx), ctx.baseUrl);
+      rewritten = rewriteSheetIn(ctx, original, key);
     }
     if (rewritten !== original) {
       output[name] = rewritten;
@@ -329,6 +353,13 @@ function rewriteAttributes(
     }
   }
   return changed ? output : value;
+}
+
+function rewriteSheetIn(ctx: RewriteContext, css: string, key: Buffer): string {
+  const toProxy = (url: string) => proxyUrl(url, key, ctx);
+  return ctx.rewriteSheet
+    ? ctx.rewriteSheet(css, ctx.baseUrl, toProxy)
+    : rewriteCssText(css, toProxy, ctx.baseUrl);
 }
 
 function rewriteStyleAttribute(value: unknown, key: Buffer, ctx: RewriteContext): unknown {

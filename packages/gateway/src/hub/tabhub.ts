@@ -10,6 +10,7 @@
  * Gotchas: Meta (EventType.Meta) precedes FullSnapshot (EventType.FullSnapshot) — keep BOTH or
  * the replayer sizes the iframe wrong. Count deltaBytes on the serialized JSON actually sent.
  */
+import { externalizeSheets } from "./snapshot-sheets";
 import {
   encodeMsg,
   EventType,
@@ -329,7 +330,7 @@ export class TabHub {
     if (meta === null) return [];
 
     this.meta = meta;
-    this.snapshot = this.pendingFullSnapshot;
+    this.snapshot = externalizeSheets(this.pendingFullSnapshot);
     this.nextMeta = null;
     this.pendingFullSnapshot = null;
     this.deltas = [];

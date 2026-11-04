@@ -4,7 +4,23 @@
  * There is deliberately no resume cursor: a reconnect asks the mirror to discard its local
  * state and the gateway supplies a fresh snapshot (D10).
  */
-import { decodeDown, decodePxBinary, encodeMsg, type Down, type Up } from "@mirror/protocol";
+import {
+  MAX_KNOWN_SHEETS,
+  decodeDown,
+  decodePxBinary,
+  encodeMsg,
+  resolveSheetRefs,
+  type Down,
+  type Up,
+} from "@mirror/protocol";
+
+/** Stylesheets received on this page, kept across reconnects and view switches. */
+const knownSheets = new Map<string, string>();
+function rememberSheet(hash: string, text: string): void {
+  knownSheets.delete(hash);
+  knownSheets.set(hash, text);
+  if (knownSheets.size > MAX_KNOWN_SHEETS) knownSheets.delete(knownSheets.keys().next().value!);
+}
 
 export interface GatewaySocket {
   send(msg: Up): void;
@@ -96,6 +112,7 @@ export function connectGateway(
     const resume = hasOpened ? (options.resumeParam?.() ?? null) : null;
     if (resume === null) socketUrl.searchParams.delete("resume");
     else socketUrl.searchParams.set("resume", resume);
+    socketUrl.searchParams.set("sheets", [...knownSheets.keys()].join(","));
     const current = makeSocket(socketUrl.href);
     // Pixel frames arrive as binary JPEG frames; read them as ArrayBuffers, not Blobs.
     current.binaryType = "arraybuffer";
@@ -120,6 +137,20 @@ export function connectGateway(
           event.data instanceof ArrayBuffer
             ? pixelFrame(event.data)
             : decodeDown(String(event.data));
+        if (message.t === "css") {
+          rememberSheet(message.hash, message.text);
+          return;
+        }
+        if (message.t === "snapshot") {
+          const data = resolveSheetRefs(message.data, (hash) => knownSheets.get(hash));
+          if (data === null) {
+            // This page lost a sheet the gateway believes it has; start over without any.
+            knownSheets.clear();
+            current.close();
+            return;
+          }
+          message.data = data;
+        }
         if (message.t === "pong") {
           const sentTs = pendingPings.get(message.id);
           if (sentTs !== undefined && sentTs === message.sentTs) {

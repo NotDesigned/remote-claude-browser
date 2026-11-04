@@ -112,6 +112,8 @@ export type Down =
   | { t: "resync"; tab: TabId }
   | { t: "input-status"; tab: TabId; failed: boolean }
   | { t: "mode"; tab: TabId; mode: "dom" | "px" }
+  /** A stylesheet that following snapshots refer to by this hash (see sheets.ts). */
+  | { t: "css"; hash: string; text: string }
   /** The requested geometry already matches the current snapshot; input may start. */
   | { t: "view-ok"; tab: TabId; w: number; h: number }
   /** A shared browser permits one pixel stream; no other workspace identity is exposed. */
@@ -236,6 +238,7 @@ const DOWN_TAGS: ReadonlySet<string> = new Set([
   "px-capacity",
   "server-status",
   "view-ok",
+  "css",
   "px",
   "rtc-sig",
   "download",
