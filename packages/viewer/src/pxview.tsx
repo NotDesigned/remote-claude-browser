@@ -212,7 +212,9 @@ function decodePxFrame(
         canvas.height > 0 && Math.abs(canvas.width / canvas.height - width / height) < 0.01;
       const previous = sameShape ? sharpGrids.get(canvas) : undefined;
       const grid = previous || frame.sharp ? imageGrid(canvas, image) : null;
-      const tiles = !frame.sharp && previous && grid ? changedTiles(previous, grid) : null;
+      // Any frame below the canvas's resolution patches it rather than replacing it, PNG included.
+      const lowerResolution = !frame.sharp || width < canvas.width;
+      const tiles = lowerResolution && previous && grid ? changedTiles(previous, grid) : null;
       if (tiles && tiles.length <= (grid!.columns * grid!.rows) / 4) {
         // A small change, such as a blinking caret, leaves the sharp picture around it intact.
         const tileWidth = canvas.width / grid!.columns;

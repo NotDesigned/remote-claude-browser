@@ -91,7 +91,8 @@ export type Down =
       resumed?: TabId[];
     }
   /** Application-level RTT echo; browser JS cannot observe WebSocket control-frame pong timing. */
-  | { t: "pong"; id: number; sentTs: number; serverTs: number }
+  /** `sent` counts every byte the gateway wrote to this connection, after compression. */
+  | { t: "pong"; id: number; sentTs: number; serverTs: number; sent?: number }
   | { t: "tabs"; tabs: TabMeta[] }
   | { t: "chrome"; tab: TabId; url: string; loading: boolean; canBack: boolean; canFwd: boolean }
   /** Renderer recovery is separate from gateway/WebSocket connectivity. */

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import type { ComponentChildren, VNode } from "preact";
 import { describe, expect, it } from "vitest";
-import { Hud, HudLayer, type HudProps } from "./hud";
+import { Hud, HudLayer, formatSpeed, type HudProps } from "./hud";
 
 type TestVNode = VNode<Record<string, unknown>>;
 
@@ -57,9 +57,18 @@ const props: HudProps = {
       storm: true,
     },
   },
-  viewerId: "viewer-me",
-  driverId: "viewer-me",
+  speedBps: 2048,
+  peakSpeedBps: 3 * 1024 * 1024,
 };
+
+describe("formatSpeed", () => {
+  it("picks a readable unit", () => {
+    expect(formatSpeed(null)).toBe("—");
+    expect(formatSpeed(500)).toBe("500 B/s");
+    expect(formatSpeed(1536)).toBe("2 KB/s");
+    expect(formatSpeed(1.5 * 1024 * 1024)).toBe("1.5 MB/s");
+  });
+});
 
 describe("P3-HUD", () => {
   it("renders Chinese connection diagnostics while preserving RTT and resync attributes", () => {
@@ -81,10 +90,13 @@ describe("P3-HUD", () => {
     expect(allText).toContain("93 ms");
     const summary = nodes.find((node) => node.type === "summary");
     expect(summary?.props.title).toBe(
-      "网络往返延迟（RTT），不包含页面处理、回放缓冲和图像绘制耗时",
+      "网络往返延迟（RTT）和当前下载速度。延迟不包含页面处理、回放缓冲和图像绘制耗时",
     );
     expect(allText).toContain("已连接");
-    expect(allText).toContain("你正在操作");
+    expect(allText).not.toContain("操作权限");
+    expect(allText).toContain("当前速度2 KB/s");
+    expect(allText).toContain("最高速度3.0 MB/s");
+    expect(allText).toContain("RTT 42 ms · 2 KB/s");
     expect(allText).toContain("First文字 DOM2 次同步");
     expect(allText).toContain("Second图像4 次同步");
     expect(allText).toContain("个页面频繁重新同步");

@@ -13,8 +13,16 @@ export interface HudProps {
   tabs: readonly Tab[];
   modeByTab: Readonly<Record<TabId, "dom" | "px" | undefined>>;
   resyncByTab: Readonly<Record<TabId, ResyncTabState | undefined>>;
-  viewerId: string | null;
-  driverId: string | null;
+  speedBps: number | null;
+  peakSpeedBps: number | null;
+}
+
+/** Network speeds in the unit people read them in, or a dash before the first measurement. */
+export function formatSpeed(bytesPerSecond: number | null): string {
+  if (bytesPerSecond === null) return "—";
+  if (bytesPerSecond < 1024) return `${Math.round(bytesPerSecond)} B/s`;
+  if (bytesPerSecond < 1024 * 1024) return `${Math.round(bytesPerSecond / 1024)} KB/s`;
+  return `${(bytesPerSecond / (1024 * 1024)).toFixed(1)} MB/s`;
 }
 
 export function HudLayer(props: HudProps) {
@@ -33,8 +41,8 @@ export function Hud({
   tabs,
   modeByTab,
   resyncByTab,
-  viewerId,
-  driverId,
+  speedBps,
+  peakSpeedBps,
 }: HudProps) {
   const states = Object.values(resyncByTab).filter(
     (state): state is ResyncTabState => state !== undefined,
@@ -58,12 +66,6 @@ export function Hud({
         : connection === "replaced"
           ? "已由另一页面接管"
           : "正在重新连接…";
-  const driver =
-    driverId === null
-      ? "等待操作连接"
-      : driverId === viewerId
-        ? "你正在操作"
-        : "其他客户端正在操作";
 
   return (
     <details
@@ -77,10 +79,13 @@ export function Hud({
     >
       <summary
         aria-label="Toggle connection diagnostics"
-        title="网络往返延迟（RTT），不包含页面处理、回放缓冲和图像绘制耗时"
+        title="网络往返延迟（RTT）和当前下载速度。延迟不包含页面处理、回放缓冲和图像绘制耗时"
       >
         <span class="hud-state-dot" aria-hidden="true" />
-        <span>{roundedRtt === null ? "RTT —" : `RTT ${roundedRtt} ms`}</span>
+        <span>
+          {roundedRtt === null ? "RTT —" : `RTT ${roundedRtt} ms`}
+          {speedBps === null ? "" : ` · ${formatSpeed(speedBps)}`}
+        </span>
         {stormTabs.length > 0 && <strong class="hud-storm-pill">同步较多</strong>}
         <svg
           class="hud-chevron"
@@ -107,8 +112,12 @@ export function Hud({
             <dd>{pixelMode ? "图像模式不使用" : `${Math.round(bufferMs)} ms`}</dd>
           </div>
           <div>
-            <dt>操作权限</dt>
-            <dd title={driverId ?? undefined}>{driver}</dd>
+            <dt>当前速度</dt>
+            <dd>{speedBps === null ? "测量中…" : formatSpeed(speedBps)}</dd>
+          </div>
+          <div>
+            <dt>最高速度</dt>
+            <dd>{formatSpeed(peakSpeedBps)}</dd>
           </div>
           <div>
             <dt>页面重新同步</dt>

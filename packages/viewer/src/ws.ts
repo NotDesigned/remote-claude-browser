@@ -47,6 +47,8 @@ export interface GatewaySocketOptions {
   socketFactory?(url: string): WebSocketLike;
   /** Recurring application-level WebSocket ping/pong RTT. */
   onRttSample?(rttMs: number): void;
+  /** Download speed since the previous ping, measured on the wire by the gateway. */
+  onSpeedSample?(bytesPerSecond: number): void;
   rttIntervalMs?: number;
   now?: () => number;
   /** Identifies this page instance across reconnects; it grants no access permissions. */
@@ -85,6 +87,7 @@ export function connectGateway(
   let hasOpened = false;
   let nextPingId = 1;
   const pendingPings = new Map<number, number>();
+  let lastSent: { bytes: number; at: number } | null = null;
   const pending: Up[] = [];
 
   const stopRtt = () => {
@@ -113,6 +116,7 @@ export function connectGateway(
     if (resume === null) socketUrl.searchParams.delete("resume");
     else socketUrl.searchParams.set("resume", resume);
     socketUrl.searchParams.set("sheets", [...knownSheets.keys()].join(","));
+    lastSent = null;
     const current = makeSocket(socketUrl.href);
     // Pixel frames arrive as binary JPEG frames; read them as ArrayBuffers, not Blobs.
     current.binaryType = "arraybuffer";
@@ -156,6 +160,13 @@ export function connectGateway(
           if (sentTs !== undefined && sentTs === message.sentTs) {
             pendingPings.delete(message.id);
             options.onRttSample?.(Math.max(0, now() - message.sentTs));
+            if (typeof message.sent === "number") {
+              const previous = lastSent;
+              lastSent = { bytes: message.sent, at: message.serverTs };
+              const elapsedMs = previous ? message.serverTs - previous.at : 0;
+              if (previous && elapsedMs > 0 && message.sent >= previous.bytes)
+                options.onSpeedSample?.(((message.sent - previous.bytes) * 1000) / elapsedMs);
+            }
           }
         }
         onDown(message);

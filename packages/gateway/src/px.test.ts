@@ -130,12 +130,13 @@ describe("createScreencast", () => {
   afterEach(() => vi.useRealTimers());
 
   describe("sharp frames", () => {
-    const setup = async () => {
+    const setup = async (dpr = 2) => {
       vi.useFakeTimers();
       const browser = new MockBrowser();
       browser.respond = async (_session, method) =>
         method === "Page.captureScreenshot" ? { data: "PNGDATA" } : {};
       const hub = recordedHub();
+      hub.viewport = { w: 1280, h: 720, dpr };
       const published: Down[] = [];
       const controller = createScreencast({
         browser,
@@ -148,6 +149,14 @@ describe("createScreencast", () => {
       const shots = () => browser.calls.filter(({ method }) => method === "Page.captureScreenshot");
       return { browser, frames, shots, controller };
     };
+
+    it("needs no extra frame when moving PNGs already have every device pixel", async () => {
+      const { browser, shots, controller } = await setup(1);
+      browser.frame("cdp-1", frame(1, "moving"));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(shots()).toHaveLength(0);
+      controller.dispose();
+    });
 
     it("sends one lossless frame once the page has been still", async () => {
       const { browser, frames, shots, controller } = await setup();
@@ -230,7 +239,7 @@ describe("createScreencast", () => {
       { method: "Page.stopScreencast", params: undefined },
       {
         method: "Page.startScreencast",
-        params: { format: "jpeg", quality: 80, everyNthFrame: 2, maxWidth: 3840, maxHeight: 3840 },
+        params: { format: "png", everyNthFrame: 2, maxWidth: 3840, maxHeight: 3840 },
       },
     ]);
     expect(hub.mode).toBe("px");
@@ -303,8 +312,7 @@ describe("createScreencast", () => {
       sessionId: "cdp-1",
       method: "Page.startScreencast",
       params: {
-        format: "jpeg",
-        quality: 80,
+        format: "png",
         everyNthFrame: 2,
         maxWidth: 3840,
         maxHeight: 3840,

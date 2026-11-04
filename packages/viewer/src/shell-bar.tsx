@@ -4,6 +4,7 @@
  * here and the address in the menu.
  */
 import type { PxQuality } from "@mirror/protocol";
+import { formatSpeed } from "./hud";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { normalizeNavigationUrl } from "./chrome/urlbar";
 import { SERVER_STATUS_STALE_MS, type ReceivedServerStatus } from "./server-status";
@@ -30,6 +31,7 @@ export interface ShellBarProps {
   onPxQuality(quality: PxQuality): void;
   serverStatus: ReceivedServerStatus | null;
   rttMs: number | null;
+  speedBps: number | null;
   sessionLabel: string | null;
   onEndSession?(): void;
 }
@@ -284,6 +286,10 @@ export function ShellBar(props: ShellBarProps) {
               <div>
                 <dt>延迟</dt>
                 <dd>{props.rttMs === null ? "—" : `${Math.round(props.rttMs)} ms`}</dd>
+              </div>
+              <div>
+                <dt>速度</dt>
+                <dd>{formatSpeed(props.speedBps)}</dd>
               </div>
             </dl>
           </div>

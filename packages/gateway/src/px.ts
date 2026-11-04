@@ -35,6 +35,8 @@ const CAPTURE_PRESETS: Record<
     maxWidth: number;
     maxHeight: number;
     jpeg: number;
+    /** Lossless moving frames keep text clean, for far more traffic than JPEG. */
+    lossless?: boolean;
     everyNthFrame: number;
     sharp?: { format: "png" | "webp"; quality?: number };
   }
@@ -51,6 +53,7 @@ const CAPTURE_PRESETS: Record<
     maxWidth: 3840,
     maxHeight: 3840,
     jpeg: 80,
+    lossless: true,
     everyNthFrame: 2,
     sharp: { format: "png" },
   },
@@ -118,8 +121,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   const screencastParams = () => {
     const preset = CAPTURE_PRESETS[quality];
     return {
-      format: "jpeg",
-      quality: preset.jpeg,
+      ...(preset.lossless ? { format: "png" } : { format: "jpeg", quality: preset.jpeg }),
       everyNthFrame: preset.everyNthFrame,
       maxWidth: preset.maxWidth,
       maxHeight: preset.maxHeight,
@@ -214,7 +216,10 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     }
     state.lastFrameAt = now;
     state.frameCount++;
-    if (!CAPTURE_PRESETS[quality].sharp) return;
+    const preset = CAPTURE_PRESETS[quality];
+    if (!preset.sharp) return;
+    // Chromium's frames stop at CSS pixels. At 1:1 a lossless one is already as sharp as can be.
+    if (preset.lossless && (state.hub.viewport?.dpr ?? 1) <= 1) return;
     const generation = state.generation;
     const whenStill = Math.max(now + SHARP_IDLE_MS, state.sharpNotBefore);
     const motionDue = state.lastSharpAt + SHARP_MOTION_INTERVAL_MS;

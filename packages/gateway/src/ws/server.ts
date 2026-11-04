@@ -400,6 +400,8 @@ export function createWsServer(opts: WsServerOpts): WsServer {
             id: msg.id,
             sentTs: msg.sentTs,
             serverTs: Date.now(),
+            sent: (socket as unknown as { _socket?: { bytesWritten?: number } })._socket
+              ?.bytesWritten,
           };
           viewer.send(pong, encodeMsg(pong));
           return;

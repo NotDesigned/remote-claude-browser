@@ -139,6 +139,8 @@ export function App() {
   const [pixelAvailable, setPixelAvailable] = useState(true);
   const [resyncByTab, setResyncByTab] = useState<Record<TabId, ResyncTabState | undefined>>({});
   const [rttMs, setRttMs] = useState<number | null>(null);
+  const [speedBps, setSpeedBps] = useState<number | null>(null);
+  const [peakSpeedBps, setPeakSpeedBps] = useState<number | null>(null);
   const [bufferMs, setBufferMs] = useState(DEFAULT_LIVE_BUFFER_MS);
   const [viewerId, setViewerId] = useState<string | null>(null);
   const [driverId, setDriverId] = useState<string | null>(null);
@@ -736,6 +738,11 @@ export function App() {
           mirror.observeRtt(sample);
           setRttMs(sample);
         },
+        onSpeedSample(sample) {
+          if (disposed) return;
+          setSpeedBps(sample);
+          setPeakSpeedBps((peak) => Math.max(peak ?? 0, sample));
+        },
         resumeParam() {
           if (currentTab === null || presentation.isPixel(currentTab)) return null;
           const cursor = mirror.resumeCursor();
@@ -910,6 +917,7 @@ export function App() {
         }}
         serverStatus={serverStatus}
         rttMs={browserView ? rttMs : null}
+        speedBps={browserView ? speedBps : null}
         sessionLabel={clientSession?.label ?? null}
         onEndSession={
           clientSession !== null && clientPhase === "ready"
@@ -1087,8 +1095,8 @@ export function App() {
           tabs={tabs}
           modeByTab={modeByTab}
           resyncByTab={resyncByTab}
-          viewerId={viewerId}
-          driverId={driverId}
+          speedBps={speedBps}
+          peakSpeedBps={peakSpeedBps}
         />
       )}
       <aside id="transfer-panels" aria-label="文件与剪贴板" hidden={!browserView}>
