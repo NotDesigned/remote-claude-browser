@@ -102,6 +102,7 @@ function viewStorage(): Pick<Storage, "getItem" | "setItem"> {
 
 const PICTURE_HOLD_TIMEOUT_MS = 8_000;
 const CHAT_TAB = "chat";
+const THEME_CHECK_MS = 3_000;
 
 export function App() {
   const uploadRef = useRef<FileUploadRelay | null>(null);
@@ -259,6 +260,34 @@ export function App() {
     document.documentElement.dataset.theme = theme;
     viewStorage().setItem("mirror.theme", themePreference);
   }, [theme, themePreference]);
+  // The same choice as Claude's Appearance setting: a change on either side reaches the other.
+  const themeSid = clientPhase === "ready" ? (clientSession?.sid ?? null) : null;
+  const lastSyncedThemeRef = useRef<ThemePreference | null>(null);
+  useEffect(() => {
+    if (themeSid === null || lastSyncedThemeRef.current === themePreference) return;
+    lastSyncedThemeRef.current = themePreference;
+    void fetch(`/s/${encodeURIComponent(themeSid)}/theme`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ theme: themePreference, systemDark }),
+    }).catch(() => {});
+  }, [themeSid, themePreference, systemDark]);
+  useEffect(() => {
+    if (themeSid === null) return;
+    const check = async () => {
+      if (document.hidden) return;
+      const response = await fetch(`/s/${encodeURIComponent(themeSid)}/theme`);
+      if (!response.ok) return;
+      const { theme: remote } = (await response.json()) as { theme: ThemePreference | null };
+      if (remote === null || lastSyncedThemeRef.current !== remote) {
+        if (remote === null) return;
+        lastSyncedThemeRef.current = remote;
+        setThemePreference(remote);
+      }
+    };
+    const timer = setInterval(() => void check().catch(() => {}), THEME_CHECK_MS);
+    return () => clearInterval(timer);
+  }, [themeSid]);
 
   useEffect(() => {
     const url = new URL(window.location.href);

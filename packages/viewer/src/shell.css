@@ -254,6 +254,10 @@ body {
   box-sizing: border-box;
   font-size: 14px;
 }
+.shell-menu-section:first-child {
+  margin-top: 0;
+  border-top: 0;
+}
 .shell-menu-section {
   display: flex;
   flex-direction: column;
@@ -421,12 +425,39 @@ body {
 #shell .hud-chevron {
   stroke: var(--muted);
 }
+#shell #urlbar button:disabled {
+  opacity: 0.4;
+}
 #shell .browser-tab {
   color: var(--muted);
 }
 #shell .browser-tab[data-active="true"] {
   color: var(--ink);
   background: var(--surface);
+  border-color: var(--line);
+}
+#shell .browser-tab:not([data-active="true"]):hover,
+#shell #new-tab:not(:disabled):hover {
+  color: var(--ink);
+  background: var(--hover);
+}
+#shell .hud-panel {
+  color: var(--ink);
+  background: var(--surface);
+  border-color: var(--line);
+}
+#shell .hud-metrics dt,
+#shell .hud-tabs h2,
+#shell .hud-tabs p,
+#shell .hud-tabs li {
+  color: var(--muted);
+}
+#shell .hud-metrics dd,
+#shell .hud-tabs li[data-active="true"] {
+  color: var(--ink);
+}
+#shell .hud-tabs li[data-active="true"] {
+  background: var(--hover);
 }
 
 /* Native progress bars follow the accent instead of the platform blue. */

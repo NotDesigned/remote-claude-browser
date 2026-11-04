@@ -34,6 +34,7 @@ import { createScreencast } from "./px";
 import { createPixelCapacity } from "./px-capacity";
 import { createRtcSignalRelay } from "./rtcsig";
 import { registerClaudeChat } from "./claude/routes";
+import { createClaudeTheme, isClaudeTheme } from "./claude/theme";
 import { registerSecurityHeaders } from "./security-headers";
 import { gatewayHost, LOOPBACK_PROXIES, registerViewerStatic } from "./serving";
 import { createTabLifecycle } from "./session/tabs";
@@ -47,6 +48,7 @@ import type { ViewerConn } from "./ws/viewerconn";
 
 interface ClientRuntime {
   sid: string;
+  theme: ReturnType<typeof createClaudeTheme>;
   browser: ClientBrowserScope;
   targets: Map<string, TargetRef>;
   metadata: Map<string, BrowserTargetInfo>;
@@ -547,6 +549,14 @@ export async function startClientGateway(): Promise<void> {
         return result.result?.value;
       },
     });
+    const theme = createClaudeTheme({
+      send: scoped.send,
+      pages: () => [...targets.values()].filter((target) => target.type === "page"),
+    });
+    scoped.onAttached((target) => {
+      if (target.type === "page")
+        void theme.applyMedia(target).catch((error) => report("client theme failed", error));
+    });
     const pixels = createScreencast({
       browser: scoped,
       hubFor: (tab) => tabs.hubFor(tab),
@@ -605,6 +615,7 @@ export async function startClientGateway(): Promise<void> {
       throw error;
     }
     const runtime: ClientRuntime = {
+      theme,
       sid,
       browser: scoped,
       targets,
@@ -881,6 +892,23 @@ export async function startClientGateway(): Promise<void> {
   for (const sid of CLIENT_SLOTS) {
     const chatDir = join(profile, "client-data", sid);
     await mkdir(chatDir, { recursive: true });
+    app.get(`/s/${sid}/theme`, { preHandler: requireSession(sid) }, async () => ({
+      theme:
+        (await runtimes
+          .get(sid)
+          ?.theme.read()
+          .catch(() => null)) ?? null,
+    }));
+    app.post<{ Body: { theme?: unknown; systemDark?: unknown } }>(
+      `/s/${sid}/theme`,
+      { preHandler: requireSession(sid), bodyLimit: 1024 },
+      async (request, reply) => {
+        const { theme, systemDark } = request.body ?? {};
+        if (!isClaudeTheme(theme)) return reply.code(400).send({ error: "未知的外观" });
+        await runtimes.get(sid)?.theme.set(theme, systemDark === true);
+        return reply.code(204).send();
+      },
+    );
     const chat = await registerClaudeChat(app, {
       routePrefix: `/s/${sid}`,
       browser,
