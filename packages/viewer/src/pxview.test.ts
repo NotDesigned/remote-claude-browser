@@ -234,10 +234,10 @@ describe("selecting text in the picture", () => {
       container.canvas.fire("mousemove", mouse({ clientX: 170 }));
       container.canvas.fire("mouseup", mouse({ clientX: 170, buttons: 0 }));
       expect(kinds(sent)).toEqual([
-        ["down", 200],
-        ["move", 280],
-        ["move", 320],
-        ["up", 320],
+        ["down", 75],
+        ["move", 105],
+        ["move", 120],
+        ["up", 120],
       ]);
       view.destroy();
     } finally {
