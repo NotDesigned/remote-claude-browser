@@ -128,6 +128,13 @@ export function mountChatView(root, options) {
     { passive: true },
   );
   messages.addEventListener("click", async (event) => {
+    // Claude's own links need the remote browser's login; this browser never visits the site.
+    const link = event.target.closest?.("a[href]");
+    if (link && /^https:\/\/([\w-]+\.)*claude\.ai(\/|$)/i.test(link.href)) {
+      event.preventDefault();
+      options.onOpenRemote?.(link.href);
+      return;
+    }
     const button = event.target.closest?.(".code-copy");
     if (!button) return;
     const code = button.closest(".chat-code-block")?.querySelector("code");
@@ -239,8 +246,19 @@ export function mountChatView(root, options) {
         files.className = "message-files";
         const steps = document.createElement("div");
         steps.className = "message-steps";
-        article.append(role, steps, text, files, copy);
-        entry = { article, text, files, steps, fileSignature: "", stepSignature: "" };
+        const cards = document.createElement("div");
+        cards.className = "message-cards";
+        article.append(role, steps, text, cards, files, copy);
+        entry = {
+          article,
+          text,
+          files,
+          steps,
+          cards,
+          fileSignature: "",
+          stepSignature: "",
+          cardSignature: "",
+        };
         messageElements.set(key, entry);
       }
       entry.article.toggleAttribute("data-streaming", streaming);
@@ -252,6 +270,11 @@ export function mountChatView(root, options) {
       if (entry.stepSignature !== stepSignature) {
         entry.stepSignature = stepSignature;
         renderSteps(entry.steps, message.steps || [], index, message.id);
+      }
+      const cardSignature = JSON.stringify(message.cards || []);
+      if (entry.cardSignature !== cardSignature) {
+        entry.cardSignature = cardSignature;
+        renderCards(entry.cards, message.cards || [], index);
       }
       const signature = JSON.stringify(message.files || []);
       if (entry.fileSignature !== signature) {
@@ -350,6 +373,8 @@ export function mountChatView(root, options) {
   const SEARCH_STEP = /search|browse|read (a |\d+ )?pages?|fetch|搜索|浏览|网页|检索/i;
   const TOOL_STEP =
     /^(used|using|ran|running|called|calling|executed|created|creating|edited|editing|viewed|analy[sz]ed|analy[sz]ing|connected|使用|运行|调用|执行|创建|编辑|查看|分析)/i;
+  const CARD_ICON =
+    '<svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>';
   const STEP_LOADING = "正在加载详细内容…";
   const STEP_UNAVAILABLE = "这一行暂时无法在聊天中展开，可切换到“页面”模式查看。";
   const stepRequests = new Map();
@@ -404,6 +429,53 @@ export function mountChatView(root, options) {
           if (details.open && !step.text) expandStep(key, messageIndex, index, container);
         });
         return details;
+      }),
+    );
+  }
+  /** Documents such as Claude Docs live on the remote page: open them there and show that view. */
+  function renderCards(container, cards, messageIndex) {
+    container.replaceChildren(
+      ...cards.map((card, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "message-card";
+        button.disabled = !card.openable;
+        const icon = document.createElement("span");
+        icon.className = "message-step-icon";
+        icon.setAttribute("aria-hidden", "true");
+        icon.innerHTML = CARD_ICON;
+        const words = document.createElement("span");
+        words.className = "message-card-words";
+        const title = document.createElement("span");
+        title.className = "message-card-title";
+        title.textContent = card.title;
+        const subtitle = document.createElement("span");
+        subtitle.className = "message-card-subtitle";
+        subtitle.textContent = card.subtitle;
+        words.append(title, subtitle);
+        button.append(icon, words);
+        button.onclick = async () => {
+          button.disabled = true;
+          try {
+            const response = await fetch(`${apiBase}/card`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                controller,
+                epoch: state?.epoch,
+                message: messageIndex,
+                card: index,
+              }),
+            });
+            if (!response.ok) throw new Error((await response.json()).error);
+            options.onOpenRemote?.();
+          } catch (error) {
+            transientStatus(error.message || "这张卡片暂时无法打开");
+          } finally {
+            button.disabled = !card.openable;
+          }
+        };
+        return button;
       }),
     );
   }

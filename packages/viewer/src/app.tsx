@@ -155,6 +155,8 @@ export function App() {
   });
   // A browser view opened from chat (or the entry URL) applies its pixel/DOM mode once tabs exist.
   const pendingModeRef = useRef<"dom" | "px" | null>(viewMode === "chat" ? null : viewMode);
+  // A claude.ai link clicked in chat: opened in the remote browser once the page view connects.
+  const pendingUrlRef = useRef<string | null>(null);
   const pageKey = useRef(globalThis.crypto.randomUUID()).current;
   const [chromeVisible, setChromeVisible] = useState(
     () => viewStorage().getItem("mirror.browser-chrome") !== "hidden",
@@ -701,6 +703,10 @@ export function App() {
                   ? { t: "mode", tab, mode: "px", quality: preferredPxQuality(viewStorage()) }
                   : { t: "mode", tab, mode: "dom" },
               );
+              if (pendingUrlRef.current !== null) {
+                socket?.send({ t: "nav", tab, action: "go", url: pendingUrlRef.current });
+                pendingUrlRef.current = null;
+              }
             }
           }
         }
@@ -834,8 +840,8 @@ export function App() {
               ? { text: "已连接", tone: "ok" }
               : { text: "同步中", tone: "busy" };
   const warning = resourceWarning(serverStatus);
-  const changeView = (mode: ViewMode) => {
-    rememberViewMode(viewStorage(), mode);
+  const changeView = (mode: ViewMode, remember = true) => {
+    if (remember) rememberViewMode(viewStorage(), mode);
     if (mode === viewMode) return;
     if (mode === "chat") {
       setViewMode("chat");
@@ -960,6 +966,11 @@ export function App() {
           tab={activeTab}
           connectionKey={pageKey}
           onStatus={setChatStatus}
+          onOpenRemote={(url) => {
+            // A visit from chat, so the remembered everyday view stays as it is.
+            pendingUrlRef.current = url ?? null;
+            changeView("dom", false);
+          }}
         />
       )}
       <main

@@ -5,6 +5,8 @@ export interface ChatMessage {
   files?: { id: string; name: string }[];
   /** Thinking/process rows shown above the answer; `text` exists only while expanded remotely. */
   steps?: { summary: string; text?: string; state: string }[];
+  /** Documents and artifacts attached to the reply, such as a Claude Docs card. */
+  cards?: { title: string; subtitle: string; openable: boolean }[];
 }
 
 export interface ChatState {
@@ -58,7 +60,8 @@ export function chatDelta(
         previous.id !== message.id ||
         previous.role !== message.role ||
         JSON.stringify(previous.files) !== JSON.stringify(message.files) ||
-        JSON.stringify(previous.steps) !== JSON.stringify(message.steps)
+        JSON.stringify(previous.steps) !== JSON.stringify(message.steps) ||
+        JSON.stringify(previous.cards) !== JSON.stringify(message.cards)
       ) {
         return [{ index, message }];
       }

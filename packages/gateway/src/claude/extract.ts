@@ -7,7 +7,7 @@ const FILE_NAME = String.raw`(e) => (e.getAttribute('download') || (e.getAttribu
 
 /** Read message text without forcing layout or including accessibility duplicates and controls. */
 const MESSAGE_TEXT = String.raw`(element, rich = true) => {
-  const skip = 'button, script, style, svg, .sr-only, [aria-hidden="true"], [data-testid="message-actions"], [data-testid="user-message-actions"], [class~="group/status"]';
+  const skip = 'button, script, style, svg, .sr-only, [aria-hidden="true"], [data-testid="message-actions"], [data-testid="user-message-actions"], [class~="group/status"], [data-file-row-card]';
   const read = node => {
     if (node.nodeType === 3) {
       const text = node.textContent || '';
@@ -18,15 +18,25 @@ const MESSAGE_TEXT = String.raw`(element, rich = true) => {
       const tex = (node.querySelector('annotation[encoding="application/x-tex"]')?.textContent || node.getAttribute('data-latex') || node.getAttribute('data-tex') || node.getAttribute('alttext') || '').trim();
       if (tex) { const block = node.matches('.katex-display, [display="block"], [display="true"]'); return block ? '\n$$\n' + tex + '\n$$\n' : '$' + tex + '$'; }
     }
-    if (node.matches(skip)) return '';
     const tick = String.fromCharCode(96);
-    if (node.tagName === 'PRE') {
-      const code = node.querySelector('code');
-      const body = code?.textContent || node.textContent || '';
-      const language = (code?.getAttribute('class') || '').match(/language-([\w+#.-]+)/)?.[1] || '';
+    const fenced = (pre, label) => {
+      const code = pre.querySelector('code');
+      const body = code?.textContent || pre.textContent || '';
+      const named = (code?.getAttribute('class') || '').match(/language-([\w+#.-]+)/)?.[1] || label;
+      const language = /^[\w+#.-]{1,30}$/.test(named) ? named : '';
       const fence = tick.repeat(Math.max(3, ...(body.match(/\x60+/g) || []).map(run => run.length + 1)));
       return '\n' + fence + language + '\n' + body.replace(/\n$/, '') + '\n' + fence + '\n';
+    };
+    // Claude's code block wraps <pre> with a language label and a copy button.
+    if (node.matches('[role="group"][aria-label="Code"]')) {
+      const pre = node.querySelector('pre');
+      if (pre) {
+        const label = [...node.children].find(c => !c.contains(pre) && !c.querySelector('button'));
+        return fenced(pre, (label?.textContent || '').trim());
+      }
     }
+    if (node.matches(skip)) return '';
+    if (node.tagName === 'PRE') return fenced(node, '');
     if (node.tagName === 'CODE' && node.parentElement?.tagName !== 'PRE') return tick + (node.textContent || '') + tick;
     if (node.tagName === 'BR') return '\n';
     const text = [...node.childNodes].map(read).join('');
@@ -83,11 +93,26 @@ const STATUS_STEPS = String.raw`(element) => [...element.querySelectorAll('[clas
   .map(s => {
     const header = s.firstElementChild;
     const live = s.querySelector(':scope > [role="status"]');
-    const summary = ((live && live.textContent) || (header && header.textContent) || '').replace(/\s+/g, ' ').trim().slice(0, 300);
-    const text = [...s.children].filter(c => c !== header && c !== live).map(c => messageText(c, false)).filter(Boolean).join('\n').trim().slice(0, 20000);
+    const titled = s.querySelector('[data-morph-key]');
+    const summary = ((titled && titled.textContent) || (live && live.textContent) || (header && header.textContent) || '').replace(/[\uE000-\uF8FF]/g, '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    // Open rows show their detail; many closed rows keep it in a hidden find-in-page layer.
+    const hidden = s.querySelector('[data-cds-findable]');
+    const text = ([...s.children].filter(c => c !== header && c !== live).map(c => messageText(c, false)).filter(Boolean).join('\n').trim() || (hidden && hidden.textContent) || '').trim().slice(0, 20000);
     return text ? { summary, text, state: s.getAttribute('data-state') || '' } : { summary, state: s.getAttribute('data-state') || '' };
   })
   .filter(step => step.summary || step.text)`;
+
+/** Document and artifact cards (for example Claude Docs) are listed apart from the reply text. */
+const MESSAGE_CARDS = String.raw`(element) => [...element.querySelectorAll('[data-file-row-card]')]
+  .map(card => {
+    const open = card.querySelector('[data-testid="frame-card-open"]');
+    const clean = value => (value || '').replace(/[\uE000-\uF8FF]/g, '').replace(/\s+/g, ' ').trim();
+    const title = clean(open ? open.textContent : card.textContent).slice(0, 200);
+    const subtitle = open ? clean(card.textContent).replace(title, '').trim().slice(0, 100) : '';
+    return { title, subtitle, openable: !!open };
+  })
+  .filter(card => card.title)
+  .slice(0, 20)`;
 
 /** Runs only in authoritative Chromium on B. No website scripts or HTML reach this UI. */
 export const CHAT_EXPRESSION = String.raw`(() => {
@@ -105,10 +130,12 @@ export const CHAT_EXPRESSION = String.raw`(() => {
     let content = cache && !cache.dirty.has(e) ? cache.entries.get(e) : undefined;
     if (!content) {
       const steps = user ? [] : (${STATUS_STEPS})(e);
+      const cards = user ? [] : (${MESSAGE_CARDS})(e);
       content = {
         text: messageText(e, !user),
         files: (${FILE_CONTROLS})(e).map((a, id) => ({ id: String(id), name: (${FILE_NAME})(a) })),
-        ...(steps.length ? { steps } : {})
+        ...(steps.length ? { steps } : {}),
+        ...(cards.length ? { cards } : {})
       };
       if (cache) { cache.entries.set(e, content); cache.dirty.delete(e); }
     }
@@ -142,6 +169,19 @@ export function buttonExpression(kind: "send" | "stop", click = false): string {
     ${click ? "e.click(); return true;" : ""}
     e.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     const r = e.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2};
+  })()`;
+}
+
+/** Opens a document or artifact card on the remote page. */
+export function cardOpenExpression(messageIndex: number, cardIndex: number): string {
+  return `(() => {
+    const candidates = [...document.querySelectorAll(${JSON.stringify(MESSAGE_SELECTOR)})];
+    const messages = candidates.filter(e => !candidates.some(p => p !== e && p.contains(e))).slice(-300);
+    const card = messages[${messageIndex}] && [...messages[${messageIndex}].querySelectorAll('[data-file-row-card]')][${cardIndex}];
+    const open = card && card.querySelector('[data-testid="frame-card-open"]');
+    if (!open) return false;
+    open.click();
+    return true;
   })()`;
 }
 

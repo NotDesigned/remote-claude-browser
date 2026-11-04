@@ -443,6 +443,49 @@
   font-size: 13px;
 }
 
+/* Documents attached to a reply, such as Claude Docs. */
+#chat-view .message-cards:empty {
+  display: none;
+}
+#chat-view .message-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+#chat-view .message button.message-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  text-align: left;
+}
+#chat-view .message-card .message-step-icon {
+  color: var(--accent);
+}
+#chat-view .message-card .message-step-icon svg {
+  width: 20px;
+  height: 20px;
+}
+#chat-view .message-card-words {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+#chat-view .message-card-title {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#chat-view .message-card-subtitle {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* Thinking, search and tool rows: one compact group above the reply. */
 #chat-view .message-steps:empty {
   display: none;
