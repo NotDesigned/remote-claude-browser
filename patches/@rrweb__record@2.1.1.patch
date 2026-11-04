@@ -1,0 +1,32 @@
+diff --git a/dist/record.js b/dist/record.js
+index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..76a47289f68c0469d17c43a5cc5f7152113c26ca 100644
+--- a/dist/record.js
++++ b/dist/record.js
+@@ -3568,6 +3568,8 @@ class CrossOriginIframeMirror {
+     return remoteIdToIdMap;
+   }
+ }
++const handledIframeMessages = new WeakSet();
++let activeIframeManager = null;
+ class IframeManager {
+   constructor(options) {
+     __publicField(this, "iframes", /* @__PURE__ */ new WeakMap());
+@@ -3591,6 +3593,7 @@ class IframeManager {
+       )
+     );
+     this.mirror = options.mirror;
++    activeIframeManager = this;
+     if (this.recordCrossOriginIframes) {
+       window.addEventListener("message", this.handleMessage.bind(this));
+     }
+@@ -3635,6 +3638,10 @@ class IframeManager {
+     if (crossOriginMessageEvent.data.type !== "rrweb" || // To filter out the rrweb messages which are forwarded by some sites.
+     crossOriginMessageEvent.origin !== crossOriginMessageEvent.data.origin)
+       return;
++    // Every re-attach and every restarted recorder adds a listener, and transforming the same
++    // event again remaps its ids in place. Only the current recorder handles a message, once.
++    if (activeIframeManager !== this || handledIframeMessages.has(message)) return;
++    handledIframeMessages.add(message);
+     const iframeSourceWindow = message.source;
+     if (!iframeSourceWindow) return;
+     const iframeEl = this.crossOriginIframeMap.get(message.source);

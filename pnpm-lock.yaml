@@ -8,6 +8,11 @@ overrides:
   brace-expansion: 5.0.8
   find-my-way: 9.7.0
 
+patchedDependencies:
+  '@rrweb/record@2.1.1':
+    hash: e4wv4lvfzdohpzl4ccklwez3vu
+    path: patches/@rrweb__record@2.1.1.patch
+
 importers:
 
   .:
@@ -41,7 +46,7 @@ importers:
         version: link:../protocol
       '@rrweb/record':
         specifier: 2.1.1
-        version: 2.1.1
+        version: 2.1.1(patch_hash=e4wv4lvfzdohpzl4ccklwez3vu)
       '@rrweb/rrweb-plugin-canvas-webrtc-record':
         specifier: 2.1.1
         version: 2.1.1(rrweb@2.1.1)
@@ -2365,7 +2370,7 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.62.2':
     optional: true
 
-  '@rrweb/record@2.1.1':
+  '@rrweb/record@2.1.1(patch_hash=e4wv4lvfzdohpzl4ccklwez3vu)':
     dependencies:
       '@rrweb/types': 2.1.1
       '@rrweb/utils': 2.1.1

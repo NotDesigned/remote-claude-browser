@@ -26,6 +26,9 @@ import {
  * and integration wires it in main.ts — the hub calls it on every buffered event and NEVER
  * needs editing for it. Identity until then.
  */
+const TRIM_MIN_INTERVAL_MS = 30_000;
+const TRIM_FORCE_FACTOR = 4;
+
 export type RewriteStage = (
   e: eventWithTime,
   ctx: { sessionId: string; tabId: TabId },
@@ -87,6 +90,7 @@ export class TabHub {
   private snapshotRetryTimer: ReturnType<typeof setTimeout> | undefined;
   private snapshotRetryDelayMs: number;
   private trimTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastTrimAt = Number.NEGATIVE_INFINITY;
   private pendingSnapshotReason: SnapshotReason | null = null;
   private queuedSnapshotReason: SnapshotReason | null = null;
   private snapshotSeq = 0;
@@ -374,8 +378,14 @@ export class TabHub {
 
   private maybeRequestTrimSnapshot(): void {
     if (!this.isOverDeltaLimit() || this.snapshotRequested) return;
-    const waitMs = this.lastInputAt + this.trimIdleMs - this.now();
+    // A snapshot makes framed documents report again, which can itself fill the buffer. Without a
+    // pause that repeats forever, so only a far larger buffer may cut the pause short.
+    const pause = this.isFarOverDeltaLimit()
+      ? 0
+      : this.lastTrimAt + TRIM_MIN_INTERVAL_MS - this.now();
+    const waitMs = Math.max(pause, this.lastInputAt + this.trimIdleMs - this.now());
     if (waitMs <= 0) {
+      this.lastTrimAt = this.now();
       this.requestSnapshot("trim");
       return;
     }
@@ -388,6 +398,13 @@ export class TabHub {
     this.trimTimer.unref?.();
   }
 
+  private isFarOverDeltaLimit(): boolean {
+    return (
+      this.deltas.length > this.maxDeltaEvents * TRIM_FORCE_FACTOR ||
+      this.deltaBytes > this.maxDeltaBytes * TRIM_FORCE_FACTOR
+    );
+  }
+
   private isOverDeltaLimit(): boolean {
     return this.deltas.length > this.maxDeltaEvents || this.deltaBytes > this.maxDeltaBytes;
   }
@@ -398,6 +415,8 @@ export class TabHub {
   }
 
   private failSnapshotRequest(attempt: number): void {
+    // A trim that never produced a snapshot refilled nothing, so its retry need not wait.
+    this.lastTrimAt = Number.NEGATIVE_INFINITY;
     if (!this.snapshotRequested || attempt !== this.snapshotRequestAttempt) return;
     const reason = this.pendingSnapshotReason;
     this.clearSnapshotRequest();

@@ -301,6 +301,35 @@ describe("TabHub", () => {
     expect(snapshotMessage(hub.ingest(rrweb(1, full(1)))).reason).toBe("viewport");
   });
 
+  it("waits between trims, as a snapshot's framed documents can refill the buffer at once", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const hub = new TabHub({ sessionId: "s1", tabId: "loop", maxDeltaEvents: 2, trimIdleMs: 0 });
+    const requested: string[] = [];
+    hub.onNeedSnapshot((reason) => requested.push(reason));
+    hub.ingest(hello(1));
+    hub.ingest(rrweb(1, meta(1)));
+    hub.ingest(rrweb(1, full(1)));
+    const fill = (from: number, count: number) => {
+      for (let i = 0; i < count; i++) hub.ingest(rrweb(1, delta(1, from + i)));
+    };
+    fill(0, 3);
+    expect(requested).toEqual(["nav", "trim"]);
+    hub.ingest(rrweb(1, meta(1)));
+    hub.ingest(rrweb(1, full(1)));
+
+    fill(10, 3);
+    expect(requested).toEqual(["nav", "trim"]);
+    vi.advanceTimersByTime(30_000);
+    expect(requested).toEqual(["nav", "trim", "trim"]);
+    hub.ingest(rrweb(1, meta(1)));
+    hub.ingest(rrweb(1, full(1)));
+
+    // A buffer this far over cannot wait.
+    fill(20, 9);
+    expect(requested).toEqual(["nav", "trim", "trim", "trim"]);
+  });
+
   it("defers a threshold trim until driver input has been idle for the quiet window", () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
