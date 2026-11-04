@@ -9,6 +9,8 @@ export interface ChatViewOptions {
   /** Shared with this page's browser-view WebSocket so view switches are not takeovers. */
   connectionKey: string;
   onStatus?(status: ChatViewStatus): void;
+  /** The conversation on show, for the address bar and tab. */
+  onLocation?(location: { url: string; title: string }): void;
   /** Show the remote page, optionally opening a URL there first. */
   onOpenRemote?(url?: string): void;
 }

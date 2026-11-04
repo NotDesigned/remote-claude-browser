@@ -28,8 +28,6 @@ export interface ShellBarProps {
   rttMs: number | null;
   speedBps: number | null;
   frameRate: number | null;
-  sessionLabel: string | null;
-  onEndSession?(): void;
 }
 
 const VIEWS: { mode: ViewMode; label: string; title: string }[] = [
@@ -122,21 +120,6 @@ export function ShellBar(props: ShellBarProps) {
 
       {menuOpen && (
         <div id="shell-menu" ref={menuRef} role="dialog" aria-label="更多">
-          <a class="shell-menu-item" href="/?new=1" target="_blank" rel="noopener">
-            打开另一个独立会话
-          </a>
-          {props.onEndSession && (
-            <button
-              type="button"
-              class="shell-menu-item"
-              onClick={() => {
-                setMenuOpen(false);
-                props.onEndSession?.();
-              }}
-            >
-              结束本会话{props.sessionLabel ? `（${props.sessionLabel}）` : ""}
-            </button>
-          )}
           <div class="shell-menu-section" role="group" aria-label="画面清晰度">
             <span>画面模式：越清晰，服务器负担越重</span>
             <div class="shell-menu-choices">

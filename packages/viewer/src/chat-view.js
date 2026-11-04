@@ -13,6 +13,7 @@ const RENDER_MAX_INTERVAL_MS = 1000;
  * @param {HTMLElement} root
  * @param {{ sid: string | null, tab?: string | null, connectionKey: string,
  *   onStatus?: (status: { text: string, connected: boolean }) => void,
+ *   onLocation?: (location: { url: string, title: string }) => void,
  *   onOpenBrowser?: () => void }} options
  * @returns {() => void}
  */
@@ -277,11 +278,19 @@ export function mountChatView(root, options) {
         if (state && !leaving) render();
       }, wait);
   }
+  let reportedLocation = "";
+  function reportLocation() {
+    const location = JSON.stringify([state.url, state.title]);
+    if (location === reportedLocation) return;
+    reportedLocation = location;
+    options.onLocation?.({ url: state.url, title: state.title ?? "" });
+  }
   function render() {
     clearTimeout(renderTimer);
     renderTimer = undefined;
     const startedAt = performance.now();
     renderNow();
+    if (state) reportLocation();
     lastRenderAt = performance.now();
     lastRenderCost = lastRenderAt - startedAt;
   }

@@ -16,7 +16,6 @@ export const CHAT_VIEW_MARKUP = `
     <button id="new-chat" type="button" disabled>＋ 新对话</button>
     <p class="label">最近</p>
     <nav id="conversations"></nav>
-    <p class="aside-note">所有人共用同一个 Claude 账号，对话历史彼此可见。</p>
   </aside>
   <main id="chat-main">
     <div id="notice" role="status">正在读取远程浏览器里的 Claude 页面…</div>

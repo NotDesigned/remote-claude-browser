@@ -13,9 +13,11 @@ export interface TabStripProps {
   chromeByTab?: Readonly<Record<TabId, ChromeState | undefined>>;
   send(message: TabNav): void;
   onActivate?(tab: TabId): void;
+  /** Shows the tabs without the controls that change them. */
+  readOnly?: boolean;
 }
 
-export function TabStrip({ tabs, chromeByTab = {}, send, onActivate }: TabStripProps) {
+export function TabStrip({ tabs, chromeByTab = {}, send, onActivate, readOnly }: TabStripProps) {
   const activeTab = tabs.find((tab) => tab.active) ?? tabs[0];
   const activate = (tab: TabId) => {
     onActivate?.(tab);
@@ -76,32 +78,36 @@ export function TabStrip({ tabs, chromeByTab = {}, send, onActivate }: TabStripP
                     title="网页加载中"
                   />
                 </button>
-                <button
-                  className="tab-close"
-                  type="button"
-                  aria-label={`Close ${label}`}
-                  title={`关闭 ${label}`}
-                  onClick={() => send({ t: "nav", tab: tab.id, action: "close" })}
-                >
-                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
-                    <path d="m7 7 10 10M17 7 7 17" />
-                  </svg>
-                </button>
+                {!readOnly && (
+                  <button
+                    className="tab-close"
+                    type="button"
+                    aria-label={`Close ${label}`}
+                    title={`关闭 ${label}`}
+                    onClick={() => send({ t: "nav", tab: tab.id, action: "close" })}
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
+                      <path d="m7 7 10 10M17 7 7 17" />
+                    </svg>
+                  </button>
+                )}
               </div>
             );
           })}
         </div>
-        <button
-          id="new-tab"
-          type="button"
-          aria-label="New tab"
-          title="新建标签页"
-          onClick={() => send({ t: "nav", tab: activeTab?.id ?? "", action: "newtab" })}
-        >
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
-            <path d="M12 5v14M5 12h14" />
-          </svg>
-        </button>
+        {!readOnly && (
+          <button
+            id="new-tab"
+            type="button"
+            aria-label="New tab"
+            title="新建标签页"
+            onClick={() => send({ t: "nav", tab: activeTab?.id ?? "", action: "newtab" })}
+          >
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+        )}
       </div>
     </nav>
   );

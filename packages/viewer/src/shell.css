@@ -3,13 +3,15 @@
  * Palette A — warm paper and terracotta — shared by every view, light and dark.
  */
 :root {
-  --bg: #faf9f6;
-  --surface: #fffefb;
-  --sunken: #f2eee6;
-  --line: #e3ddd1;
-  --ink: #27251f;
-  --muted: #665e54;
-  --accent: #a35c3f;
+  /* Claude's own palette, so switching between chat and the page does not change the colours. */
+  --bg: #faf9f5;
+  --surface: #ffffff;
+  --sunken: #f5f4ed;
+  --hover: #f0eee6;
+  --line: rgb(31 30 29 / 15%);
+  --ink: #141413;
+  --muted: #5e5d59;
+  --accent: #c6613f;
   --accent-ink: #ffffff;
   --accent-soft: #f4e7e0;
   --warn-bg: #fbf0dc;
@@ -18,7 +20,7 @@
   --busy: #b26b12;
   --bad: #b3392f;
   --focus: #a35c3f;
-  --bubble: #f0ede6;
+  --bubble: #f0eee6;
   --code-bg: rgb(60 50 30 / 5%);
   --shellbar-height: 44px;
   --chrome-border: var(--line);
@@ -30,14 +32,15 @@
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #1f1d1a;
-  --surface: #282521;
-  --sunken: #171613;
-  --line: #3b3630;
-  --ink: #ece6dd;
-  --muted: #aca297;
-  --accent: #d48c6d;
-  --accent-ink: #1f1d1a;
+  --bg: #262624;
+  --surface: #30302e;
+  --sunken: #1f1e1d;
+  --hover: #141413;
+  --line: rgb(222 220 209 / 15%);
+  --ink: #faf9f5;
+  --muted: #c2c0b6;
+  --accent: #d97757;
+  --accent-ink: #1f1e1d;
   --accent-soft: #3a2b24;
   --warn-bg: #3a2c17;
   --warn-ink: #f0c987;
@@ -45,7 +48,7 @@
   --busy: #e0a55a;
   --bad: #ef8a80;
   --focus: #d48c6d;
-  --bubble: #35312b;
+  --bubble: #141413;
   --code-bg: rgb(255 255 255 / 6%);
 }
 
@@ -69,9 +72,6 @@ body {
 #shell {
   /* The tabs share the top bar. */
   --tabstrip-height: 0px;
-}
-#shell[data-address="hidden"] {
-  --urlbar-height: 0px;
 }
 #shell > #mirror-host,
 #shell > #chat-view {
@@ -254,73 +254,6 @@ body {
   box-sizing: border-box;
   font-size: 14px;
 }
-.shell-menu-address {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 4px 8px 8px;
-}
-.shell-menu-address label,
-.shell-menu-section > span {
-  color: var(--muted);
-  font-size: 12px;
-}
-.shell-menu-address input {
-  height: 38px;
-  padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--sunken);
-  color: var(--ink);
-  font-size: 14px;
-}
-.shell-menu-item,
-.shell-menu-switch {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 42px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--ink);
-  font-size: 14px;
-  text-align: left;
-  text-decoration: none;
-  cursor: pointer;
-}
-.shell-menu-item:hover,
-.shell-menu-switch:hover {
-  background: var(--sunken);
-}
-.shell-switch {
-  position: relative;
-  flex: none;
-  width: 36px;
-  height: 20px;
-  border-radius: 10px;
-  background: var(--line);
-  transition: background 120ms ease;
-}
-.shell-switch::after {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #ffffff;
-  content: "";
-  transition: transform 120ms ease;
-}
-.shell-menu-switch[aria-pressed="true"] .shell-switch {
-  background: var(--accent);
-}
-.shell-menu-switch[aria-pressed="true"] .shell-switch::after {
-  transform: translateX(16px);
-}
 .shell-menu-section {
   display: flex;
   flex-direction: column;
@@ -433,26 +366,11 @@ body {
     border-radius: 18px 18px 0 0;
     font-size: 15px;
   }
-  .shell-menu-item,
-  .shell-menu-switch {
-    min-height: 48px;
-  }
-  .shell-menu-choices button,
-  .shell-menu-address input {
+  .shell-menu-choices button {
     height: 44px;
-  }
-  .shell-menu-address input {
-    font-size: 16px;
   }
   #chat-view .chat-subbar {
     display: flex;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .shell-switch,
-  .shell-switch::after {
-    transition: none;
   }
 }
 
@@ -466,6 +384,49 @@ body {
 }
 #shell > #chat-view {
   height: auto;
+}
+
+/* The browser's bars and status pill take their colours from the same tokens as everything else. */
+#shell #urlbar {
+  color: var(--muted);
+  background: var(--bg);
+  border-color: var(--line);
+}
+#shell #urlbar button {
+  color: var(--muted);
+}
+#shell #urlbar button:not(:disabled):hover {
+  background: var(--hover);
+}
+#shell #urlbar input {
+  color: var(--ink);
+  background: var(--sunken);
+  border-color: var(--line);
+}
+#shell #urlbar input:focus {
+  background: var(--surface);
+  border-color: var(--muted);
+}
+#shell #urlbar input::placeholder {
+  color: var(--muted);
+}
+#shell .connection-hud {
+  color: var(--ink);
+  background: var(--surface);
+  border-color: var(--line);
+}
+#shell .connection-hud > summary:hover {
+  background: var(--hover);
+}
+#shell .hud-chevron {
+  stroke: var(--muted);
+}
+#shell .browser-tab {
+  color: var(--muted);
+}
+#shell .browser-tab[data-active="true"] {
+  color: var(--ink);
+  background: var(--surface);
 }
 
 /* Native progress bars follow the accent instead of the platform blue. */

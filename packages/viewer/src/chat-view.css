@@ -5,7 +5,11 @@
     sans-serif;
   --font-mono:
     ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
-  --column: 760px;
+  /* Claude's response font where the system has it, and the nearest serif everywhere else. */
+  --font-response:
+    "Anthropic Serif", Georgia, "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", SimSun,
+    serif;
+  --column: 740px;
   --gutter: 24px;
   display: flex;
   flex-direction: column;
@@ -91,7 +95,7 @@
 #chat-view .layout {
   display: grid;
   flex: 1;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: 288px minmax(0, 1fr);
   width: 100%;
   min-height: 0;
 }
@@ -100,13 +104,20 @@
 #chat-view aside {
   display: flex;
   flex-direction: column;
-  padding: 16px 12px;
+  padding: 12px 8px;
   overflow: auto;
   border-right: 1px solid var(--line);
+  background: var(--sunken);
 }
 #chat-view #new-chat {
   width: 100%;
+  border: 0;
+  background: transparent;
+  font-size: 14px;
   text-align: left;
+}
+#chat-view #new-chat:hover:enabled {
+  background: var(--hover);
 }
 #chat-view .label {
   margin: 20px 10px 6px;
@@ -116,31 +127,20 @@
 #chat-view nav button {
   display: block;
   width: 100%;
-  padding: 11px 10px;
+  height: 34px;
+  margin-bottom: 1px;
+  padding: 0 10px;
   overflow: hidden;
   border: 0;
-  border-bottom: 1px solid var(--line);
-  border-radius: 0;
+  border-radius: 8px;
   background: transparent;
   font-size: 14px;
   text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-#chat-view nav button:first-child {
-  border-top: 1px solid var(--line);
-}
 #chat-view nav button[aria-current="page"] {
-  background: var(--accent-soft);
-  box-shadow: inset 3px 0 0 var(--accent);
-  font-weight: 600;
-}
-#chat-view .aside-note {
-  margin: auto 8px 0;
-  padding-top: 24px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.7;
+  background: var(--hover);
 }
 
 /* Everything in the main column shares one comfortable reading width. */
@@ -215,8 +215,9 @@
 }
 #chat-view .message > .text {
   max-width: 100%;
-  font-size: 15px;
-  line-height: 1.75;
+  font-family: var(--font-response);
+  font-size: 16px;
+  line-height: 1.65;
   overflow-wrap: anywhere;
   tab-size: 4;
 }
@@ -225,6 +226,8 @@
   padding: 10px 16px;
   border-radius: 16px;
   background: var(--bubble);
+  font-family: var(--font-ui);
+  font-size: 15px;
   white-space: pre-wrap;
 }
 #chat-view .message > button {

@@ -101,6 +101,7 @@ function viewStorage(): Pick<Storage, "getItem" | "setItem"> {
 }
 
 const PICTURE_HOLD_TIMEOUT_MS = 8_000;
+const CHAT_TAB = "chat";
 
 export function App() {
   const uploadRef = useRef<FileUploadRelay | null>(null);
@@ -178,6 +179,7 @@ export function App() {
   // Coming from chat, the remote page may still have chat's geometry. Keep the mirror covered until
   // this window's viewport is agreed, so the old layout never flashes before the real one.
   const [settling, setSettling] = useState(false);
+  const [chatLocation, setChatLocation] = useState({ url: "", title: "" });
   // The page changes shape while the picture starts, which the mirror should not show.
   const pictureHoldRef = useRef<{
     tab: TabId;
@@ -972,12 +974,7 @@ export function App() {
   };
 
   return (
-    <div
-      id="shell"
-      data-theme={theme}
-      data-view={browserView ? "browser" : "chat"}
-      data-address={browserView ? "shown" : "hidden"}
-    >
+    <div id="shell" data-theme={theme} data-view={browserView ? "browser" : "chat"}>
       <ShellBar
         viewMode={browserView ? (activeTab !== null && modeByTab[activeTab]) || viewMode : "chat"}
         onViewMode={changeView}
@@ -1003,14 +1000,8 @@ export function App() {
         rttMs={browserView ? rttMs : null}
         speedBps={browserView ? speedBps : null}
         frameRate={browserView && pixelMode ? (frameRates?.display ?? null) : null}
-        sessionLabel={clientSession?.label ?? null}
-        onEndSession={
-          clientSession !== null && clientPhase === "ready"
-            ? () => void closeClientSession()
-            : undefined
-        }
       >
-        {browserView && (
+        {browserView ? (
           <TabStrip
             tabs={tabs}
             chromeByTab={chromeByTab}
@@ -1020,6 +1011,19 @@ export function App() {
               setActiveTab(tab);
             }}
             send={(message) => socketRef.current?.send(message)}
+          />
+        ) : (
+          <TabStrip
+            readOnly
+            tabs={[
+              {
+                id: CHAT_TAB,
+                title: chatLocation.title || "Claude",
+                url: chatLocation.url,
+                active: true,
+              },
+            ]}
+            send={() => {}}
           />
         )}
       </ShellBar>
@@ -1053,12 +1057,25 @@ export function App() {
           />
         )}
       </div>
-      {browserView && (
+      {browserView ? (
         <UrlBar
           tab={activeTab}
           chrome={activeChrome}
           fallbackUrl={tabs.find((tab) => tab.id === activeTab)?.url ?? ""}
           send={(message) => socketRef.current?.send(message)}
+        />
+      ) : (
+        <UrlBar
+          tab={CHAT_TAB}
+          chrome={null}
+          fallbackUrl={chatLocation.url}
+          send={(message) => {
+            // The address leads to the remote browser; chat only ever shows a conversation.
+            if (message.action === "reload") window.location.reload();
+            if (message.action !== "go") return;
+            pendingUrlRef.current = message.url ?? null;
+            changeView("dom", false);
+          }}
         />
       )}
       {!browserView && clientPhase === "ready" && clientSession !== null && (
@@ -1067,6 +1084,7 @@ export function App() {
           tab={activeTab}
           connectionKey={pageKey}
           onStatus={setChatStatus}
+          onLocation={setChatLocation}
           onOpenRemote={(url) => {
             // A visit from chat, so the remembered everyday view stays as it is.
             pendingUrlRef.current = url ?? null;

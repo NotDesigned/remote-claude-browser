@@ -820,6 +820,11 @@ body,
     min-width: 100px;
   }
 
+  /* iOS zooms the whole page into any smaller field it focuses, and stays there. */
+  #urlbar input {
+    font-size: 16px;
+  }
+
   #urlbar {
     grid-template-columns: 26px 26px 26px minmax(0, 1fr);
     gap: 2px;
@@ -890,19 +895,12 @@ body,
   background: #1f1d1a;
 }
 
-#shell[data-theme="dark"] #tabstrip,
-#shell[data-theme="dark"] #urlbar {
-  color: #c5c1bd;
-  background: #292623;
-  border-color: #413d38;
-}
-
 #shell[data-theme="dark"] .browser-tab[data-active="true"],
 #shell[data-theme="dark"] .view-mode-options,
 #shell[data-theme="dark"] .hud-panel {
   color: #edebe9;
-  background: #312d29;
-  border-color: #504b46;
+  background: var(--surface);
+  border-color: var(--line);
 }
 
 #shell[data-theme="dark"] .browser-tab:not([data-active="true"]):hover,
@@ -918,8 +916,7 @@ body,
 }
 
 #shell[data-theme="dark"] .view-mode-options button,
-#shell[data-theme="dark"] .view-mode-options a,
-#shell[data-theme="dark"] #urlbar input {
+#shell[data-theme="dark"] .view-mode-options a {
   color: #edebe9;
 }
 
