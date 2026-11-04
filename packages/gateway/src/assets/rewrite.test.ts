@@ -1,10 +1,12 @@
-import {
-  EventType,
-  IncrementalSource,
-  type eventWithTime,
-} from "@mirror/protocol";
+import { EventType, IncrementalSource, type eventWithTime } from "@mirror/protocol";
 import { describe, expect, it } from "vitest";
-import { createRewriteStage, portableSupports, rewriteCssText, rewriteSrcset } from "./rewrite";
+import {
+  createRewriteStage,
+  portableMaskClip,
+  portableSupports,
+  rewriteCssText,
+  rewriteSrcset,
+} from "./rewrite";
 import { openAssetToken, type AssetRef } from "./token";
 
 const KEY = Buffer.alloc(32, 0x5a);
@@ -646,6 +648,15 @@ describe("portable @supports for the viewer's browser", () => {
       portableSupports("@supports (-webkit-app-region: drag) and (display:grid) { a { b: c } }"),
     ).toBe("@supports (display:grid) { a { b: c } }");
     expect(rewriteCssText(clone, (url) => url)).not.toContain("app-region");
+  });
+
+  it("adds the WebKit prefix to text mask clipping, and only there", () => {
+    expect(portableMaskClip("a { mask-clip: text; display: block; }")).toBe(
+      "a { -webkit-mask-clip: text; mask-clip: text; display: block; }",
+    );
+    for (const css of ["a { -webkit-mask-clip: text; }", "a { mask-clip: border-box; }"])
+      expect(portableMaskClip(css)).toBe(css);
+    expect(rewriteCssText("a{mask-clip:text}", (url) => url)).toContain("-webkit-mask-clip: text");
   });
 
   it("leaves every other rule, and a condition that only tests app-region, untouched", () => {

@@ -450,7 +450,7 @@ export function rewriteCssText(
     }
     position += 1;
   }
-  return portableSupports(applyReplacements(css, replacements));
+  return portableMaskClip(portableSupports(applyReplacements(css, replacements)));
 }
 
 function parseUrlFunction(
@@ -690,6 +690,18 @@ function record(value: unknown): UnknownRecord {
  * rendered as a bare dark bar. Dropping the `-webkit-app-region` clause keeps the remaining,
  * portable condition.
  */
+/**
+ * Chromium serializes `-webkit-mask-clip` as unprefixed `mask-clip`, but WebKit only accepts
+ * `text` under the prefix. Claude's shimmer paints a text-coloured rectangle clipped by it, so
+ * without the prefix Safari shows that rectangle as a solid dark bar.
+ */
+export function portableMaskClip(css: string): string {
+  return css.replace(
+    /(?<![-\w])mask-clip\s*:\s*text/gi,
+    "-webkit-mask-clip: text; mask-clip: text",
+  );
+}
+
 export function portableSupports(css: string): string {
   if (!/-webkit-app-region/i.test(css)) return css;
   return css.replace(/@supports([^{;]*)\{/gi, (rule, prelude: string) => {
