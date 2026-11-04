@@ -53,8 +53,8 @@ export interface PresenceEntry {
   name: string;
 }
 
-/** Pixel view detail, trading sharpness and frame rate for bandwidth. */
-export type PxQuality = "low" | "medium" | "high";
+/** What the pixel view favours: frame rate or sharpness. Traffic is not the constraint. */
+export type PxQuality = "smooth" | "balanced" | "sharp";
 
 export type SnapshotReason = "nav" | "viewport" | "trim" | "resync";
 

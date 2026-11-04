@@ -38,45 +38,22 @@ const VIDEO_FLUSH_FRAMES = 3;
 /** A page that never stops, such as a shimmer on one row, still gets sharp around that row. */
 const SHARP_MOTION_INTERVAL_MS = 3_000;
 /**
- * Limits are in device pixels and square, so a portrait phone keeps its full width. Chromium only
- * scales down, so a smaller browser simply gets its own resolution.
+ * The presets trade sharpness for frame rate, which the CPU limits on a host without a GPU. Traffic
+ * is not the constraint. A zoom above the viewer's density never applies, so a normal display gets
+ * its own full resolution from all of them.
  */
-const CAPTURE_PRESETS: Record<
-  PxQuality,
-  {
-    maxWidth: number;
-    maxHeight: number;
-    jpeg: number;
-    /** H.264 replaces JPEG where the viewer can decode it. */
-    video: { jpeg: number; everyNthFrame: number; crf: number };
-    everyNthFrame: number;
-    sharp?: { format: "png" | "webp"; quality?: number };
-  }
-> = {
-  low: {
-    maxWidth: 1280,
-    maxHeight: 1280,
-    jpeg: 50,
-    video: { jpeg: 60, everyNthFrame: 3, crf: 28 },
-    everyNthFrame: 3,
-  },
-  medium: {
-    maxWidth: 1920,
-    maxHeight: 1920,
-    jpeg: 65,
-    video: { jpeg: 75, everyNthFrame: 2, crf: 23 },
-    everyNthFrame: 2,
-    sharp: { format: "webp", quality: 90 },
-  },
-  high: {
-    maxWidth: 3840,
-    maxHeight: 3840,
-    jpeg: 80,
-    video: { jpeg: 80, everyNthFrame: 1, crf: 18 },
-    everyNthFrame: 2,
-    sharp: { format: "png" },
-  },
+const CAPTURE_PRESETS: Record<PxQuality, { maxZoom: number }> = {
+  smooth: { maxZoom: 1 },
+  balanced: { maxZoom: 1.5 },
+  sharp: { maxZoom: Number.POSITIVE_INFINITY },
 };
+/** Square, so a portrait phone keeps its full width. Chromium only ever scales frames down. */
+const MAX_FRAME_SIDE = 3840;
+const FRAME_JPEG_QUALITY = 80;
+const VIDEO_CRF = 16;
+/** Without the encoder every frame goes to the viewer, so fewer of them are taken. */
+const JPEG_EVERY_NTH_FRAME = 2;
+const SHARP_FRAME = { format: "png" } as const;
 type ScreencastBrowser = Pick<
   BrowserHandle,
   "send" | "onAttached" | "onDetached" | "onSessionEvent"
@@ -157,27 +134,24 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   const tabs = new Map<string, TabState>();
   const sessions = new Map<string, TabState>();
   // Chosen by the viewer; applies to every tab of this client session.
-  let quality: PxQuality = "high";
+  let quality: PxQuality = "balanced";
   let videoWanted = false;
   // ffmpeg is missing or keeps failing: this session stays on JPEG frames.
   let videoBroken = false;
   let zoomBroken = false;
-  const screencastParams = () => {
-    const preset = CAPTURE_PRESETS[quality];
-    const video = videoWanted && !videoBroken;
-    return {
-      format: "jpeg",
-      quality: video ? preset.video.jpeg : preset.jpeg,
-      everyNthFrame: video ? preset.video.everyNthFrame : preset.everyNthFrame,
-      maxWidth: preset.maxWidth,
-      maxHeight: preset.maxHeight,
-    };
-  };
+  const screencastParams = () => ({
+    format: "jpeg",
+    quality: FRAME_JPEG_QUALITY,
+    everyNthFrame: videoWanted && !videoBroken ? 1 : JPEG_EVERY_NTH_FRAME,
+    maxWidth: MAX_FRAME_SIDE,
+    maxHeight: MAX_FRAME_SIDE,
+  });
   const zoomWanted = (state: TabState): number => {
     const viewport = state.hub.viewport;
     if (!viewport || !opts.browserZoom || zoomBroken || videoBroken) return 1;
-    if (!videoWanted || quality !== "high") return 1;
-    return zoomLevelFor(viewport.dpr, viewport.w, viewport.h);
+    if (!videoWanted) return 1;
+    const density = Math.min(viewport.dpr, CAPTURE_PRESETS[quality].maxZoom);
+    return zoomLevelFor(density, viewport.w, viewport.h);
   };
   const applyMetrics = async (state: TabState, zoom: number): Promise<void> => {
     const viewport = state.hub.viewport;
@@ -233,13 +207,12 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     await opts.browserZoom.press(state.target, zoom);
   };
   const screenshotClip = (w: number, h: number, dpr: number) => {
-    const preset = CAPTURE_PRESETS[quality];
     return {
       x: 0,
       y: 0,
       width: w,
       height: h,
-      scale: Math.min(1, preset.maxWidth / (w * dpr), preset.maxHeight / (h * dpr)),
+      scale: Math.min(1, MAX_FRAME_SIDE / (w * dpr), MAX_FRAME_SIDE / (h * dpr)),
     };
   };
   const commandTimeoutMs = checkedTimeout(opts.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS);
@@ -273,16 +246,15 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     generation: number,
     duringMotion: boolean,
   ): Promise<void> => {
-    const sharp = CAPTURE_PRESETS[quality].sharp;
     const viewport = state.hub.viewport;
     const seen = state.frameCount;
-    if (!sharp || !viewport || !state.screencasting || state.hub.mode !== "px") return;
+    if (!viewport || !state.screencasting || state.hub.mode !== "px") return;
     if (!current(state, generation) || state.sharpInFlight) return;
     state.sharpInFlight = true;
     state.lastSharpAt = Date.now();
     try {
       const shot = (await sendBounded(state, "Page.captureScreenshot", {
-        ...sharp,
+        ...SHARP_FRAME,
         optimizeForSpeed: true,
         fromSurface: true,
         captureBeyondViewport: false,
@@ -326,32 +298,29 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       w,
       h,
       frameGapMs: 0,
-      encoder: (opts.createVideoEncoder ?? createFfmpegEncoder)(
-        CAPTURE_PRESETS[quality].video.crf,
-        {
-          onConfig({ codec, description }) {
-            if (state.video === video)
-              opts.publish({
-                t: "vid-cfg",
-                tab,
-                codec,
-                description: description.toString("base64"),
-              });
-          },
-          onChunk(data, key) {
-            if (state.video !== video) return;
-            state.stats.encoded++;
-            opts.publish({ t: "vid", tab, seq: state.videoSeq++, key, w, h, data });
-          },
-          onFailure(error) {
-            if (state.video !== video) return;
-            state.video = undefined;
-            clearTimeout(video.flushTimer);
-            videoBroken = true;
-            report(error);
-          },
+      encoder: (opts.createVideoEncoder ?? createFfmpegEncoder)(VIDEO_CRF, {
+        onConfig({ codec, description }) {
+          if (state.video === video)
+            opts.publish({
+              t: "vid-cfg",
+              tab,
+              codec,
+              description: description.toString("base64"),
+            });
         },
-      ),
+        onChunk(data, key) {
+          if (state.video !== video) return;
+          state.stats.encoded++;
+          opts.publish({ t: "vid", tab, seq: state.videoSeq++, key, w, h, data });
+        },
+        onFailure(error) {
+          if (state.video !== video) return;
+          state.video = undefined;
+          clearTimeout(video.flushTimer);
+          videoBroken = true;
+          report(error);
+        },
+      }),
     };
     state.video = video;
   };
@@ -409,8 +378,6 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     }
     state.lastFrameAt = now;
     state.frameCount++;
-    const preset = CAPTURE_PRESETS[quality];
-    if (!preset.sharp) return;
     const generation = state.generation;
     const whenStill = Math.max(now + SHARP_IDLE_MS, state.sharpNotBefore);
     const motionDue = state.lastSharpAt + SHARP_MOTION_INTERVAL_MS;
@@ -497,25 +464,24 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     state.fallback = fallback;
     fallback.promise = (async () => {
       try {
-        const preset = CAPTURE_PRESETS[quality];
         let viewport = state.hub.viewport;
         if (viewport === null) {
           const metrics = (await sendBounded(state, "Page.getLayoutMetrics")) as {
             cssLayoutViewport?: { clientWidth?: number; clientHeight?: number };
           };
           viewport = {
-            w: frameDimension(metrics.cssLayoutViewport?.clientWidth, preset.maxWidth),
-            h: frameDimension(metrics.cssLayoutViewport?.clientHeight, preset.maxHeight),
+            w: frameDimension(metrics.cssLayoutViewport?.clientWidth, MAX_FRAME_SIDE),
+            h: frameDimension(metrics.cssLayoutViewport?.clientHeight, MAX_FRAME_SIDE),
             dpr: 1,
           };
         }
         if (!current(state, generation) || state.hub.mode !== "px" || state.lastFrame) return;
-        const w = frameDimension(viewport.w, preset.maxWidth);
-        const h = frameDimension(viewport.h, preset.maxHeight);
+        const w = frameDimension(viewport.w, MAX_FRAME_SIDE);
+        const h = frameDimension(viewport.h, MAX_FRAME_SIDE);
         const dpr = Number.isFinite(viewport.dpr) && viewport.dpr > 0 ? viewport.dpr : 1;
         const screenshot = (await sendBounded(state, "Page.captureScreenshot", {
           format: "jpeg",
-          quality: preset.jpeg,
+          quality: FRAME_JPEG_QUALITY,
           fromSurface: true,
           captureBeyondViewport: false,
           clip: screenshotClip(w, h, dpr),

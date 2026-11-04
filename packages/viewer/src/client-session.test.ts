@@ -9,6 +9,7 @@ import {
   endClientSession,
   prepareClientSession,
   preferredViewMode,
+  VIEW_MODE_STORAGE_KEY,
   rememberViewMode,
   requestClientSession,
 } from "./client-session";
@@ -271,22 +272,22 @@ describe("client session bootstrap", () => {
     expect(clientReturnUrl("client-1")).toBe("/?sid=client-1");
   });
 
-  it("prefers text chat and remembers an explicitly chosen browser view", () => {
+  it("prefers the page view and remembers an explicitly chosen view", () => {
     const store = new Map<string, string>();
     const storage = {
       getItem: (key: string) => store.get(key) ?? null,
       setItem: (key: string, value: string) => void store.set(key, value),
     };
-    expect(preferredViewMode(storage)).toBe("chat");
+    expect(preferredViewMode(storage)).toBe("dom");
     rememberViewMode(storage, "px");
     expect(preferredViewMode(storage)).toBe("px");
-    store.set("mirror.view-mode", "nonsense");
-    expect(preferredViewMode(storage)).toBe("chat");
+    store.set(VIEW_MODE_STORAGE_KEY, "nonsense");
+    expect(preferredViewMode(storage)).toBe("dom");
     const blocked = {
       getItem: () => {
         throw new Error("blocked");
       },
     };
-    expect(preferredViewMode(blocked)).toBe("chat");
+    expect(preferredViewMode(blocked)).toBe("dom");
   });
 });

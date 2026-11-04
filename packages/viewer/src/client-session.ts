@@ -196,15 +196,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export type ViewMode = "chat" | "dom" | "px";
-export const VIEW_MODE_STORAGE_KEY = "mirror.view-mode";
+// A new key, as everyone had "chat" remembered from when it was the default.
+export const VIEW_MODE_STORAGE_KEY = "mirror.view-mode.v2";
 
-/** Text chat is the everyday view; DOM and pixel views are remembered when chosen explicitly. */
+/** The page view is the everyday view; chat and the pixel view are remembered when chosen. */
 export function preferredViewMode(storage: Pick<Storage, "getItem">): ViewMode {
   try {
     const value = storage.getItem(VIEW_MODE_STORAGE_KEY);
-    return value === "dom" || value === "px" ? value : "chat";
+    return value === "chat" || value === "px" ? value : "dom";
   } catch {
-    return "chat";
+    return "dom";
   }
 }
 
@@ -218,12 +219,12 @@ export function rememberViewMode(storage: Pick<Storage, "setItem">, mode: ViewMo
 
 export const PX_QUALITY_STORAGE_KEY = "mirror.px-quality";
 
-/** The picture detail chosen on this device; the sharpest one until someone asks for less. */
+/** What this device chose for the pixel view; balanced until someone asks for otherwise. */
 export function preferredPxQuality(storage: Pick<Storage, "getItem">): PxQuality {
   try {
     const value = storage.getItem(PX_QUALITY_STORAGE_KEY);
-    return value === "low" || value === "medium" ? value : "high";
+    return value === "smooth" || value === "sharp" ? value : "balanced";
   } catch {
-    return "high";
+    return "balanced";
   }
 }

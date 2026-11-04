@@ -215,13 +215,13 @@ export function ShellBar(props: ShellBarProps) {
             </button>
           )}
           <div class="shell-menu-section" role="group" aria-label="画面清晰度">
-            <span>画面清晰度（越低越省流量）</span>
+            <span>画面模式：越清晰，动起来帧率越低</span>
             <div class="shell-menu-choices">
               {(
                 [
-                  ["low", "低"],
-                  ["medium", "中"],
-                  ["high", "高"],
+                  ["smooth", "流畅"],
+                  ["balanced", "均衡"],
+                  ["sharp", "清晰"],
                 ] as const
               ).map(([value, label]) => (
                 <button
