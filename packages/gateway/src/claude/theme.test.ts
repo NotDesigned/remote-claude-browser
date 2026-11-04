@@ -30,6 +30,19 @@ describe("Claude's theme", () => {
     expect(setThemeExpression("dark")).toContain('dataset.mode = "dark"');
   });
 
+  it("says whether a Claude page took the setting, so the viewer knows to try again", async () => {
+    const value = { current: undefined as unknown };
+    const send = vi.fn(async () => ({ result: { value: value.current } }));
+    const theme = createClaudeTheme({ send: send as never, pages: () => [PAGE] });
+    value.current = false;
+    expect(await theme.set("dark", false)).toBe(false);
+    value.current = true;
+    expect(await theme.set("dark", false)).toBe(true);
+    expect(
+      await createClaudeTheme({ send: send as never, pages: () => [] }).set("dark", false),
+    ).toBe(false);
+  });
+
   it("follows the viewer's device, not the server's, for automatic", async () => {
     const send = vi.fn(async () => ({}));
     await createClaudeTheme({ send: send as never, pages: () => [PAGE] }).set("auto", true);

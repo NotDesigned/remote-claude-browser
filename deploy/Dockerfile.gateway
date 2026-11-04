@@ -8,6 +8,7 @@ RUN corepack enable \
     && corepack prepare pnpm@9.15.9 --activate
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches patches
 COPY packages/agent/package.json packages/agent/package.json
 COPY packages/gateway/package.json packages/gateway/package.json
 COPY packages/protocol/package.json packages/protocol/package.json

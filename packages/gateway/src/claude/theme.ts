@@ -28,10 +28,11 @@ export function setThemeExpression(theme: ClaudeTheme): string {
   const stored = JSON.stringify(JSON.stringify(theme));
   const mode = JSON.stringify(theme === "auto" ? "system" : theme);
   return `(() => {
-    if (!(${onClaude})) return;
+    if (!(${onClaude})) return false;
     localStorage.setItem(${key}, ${stored});
     window.dispatchEvent(new StorageEvent("storage", { key: ${key}, newValue: ${stored} }));
     document.documentElement.dataset.mode = ${mode};
+    return true;
   })()`;
 }
 
@@ -63,16 +64,18 @@ export function createClaudeTheme(deps: ClaudeThemeDeps) {
   return {
     /** A new page starts from the same device preference; its storage already has the setting. */
     applyMedia,
-    async set(theme: ClaudeTheme, dark: boolean): Promise<void> {
+    /** Resolves to whether a Claude page took the setting; there may not be one open yet. */
+    async set(theme: ClaudeTheme, dark: boolean): Promise<boolean> {
       systemDark = dark;
       wanted = theme;
-      await Promise.allSettled(
-        deps.pages().flatMap((target) => [
+      const results = await Promise.allSettled(
+        deps.pages().map(async (target) => {
           // "Follow the system" means the viewer's device, not this server's.
-          applyMedia(target),
-          evaluate(target, setThemeExpression(theme)),
-        ]),
+          await applyMedia(target);
+          return evaluate(target, setThemeExpression(theme));
+        }),
       );
+      return results.some((result) => result.status === "fulfilled" && result.value === true);
     },
     /** What Claude has now, which the person may have changed under Settings. */
     async read(): Promise<ClaudeTheme | null> {

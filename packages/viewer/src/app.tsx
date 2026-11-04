@@ -260,34 +260,42 @@ export function App() {
     document.documentElement.dataset.theme = theme;
     viewStorage().setItem("mirror.theme", themePreference);
   }, [theme, themePreference]);
-  // The same choice as Claude's Appearance setting: a change on either side reaches the other.
+  // The same choice as Claude's Appearance setting. This page's choice goes first, and is repeated
+  // until a Claude page has taken it. Only then can a change made under Settings come back.
   const themeSid = clientPhase === "ready" ? (clientSession?.sid ?? null) : null;
-  const lastSyncedThemeRef = useRef<ThemePreference | null>(null);
-  useEffect(() => {
-    if (themeSid === null || lastSyncedThemeRef.current === themePreference) return;
-    lastSyncedThemeRef.current = themePreference;
-    void fetch(`/s/${encodeURIComponent(themeSid)}/theme`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ theme: themePreference, systemDark }),
-    }).catch(() => {});
-  }, [themeSid, themePreference, systemDark]);
+  const themeKey = `${themePreference}:${systemDark}`;
+  const syncedThemeRef = useRef<string | null>(null);
   useEffect(() => {
     if (themeSid === null) return;
-    const check = async () => {
+    let active = true;
+    const url = `/s/${encodeURIComponent(themeSid)}/theme`;
+    const sync = async () => {
       if (document.hidden) return;
-      const response = await fetch(`/s/${encodeURIComponent(themeSid)}/theme`);
+      if (syncedThemeRef.current !== themeKey) {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ theme: themePreference, systemDark }),
+        });
+        if (!response.ok) return;
+        const { applied } = (await response.json()) as { applied: boolean };
+        if (active && applied) syncedThemeRef.current = themeKey;
+        return;
+      }
+      const response = await fetch(url);
       if (!response.ok) return;
       const { theme: remote } = (await response.json()) as { theme: ThemePreference | null };
-      if (remote === null || lastSyncedThemeRef.current !== remote) {
-        if (remote === null) return;
-        lastSyncedThemeRef.current = remote;
-        setThemePreference(remote);
-      }
+      if (!active || remote === null || remote === themePreference) return;
+      syncedThemeRef.current = `${remote}:${systemDark}`;
+      setThemePreference(remote);
     };
-    const timer = setInterval(() => void check().catch(() => {}), THEME_CHECK_MS);
-    return () => clearInterval(timer);
-  }, [themeSid]);
+    void sync().catch(() => {});
+    const timer = setInterval(() => void sync().catch(() => {}), THEME_CHECK_MS);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [themeSid, themeKey]);
 
   useEffect(() => {
     const url = new URL(window.location.href);

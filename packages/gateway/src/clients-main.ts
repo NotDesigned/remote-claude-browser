@@ -905,8 +905,8 @@ export async function startClientGateway(): Promise<void> {
       async (request, reply) => {
         const { theme, systemDark } = request.body ?? {};
         if (!isClaudeTheme(theme)) return reply.code(400).send({ error: "未知的外观" });
-        await runtimes.get(sid)?.theme.set(theme, systemDark === true);
-        return reply.code(204).send();
+        const applied = (await runtimes.get(sid)?.theme.set(theme, systemDark === true)) ?? false;
+        return { applied };
       },
     );
     const chat = await registerClaudeChat(app, {
