@@ -80,7 +80,7 @@ export async function startClientGateway(): Promise<void> {
         userDataDir: profile,
         executablePath: process.env.CHROME_PATH,
         headful: process.env.CHROME_HEADFUL === "1",
-        // The display is much larger than a window needs to be outside the pixel view.
+        // Sets the first window. On this display's wide screen it would otherwise be huge.
         args: ["--disable-dev-shm-usage", "--window-size=1050,980"],
       });
   const pool = createClientBrowserPool(browser, {

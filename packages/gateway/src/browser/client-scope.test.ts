@@ -184,6 +184,10 @@ describe("shared-browser client scopes", () => {
     expect(browser.sendBrowser).toHaveBeenCalledWith("Target.createTarget", {
       url: "https://fixture.test",
       newWindow: true,
+      left: 0,
+      top: 0,
+      width: 1050,
+      height: 980,
     });
     expect(new Set(a.targets().map((t) => t.targetId))).toEqual(
       new Set(["created", "child", "nested", "popup"]),

@@ -363,6 +363,11 @@ export function createClientBrowserPool(
       const result = (await rootSend("Target.createTarget", {
         url,
         newWindow: true,
+        // Chromium would offset it from the last active window, which may be in a picture's slot.
+        left: 0,
+        top: 0,
+        width: 1050,
+        height: 980,
         ...(browserContextId ? { browserContextId } : {}),
       })) as {
         targetId?: string;
