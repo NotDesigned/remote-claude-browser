@@ -17,13 +17,41 @@ type ModeMsg = Extract<Up, { t: "mode" }>;
 type PixelFrame = Extract<Down, { t: "px" }>;
 const DEFAULT_COMMAND_TIMEOUT_MS = 3000;
 const DEFAULT_FIRST_FRAME_TIMEOUT_MS = 1500;
+/** Motion stays JPEG for latency; a still page then gets one `sharp` frame made for text. */
+const SHARP_IDLE_MS = 350;
+const SHARP_MIN_INTERVAL_MS = 1_500;
+const SHARP_MAX_INTERVAL_MS = 30_000;
+/** Frames closer than this are real activity, unlike a lone blinking caret. */
+const BURST_GAP_MS = 150;
+/**
+ * Limits are in device pixels and square, so a portrait phone keeps its full width. Chromium only
+ * scales down, so a smaller browser simply gets its own resolution.
+ */
 const CAPTURE_PRESETS: Record<
   PxQuality,
-  { maxWidth: number; maxHeight: number; jpeg: number; everyNthFrame: number }
+  {
+    maxWidth: number;
+    maxHeight: number;
+    jpeg: number;
+    everyNthFrame: number;
+    sharp?: { format: "png" | "webp"; quality?: number };
+  }
 > = {
-  low: { maxWidth: 960, maxHeight: 540, jpeg: 50, everyNthFrame: 3 },
-  medium: { maxWidth: 1600, maxHeight: 900, jpeg: 65, everyNthFrame: 2 },
-  high: { maxWidth: 2560, maxHeight: 1440, jpeg: 80, everyNthFrame: 2 },
+  low: { maxWidth: 1280, maxHeight: 1280, jpeg: 50, everyNthFrame: 3 },
+  medium: {
+    maxWidth: 1920,
+    maxHeight: 1920,
+    jpeg: 65,
+    everyNthFrame: 2,
+    sharp: { format: "webp", quality: 90 },
+  },
+  high: {
+    maxWidth: 3840,
+    maxHeight: 3840,
+    jpeg: 80,
+    everyNthFrame: 2,
+    sharp: { format: "png" },
+  },
 };
 type ScreencastBrowser = Pick<
   BrowserHandle,
@@ -59,6 +87,13 @@ interface TabState {
   generation: number;
   queueGeneration: number;
   firstFrameTimer?: ReturnType<typeof setTimeout>;
+  sharpTimer?: ReturnType<typeof setTimeout>;
+  sharpBackoffMs: number;
+  sharpNotBefore: number;
+  lastSharpInputAt: number;
+  lastFrameAt: number;
+  frameCount: number;
+  lastCastData?: string;
   fallback?: { generation: number; promise: Promise<void> };
   queue: Promise<void>;
   pixelLease?: { releasing: boolean };
@@ -76,15 +111,24 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   const sessions = new Map<string, TabState>();
   // Chosen by the viewer; applies to every tab of this client session.
   let quality: PxQuality = "high";
-  const screencastParams = (state: TabState) => {
+  const screencastParams = () => {
     const preset = CAPTURE_PRESETS[quality];
-    const viewport = state.hub.viewport;
     return {
       format: "jpeg",
       quality: preset.jpeg,
       everyNthFrame: preset.everyNthFrame,
-      maxWidth: Math.min(preset.maxWidth, frameDimension(viewport?.w, preset.maxWidth)),
-      maxHeight: Math.min(preset.maxHeight, frameDimension(viewport?.h, preset.maxHeight)),
+      maxWidth: preset.maxWidth,
+      maxHeight: preset.maxHeight,
+    };
+  };
+  const screenshotClip = (w: number, h: number, dpr: number) => {
+    const preset = CAPTURE_PRESETS[quality];
+    return {
+      x: 0,
+      y: 0,
+      width: w,
+      height: h,
+      scale: Math.min(1, preset.maxWidth / (w * dpr), preset.maxHeight / (h * dpr)),
     };
   };
   const commandTimeoutMs = checkedTimeout(opts.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS);
@@ -109,6 +153,63 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   const clearFirstFrameTimer = (state: TabState): void => {
     if (state.firstFrameTimer !== undefined) clearTimeout(state.firstFrameTimer);
     state.firstFrameTimer = undefined;
+    clearTimeout(state.sharpTimer);
+    state.sharpTimer = undefined;
+  };
+  /** Replaces the last JPEG with a frame fit for reading once the page has stopped changing. */
+  const captureSharp = async (state: TabState, generation: number): Promise<void> => {
+    const sharp = CAPTURE_PRESETS[quality].sharp;
+    const viewport = state.hub.viewport;
+    const seen = state.frameCount;
+    if (!sharp || !viewport || !state.screencasting || state.hub.mode !== "px") return;
+    if (!current(state, generation)) return;
+    try {
+      const shot = (await sendBounded(state, "Page.captureScreenshot", {
+        ...sharp,
+        optimizeForSpeed: true,
+        fromSurface: true,
+        captureBeyondViewport: false,
+        clip: screenshotClip(viewport.w, viewport.h, viewport.dpr),
+      })) as { data?: unknown };
+      // A newer frame means this picture is out of date; that frame schedules its own.
+      if (!current(state, generation) || state.hub.mode !== "px" || state.frameCount !== seen)
+        return;
+      if (typeof shot.data !== "string" || shot.data.length === 0) return;
+      state.lastFrame = {
+        t: "px",
+        tab: state.target.targetId,
+        data: shot.data,
+        w: viewport.w,
+        h: viewport.h,
+      };
+      state.sharpBackoffMs = Math.min(SHARP_MAX_INTERVAL_MS, state.sharpBackoffMs * 2);
+      state.sharpNotBefore = Date.now() + state.sharpBackoffMs;
+      opts.publish(state.lastFrame);
+    } catch (error) {
+      if (current(state, generation)) report(error);
+    }
+  };
+  const noteMotionFrame = (state: TabState): void => {
+    const now = Date.now();
+    // A blinking caret must not cost a full lossless picture every half second, while typing or
+    // scrolling should turn sharp again straight away.
+    if (now - state.lastFrameAt < BURST_GAP_MS || state.hub.lastInputAt > state.lastSharpInputAt) {
+      state.sharpBackoffMs = SHARP_MIN_INTERVAL_MS / 2;
+      state.sharpNotBefore = 0;
+      state.lastSharpInputAt = state.hub.lastInputAt;
+    }
+    state.lastFrameAt = now;
+    state.frameCount++;
+    if (!CAPTURE_PRESETS[quality].sharp) return;
+    const generation = state.generation;
+    state.sharpTimer = setTimeout(
+      () => {
+        state.sharpTimer = undefined;
+        void captureSharp(state, generation);
+      },
+      Math.max(SHARP_IDLE_MS, state.sharpNotBefore - now),
+    );
+    state.sharpTimer.unref?.();
   };
   const invalidate = (state: TabState): boolean => {
     const wasScreencasting = state.screencasting;
@@ -200,13 +301,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
           quality: preset.jpeg,
           fromSurface: true,
           captureBeyondViewport: false,
-          clip: {
-            x: 0,
-            y: 0,
-            width: w,
-            height: h,
-            scale: Math.min(1, preset.maxWidth / (w * dpr), preset.maxHeight / (h * dpr)),
-          },
+          clip: screenshotClip(w, h, dpr),
         })) as { data?: unknown };
         if (!current(state, generation) || state.hub.mode !== "px" || state.lastFrame) return;
         if (typeof screenshot.data !== "string" || screenshot.data.length === 0)
@@ -249,11 +344,15 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       );
 
       if (!state.screencasting) return;
+      // Taking a sharp frame can make Chromium repeat the same picture. It must not replace it.
+      if (state.lastFrame && event.data === state.lastCastData) return;
+      state.lastCastData = event.data;
       const viewport = state.hub.viewport;
       const w = frameDimension(viewport?.w, event.metadata.deviceWidth);
       const h = frameDimension(viewport?.h, event.metadata.deviceHeight);
       state.lastFrame = { t: "px", tab: state.target.targetId, data: event.data, w, h };
       clearFirstFrameTimer(state);
+      noteMotionFrame(state);
       if (state.hub.mode === "px") opts.publish(state.lastFrame);
       // Retain one bounded latest frame for repeated mode requests on static pages.
       // ViewerConn still drops delivery to stalled viewers rather than queueing frames.
@@ -304,7 +403,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
           try {
             await sendBounded(state, "Page.stopScreencast");
             if (!current(state, generation)) return;
-            await sendBounded(state, "Page.startScreencast", screencastParams(state));
+            await sendBounded(state, "Page.startScreencast", screencastParams());
           } catch (error) {
             await returnToDom(state, generation, error);
             return;
@@ -324,7 +423,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       // Until start is confirmed, keep the existing DOM lane available to the viewer.
       state.hub.mode = "dom";
       try {
-        await sendBounded(state, "Page.startScreencast", screencastParams(state));
+        await sendBounded(state, "Page.startScreencast", screencastParams());
       } catch (error) {
         await returnToDom(state, generation, error);
         return;
@@ -369,6 +468,11 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       generation: 0,
       queueGeneration: 0,
       queue: Promise.resolve(),
+      sharpBackoffMs: SHARP_MIN_INTERVAL_MS / 2,
+      sharpNotBefore: 0,
+      lastSharpInputAt: 0,
+      lastFrameAt: 0,
+      frameCount: 0,
     };
     tabs.set(target.targetId, state);
     sessions.set(target.sessionId, state);

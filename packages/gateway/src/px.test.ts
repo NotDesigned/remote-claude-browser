@@ -129,6 +129,67 @@ function recordedHub(): TabHub {
 describe("createScreencast", () => {
   afterEach(() => vi.useRealTimers());
 
+  describe("sharp frames", () => {
+    const setup = async () => {
+      vi.useFakeTimers();
+      const browser = new MockBrowser();
+      browser.respond = async (_session, method) =>
+        method === "Page.captureScreenshot" ? { data: "PNGDATA" } : {};
+      const hub = recordedHub();
+      const published: Down[] = [];
+      const controller = createScreencast({
+        browser,
+        hubFor: () => hub,
+        publish: (message) => published.push(message),
+      });
+      browser.attach({ targetId: "tab-1", sessionId: "cdp-1", type: "page" });
+      await controller.handle({ t: "mode", tab: "tab-1", mode: "px", quality: "high" });
+      const frames = () => published.filter((message) => message.t === "px");
+      const shots = () => browser.calls.filter(({ method }) => method === "Page.captureScreenshot");
+      return { browser, frames, shots, controller };
+    };
+
+    it("sends one lossless frame once the page has been still", async () => {
+      const { browser, frames, shots, controller } = await setup();
+      browser.frame("cdp-1", frame(1, "moving"));
+      expect(frames().at(-1)).toMatchObject({ data: "moving" });
+      await vi.advanceTimersByTimeAsync(349);
+      expect(shots()).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(shots()[0]!.params).toMatchObject({ format: "png", optimizeForSpeed: true });
+      expect(frames().at(-1)).toMatchObject({ data: "PNGDATA", w: 1280, h: 720 });
+
+      // Chromium repeating the same picture must not put the JPEG back.
+      browser.frame("cdp-1", frame(2, "moving"));
+      expect(frames().at(-1)).toMatchObject({ data: "PNGDATA" });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(shots()).toHaveLength(1);
+      controller.dispose();
+    });
+
+    it("waits while the page keeps changing", async () => {
+      const { browser, shots, controller } = await setup();
+      for (let index = 0; index < 5; index++) {
+        browser.frame("cdp-1", frame(index, `moving-${index}`));
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(shots()).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(350);
+      expect(shots()).toHaveLength(1);
+      controller.dispose();
+    });
+
+    it("backs off when only a lone change repeats, like a blinking caret", async () => {
+      const { browser, shots, controller } = await setup();
+      for (let blink = 0; blink < 10; blink++) {
+        browser.frame("cdp-1", frame(blink, `caret-${blink % 2}`));
+        await vi.advanceTimersByTimeAsync(530);
+      }
+      expect(shots().length).toBeLessThanOrEqual(3);
+      controller.dispose();
+    });
+  });
+
   it("captures at the requested detail and restarts only the capture when it changes", async () => {
     const browser = new MockBrowser();
     const hub = new TabHub({ sessionId: "session", tabId: "tab-1" });
@@ -157,7 +218,7 @@ describe("createScreencast", () => {
     expect(capture()).toEqual([
       {
         method: "Page.startScreencast",
-        params: { format: "jpeg", quality: 50, everyNthFrame: 3, maxWidth: 960, maxHeight: 540 },
+        params: { format: "jpeg", quality: 50, everyNthFrame: 3, maxWidth: 1280, maxHeight: 1280 },
       },
     ]);
 
@@ -166,7 +227,7 @@ describe("createScreencast", () => {
       { method: "Page.stopScreencast", params: undefined },
       {
         method: "Page.startScreencast",
-        params: { format: "jpeg", quality: 80, everyNthFrame: 2, maxWidth: 1920, maxHeight: 1080 },
+        params: { format: "jpeg", quality: 80, everyNthFrame: 2, maxWidth: 3840, maxHeight: 3840 },
       },
     ]);
     expect(hub.mode).toBe("px");
@@ -242,8 +303,8 @@ describe("createScreencast", () => {
         format: "jpeg",
         quality: 80,
         everyNthFrame: 2,
-        maxWidth: 1280,
-        maxHeight: 720,
+        maxWidth: 3840,
+        maxHeight: 3840,
       },
     });
 
@@ -465,12 +526,12 @@ describe("createScreencast", () => {
         quality: 80,
         fromSurface: true,
         captureBeyondViewport: false,
-        clip: { x: 0, y: 0, width: 4000, height: 2000, scale: 0.32 },
+        clip: { x: 0, y: 0, width: 4000, height: 2000, scale: 0.48 },
       },
     );
     expect(
       browser.calls.find(({ method }) => method === "Page.startScreencast")?.params,
-    ).toMatchObject({ maxWidth: 2560, maxHeight: 1440 });
+    ).toMatchObject({ maxWidth: 3840, maxHeight: 3840 });
     await vi.advanceTimersByTimeAsync(10000);
     await controller.handle({ t: "mode", tab: "tab-1", mode: "px" });
     expect(browser.calls.filter(({ method }) => method === "Page.captureScreenshot")).toHaveLength(

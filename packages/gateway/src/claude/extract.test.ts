@@ -163,6 +163,64 @@ describe("native chat reads", () => {
     });
   });
 
+  it("keeps a process row's label apart from its detail", () => {
+    const span = (id: string, text: string, previous: unknown) => ({
+      nodeType: 1,
+      tagName: "SPAN",
+      id,
+      previousElementSibling: previous,
+      childNodes: [{ nodeType: 3, textContent: text }],
+      matches: () => false,
+      getAttribute: () => null,
+    });
+    const label = span("a-label", "Running an agent", null);
+    const row = {
+      nodeType: 1,
+      tagName: "DIV",
+      id: "",
+      childNodes: [label, span("a-meta", "Research data", label)],
+      contains: () => false,
+      closest: () => null,
+      getAttribute: () => null,
+      hasAttribute: () => false,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      matches: (selector: string) => selector === '[data-testid="user-message"]',
+    };
+    const state = new Script(CHAT_EXPRESSION).runInNewContext({
+      document: {
+        querySelector: () => null,
+        querySelectorAll: (selector: string) =>
+          selector.includes('[data-testid="user-message"]') ? [row] : [],
+      },
+      location: { href: "https://claude.ai/new", pathname: "/new" },
+      URL,
+    });
+    expect(state.messages[0].text).toBe("Running an agent Research data");
+  });
+
+  it("reads shimmering conversation titles once", () => {
+    const link = {
+      href: "https://claude.ai/chat/a",
+      textContent: "标题标题",
+      querySelector: () => ({}),
+      cloneNode: () => ({
+        textContent: "标题",
+        querySelectorAll: () => [],
+      }),
+    };
+    const state = new Script(CHAT_EXPRESSION).runInNewContext({
+      document: {
+        querySelector: () => null,
+        querySelectorAll: (selector: string) =>
+          selector.includes('a[href^="/chat/"]') ? [link] : [],
+      },
+      location: { href: "https://claude.ai/new", pathname: "/new" },
+      URL,
+    });
+    expect(state.conversations).toEqual([{ path: "/chat/a", title: "标题" }]);
+  });
+
   describe("composer attachments", () => {
     const composer = (name: string, click = vi.fn()) => ({
       click,

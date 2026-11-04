@@ -208,11 +208,15 @@ export function connectGateway(
 function pixelFrame(buffer: ArrayBuffer): Down {
   const frame = decodePxBinary(buffer);
   if (frame === null) throw new Error("Down: unknown binary frame");
+  // Moving pictures are JPEG; a still page gets a PNG or WebP that is sharper for text.
+  const sharp = frame.jpeg[0] !== 0xff;
+  const type = !sharp ? "image/jpeg" : frame.jpeg[0] === 0x89 ? "image/png" : "image/webp";
   return {
     t: "px",
     tab: frame.tab,
     w: frame.w,
     h: frame.h,
-    data: new Blob([frame.jpeg as Uint8Array<ArrayBuffer>], { type: "image/jpeg" }),
+    sharp,
+    data: new Blob([frame.jpeg as Uint8Array<ArrayBuffer>], { type }),
   };
 }

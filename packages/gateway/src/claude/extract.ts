@@ -48,6 +48,8 @@ const MESSAGE_TEXT = String.raw`(element, rich = true) => {
     if (node.tagName === 'CODE' && node.parentElement?.tagName !== 'PRE') return tick + (node.textContent || '') + tick;
     if (node.tagName === 'BR') return '\n';
     const text = [...node.childNodes].map(read).join('');
+    // A process row shows its label and detail side by side, as two adjacent elements.
+    if (/-meta$/.test(node.id || '') && node.previousElementSibling) return ' ' + text;
     if (rich) {
       if (/^H[1-6]$/.test(node.tagName)) return '\n' + '#'.repeat(Number(node.tagName[1])) + ' ' + text.trim() + '\n\n';
       if (node.tagName === 'A') {
@@ -102,7 +104,7 @@ const STATUS_STEPS = String.raw`(element) => [...element.querySelectorAll('[clas
     const header = s.firstElementChild;
     const live = s.querySelector(':scope > [role="status"]');
     const titled = s.querySelector('[data-morph-key]');
-    const summary = ((titled && titled.textContent) || (live && live.textContent) || (header && header.textContent) || '').replace(/[\uE000-\uF8FF]/g, '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    const summary = ((titled && plainText(titled)) || (live && plainText(live)) || (header && plainText(header)) || '').replace(/[\uE000-\uF8FF]/g, '').replace(/\s+/g, ' ').trim().slice(0, 300);
     // Open rows show their detail; many closed rows keep it in a hidden find-in-page layer.
     const hidden = s.querySelector('[data-cds-findable]');
     const text = ([...s.children].filter(c => c !== header && c !== live).map(c => messageText(c, false)).filter(Boolean).join('\n').trim() || (hidden && hidden.textContent) || '').trim().slice(0, 20000);
@@ -131,6 +133,13 @@ export const CHAT_EXPRESSION = String.raw`(() => {
   const candidates = signedOut ? [] : [...document.querySelectorAll(${JSON.stringify(MESSAGE_SELECTOR)})];
   const tops = candidates.filter(e => !candidates.some(p => p !== e && p.contains(e)));
   const messageText = ${MESSAGE_TEXT};
+  // Shimmering text holds a hidden second copy of itself for its animation.
+  const plainText = element => {
+    if (!element.querySelector('[data-cds-shimmer-clone]')) return element.textContent || '';
+    const copy = element.cloneNode(true);
+    copy.querySelectorAll('[data-cds-shimmer-clone]').forEach(clone => clone.remove());
+    return copy.textContent || '';
+  };
   // In the observer's isolated world a cache keeps each message's serialized content until a
   // mutation inside that message marks it dirty, so streaming re-reads only the changing reply.
   const cache = globalThis.${CHAT_CACHE_GLOBAL};
@@ -186,7 +195,7 @@ export const CHAT_EXPRESSION = String.raw`(() => {
     const name = ((remove?.getAttribute('aria-label') || '').replace(/^(remove|删除|移除)\s*/i, '') || tile.textContent || '附件').trim().slice(0, 200);
     return { name, removable: !!remove };
   });
-  const conversations = [...document.querySelectorAll('a[href^="/chat/"]')].map(e => ({path: new URL(e.href).pathname, title: (e.textContent || '').trim().slice(0, 150)})).filter(e => e.title && /^\/chat\/[a-zA-Z0-9-]+$/.test(e.path));
+  const conversations = [...document.querySelectorAll('a[href^="/chat/"]')].map(e => ({path: new URL(e.href).pathname, title: plainText(e).trim().slice(0, 150)})).filter(e => e.title && /^\/chat\/[a-zA-Z0-9-]+$/.test(e.path));
   const stop = [...document.querySelectorAll('button[aria-label], button[data-testid]')].find(e => /stop|停止/i.test((e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-testid') || '')) && visible(e));
   const editorText = ${editableText.toString()};
   const draft = editor ? ('value' in editor ? editor.value : editorText(editor)) : '';

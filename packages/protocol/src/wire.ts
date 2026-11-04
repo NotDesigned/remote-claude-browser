@@ -122,7 +122,7 @@ export type Down =
    * Pixel-fallback frame, viewport-sized. Base64 JPEG inside the gateway; on the wire it travels
    * as a binary frame (see encodePxBinary), which the viewer decodes into a JPEG Blob.
    */
-  | { t: "px"; tab: TabId; data: string | Blob; w: number; h: number }
+  | { t: "px"; tab: TabId; data: string | Blob; w: number; h: number; sharp?: boolean }
   /**
    * One agent -> viewer WebRTC signaling lane. `lane` identifies a single Replayer generation;
    * the gateway delivers it only to the authenticated viewer that opened that lane.

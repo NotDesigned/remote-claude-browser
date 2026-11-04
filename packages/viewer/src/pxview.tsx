@@ -6,6 +6,7 @@
  * Returning to dom removes an owned canvas; P2-PX-G immediately follows the mode message with a
  * canonical join snapshot, which rebuilds a fresh Replayer.
  */
+import { GRID_COLUMNS, changedTiles, type TileGrid } from "./px-tiles";
 import { Mod, type Down, type TabId, type Up } from "@mirror/protocol";
 import { attachPxKeyboard } from "./px-ime";
 import { createTouchMouseFilter } from "./input/pointer";
@@ -100,7 +101,7 @@ export function createPxView(options: PxViewOptions): PxView {
 
 export function paintPxFrame(
   canvas: HTMLCanvasElement,
-  frame: Pick<PxFrame, "data" | "w" | "h">,
+  frame: Pick<PxFrame, "data" | "w" | "h" | "sharp">,
   createImage: () => HTMLImageElement = () => new Image(),
 ): () => void {
   return decodePxFrame(canvas, frame, createImage, () => {});
@@ -112,7 +113,7 @@ function createPxFramePainter(
   createImage: () => HTMLImageElement = () => new Image(),
 ) {
   let disposed = false;
-  let pending: Pick<PxFrame, "data" | "w" | "h"> | null = null;
+  let pending: Pick<PxFrame, "data" | "w" | "h" | "sharp"> | null = null;
   let active: { cancel: () => void } | null = null;
 
   const drain = () => {
@@ -129,9 +130,9 @@ function createPxFramePainter(
   };
 
   return {
-    enqueue(frame: Pick<PxFrame, "data" | "w" | "h">) {
+    enqueue(frame: Pick<PxFrame, "data" | "w" | "h" | "sharp">) {
       if (disposed) return;
-      pending = { data: frame.data, w: frame.w, h: frame.h };
+      pending = { data: frame.data, w: frame.w, h: frame.h, sharp: frame.sharp };
       drain();
     },
     dispose() {
@@ -143,9 +144,33 @@ function createPxFramePainter(
   };
 }
 
+const logicalSizes = new WeakMap<HTMLCanvasElement, { width: number; height: number }>();
+const sharpGrids = new WeakMap<HTMLCanvasElement, TileGrid>();
+
+/** The page's size in CSS pixels, which pointer coordinates are expressed in. */
+function logicalSize(canvas: HTMLCanvasElement): { width: number; height: number } {
+  return logicalSizes.get(canvas) ?? { width: canvas.width, height: canvas.height };
+}
+
+function imageGrid(canvas: HTMLCanvasElement, image: HTMLImageElement): TileGrid | null {
+  try {
+    const columns = GRID_COLUMNS;
+    const rows = Math.max(1, Math.round((columns * image.naturalHeight) / image.naturalWidth));
+    const small = canvas.ownerDocument.createElement("canvas");
+    small.width = columns;
+    small.height = rows;
+    const context = small.getContext("2d", { willReadFrequently: true });
+    if (!context) return null;
+    context.drawImage(image, 0, 0, columns, rows);
+    return { columns, rows, pixels: context.getImageData(0, 0, columns, rows).data };
+  } catch {
+    return null;
+  }
+}
+
 function decodePxFrame(
   canvas: HTMLCanvasElement,
-  frame: Pick<PxFrame, "data" | "w" | "h">,
+  frame: Pick<PxFrame, "data" | "w" | "h" | "sharp">,
   createImage: () => HTMLImageElement,
   settled: () => void,
 ): () => void {
@@ -174,11 +199,36 @@ function decodePxFrame(
     try {
       // Resizing clears the canvas, even when assigned its current dimensions. Keep the last
       // painted frame until a replacement is decoded, then resize and draw in the same task.
-      const width = positiveDimension(frame.w);
-      const height = positiveDimension(frame.h);
-      if (canvas.width !== width) canvas.width = width;
-      if (canvas.height !== height) canvas.height = height;
-      context.drawImage(image, 0, 0, width, height);
+      // The canvas holds every device pixel received; page coordinates stay in `frame.w`/`h`.
+      logicalSizes.set(canvas, {
+        width: positiveDimension(frame.w),
+        height: positiveDimension(frame.h),
+      });
+      const width = positiveDimension(image.naturalWidth || frame.w);
+      const height = positiveDimension(image.naturalHeight || frame.h);
+      const previous =
+        canvas.width === width && canvas.height === height ? sharpGrids.get(canvas) : undefined;
+      const grid = previous || frame.sharp ? imageGrid(canvas, image) : null;
+      const tiles = !frame.sharp && previous && grid ? changedTiles(previous, grid) : null;
+      if (tiles && tiles.length <= (grid!.columns * grid!.rows) / 4) {
+        // A small change, such as a blinking caret, leaves the sharp picture around it intact.
+        const tileWidth = width / grid!.columns;
+        const tileHeight = height / grid!.rows;
+        for (const { column, row } of tiles) {
+          const x = Math.floor(column * tileWidth);
+          const y = Math.floor(row * tileHeight);
+          const w = Math.ceil(tileWidth);
+          const h = Math.ceil(tileHeight);
+          context.drawImage(image, x, y, w, h, x, y, w, h);
+        }
+        sharpGrids.set(canvas, grid!);
+      } else {
+        if (canvas.width !== width) canvas.width = width;
+        if (canvas.height !== height) canvas.height = height;
+        context.drawImage(image, 0, 0, width, height);
+        if (frame.sharp && grid) sharpGrids.set(canvas, grid);
+        else sharpGrids.delete(canvas);
+      }
     } finally {
       complete();
     }
@@ -305,11 +355,11 @@ export function attachPxInput(options: PxInputOptions): () => void {
         shiftKey: event.shiftKey,
         deltaX:
           rect.width > 0
-            ? ((current.lastX - point.clientX) * options.canvas.width) / rect.width
+            ? ((current.lastX - point.clientX) * logicalSize(options.canvas).width) / rect.width
             : 0,
         deltaY:
           rect.height > 0
-            ? ((current.lastY - point.clientY) * options.canvas.height) / rect.height
+            ? ((current.lastY - point.clientY) * logicalSize(options.canvas).height) / rect.height
             : 0,
       },
       "wheel",
@@ -417,9 +467,10 @@ function rawCanvasPoint(
   event: Pick<MouseEvent, "clientX" | "clientY">,
 ): { vx: number; vy: number } {
   const rect = canvas.getBoundingClientRect();
+  const size = logicalSize(canvas);
   return {
-    vx: scalePoint(event.clientX - rect.left, rect.width, canvas.width),
-    vy: scalePoint(event.clientY - rect.top, rect.height, canvas.height),
+    vx: scalePoint(event.clientX - rect.left, rect.width, size.width),
+    vy: scalePoint(event.clientY - rect.top, rect.height, size.height),
   };
 }
 
