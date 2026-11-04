@@ -74,6 +74,8 @@ export class TabHub {
   private readonly rewrite: RewriteStage;
   private readonly needSnapshotListeners = new Set<NeedSnapshotListener>();
   private hasDocument = false;
+  /** Browser zoom the pixel view is using; the page sees the same geometry either way. */
+  pixelZoom = 1;
   private snapshotRequested = false;
   /** The recorder was stopped for native chat, so the cached snapshot no longer matches the page. */
   private recorderPaused = false;

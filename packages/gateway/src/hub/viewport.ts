@@ -19,6 +19,7 @@ export type ViewportMsg = Extract<Up, { t: "view" } | { t: "view-ack" }>;
 export interface ViewportHub {
   viewport: { w: number; h: number; dpr: number } | null;
   epoch?: number;
+  pixelZoom?: number;
   requestSnapshot(reason: SnapshotReason): void;
   hasGeometry?(w: number, h: number): boolean;
   expectRecorderSnapshot?(reason: SnapshotReason): boolean;
@@ -292,10 +293,12 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
 
     state.applying = true;
     try {
+      // At a browser zoom the window is larger and the page still lays out at the same size.
+      const zoom = hub.pixelZoom ?? 1;
       await deps.send(sessionId, "Emulation.setDeviceMetricsOverride", {
-        width: desired.w,
-        height: desired.h,
-        deviceScaleFactor: desired.dpr,
+        width: Math.round(desired.w * zoom),
+        height: Math.round(desired.h * zoom),
+        deviceScaleFactor: zoom > 1 ? 1 : desired.dpr,
         mobile: false,
       });
       if (!current(tabId, state)) return;

@@ -26,6 +26,7 @@ import { createNavigationController } from "./browser/nav";
 import { createRendererRecovery } from "./browser/recovery";
 import { createDownloadManager, registerDownloadRoutes } from "./downloads";
 import { createUploadManager, registerUploadRoutes } from "./uploads";
+import { createBrowserZoom } from "./browser/browser-zoom";
 import { createViewportAgreement } from "./hub/viewport";
 import { createInputRelay, type InputMsg } from "./input/relay";
 import { createScreencast } from "./px";
@@ -517,6 +518,7 @@ export async function startClientGateway(): Promise<void> {
       isDriver: (id) => roles.isDriver(id) && viewers.get(id)?.sid === sid,
       allowsInput: (id, tab) => viewport.gate.allowsInput(id, tab),
       noteInput: (tab) => tabs.hubFor(tab)?.noteInput(),
+      wheelScale: (tab) => tabs.hubFor(tab)?.pixelZoom ?? 1,
       viewportFor: (tab) => viewport.viewportFor(tab),
     });
     scoped.onSessionEvent("Page.frameNavigated", (sessionId, event) => {
@@ -527,6 +529,16 @@ export async function startClientGateway(): Promise<void> {
       if (page) input.resetTab(page.targetId);
     });
     const navigation = createNavigationController(scoped, (message) => publish(sid, message));
+    const browserZoom = createBrowserZoom({
+      evaluate: async (session, expression) => {
+        const result = (await scoped.send(session, "Runtime.evaluate", {
+          expression,
+          returnByValue: true,
+          silent: true,
+        })) as { result?: { value?: unknown } };
+        return result.result?.value;
+      },
+    });
     const pixels = createScreencast({
       browser: scoped,
       hubFor: (tab) => tabs.hubFor(tab),
@@ -538,6 +550,7 @@ export async function startClientGateway(): Promise<void> {
           (connection) =>
             connection.sid === sid && connection.viewer.socket.bufferedAmount > VIDEO_BACKLOG_BYTES,
         ),
+      browserZoom,
       onError: (error) => report("client picture failed", error),
     });
     recovery = createRendererRecovery({
@@ -865,6 +878,11 @@ export async function startClientGateway(): Promise<void> {
       onNativeViewport: async (tab) => {
         const runtime = runtimes.get(sid);
         if (!runtime) return;
+        // Chat reads the page itself, and the picture's browser zoom must not stay behind.
+        if (runtime.pixels.modeFor(tab) === "px")
+          await runtime.pixels
+            .handle({ t: "mode", tab, mode: "dom" })
+            .catch((error) => report("client picture stop failed", error));
         runtime.viewport.resetTab(tab);
         // Chat overrides a narrower viewport with its desktop layout, so that geometry is gone.
         const hub = runtime.tabs.hubFor(tab);

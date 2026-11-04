@@ -13,6 +13,7 @@ import type { Down, PxQuality, Up } from "@mirror/protocol";
 import type { BrowserHandle } from "./browser/launch";
 import type { TabHub } from "./hub/tabhub";
 import type { TargetRef } from "./types";
+import { zoomLevelFor, type BrowserZoom } from "./browser/browser-zoom";
 import { createFfmpegEncoder, type VideoEncoder, type VideoEncoderFactory } from "./px-video";
 
 type ModeMsg = Extract<Up, { t: "mode" }>;
@@ -25,6 +26,8 @@ const SHARP_MIN_INTERVAL_MS = 1_500;
 const SHARP_MAX_INTERVAL_MS = 30_000;
 /** Frames closer than this are real activity, unlike a lone blinking caret. */
 const BURST_GAP_MS = 150;
+const ZOOM_SETTLE_MS = 1_500;
+const ZOOM_POLL_MS = 50;
 const VIDEO_QUIET_MS = 40;
 const VIDEO_FLUSH_GAP_MS = 5;
 const VIDEO_FLUSH_FRAMES = 3;
@@ -85,6 +88,8 @@ export interface ScreencastOpts {
   /** A viewer cannot keep up, so frames should wait rather than be encoded and queued. */
   backlogged?(): boolean;
   createVideoEncoder?: VideoEncoderFactory;
+  /** Lets the highest quality reach device resolution; without it frames stop at CSS pixels. */
+  browserZoom?: BrowserZoom;
   /** Supply both hooks to track pixel ownership. Acquisition must be synchronous. */
   acquirePixel?(tabId: string): boolean;
   /** Called after stop completes or its bounded deadline, including reset/dispose paths. */
@@ -124,6 +129,7 @@ interface TabState {
   lastSharpAt: number;
   sharpInFlight: boolean;
   video?: VideoStream;
+  zoomChanging?: boolean;
   videoSeq: number;
   lastJpeg?: Buffer;
   frameCount: number;
@@ -148,6 +154,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   let videoWanted = false;
   // ffmpeg is missing or keeps failing: this session stays on JPEG frames.
   let videoBroken = false;
+  let zoomBroken = false;
   const screencastParams = () => {
     const preset = CAPTURE_PRESETS[quality];
     const video = videoWanted && !videoBroken;
@@ -158,6 +165,65 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       maxWidth: preset.maxWidth,
       maxHeight: preset.maxHeight,
     };
+  };
+  const zoomWanted = (state: TabState): number => {
+    const viewport = state.hub.viewport;
+    if (!viewport || !opts.browserZoom || zoomBroken || videoBroken) return 1;
+    if (!videoWanted || quality !== "high") return 1;
+    return zoomLevelFor(viewport.dpr, viewport.w, viewport.h);
+  };
+  const applyMetrics = async (state: TabState, zoom: number): Promise<void> => {
+    const viewport = state.hub.viewport;
+    if (!viewport) return;
+    await sendBounded(state, "Emulation.setDeviceMetricsOverride", {
+      width: Math.round(viewport.w * zoom),
+      height: Math.round(viewport.h * zoom),
+      deviceScaleFactor: zoom > 1 ? 1 : viewport.dpr,
+      mobile: false,
+    });
+  };
+  const pageDensity = async (state: TabState): Promise<number> => {
+    const result = (await sendBounded(state, "Runtime.evaluate", {
+      expression: "window.devicePixelRatio",
+      returnByValue: true,
+      silent: true,
+    })) as { result?: { value?: unknown } };
+    return Number(result.result?.value);
+  };
+  /** A page at the wanted zoom reports it as its density, as the window has a density of 1. */
+  const zoomTookEffect = async (state: TabState, zoom: number): Promise<boolean> => {
+    for (let waited = 0; waited < ZOOM_SETTLE_MS; waited += ZOOM_POLL_MS) {
+      if (Math.abs((await pageDensity(state)) - zoom) < 0.01) return true;
+      await new Promise((resolve) => setTimeout(resolve, ZOOM_POLL_MS));
+    }
+    return false;
+  };
+  /** Moves the page to a browser zoom. Its layout and reported density stay the same throughout. */
+  const syncZoom = async (state: TabState, zoom: number): Promise<void> => {
+    if (!opts.browserZoom || zoom === state.hub.pixelZoom) return;
+    try {
+      state.hub.pixelZoom = zoom;
+      await applyMetrics(state, zoom);
+      await opts.browserZoom.press(state.target, zoom);
+      if (zoom > 1 && !(await zoomTookEffect(state, zoom)))
+        throw new Error(`Browser zoom ${zoom} did not take effect`);
+    } catch (error) {
+      if (zoom > 1) {
+        // Without the zoom the larger window would show a tiny page, so undo all of it.
+        zoomBroken = true;
+        state.hub.pixelZoom = 1;
+        await applyMetrics(state, 1).catch(report);
+        await opts.browserZoom.press(state.target, 1).catch(() => {});
+      }
+      report(error);
+    }
+  };
+  /** Zoom belongs to a site, so a page on another site starts over at 100%. */
+  const reassertZoom = async (state: TabState): Promise<void> => {
+    const zoom = state.hub.pixelZoom;
+    if (!opts.browserZoom || zoom <= 1 || !current(state)) return;
+    if (Math.abs((await pageDensity(state)) - zoom) < 0.01) return;
+    await opts.browserZoom.press(state.target, zoom);
   };
   const screenshotClip = (w: number, h: number, dpr: number) => {
     const preset = CAPTURE_PRESETS[quality];
@@ -213,7 +279,10 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
         optimizeForSpeed: true,
         fromSurface: true,
         captureBeyondViewport: false,
-        clip: screenshotClip(viewport.w, viewport.h, viewport.dpr),
+        // A clip is measured in CSS pixels at scale 1, which would undo the zoom's resolution.
+        ...(state.hub.pixelZoom > 1
+          ? {}
+          : { clip: screenshotClip(viewport.w, viewport.h, viewport.dpr) }),
       })) as { data?: unknown };
       // On a still page a newer frame means this picture is out of date and schedules its own.
       // On a moving page the viewer patches whatever keeps changing back over it.
@@ -298,7 +367,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     const video = state.video;
     if (!video || !state.lastJpeg) return;
     // A frame dropped here costs nothing; one dropped after encoding would break the decoder.
-    if (!opts.backlogged?.()) video.encoder.write(state.lastJpeg);
+    if (!opts.backlogged?.() && !video.encoder.busy?.()) video.encoder.write(state.lastJpeg);
     flushVideo(state, video, VIDEO_FLUSH_FRAMES);
   };
   /** A viewer that joined or lost its place needs a new stream beginning with a keyframe. */
@@ -324,7 +393,8 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     const generation = state.generation;
     const whenStill = Math.max(now + SHARP_IDLE_MS, state.sharpNotBefore);
     const motionDue = state.lastSharpAt + SHARP_MOTION_INTERVAL_MS;
-    const duringMotion = bursting && motionDue < whenStill;
+    // At device resolution moving frames already look like still ones.
+    const duringMotion = bursting && motionDue < whenStill && state.hub.pixelZoom <= 1;
     state.sharpTimer = setTimeout(
       () => {
         state.sharpTimer = undefined;
@@ -395,6 +465,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     } catch (cause) {
       if (current(state, restoredGeneration)) report(cause);
     }
+    await syncZoom(state, 1);
   };
   const ensureFirstFrame = (state: TabState, generation: number): Promise<void> => {
     if (!current(state, generation) || !state.screencasting || state.lastFrame)
@@ -469,6 +540,20 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       );
 
       if (!state.screencasting) return;
+      // The viewer's density can change while casting, for example on another monitor.
+      if (
+        state.hub.mode === "px" &&
+        !state.zoomChanging &&
+        zoomWanted(state) !== state.hub.pixelZoom
+      ) {
+        state.zoomChanging = true;
+        state.queue = state.queue
+          .then(() => applyMode(state, "px", true))
+          .catch(report)
+          .finally(() => {
+            state.zoomChanging = false;
+          });
+      }
       // Taking a sharp frame can make Chromium repeat the same picture. It must not replace it.
       if (state.lastFrame && event.data === state.lastCastData) return;
       state.lastCastData = event.data;
@@ -497,6 +582,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
           clearFirstFrameTimer(state);
           state.fallback = undefined;
           delete state.lastFrame;
+          state.queue = state.queue.then(() => reassertZoom(state)).catch(report);
           if (state.screencasting && state.hub.mode === "px") {
             watchFirstFrame(state, state.generation);
           } else if (state.screencasting) {
@@ -532,6 +618,8 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
           try {
             await sendBounded(state, "Page.stopScreencast");
             if (!current(state, generation)) return;
+            await syncZoom(state, zoomWanted(state));
+            if (!current(state, generation)) return;
             await sendBounded(state, "Page.startScreencast", screencastParams());
           } catch (error) {
             await returnToDom(state, generation, error);
@@ -545,6 +633,8 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
         restartVideo(state);
         return;
       }
+      await syncZoom(state, zoomWanted(state));
+      if (!current(state)) return;
       const generation = ++state.generation;
       clearFirstFrameTimer(state);
       state.fallback = undefined;
@@ -578,6 +668,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     if (state?.target.sessionId !== target.sessionId) return;
     tabs.delete(target.targetId);
     sessions.delete(target.sessionId);
+    opts.browserZoom?.forget(target.targetId);
     stopQuietly(state, invalidate(state));
   });
 

@@ -19,9 +19,13 @@ export interface VideoEncoderEvents {
 }
 
 export interface VideoEncoder {
+  /** Frames have piled up in front of the encoder; a new one would only add delay. */
+  busy?(): boolean;
   write(jpeg: Buffer): void;
   close(): void;
 }
+
+const MAX_QUEUED_INPUT_BYTES = 1024 * 1024;
 
 export type VideoEncoderFactory = (crf: number, events: VideoEncoderEvents) => VideoEncoder;
 
@@ -75,7 +79,7 @@ export function ffmpegArguments(crf: number): string[] {
       "scale=trunc(iw/2)*2:trunc(ih/2)*2:out_range=tv:out_color_matrix=bt709,format=yuv420p",
     ],
     ...["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-crf", String(crf)],
-    ...["-threads", "2", "-g", "600", "-bf", "0", "-fps_mode", "passthrough"],
+    ...["-threads", "3", "-g", "600", "-bf", "0", "-fps_mode", "passthrough"],
     ...["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709"],
     ...["-color_trc", "bt709"],
     ...["-flush_packets", "1", "-f", "mp4"],
@@ -110,6 +114,7 @@ export const createFfmpegEncoder: VideoEncoderFactory = (crf, events) => {
   process.on("error", fail);
   process.on("exit", (code) => fail(new Error(`ffmpeg exited with ${code}: ${lastError}`)));
   return {
+    busy: () => process.stdin.writableLength > MAX_QUEUED_INPUT_BYTES,
     write(jpeg) {
       if (!closed && process.stdin.writable) process.stdin.write(jpeg);
     },

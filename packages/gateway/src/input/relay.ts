@@ -28,6 +28,8 @@ export interface InputRelayDeps {
   /** Accepted activity delays routine trim snapshots without coupling the relay to TabHub. */
   noteInput(tabId: string): void;
   /** Current negotiated CSS-pixel viewport, used to clamp live rect coordinates. */
+  /** Browser zoom divides scroll distances, unlike pointer coordinates. */
+  wheelScale?(tabId: string): number;
   viewportFor(tabId: string): { w: number; h: number } | undefined;
   rectTimeoutMs?: number;
   onValueStatus?(tabId: string, failed: boolean): void;
@@ -222,8 +224,8 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
           ...common,
           type: "mouseWheel",
           button: "none",
-          deltaX: finiteOr(msg.dx, 0),
-          deltaY: finiteOr(msg.dy, 0),
+          deltaX: finiteOr(msg.dx, 0) * (deps.wheelScale?.(msg.tab) ?? 1),
+          deltaY: finiteOr(msg.dy, 0) * (deps.wheelScale?.(msg.tab) ?? 1),
         });
         return true;
       case "down":

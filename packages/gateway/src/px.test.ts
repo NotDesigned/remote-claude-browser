@@ -130,6 +130,87 @@ function recordedHub(): TabHub {
 describe("createScreencast", () => {
   afterEach(() => vi.useRealTimers());
 
+  describe("browser zoom", () => {
+    const setup = async (dpr: number, density = () => dpr) => {
+      vi.useFakeTimers();
+      const browser = new MockBrowser();
+      browser.respond = async (_session, method) =>
+        method === "Runtime.evaluate" ? { result: { value: density() } } : {};
+      const hub = recordedHub();
+      hub.viewport = { w: 1440, h: 900, dpr };
+      const pressed: number[] = [];
+      const errors: unknown[] = [];
+      const published: Down[] = [];
+      const controller = createScreencast({
+        browser,
+        hubFor: () => hub,
+        publish: (message) => published.push(message),
+        onError: (error) => errors.push(error),
+        createVideoEncoder: () => ({ write: () => {}, close: () => {} }),
+        browserZoom: {
+          press: async (_target, level) => void pressed.push(level),
+          forget: () => {},
+        },
+      });
+      browser.attach({ targetId: "tab-1", sessionId: "cdp-1", type: "page" });
+      const metrics = () =>
+        browser.calls
+          .filter(({ method }) => method === "Emulation.setDeviceMetricsOverride")
+          .map(({ params }) => params);
+      return { browser, hub, pressed, errors, metrics, controller };
+    };
+    const px = { t: "mode", tab: "tab-1", mode: "px", quality: "high", video: true } as const;
+
+    it("widens the window and zooms a high-density page to reach device resolution", async () => {
+      const { hub, pressed, metrics, controller } = await setup(2);
+      await controller.handle(px);
+      expect(pressed).toEqual([2]);
+      expect(hub.pixelZoom).toBe(2);
+      expect(metrics()).toEqual([
+        { width: 2880, height: 1800, deviceScaleFactor: 1, mobile: false },
+      ]);
+      controller.dispose();
+    });
+
+    it("restores the window and zoom when leaving the picture", async () => {
+      const { hub, pressed, metrics, controller } = await setup(2);
+      await controller.handle(px);
+      await controller.handle({ t: "mode", tab: "tab-1", mode: "dom" });
+      expect(pressed).toEqual([2, 1]);
+      expect(hub.pixelZoom).toBe(1);
+      expect(metrics().at(-1)).toEqual({
+        width: 1440,
+        height: 900,
+        deviceScaleFactor: 2,
+        mobile: false,
+      });
+      controller.dispose();
+    });
+
+    it("leaves a normal display and lower qualities alone", async () => {
+      const normal = await setup(1);
+      await normal.controller.handle(px);
+      expect(normal.pressed).toEqual([]);
+      normal.controller.dispose();
+      const medium = await setup(2);
+      await medium.controller.handle({ ...px, quality: "medium" });
+      expect(medium.pressed).toEqual([]);
+      medium.controller.dispose();
+    });
+
+    it("gives up on zoom and restores the page when it has no effect", async () => {
+      const { hub, pressed, errors, metrics, controller } = await setup(2, () => 1);
+      const started = controller.handle(px);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await started;
+      expect(hub.pixelZoom).toBe(1);
+      expect(pressed).toEqual([2, 1]);
+      expect(metrics().at(-1)).toMatchObject({ width: 1440, deviceScaleFactor: 2 });
+      expect(String(errors[0])).toContain("did not take effect");
+      controller.dispose();
+    });
+  });
+
   describe("video frames", () => {
     const setup = async (backlogged = () => false) => {
       vi.useFakeTimers();
