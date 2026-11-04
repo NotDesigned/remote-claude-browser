@@ -198,6 +198,25 @@ describe("shared-browser client scopes", () => {
     pool.dispose();
   });
 
+  it("opens each window where an edge of it stays visible, left of the picture slots", async () => {
+    const browser = new FakeBrowser(),
+      pool = createClientBrowserPool(browser),
+      a = pool.scope("a");
+    let created = 0;
+    browser.create = async () => {
+      const targetId = `created-${created++}`;
+      browser.attach(page(targetId));
+      return { targetId };
+    };
+    await a.sendBrowser!("Target.createTarget", { url: "about:blank" });
+    await a.sendBrowser!("Target.createTarget", { url: "about:blank" });
+    expect(browser.sendBrowser).toHaveBeenLastCalledWith(
+      "Target.createTarget",
+      expect.objectContaining({ left: 10, top: 10 }),
+    );
+    pool.dispose();
+  });
+
   it("lets a client move only its own window", async () => {
     const browser = new FakeBrowser(),
       pool = createClientBrowserPool(browser),

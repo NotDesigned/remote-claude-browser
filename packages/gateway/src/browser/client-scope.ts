@@ -44,6 +44,9 @@ interface ScopeState {
 }
 
 const CREATE_ATTACH_TIMEOUT_MS = 10_000;
+/** Fits every new window in the part of the screen left of the picture slots. */
+const WINDOW_OFFSET_STEP = 10;
+const WINDOW_OFFSETS = 24;
 
 export interface ClientBrowserPoolOptions {
   /** Separate website storage while bootstrapping each context from the saved login cookies. */
@@ -67,6 +70,7 @@ export function createClientBrowserPool(
   const targets = new Map<string, TargetRef>();
   const sessions = new Map<string, string>();
   const infos = new Map<string, BrowserTargetInfo>();
+  let openedWindows = 0;
   const owners = new Map<string, string>();
   // A createTarget acknowledgement reserves a page even before its flat session attaches.
   const createdRoots = new Set<string>();
@@ -360,12 +364,14 @@ export function createClientBrowserPool(
     const createPage = async (url: string): Promise<unknown> => {
       // Force an independent window rather than another background tab in a client's window.
       const browserContextId = options.isolatedStorage ? await contextForScope() : undefined;
+      const offset = (openedWindows++ % WINDOW_OFFSETS) * WINDOW_OFFSET_STEP;
       const result = (await rootSend("Target.createTarget", {
         url,
         newWindow: true,
         // Chromium would offset it from the last active window, which may be in a picture's slot.
-        left: 0,
-        top: 0,
+        // Each keeps an edge showing, as Chromium stops drawing a window that is fully covered.
+        left: offset,
+        top: offset,
         width: 1050,
         height: 980,
         ...(browserContextId ? { browserContextId } : {}),

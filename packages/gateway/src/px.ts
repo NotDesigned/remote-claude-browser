@@ -533,12 +533,20 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   /** Puts the window on the display and starts reading it. Throws if any of that fails. */
   const beginGrab = async (state: TabState): Promise<void> => {
     state.hub.pixelGrabbing = true;
-    await syncZoom(state, zoomWanted(state));
-    const zoom = state.hub.pixelZoom;
-    await applyMetrics(state, zoom);
     const viewport = state.hub.viewport!;
-    const { width, height } = grabSize(viewport.w, viewport.h, zoom);
-    await opts.grab!.window.place(state.target.targetId, state.grabLeft!, width, height);
+    const left = state.grabLeft!;
+    const target = state.target.targetId;
+    const wanted = zoomWanted(state);
+    const place = (zoom: number) => {
+      const { width, height } = grabSize(viewport.w, viewport.h, zoom);
+      return opts.grab!.window.place(target, left, width, height);
+    };
+    // First, as a covered window would not answer the page commands below.
+    await place(wanted);
+    await syncZoom(state, wanted);
+    const zoom = state.hub.pixelZoom;
+    if (zoom !== wanted) await place(zoom);
+    await applyMetrics(state, zoom);
     // The tab left the pixel view during that, and already gave its slot back.
     if (state.grabLeft === undefined) {
       await opts.grab!.window.restore(state.target.targetId);
