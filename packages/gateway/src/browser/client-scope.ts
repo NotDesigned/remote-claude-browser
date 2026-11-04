@@ -39,6 +39,8 @@ interface ScopeState {
   closePromise?: Promise<void>;
   context?: Promise<string>;
   initialCookies?: Map<string, string>;
+  /** The newest login value this session has held or been offered. */
+  loginSeen?: string;
 }
 
 const CREATE_ATTACH_TIMEOUT_MS = 10_000;
@@ -52,8 +54,10 @@ export interface ClientBrowserPoolOptions {
    * session sitting on a sign-in or forced-logout page must never overwrite everyone's login.
    */
   canPersistCookies?(sid: string): boolean;
-  /** Periodically copy refreshed login cookies of healthy sessions to the shared store. */
+  /** How often signed-in sessions share a new or refreshed login with all the others. */
   cookieSyncIntervalMs?: number;
+  /** A session just received another session's login; pages on sign-in screens should leave. */
+  onLoginShared?(sid: string): void;
 }
 
 export function createClientBrowserPool(
@@ -175,7 +179,9 @@ export function createClientBrowserPool(
       cookies?: Record<string, unknown>[];
     };
     const current = cookieParameters(saved.cookies ?? []);
-    if (!hasLoginCookie(current)) return false;
+    const login = loginValue(current);
+    if (login === undefined) return false;
+    state.loginSeen = login;
     const changed = current.filter(
       (cookie) => state.initialCookies?.get(cookieIdentity(cookie)) !== JSON.stringify(cookie),
     );
@@ -186,14 +192,51 @@ export function createClientBrowserPool(
     return true;
   }
 
+  /**
+   * Everyone shares one Claude login: hand the shared login to any open session that has not
+   * been offered this value yet. Offering a value only once stops a dead token from being pushed
+   * again after it logged a session out.
+   */
+  async function distributeLogin(): Promise<void> {
+    const saved = (await poolSend("Storage.getCookies")) as {
+      cookies?: Record<string, unknown>[];
+    };
+    const shared = cookieParameters(saved.cookies ?? []);
+    const login = loginValue(shared);
+    if (login === undefined) return;
+    for (const [sid, state] of scopes) {
+      if (state.disposed || state.closing || !state.context || state.loginSeen === login) continue;
+      const id = await state.context.catch(() => undefined);
+      if (!id) continue;
+      state.loginSeen = login;
+      const own = (await poolSend("Storage.getCookies", { browserContextId: id })) as {
+        cookies?: Record<string, unknown>[];
+      };
+      if (loginValue(cookieParameters(own.cookies ?? [])) === login) continue;
+      const site = shared.filter(isSiteCookie);
+      await poolSend("Storage.setCookies", { browserContextId: id, cookies: site });
+      for (const cookie of site)
+        state.initialCookies?.set(cookieIdentity(cookie), JSON.stringify(cookie));
+      options.onLoginShared?.(sid);
+    }
+  }
+
+  let cookieSyncRunning = false;
   const cookieSyncTimer =
     options.isolatedStorage && options.canPersistCookies
       ? setInterval(() => {
-          for (const [sid, state] of scopes) {
-            if (state.disposed || state.closing || !options.canPersistCookies!(sid)) continue;
-            void persistScopeCookies(state).catch(() => undefined);
-          }
-        }, options.cookieSyncIntervalMs ?? 30_000)
+          if (cookieSyncRunning) return;
+          cookieSyncRunning = true;
+          void (async () => {
+            for (const [sid, state] of scopes) {
+              if (state.disposed || state.closing || !options.canPersistCookies!(sid)) continue;
+              await persistScopeCookies(state).catch(() => undefined);
+            }
+            await distributeLogin().catch(() => undefined);
+          })().finally(() => {
+            cookieSyncRunning = false;
+          });
+        }, options.cookieSyncIntervalMs ?? 5_000)
       : undefined;
   cookieSyncTimer?.unref?.();
 
@@ -277,6 +320,7 @@ export function createClientBrowserPool(
           state.initialCookies = new Map(
             cookies.map((cookie) => [cookieIdentity(cookie), JSON.stringify(cookie)]),
           );
+          state.loginSeen = loginValue(cookies);
           if (cookies.length)
             await rootSend("Storage.setCookies", { browserContextId: id, cookies });
           if (options.downloadDir)
@@ -544,19 +588,35 @@ function cookieParameters(cookies: Record<string, unknown>[]): Record<string, un
   );
 }
 
-/** A context still logged in to the site keeps a session cookie; a forced logout clears it. */
-function hasLoginCookie(cookies: Record<string, unknown>[]): boolean {
-  return cookies.some(
-    (cookie) =>
-      typeof cookie.name === "string" &&
-      /session/i.test(cookie.name) &&
-      typeof cookie.value === "string" &&
-      cookie.value.length > 0 &&
-      typeof cookie.domain === "string" &&
-      /(^|\.)claude\.ai$/i.test(cookie.domain),
-  );
+function isSiteCookie(cookie: Record<string, unknown>): boolean {
+  return typeof cookie.domain === "string" && /(^|\.)claude\.ai$/i.test(cookie.domain);
+}
+
+/** The site's login token; a forced logout clears it. Undefined means signed out. */
+function loginValue(cookies: Record<string, unknown>[]): string | undefined {
+  const cookie = cookies.find((item) => item.name === "sessionKey" && isSiteCookie(item));
+  return typeof cookie?.value === "string" && cookie.value !== "" ? cookie.value : undefined;
 }
 
 function cookieIdentity(cookie: Record<string, unknown>): string {
   return JSON.stringify([cookie.domain, cookie.path, cookie.name, cookie.partitionKey]);
+}
+
+export function isClaudeUrl(url: string | undefined): boolean {
+  try {
+    return /(^|\.)claude\.ai$/i.test(new URL(url ?? "").hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** Where a page on Claude's sign-in screens should go once signed in; null for any other page. */
+export function afterSignInUrl(url: string | undefined): string | null {
+  if (!isClaudeUrl(url)) return null;
+  const page = new URL(url!);
+  if (!/^\/(login|logout|oauth|auth|magic-link)(\/|$)/i.test(page.pathname)) return null;
+  const back = page.searchParams.get("returnTo") ?? "";
+  const safe =
+    back.startsWith("/") && !back.startsWith("//") && !/^\/(login|logout)(\/|\?|$)/i.test(back);
+  return `${page.origin}${safe ? back : "/new"}`;
 }

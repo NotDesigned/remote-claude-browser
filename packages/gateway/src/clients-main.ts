@@ -14,7 +14,12 @@ import { createAssetFetcher } from "./assets/fetch";
 import { registerAssetRoutes } from "./assets/route";
 import { createAgentLink } from "./browser/agentlink";
 import { agentBridgeChannel, callAgentBridge } from "./browser/bridge";
-import { createClientBrowserPool, type ClientBrowserScope } from "./browser/client-scope";
+import {
+  afterSignInUrl,
+  createClientBrowserPool,
+  isClaudeUrl,
+  type ClientBrowserScope,
+} from "./browser/client-scope";
 import { launchBrowser, type BrowserTargetInfo } from "./browser/launch";
 import { connectRemoteBrowser } from "./browser/remote";
 import { createNavigationController } from "./browser/nav";
@@ -74,21 +79,22 @@ export async function startClientGateway(): Promise<void> {
   const pool = createClientBrowserPool(browser, {
     isolatedStorage: true,
     downloadDir: join(profile, "downloads"),
+    // A shared login reached this session: leave any sign-in page it is stuck on.
+    onLoginShared: (sid) => {
+      const runtime = runtimes.get(sid);
+      for (const target of runtime?.targets.values() ?? []) {
+        if (target.type !== "page") continue;
+        const destination = afterSignInUrl(runtime!.metadata.get(target.targetId)?.url);
+        if (destination === null) continue;
+        void runtime!.browser
+          .send(target.sessionId, "Page.navigate", { url: destination })
+          .catch((error) => report("shared login navigation failed", error));
+      }
+    },
     // Only a session that is visibly signed in may refresh everyone's shared login cookies.
     canPersistCookies: (sid) => {
-      const pages = [...(runtimes.get(sid)?.metadata.values() ?? [])]
-        .map((info) => {
-          try {
-            return new URL(info.url);
-          } catch {
-            return undefined;
-          }
-        })
-        .filter((url): url is URL => url !== undefined && /(^|\.)claude\.ai$/i.test(url.hostname));
-      return (
-        pages.length > 0 &&
-        !pages.some((url) => /^\/(login|logout|oauth|auth|magic-link)(\/|$)/i.test(url.pathname))
-      );
+      const urls = [...(runtimes.get(sid)?.metadata.values() ?? [])].map((info) => info.url);
+      return urls.some(isClaudeUrl) && !urls.some((url) => afterSignInUrl(url) !== null);
     },
   });
   const app = Fastify({ logger: false, trustProxy: LOOPBACK_PROXIES });

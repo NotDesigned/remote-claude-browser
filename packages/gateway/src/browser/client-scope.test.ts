@@ -6,7 +6,7 @@ import type {
   BrowserTargetInfo,
   FlatSessionEventMap,
 } from "./launch";
-import { createClientBrowserPool } from "./client-scope";
+import { afterSignInUrl, createClientBrowserPool } from "./client-scope";
 
 class FakeBrowser implements BrowserHandle {
   readonly refs = new Map<string, TargetRef>();
@@ -518,14 +518,21 @@ describe("shared-browser client scopes", () => {
 describe("shared login cookie write-back", () => {
   function setup(contextCookie: { value: string } | null, canPersist: () => boolean) {
     const browser = new FakeBrowser();
+    let sharedValue = "shared";
     let contextNumber = 0,
       pageNumber = 0;
     const original = browser.sendBrowser.getMockImplementation()!;
     browser.sendBrowser.mockImplementation(async (method, params = {}) => {
       if (method === "Target.createBrowserContext")
         return { browserContextId: `private-${++contextNumber}` };
+      if (method === "Storage.setCookies" && !params.browserContextId) {
+        const written = (params.cookies as { name: string; value: string }[]).find(
+          (cookie) => cookie.name === "sessionKey",
+        );
+        if (written) sharedValue = written.value;
+      }
       if (method === "Storage.getCookies") {
-        const shared = { name: "sessionKey", value: "shared", domain: ".claude.ai", path: "/" };
+        const shared = { name: "sessionKey", value: sharedValue, domain: ".claude.ai", path: "/" };
         if (!params.browserContextId) return { cookies: [shared] };
         return {
           cookies:
@@ -594,5 +601,87 @@ describe("shared login cookie write-back", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("hands a new login to the other open sessions once, even if it later fails", async () => {
+    vi.useFakeTimers();
+    try {
+      const browser = new FakeBrowser();
+      const jar = new Map<string, string | null>([["shared", "old"]]);
+      let contexts = 0,
+        pages = 0;
+      const original = browser.sendBrowser.getMockImplementation()!;
+      browser.sendBrowser.mockImplementation(async (method, params = {}) => {
+        const key = (params.browserContextId as string | undefined) ?? "shared";
+        if (method === "Target.createBrowserContext") {
+          const id = `private-${++contexts}`;
+          return { browserContextId: id };
+        }
+        if (method === "Storage.getCookies") {
+          const value = jar.get(key);
+          return {
+            cookies: value
+              ? [{ name: "sessionKey", value, domain: ".claude.ai", path: "/" }]
+              : [{ name: "other", value: "x", domain: ".example.com", path: "/" }],
+          };
+        }
+        if (method === "Storage.setCookies") {
+          const cookie = (params.cookies as { name: string; value: string }[]).find(
+            (item) => item.name === "sessionKey",
+          );
+          if (cookie) jar.set(key, cookie.value);
+          return {};
+        }
+        return original(method, params);
+      });
+      browser.create = async () => {
+        const target = page(`login-page-${++pages}`);
+        browser.attach(target);
+        return { targetId: target.targetId };
+      };
+      const shared: string[] = [];
+      const signedIn = new Set(["a"]);
+      const pool = createClientBrowserPool(browser, {
+        isolatedStorage: true,
+        canPersistCookies: (sid) => signedIn.has(sid),
+        onLoginShared: (sid) => shared.push(sid),
+        cookieSyncIntervalMs: 1_000,
+      });
+      const a = pool.scope("a"),
+        b = pool.scope("b");
+      await a.sendBrowser!("Target.createTarget", { url: "https://claude.ai/new" });
+      await b.sendBrowser!("Target.createTarget", { url: "https://claude.ai/login" });
+
+      // Session b was forced out; a signs in again.
+      jar.set("private-2", null);
+      jar.set("private-1", "fresh");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(jar.get("shared")).toBe("fresh");
+      expect(jar.get("private-2")).toBe("fresh");
+      expect(shared).toEqual(["b"]);
+
+      // The token turns out dead and logs b out again: it must not be pushed in a loop.
+      jar.set("private-2", null);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(jar.get("private-2")).toBeNull();
+      expect(shared).toEqual(["b"]);
+      pool.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("leaving Claude's sign-in pages", () => {
+  it("returns to the requested page, never to another site or sign-in page", () => {
+    const login = "https://claude.ai/login?from=logout&reauth=1&returnTo=";
+    expect(afterSignInUrl(login + "%2Fcode")).toBe("https://claude.ai/code");
+    expect(afterSignInUrl(login + "%2Flogin%3Fa%3D1")).toBe("https://claude.ai/new");
+    expect(afterSignInUrl(login + "%2F%2Fevil.example")).toBe("https://claude.ai/new");
+    expect(afterSignInUrl(login + "https%3A%2F%2Fevil.example")).toBe("https://claude.ai/new");
+    expect(afterSignInUrl("https://claude.ai/logout?involuntary=1")).toBe("https://claude.ai/new");
+    expect(afterSignInUrl("https://claude.ai/chat/abc")).toBeNull();
+    expect(afterSignInUrl("https://accounts.google.com/login")).toBeNull();
+    expect(afterSignInUrl(undefined)).toBeNull();
   });
 });
