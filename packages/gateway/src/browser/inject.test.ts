@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { TargetRef } from "../types";
 import type { BrowserHandle, FlatSessionEventMap } from "./launch";
 import { agentBridgeChannel, isolatedAgentBridgeSource } from "./bridge";
-import { injectAgent, WEBDRIVER_NORMALIZER } from "./inject";
+import { injectAgent, WEBDRIVER_NORMALIZER, skipOnErrorPage } from "./inject";
 
 class RecordingBrowser implements BrowserHandle {
   readonly calls: { sessionId: string; method: string; params?: Record<string, unknown> }[] = [];
@@ -152,6 +152,19 @@ describe("injectAgent", () => {
 
     expect(order).toEqual(["Page.enable"]);
     expect(browser.calls.map((call) => call.method)).toContain("Page.getFrameTree");
+  });
+
+  it("keeps the recorder off Chromium's error page, whose process may not commit an iframe", () => {
+    const run = (protocol: string) => {
+      let ran = false;
+      new Function("location", "mark", skipOnErrorPage("mark();"))({ protocol }, () => {
+        ran = true;
+      });
+      return ran;
+    };
+    expect(run("https:")).toBe(true);
+    expect(run("about:")).toBe(true);
+    expect(run("chrome-error:")).toBe(false);
   });
 
   it("coalesces duplicate injection requests for one flat session", async () => {

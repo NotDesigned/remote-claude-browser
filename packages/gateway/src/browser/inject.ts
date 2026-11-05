@@ -34,6 +34,15 @@ export const WEBDRIVER_NORMALIZER = `(() => {
   });
 })()`;
 
+/**
+ * Chromium's page for an address that failed to load lives in a process that may show nothing else,
+ * and kills it if a frame there commits anything. The recorder makes a blank iframe to get clean
+ * prototypes, so running on that page takes the tab down. The viewer says the page failed instead.
+ */
+export function skipOnErrorPage(source: string): string {
+  return `if (location.protocol !== "chrome-error:") {\n${source}\n}`;
+}
+
 const injections = new WeakMap<BrowserHandle, Map<string, Promise<void>>>();
 const rebindingBrowsers = new WeakSet<BrowserHandle>();
 
@@ -166,7 +175,10 @@ export function injectAgent(
       worldName: channel.worldName,
       runImmediately: true,
     });
-    send("Page.addScriptToEvaluateOnNewDocument", { source, runImmediately: true });
+    send("Page.addScriptToEvaluateOnNewDocument", {
+      source: skipOnErrorPage(source),
+      runImmediately: true,
+    });
     // Resume before creating the current isolated world: Page.createIsolatedWorld can wait on a
     // debugger-paused OOPIF, while its parent waits for that child to finish loading. The MAIN
     // agent queues safely until the context-scoped bridge becomes ready.

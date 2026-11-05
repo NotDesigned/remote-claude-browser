@@ -80,6 +80,15 @@ describe("createNavHandler", () => {
     ]);
   });
 
+  it("takes a navigation that turned into a download as a success", async () => {
+    const send = vi.fn<CdpSend>(async () => ({ errorText: "net::ERR_ABORTED", isDownload: true }));
+    const handle = createNavHandler(send);
+
+    await expect(
+      handle({ t: "nav", tab: "known", action: "go", url: "https://example.test/file" }),
+    ).resolves.toBeUndefined();
+  });
+
   it("rejects missing URLs, unknown tabs, navigation errors, and future tab actions", async () => {
     const send = vi.fn<CdpSend>(async () => ({ errorText: "net::ERR_INVALID_URL" }));
     const handle = createNavHandler(send, (tab) => (tab === "known" ? "session" : undefined));
@@ -250,5 +259,43 @@ describe("createNavigationController", () => {
       "unknown navigation tab",
     );
     controller.dispose();
+  });
+
+  it("keeps the address that failed to load, and says so, until a page loads", async () => {
+    const browser = new MockBrowser();
+    const chrome: ChromeMsg[] = [];
+    createNavigationController(browser, (message) => chrome.push(message));
+    const target: TargetRef = { targetId: "tab-1", sessionId: "session-1", type: "page" };
+    browser.attach(target);
+    await vi.waitFor(() => expect(chrome.length).toBeGreaterThan(0));
+    const frame = {
+      id: "main-frame",
+      loaderId: "l",
+      domainAndRegistry: "",
+      securityOrigin: "",
+      mimeType: "text/html",
+      secureContextType: "Secure",
+      crossOriginIsolatedContextType: "NotIsolated",
+      gatedAPIFeatures: [],
+    };
+
+    browser.emit("Page.frameNavigated", "session-1", {
+      frame: {
+        ...frame,
+        url: "chrome-error://chromewebdata/",
+        unreachableUrl: "https://nowhere.test/",
+      },
+      type: "Navigation",
+    } as never);
+    await vi.waitFor(() =>
+      expect(chrome.at(-1)).toMatchObject({ url: "https://nowhere.test/", failed: true }),
+    );
+
+    browser.emit("Page.frameNavigated", "session-1", {
+      frame: { ...frame, url: "https://somewhere.test/" },
+      type: "Navigation",
+    } as never);
+    await vi.waitFor(() => expect(chrome.at(-1)?.url).toBe("https://somewhere.test/"));
+    expect(chrome.at(-1)?.failed).toBeUndefined();
   });
 });

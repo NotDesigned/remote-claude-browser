@@ -36,6 +36,8 @@ interface PageState {
   target: TargetRef;
   mainFrameId?: string;
   url: string;
+  /** The address failed to load, and the page in the browser is Chromium's error page. */
+  failed: boolean;
   loading: boolean;
   canBack: boolean;
   canFwd: boolean;
@@ -100,7 +102,9 @@ export function createNavHandler(
       case "go": {
         const result = (await send(sessionId, "Page.navigate", {
           url: normalizeNavigationUrl(msg.url ?? ""),
-        })) as { errorText?: unknown } | undefined;
+        })) as { errorText?: unknown; isDownload?: unknown } | undefined;
+        // A download is reported as an aborted navigation, and this page simply stays.
+        if (result?.isDownload === true) return;
         if (typeof result?.errorText === "string" && result.errorText !== "") {
           throw new Error(`Page.navigate failed: ${result.errorText}`);
         }
@@ -126,7 +130,8 @@ export function createNavHandler(
 }
 
 function frameUrl(frame: Protocol.Page.Frame): string {
-  return `${frame.url}${frame.urlFragment ?? ""}`;
+  // Like a browser's own address bar, keep what failed rather than chrome-error://chromewebdata/.
+  return frame.unreachableUrl ?? `${frame.url}${frame.urlFragment ?? ""}`;
 }
 
 /**
@@ -152,6 +157,7 @@ export function createNavigationController(
       loading: state.loading,
       canBack: state.canBack,
       canFwd: state.canFwd,
+      ...(state.failed ? { failed: true } : {}),
     });
   };
 
@@ -182,6 +188,7 @@ export function createNavigationController(
       enqueue(state, async () => {
         state.mainFrameId = event.frame.id;
         state.url = frameUrl(event.frame);
+        state.failed = event.frame.unreachableUrl !== undefined;
         state.loading = true;
         await refreshHistory(state).catch(() => undefined);
         emitState(state);
@@ -228,6 +235,7 @@ export function createNavigationController(
     const state: PageState = {
       target,
       url: "",
+      failed: false,
       loading: false,
       canBack: false,
       canFwd: false,

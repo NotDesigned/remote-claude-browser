@@ -319,6 +319,43 @@ body {
 
 /* Banners */
 /* Over the page rather than above it: taking height would resize the remote page. */
+/* The mirror still holds the page before this one, as an error page cannot be recorded. */
+#page-load-failed {
+  position: absolute;
+  inset: var(--shellbar-height) 0 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+  background: var(--bg);
+  color: var(--ink);
+  text-align: center;
+}
+#page-load-failed h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+#page-load-failed p {
+  margin: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 14px;
+}
+#page-load-failed button {
+  margin-top: 6px;
+  padding: 7px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
 #shell-banners {
   position: relative;
   z-index: 50;

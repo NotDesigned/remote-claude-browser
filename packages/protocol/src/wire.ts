@@ -94,7 +94,15 @@ export type Down =
   /** `sent` counts every byte the gateway wrote to this connection, after compression. */
   | { t: "pong"; id: number; sentTs: number; serverTs: number; sent?: number }
   | { t: "tabs"; tabs: TabMeta[] }
-  | { t: "chrome"; tab: TabId; url: string; loading: boolean; canBack: boolean; canFwd: boolean }
+  | {
+      t: "chrome";
+      tab: TabId;
+      url: string;
+      loading: boolean;
+      canBack: boolean;
+      canFwd: boolean;
+      failed?: boolean;
+    }
   /** Renderer recovery is separate from gateway/WebSocket connectivity. */
   | { t: "tab-state"; tab: TabId; state: "recovering" | "ready" | "failed" }
   /** data = [Meta, FullSnapshot]; seq = the snapshot's seq; opens `epoch`. */

@@ -1148,6 +1148,20 @@ export function App() {
         )}
       </div>
       <main id="mirror-host" data-input-ready={inputReady ? "true" : "false"} ref={hostRef} />
+      {activeChrome?.failed === true && !pixelMode && (
+        <section id="page-load-failed" role="alert">
+          <h2>这个网页打不开</h2>
+          <p>{activeChrome.url}</p>
+          <button
+            type="button"
+            onClick={() =>
+              socketRef.current?.send({ t: "nav", tab: activeChrome.tab, action: "reload" })
+            }
+          >
+            重新加载
+          </button>
+        </section>
+      )}
       {clientPhase !== "ready" && (
         <section
           id="client-session-overlay"

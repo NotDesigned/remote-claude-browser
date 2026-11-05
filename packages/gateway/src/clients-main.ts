@@ -792,7 +792,13 @@ export async function startClientGateway(): Promise<void> {
         await stopPixels(runtime, message.action === "activate" ? message.tab : undefined);
       if (["newtab", "close", "activate"].includes(message.action))
         await runtime.tabs.handle(message);
-      else await runtime.navigation.handle(message);
+      else {
+        // An address that does not load is an ordinary outcome, shown as a failed page. Letting this
+        // propagate would close the viewer's connection, which is how it would hear about that page.
+        await runtime.navigation
+          .handle(message)
+          .catch((error) => report("client navigation failed", error));
+      }
       return;
     }
     if (isInput(message)) await runtime.input(id, message);
