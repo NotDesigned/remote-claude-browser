@@ -14,13 +14,33 @@ import {
   type Down,
   type Up,
 } from "@mirror/protocol";
+import { forgetAllSheets, forgetSheet, loadStoredSheets, storeSheet } from "./sheet-store";
 
 /** Stylesheets received on this page, kept across reconnects and view switches. */
 const knownSheets = new Map<string, string>();
+/** Read once per page, before its first connection offers what it holds. */
+let storedSheets: Promise<void> | null | undefined;
+function readStoredSheets(): Promise<void> | null {
+  if (storedSheets !== undefined) return storedSheets;
+  storedSheets =
+    loadStoredSheets()?.then((sheets) => {
+      for (const [hash, text] of sheets) {
+        if (knownSheets.size < MAX_KNOWN_SHEETS && !knownSheets.has(hash))
+          knownSheets.set(hash, text);
+        else if (!knownSheets.has(hash)) forgetSheet(hash);
+      }
+    }) ?? null;
+  return storedSheets;
+}
 function rememberSheet(hash: string, text: string): void {
   knownSheets.delete(hash);
   knownSheets.set(hash, text);
-  if (knownSheets.size > MAX_KNOWN_SHEETS) knownSheets.delete(knownSheets.keys().next().value!);
+  storeSheet(hash, text);
+  if (knownSheets.size > MAX_KNOWN_SHEETS) {
+    const oldest = knownSheets.keys().next().value!;
+    knownSheets.delete(oldest);
+    forgetSheet(oldest);
+  }
 }
 
 export interface GatewaySocket {
@@ -151,6 +171,7 @@ export function connectGateway(
           if (data === null) {
             // This page lost a sheet the gateway believes it has; start over without any.
             knownSheets.clear();
+            forgetAllSheets();
             current.close();
             return;
           }
@@ -196,7 +217,9 @@ export function connectGateway(
     };
   };
 
-  open();
+  const stored = readStoredSheets();
+  if (stored === null) open();
+  else void stored.then(open, open);
 
   return {
     send(msg) {

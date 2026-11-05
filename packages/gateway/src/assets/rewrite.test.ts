@@ -11,6 +11,7 @@ import { openAssetToken, type AssetRef } from "./token";
 
 const KEY = Buffer.alloc(32, 0x5a);
 const CTX = { sessionId: "session / one", tabId: "tab-3" };
+const PROXIED = { sessionId: CTX.sessionId, tabId: "*" };
 
 function event(value: unknown): eventWithTime {
   return value as eventWithTime;
@@ -183,7 +184,8 @@ describe("rrweb RewriteStage", () => {
       attributes: { src: "https://cdn.example/page.png" },
     });
     expect(stage(source, CTX)).toEqual(stage(source, CTX));
-    expect(stage(source, { ...CTX, tabId: "other" })).not.toEqual(stage(source, CTX));
+    // A new tab keeps the address, and with it the viewer's cached copy.
+    expect(stage(source, { ...CTX, tabId: "other" })).toEqual(stage(source, CTX));
   });
 
   it("proxies object URLs but leaves non-fetchable schemes alone", () => {
@@ -228,7 +230,7 @@ describe("rrweb RewriteStage", () => {
 
     expect(ref).toEqual({
       url: "https://fonts.example/files/server-sans.woff2",
-      ...CTX,
+      ...PROXIED,
     });
     expect(css).toMatch(/src:url\(\/s\/session%20%2F%20one\/a\/[A-Za-z0-9_-]+\)/);
     expect(css).toContain("format('woff2')");
@@ -251,7 +253,7 @@ describe("rrweb RewriteStage", () => {
     };
 
     expect(refsIn(rewritten.data.fontSource)).toEqual([
-      { url: "https://fonts.example/constructor.woff2", ...CTX },
+      { url: "https://fonts.example/constructor.woff2", ...PROXIED },
     ]);
     expect(rewritten.data.family).toBe("Constructor Sans");
     expect(rewritten.data.descriptors).toEqual({ weight: "600" });
@@ -331,7 +333,7 @@ describe("rrweb RewriteStage", () => {
     const image = rewritten.data.node.childNodes[0]!;
     expect(proxiedRef(image.attributes.src)).toEqual({
       url: "https://img.example/photo.png",
-      ...CTX,
+      ...PROXIED,
     });
     expect(refsIn(image.attributes.srcset).map((ref) => ref.url)).toEqual([
       "https://img.example/a,b.png",
@@ -482,7 +484,7 @@ describe("rrweb RewriteStage", () => {
 
     expect(original).toEqual(before);
     expect(refsIn(rewritten.data.texts[0].value)).toEqual([
-      { url: "https://page.example/fonts/icons.woff2", ...CTX },
+      { url: "https://page.example/fonts/icons.woff2", ...PROXIED },
     ]);
     expect(rewritten.data.texts[0].id).toBe(3);
     expect(rewritten.data.texts[0].value).toContain("font-family:Icons");
@@ -512,7 +514,7 @@ describe("rrweb RewriteStage", () => {
     const appended = stage(original, CTX) as unknown as { data: Record<string, any> };
     expect(original).toEqual(before);
     expect(refsIn(appended.data.adds[0].node.textContent)).toEqual([
-      { url: "https://css.example/theme.css", ...CTX },
+      { url: "https://css.example/theme.css", ...PROXIED },
     ]);
     expect(appended.data.adds[0].parentId).toBe(2);
 
@@ -531,7 +533,7 @@ describe("rrweb RewriteStage", () => {
       CTX,
     ) as unknown as { data: Record<string, any> };
     expect(refsIn(updated.data.texts[0].value)).toEqual([
-      { url: "https://css.example/icon.png", ...CTX },
+      { url: "https://css.example/icon.png", ...PROXIED },
     ]);
   });
 
@@ -589,7 +591,7 @@ describe("rrweb RewriteStage", () => {
     const rewritten = stage(original, CTX) as unknown as { data: Record<string, any> };
     expect(original).toEqual(before);
     expect(refsIn(rewritten.data.texts[0].value)).toEqual([
-      { url: "https://css.example/icon.png", ...CTX },
+      { url: "https://css.example/icon.png", ...PROXIED },
     ]);
     expect(rewritten.data.texts.slice(1)).toEqual((original as any).data.texts.slice(1));
     expect(rewritten.data.attributes).toEqual((original as any).data.attributes);
@@ -676,7 +678,7 @@ describe("rrweb RewriteStage", () => {
 
     expect(proxiedRef(rewritten.data.node.attributes.poster)).toEqual({
       url: "https://page.example/poster.png",
-      ...CTX,
+      ...PROXIED,
     });
   });
 

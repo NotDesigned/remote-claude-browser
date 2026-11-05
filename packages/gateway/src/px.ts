@@ -16,7 +16,7 @@ import type { BrowserHandle } from "./browser/launch";
 import type { TabHub } from "./hub/tabhub";
 import type { TargetRef } from "./types";
 import { zoomLevelFor, type BrowserZoom } from "./browser/browser-zoom";
-import type { PixelWindow } from "./browser/pixel-window";
+import { GRAB_MAX_HEIGHT, type PixelWindow } from "./browser/pixel-window";
 import {
   createFfmpegEncoder,
   createGrabEncoder,
@@ -530,8 +530,8 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       videoWanted &&
       !videoBroken &&
       !grabBroken &&
-      viewport.w <= MAX_FRAME_SIDE &&
-      viewport.h <= MAX_FRAME_SIDE
+      viewport.w * zoomWanted(state) <= MAX_FRAME_SIDE &&
+      viewport.h * zoomWanted(state) <= GRAB_MAX_HEIGHT
     );
   };
   /** Puts the window on the display and starts reading it. Throws if any of that fails. */

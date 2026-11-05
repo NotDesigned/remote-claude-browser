@@ -25,7 +25,7 @@ import type WebSocket from "ws";
 import type { TabHub } from "../hub/tabhub";
 import { ViewerConn, type ViewerConnOpts, type ViewerSocket } from "./viewerconn";
 
-export const DEFAULT_BATCH_MS = 30;
+export const DEFAULT_BATCH_MS = 16;
 export const VIEWER_REPLACED_CODE = 4009;
 
 export interface DeltaChaosOptions {
@@ -49,6 +49,7 @@ interface PendingDelta {
 export class Fanout {
   private readonly viewers = new Map<ViewerConn, string | undefined>();
   private readonly pending = new Map<string, PendingDelta>();
+  private readonly lastDeltaSentAt = new Map<string, number>();
 
   private readonly chaosRandom: () => number;
   private readonly chaosDropRate: number;
@@ -59,6 +60,7 @@ export class Fanout {
   constructor(
     private readonly batchMs = DEFAULT_BATCH_MS,
     chaos?: DeltaChaosOptions,
+    private readonly sendFirstAtOnce = true,
   ) {
     if (!Number.isSafeInteger(batchMs) || batchMs < 1) {
       throw new RangeError("batchMs must be a positive safe integer");
@@ -141,8 +143,18 @@ export class Fanout {
     }
 
     this.flushTab(sessionId, msg.tab);
+    // A change after a quiet moment goes out at once; only a burst waits to travel together.
+    const sinceLastSend = Date.now() - (this.lastDeltaSentAt.get(key) ?? 0);
+    if (this.sendFirstAtOnce && sinceLastSend >= this.batchMs) {
+      this.lastDeltaSentAt.set(key, Date.now());
+      this.broadcastNow(sessionId, msg);
+      return;
+    }
     const batched: Extract<Down, { t: "delta" }> = { ...msg, data: [...msg.data] };
-    const timer = setTimeout(() => this.flushTab(sessionId, msg.tab), this.batchMs);
+    const timer = setTimeout(
+      () => this.flushTab(sessionId, msg.tab),
+      sinceLastSend >= this.batchMs ? this.batchMs : this.batchMs - sinceLastSend,
+    );
     timer.unref();
     this.pending.set(key, { sessionId, msg: batched, timer });
   }
@@ -175,6 +187,7 @@ export class Fanout {
     if (pending === undefined) return;
     clearTimeout(pending.timer);
     this.pending.delete(key);
+    this.lastDeltaSentAt.set(key, Date.now());
     this.broadcastNow(pending.sessionId, pending.msg);
   }
 
@@ -208,6 +221,8 @@ export interface WsServerOpts {
   hubsForSession?: (sessionId: string) => Iterable<TabHub>;
   path?: string;
   batchMs?: number;
+  /** Off to make every delta wait out the batch window. */
+  sendFirstDeltaAtOnce?: boolean;
   viewerConn?: ViewerConnOpts;
   /** Test-only application-frame RTT shim; half is applied in each WS direction. */
   simulatedRttMs?: number;
@@ -253,7 +268,7 @@ export function createWsServer(opts: WsServerOpts): WsServer {
     throw new RangeError("simulatedRttMs must be a non-negative safe integer");
   }
   const oneWayDelayMs = simulatedRttMs / 2;
-  const fanout = new Fanout(opts.batchMs, opts.deltaChaos);
+  const fanout = new Fanout(opts.batchMs, opts.deltaChaos, opts.sendFirstDeltaAtOnce ?? true);
   const webSocketServer = new WebSocketServer({ noServer: true, perMessageDeflate: true });
   const authorizedSessions = new WeakMap<IncomingMessage, string>();
   const viewerSessions = new WeakMap<ViewerConn, string | undefined>();

@@ -570,7 +570,7 @@ describe("createTabLifecycle", () => {
       expect(openAssetToken(src.split("/").at(-1)!, key)).toEqual({
         url: "https://reader.example/chapter/page.png",
         sessionId: "session",
-        tabId: "tab",
+        tabId: "*",
       });
     } finally {
       lifecycle.dispose();

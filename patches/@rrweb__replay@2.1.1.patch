@@ -1,8 +1,17 @@
 diff --git a/dist/replay.cjs b/dist/replay.cjs
-index 40e271ca6a7ec2e63fdf898fa1a007ae9bd735b2..c633d1abc7f4c42ffaae367edfebbf1043c54f39 100644
+index 40e271ca6a7ec2e63fdf898fa1a007ae9bd735b2..05b8e7e53ea185f574ee19d9724ce5b8c490109e 100644
 --- a/dist/replay.cjs
 +++ b/dist/replay.cjs
-@@ -11771,6 +11771,11 @@ class Replayer {
+@@ -10594,6 +10594,8 @@ function createPlayerService(context, { getCastFn, applyEventsSynchronously, emi
+               }
+               events.splice(insertionIndex, 0, event);
+             }
++            // Live replay never looks back, and a long session would otherwise keep every event.
++            if (events.length > 4000) events.splice(1, events.length - 2000);
+             const isSync = event.timestamp < baselineTime;
+             const castFn = getCastFn(event, isSync);
+             if (isSync) {
+@@ -11771,6 +11773,11 @@ class Replayer {
      const mirror2 = this.usingVirtualDom ? this.virtualDom.mirror : this.mirror;
      const collectedIframes = [];
      const collectedDialogs = /* @__PURE__ */ new Set();
@@ -15,10 +24,19 @@ index 40e271ca6a7ec2e63fdf898fa1a007ae9bd735b2..c633d1abc7f4c42ffaae367edfebbf10
        if (builtNode.nodeName === "DIALOG")
          collectedDialogs.add(builtNode);
 diff --git a/dist/replay.js b/dist/replay.js
-index 55c239020841f7a3340d0caeffeea1fc82a34771..f6767a03a0ca426ce30cd193f382dc6104e4ecaf 100644
+index 55c239020841f7a3340d0caeffeea1fc82a34771..ddb2207e60990b75f66492778ba286fa60b6d79a 100644
 --- a/dist/replay.js
 +++ b/dist/replay.js
-@@ -11769,6 +11769,11 @@ class Replayer {
+@@ -10592,6 +10592,8 @@ function createPlayerService(context, { getCastFn, applyEventsSynchronously, emi
+               }
+               events.splice(insertionIndex, 0, event);
+             }
++            // Live replay never looks back, and a long session would otherwise keep every event.
++            if (events.length > 4000) events.splice(1, events.length - 2000);
+             const isSync = event.timestamp < baselineTime;
+             const castFn = getCastFn(event, isSync);
+             if (isSync) {
+@@ -11769,6 +11771,11 @@ class Replayer {
      const mirror2 = this.usingVirtualDom ? this.virtualDom.mirror : this.mirror;
      const collectedIframes = [];
      const collectedDialogs = /* @__PURE__ */ new Set();

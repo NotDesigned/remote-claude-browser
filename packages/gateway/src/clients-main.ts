@@ -3,7 +3,7 @@ import { encodeMsg, type Down, type Up, type ServerStatusMsg } from "@mirror/pro
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import { randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAccessGate, ACCESS_MAX_AGE_SECONDS } from "./auth/access-gate";
@@ -32,6 +32,7 @@ import { createViewportAgreement } from "./hub/viewport";
 import { createInputRelay, type InputMsg } from "./input/relay";
 import { createScreencast } from "./px";
 import { createPixelCapacity } from "./px-capacity";
+import { ANY_SESSION_TAB } from "./assets/token";
 import { createRtcSignalRelay } from "./rtcsig";
 import { createClaudeTheme, isClaudeTheme } from "./claude/theme";
 import { registerSecurityHeaders } from "./security-headers";
@@ -64,6 +65,20 @@ interface ClientRuntime {
 
 /** Frames wait before encoding beyond this, since a viewer cannot skip one once it is encoded. */
 const VIDEO_BACKLOG_BYTES = 512 * 1024;
+const PAGE_IDLE_RELEASE_MS = 60_000;
+
+/** Kept across restarts, so that a restart does not invalidate what viewers have cached. */
+async function loadAssetKey(file: string): Promise<Buffer> {
+  try {
+    const stored = await readFile(file);
+    if (stored.length === 32) return stored;
+  } catch {
+    // Not there yet.
+  }
+  const key = randomBytes(32);
+  await writeFile(file, key, { mode: 0o600 });
+  return key;
+}
 
 export async function startClientGateway(): Promise<void> {
   const e2e = process.env.MIRROR_E2E === "1";
@@ -83,6 +98,10 @@ export async function startClientGateway(): Promise<void> {
           "--disable-dev-shm-usage",
           "--window-size=1050,980",
           "--autoplay-policy=no-user-gesture-required",
+          // This host is short of memory rather than of JavaScript speed, and new windows are rare
+          // enough not to need a renderer waiting for them.
+          "--js-flags=--optimize-for-size",
+          "--disable-features=SpareRendererForSitePerProcess",
         ],
       });
   const pool = createClientBrowserPool(browser, {
@@ -429,16 +448,20 @@ export async function startClientGateway(): Promise<void> {
     if (!currentOwner(request.raw)) return reply.code(401).send({ error: "请重新输入访问密码" });
     return reply.header("cache-control", "no-store").send(status());
   });
-  const assetKey = randomBytes(32);
+  const assetKey = await loadAssetKey(join(profile, "asset-token.key"));
   registerAssetRoutes(app, {
     serverKey: assetKey,
     cache: createAssetCache(join(profile, "asset-cache")),
     fetcher: createAssetFetcher({
       send: browser.send,
-      sessionFor: (ref) =>
-        pool.ownerOf(ref.tabId) === ref.sessionId
-          ? runtimes.get(ref.sessionId)?.targets.get(ref.tabId)?.sessionId
-          : undefined,
+      sessionFor: (ref) => {
+        const targets = runtimes.get(ref.sessionId)?.targets;
+        if (ref.tabId === ANY_SESSION_TAB)
+          return [...(targets?.values() ?? [])].find((target) => target.type === "page")?.sessionId;
+        return pool.ownerOf(ref.tabId) === ref.sessionId
+          ? targets?.get(ref.tabId)?.sessionId
+          : undefined;
+      },
     }),
     preHandler: requireSession(),
   });
@@ -966,7 +989,29 @@ export async function startClientGateway(): Promise<void> {
       .catch((error) => report("resource sampling", error));
   }, 3000);
   statusTimer.unref?.();
-  const idleTimer = setInterval(() => void idleReaper.sweep(), e2e ? 200 : 3000);
+  /** A page nothing is happening on gives back its caches, which its renderer holds on to. */
+  const releasedAt = new WeakMap<object, number>();
+  const releaseIdlePageMemory = () => {
+    const now = Date.now();
+    for (const runtime of runtimes.values())
+      for (const hub of runtime.tabs.hubs()) {
+        if (now - hub.lastActivityAt < PAGE_IDLE_RELEASE_MS) continue;
+        if ((releasedAt.get(hub) ?? 0) >= hub.lastActivityAt) continue;
+        const session = runtime.targets.get(hub.tabId)?.sessionId;
+        if (!session) continue;
+        releasedAt.set(hub, now);
+        void browser
+          .send(session, "Memory.simulatePressureNotification", { level: "critical" })
+          .catch((error) => report("page memory release failed", error));
+      }
+  };
+  const idleTimer = setInterval(
+    () => {
+      void idleReaper.sweep();
+      releaseIdlePageMemory();
+    },
+    e2e ? 200 : 3000,
+  );
   idleTimer.unref?.();
   const stop = async () => {
     if (stopping) return;

@@ -18,14 +18,15 @@ describe("asset tokens", () => {
     expect(openAssetToken(token, key)).toEqual(ref);
   });
 
-  it("uses a fresh GCM nonce and rejects tampering or the wrong key", () => {
+  it("gives one asset one stable token and rejects tampering or the wrong key", () => {
     const key = randomBytes(32);
     const first = sealAssetToken(ref, key);
     const second = sealAssetToken(ref, key);
     const last = first.at(-1)!;
     const tampered = `${first.slice(0, -1)}${last === "A" ? "B" : "A"}`;
 
-    expect(first).not.toBe(second);
+    expect(first).toBe(second);
+    expect(sealAssetToken({ ...ref, url: `${ref.url}?v=2` }, key)).not.toBe(first);
     expect(() => openAssetToken(tampered, key)).toThrow("Invalid asset token");
     expect(() => openAssetToken(first, randomBytes(32))).toThrow("Invalid asset token");
   });

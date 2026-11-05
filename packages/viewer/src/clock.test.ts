@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createServerClock } from "./clock";
+import { createServerClock, DEFAULT_LIVE_BUFFER_MS } from "./clock";
 
 describe("server clock live baseline", () => {
   it.each([-5_000, 8_000])(
@@ -11,7 +11,6 @@ describe("server clock live baseline", () => {
       const clock = createServerClock({
         now: localNow,
         bufferMs: 180,
-        minBufferMs: 180,
       });
 
       clock.observeRtt(oneWayMs * 2);
@@ -23,20 +22,10 @@ describe("server clock live baseline", () => {
     },
   );
 
-  it("lowers the old 300ms ceiling when measured RTT permits", () => {
+  it("keeps the replay just behind the page whatever the round trip", () => {
     const clock = createServerClock({ now: () => 10_000 });
-    expect(clock.liveBufferMs()).toBe(300);
-
-    clock.observeRtt(25);
-    expect(clock.liveBufferMs()).toBe(50);
-
-    clock.observeRtt(400);
-    expect(clock.liveBufferMs()).toBe(50);
-  });
-
-  it("uses a jitter cushion at the observed 173ms RTT", () => {
-    const clock = createServerClock();
+    expect(clock.liveBufferMs()).toBe(DEFAULT_LIVE_BUFFER_MS);
     clock.observeRtt(173);
-    expect(clock.liveBufferMs()).toBe(69);
+    expect(clock.liveBufferMs()).toBe(DEFAULT_LIVE_BUFFER_MS);
   });
 });

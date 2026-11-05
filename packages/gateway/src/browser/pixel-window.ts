@@ -10,9 +10,11 @@ import { execFile } from "node:child_process";
 
 const LOCATE_TIMEOUT_MS = 1_000;
 const LOCATE_POLL_MS = 25;
-/** Keep in step with the Xvfb screen in claude-display.service: 12800x3840. */
+/** Keep in step with the Xvfb screen in claude-display.service: 12800x2880. */
 const OPEN_WINDOW_AREA = 1280;
 const SLOT_SIDE = 3840;
+/** Every pixel of the screen takes four bytes whether used or not, so it is no taller than needed. */
+export const GRAB_MAX_HEIGHT = 2880;
 const SLOTS = 3;
 
 export interface GrabSlots {

@@ -70,7 +70,7 @@ afterEach(() => vi.useRealTimers());
 
 describe("session-scoped WebSocket fanout", () => {
   it("isolates every message type and keeps legacy broadcasts away from scoped viewers", () => {
-    const fanout = new Fanout();
+    const fanout = new Fanout(30, undefined, false);
     const a = peer();
     const sameSession = peer();
     const b = peer();
@@ -141,7 +141,7 @@ describe("session-scoped WebSocket fanout", () => {
 
   it("keeps same-tab delta batches separate and flushes only the joining session", () => {
     vi.useFakeTimers();
-    const fanout = new Fanout(30);
+    const fanout = new Fanout(30, undefined, false);
     const a = peer();
     const b = peer();
     fanout.addViewer(a.viewer, "a");
@@ -168,7 +168,7 @@ describe("session-scoped WebSocket fanout", () => {
 
   it("flushes only the recovering viewer's session when its backpressure drains", () => {
     vi.useFakeTimers();
-    const fanout = new Fanout(30);
+    const fanout = new Fanout(30, undefined, false);
     const slow = peer();
     const fast = peer();
     const b = peer();
@@ -195,7 +195,7 @@ describe("session-scoped WebSocket fanout", () => {
 
   it("flushes tab control messages only against their own session's pending delta", () => {
     vi.useFakeTimers();
-    const fanout = new Fanout(30);
+    const fanout = new Fanout(30, undefined, false);
     const a = peer();
     const b = peer();
     fanout.addViewer(a.viewer, "a");
@@ -326,6 +326,7 @@ describe("session-scoped WebSocket upgrades", () => {
     const onUp = vi.fn();
     const onDisconnection = vi.fn();
     const wsServer = createWsServer({
+      sendFirstDeltaAtOnce: false,
       server,
       sessionForRequest: (request) => {
         const sid = request.headers["x-test-session"];

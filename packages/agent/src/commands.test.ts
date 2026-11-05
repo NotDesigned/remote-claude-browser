@@ -86,7 +86,7 @@ describe("resolve command", () => {
 });
 
 describe("snapshot command readiness", () => {
-  it("waits for recording to start and then takes the snapshot", async () => {
+  it("waits for recording to start, whose own snapshot answers the request", async () => {
     const messages: AgentMsg[] = [];
     const readiness = createRecordReadiness();
     const takeFullSnapshot = vi.fn();
@@ -106,7 +106,7 @@ describe("snapshot command readiness", () => {
     readiness.markStarted();
     await Promise.resolve();
 
-    expect(takeFullSnapshot).toHaveBeenCalledOnce();
+    expect(takeFullSnapshot).not.toHaveBeenCalled();
     expect(messages).toEqual([{ kind: "cmdres", reqId: 10, ok: true }]);
   });
 

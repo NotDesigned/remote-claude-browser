@@ -1,11 +1,13 @@
 /**
  * Signed asset-proxy tokens.
  *
- * token = AES-256-GCM of {url, sessionId, tabId} under a per-boot server key — opaque,
- * unforgeable, session-bound, carries the browser context to fetch in, and needs no lookup
- * table. URL-safe base64 on the wire.
+ * token = AES-256-GCM of {url, sessionId, tabId} under a server key — opaque, unforgeable,
+ * session-bound, carries the browser context to fetch in, and needs no lookup table. URL-safe
+ * base64 on the wire. The same asset always gets the same token, as the viewer's browser can only
+ * reuse what it has cached under the same address: the nonce comes from the content, so that only
+ * identical plaintexts ever share one.
  */
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac } from "node:crypto";
 
 export interface AssetRef {
   url: string;
@@ -19,14 +21,17 @@ const TAG_BYTES = 16;
 const HEADER_BYTES = 1 + NONCE_BYTES + TAG_BYTES;
 const AAD = Buffer.from("mirror-asset-token:v1", "utf8");
 
+/** Fetches in whichever tab the session has: most assets do not depend on the page. */
+export const ANY_SESSION_TAB = "*";
+
 export function sealAssetToken(ref: AssetRef, key: Buffer): string {
   assertKey(key);
   assertAssetRef(ref);
 
-  const nonce = randomBytes(NONCE_BYTES);
+  const plaintext = Buffer.from(JSON.stringify(ref), "utf8");
+  const nonce = createHmac("sha256", key).update(plaintext).digest().subarray(0, NONCE_BYTES);
   const cipher = createCipheriv("aes-256-gcm", key, nonce);
   cipher.setAAD(AAD);
-  const plaintext = Buffer.from(JSON.stringify(ref), "utf8");
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const tag = cipher.getAuthTag();
 

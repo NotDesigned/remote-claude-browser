@@ -59,8 +59,6 @@ export interface MirrorOpts {
   bufferMs?: number;
   requestResync(tab: TabId, reason: string): void;
   now?: () => number;
-  minBufferMs?: number;
-  adaptiveBuffer?: boolean;
   clock?: ServerClock;
   /** Shared with Phase-1 echo so predicted edit state can join the rebuild restore point. */
   restoreHooks?: RebuildRestoreHooks;
@@ -195,8 +193,6 @@ export function createMirror(opts: MirrorOpts): Mirror {
     createServerClock({
       now,
       bufferMs: opts.bufferMs,
-      minBufferMs: opts.minBufferMs,
-      adaptive: opts.adaptiveBuffer,
     });
   const restoreHooks = opts.restoreHooks ?? createRebuildRestoreHooks();
   let activeTab: TabId | null = null;
@@ -570,11 +566,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
     getActiveTab: () => activeTab,
     getIframe: () => state?.replayer.iframe ?? null,
     getReplayer: () => state?.replayer ?? null,
-    observeRtt: (rttMs) => {
-      clock.observeRtt(rttMs);
-      if (state !== null && state.bufferMs - clock.liveBufferMs() >= 40)
-        requestFreshSnapshot(state.tab, "apply measured replay latency");
-    },
+    observeRtt: (rttMs) => clock.observeRtt(rttMs),
     refreshViewportLayout: applyViewportLayout,
     teardown() {
       pendingRestore = null;

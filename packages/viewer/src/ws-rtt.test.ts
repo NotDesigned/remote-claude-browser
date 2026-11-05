@@ -48,7 +48,7 @@ it("computes recurring pong RTT and feeds the live server clock", () => {
 
   expect(samples).toEqual([42]);
   expect(received).toEqual([{ t: "pong", id: 1, sentTs: 1_000, serverTs: 1_021 }]);
-  expect(clock.liveBufferMs()).toBe(50);
+  expect(clock.liveBufferMs()).toBe(300);
   expect(clock.estimatedServerNow()).toBe(1_042);
 
   vi.advanceTimersByTime(RTT_INTERVAL_MS);

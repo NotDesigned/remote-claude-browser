@@ -7,16 +7,15 @@
  * sample slower.
  */
 
-export const DEFAULT_LIVE_BUFFER_MS = 300;
-export const DEFAULT_MIN_LIVE_BUFFER_MS = 50;
+/**
+ * The replay's lag behind the page. Everything here arrives in order, so a larger cushion would
+ * only delay what the viewer sees.
+ */
+export const DEFAULT_LIVE_BUFFER_MS = 10;
 
 export interface ServerClockOptions {
   now?: () => number;
-  /** Safe fallback and adaptive ceiling while no RTT sample is available. */
   bufferMs?: number;
-  /** Lowest permitted adaptive jitter buffer. */
-  minBufferMs?: number;
-  adaptive?: boolean;
 }
 
 export interface ServerClock {
@@ -38,19 +37,12 @@ function assertDuration(name: string, value: number, min: number, max: number): 
 
 export function createServerClock(options: ServerClockOptions = {}): ServerClock {
   const now = options.now ?? Date.now;
-  const bufferCeiling = assertDuration(
+  const bufferMs = assertDuration(
     "bufferMs",
     options.bufferMs ?? DEFAULT_LIVE_BUFFER_MS,
-    DEFAULT_MIN_LIVE_BUFFER_MS,
+    0,
     MAX_LIVE_BUFFER_MS,
   );
-  const minBuffer = assertDuration(
-    "minBufferMs",
-    options.minBufferMs ?? DEFAULT_MIN_LIVE_BUFFER_MS,
-    DEFAULT_MIN_LIVE_BUFFER_MS,
-    bufferCeiling,
-  );
-  const adaptive = options.adaptive ?? true;
 
   let bestRttMs: number | null = null;
   let clockOffsetMs: number | null = null;
@@ -62,12 +54,7 @@ export function createServerClock(options: ServerClockOptions = {}): ServerClock
     clockOffsetMs = lastReference.serverTs + oneWayMs - lastReference.receivedAt;
   };
 
-  const liveBufferMs = (): number => {
-    if (!adaptive || bestRttMs === null) return bufferCeiling;
-    // Network travel is already included in the clock offset. Keep a scheduling and jitter
-    // cushion here so every interaction does not wait for another complete network round trip.
-    return Math.min(bufferCeiling, Math.max(minBuffer, Math.ceil(bestRttMs / 4 + 25)));
-  };
+  const liveBufferMs = (): number => bufferMs;
 
   const estimatedServerNow = (): number => now() + (clockOffsetMs ?? 0);
 

@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { ACCESS_MAX_AGE_SECONDS, createAccessGate } from "./auth/access-gate";
 import { createAssetCache } from "./assets/cache";
 import { createAssetFetcher } from "./assets/fetch";
+import { ANY_SESSION_TAB } from "./assets/token";
 import { registerAssetRoutes } from "./assets/route";
 import { mintInvite } from "./auth/invite";
 import { SESSION_COOKIE, createSessionGuard } from "./auth/middleware";
@@ -170,8 +171,12 @@ async function main(): Promise<void> {
     cache: createAssetCache(join(userDataDir, "asset-cache")),
     fetcher: createAssetFetcher({
       send: browser.send,
-      sessionFor: (ref) =>
-        ref.sessionId === SESSION_ID ? targets.get(ref.tabId)?.sessionId : undefined,
+      sessionFor: (ref) => {
+        if (ref.sessionId !== SESSION_ID) return undefined;
+        if (ref.tabId === ANY_SESSION_TAB)
+          return [...targets.values()].find((target) => target.type === "page")?.sessionId;
+        return targets.get(ref.tabId)?.sessionId;
+      },
     }),
     preHandler: sessionGuard.preHandler,
   });

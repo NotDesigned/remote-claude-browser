@@ -18,7 +18,7 @@
  */
 import { EventType, IncrementalSource, type eventWithTime } from "@mirror/protocol";
 import type { RewriteStage } from "../hub/tabhub";
-import { sealAssetToken } from "./token";
+import { ANY_SESSION_TAB, sealAssetToken } from "./token";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -596,7 +596,10 @@ function rewriteUrlPreservingSpace(
 
 function proxyUrl(url: string, key: Buffer, ctx: RewriteContext): string {
   if (ctx.assetUrl !== undefined) return ctx.assetUrl(url);
-  const token = sealAssetToken({ url, sessionId: ctx.sessionId, tabId: ctx.tabId }, key);
+  // A blob belongs to its page. Everything else keeps its address, and so its cached copy, when
+  // the session gets a new tab.
+  const tabId = url.startsWith("blob:") ? ctx.tabId : ANY_SESSION_TAB;
+  const token = sealAssetToken({ url, sessionId: ctx.sessionId, tabId }, key);
   return `/s/${encodeURIComponent(ctx.sessionId)}/a/${token}`;
 }
 

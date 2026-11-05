@@ -78,9 +78,29 @@ describe("P0-FANOUT", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  it("sends the first delta after a quiet moment at once and batches what follows it", () => {
+    const hub = readyHub();
+    const fanout = new Fanout(30);
+    const socket = new MockSocket();
+    fanout.addViewer(new ViewerConn(socket, () => hub.joinPayload()));
+    socket.take();
+
+    publishEvent(hub, fanout, 10);
+    expect(socket.take()).toMatchObject([{ t: "delta", seq: 2 }]);
+    publishEvent(hub, fanout, 11);
+    publishEvent(hub, fanout, 12);
+    expect(socket.sent).toEqual([]);
+    vi.advanceTimersByTime(30);
+    expect(socket.take()).toMatchObject([{ t: "delta", seq: 3 }]);
+    vi.advanceTimersByTime(30);
+    publishEvent(hub, fanout, 13);
+    expect(socket.take()).toMatchObject([{ t: "delta", seq: 5 }]);
+    fanout.close();
+  });
+
   it("batches contiguous deltas for 30ms and broadcasts one byte-identical serialization", () => {
     const hub = readyHub();
-    const fanout = new Fanout();
+    const fanout = new Fanout(30, undefined, false);
     const a = new MockSocket();
     const b = new MockSocket();
     fanout.addViewer(new ViewerConn(a, () => hub.joinPayload()));
@@ -109,7 +129,7 @@ describe("P0-FANOUT", () => {
 
   it("stalls only the slow viewer, then drains into a fresh join payload", () => {
     const hub = readyHub();
-    const fanout = new Fanout(30);
+    const fanout = new Fanout(30, undefined, false);
     const slowSocket = new MockSocket();
     const fastSocket = new MockSocket();
     const slow = new ViewerConn(slowSocket, () => hub.joinPayload(), { drainPollMs: 10 });
@@ -154,7 +174,7 @@ describe("P0-FANOUT", () => {
 
   it("does not replay a pending batch to a viewer whose join already contained it", () => {
     const hub = readyHub();
-    const fanout = new Fanout();
+    const fanout = new Fanout(30, undefined, false);
     const existingSocket = new MockSocket();
     fanout.addViewer(new ViewerConn(existingSocket, () => hub.joinPayload()));
     existingSocket.take();

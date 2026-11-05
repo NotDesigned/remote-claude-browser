@@ -26,8 +26,6 @@ import {
  * and integration wires it in main.ts — the hub calls it on every buffered event and NEVER
  * needs editing for it. Identity until then.
  */
-const TRIM_MIN_INTERVAL_MS = 30_000;
-const TRIM_FORCE_FACTOR = 4;
 
 export type RewriteStage = (
   e: eventWithTime,
@@ -40,11 +38,10 @@ export interface TabHubOpts {
   sessionId: string;
   tabId: TabId;
   maxDeltaEvents?: number; // default 5000
-  maxDeltaBytes?: number; // default 10MB
+  maxDeltaBytes?: number; // default 4MB
   snapshotRequestTimeoutMs?: number; // default 5000
   snapshotRetryMs?: number; // default 250; nav/resync retry base
   snapshotRetryMaxMs?: number; // default 5000; bounded exponential backoff
-  trimIdleMs?: number; // default 750
   now?: () => number; // default Date.now
   rewrite?: RewriteStage; // default identityRewrite
 }
@@ -72,7 +69,6 @@ export class TabHub {
   private readonly snapshotRequestTimeoutMs: number;
   private readonly snapshotRetryMs: number;
   private readonly snapshotRetryMaxMs: number;
-  private readonly trimIdleMs: number;
   private readonly now: () => number;
   private readonly rewrite: RewriteStage;
   private readonly needSnapshotListeners = new Set<NeedSnapshotListener>();
@@ -86,8 +82,12 @@ export class TabHub {
   private snapshotRequestTimer: ReturnType<typeof setTimeout> | undefined;
   private snapshotRetryTimer: ReturnType<typeof setTimeout> | undefined;
   private snapshotRetryDelayMs: number;
-  private trimTimer: ReturnType<typeof setTimeout> | undefined;
-  private lastTrimAt = Number.NEGATIVE_INFINITY;
+  /**
+   * The buffer overflowed, so nothing here can bring a new viewer up to date. Connected viewers
+   * are fine as they are, so a new snapshot waits until someone actually needs one.
+   */
+  private historyDropped = false;
+  private lastActivity = 0;
   private pendingSnapshotReason: SnapshotReason | null = null;
   private queuedSnapshotReason: SnapshotReason | null = null;
   private snapshotSeq = 0;
@@ -100,12 +100,11 @@ export class TabHub {
     assertPositiveLimit("snapshotRequestTimeoutMs", opts.snapshotRequestTimeoutMs);
     assertPositiveLimit("snapshotRetryMs", opts.snapshotRetryMs);
     assertPositiveLimit("snapshotRetryMaxMs", opts.snapshotRetryMaxMs);
-    assertLimit("trimIdleMs", opts.trimIdleMs);
 
     this.sessionId = opts.sessionId;
     this.tabId = opts.tabId;
     this.maxDeltaEvents = opts.maxDeltaEvents ?? 5_000;
-    this.maxDeltaBytes = opts.maxDeltaBytes ?? 10 * 1024 * 1024;
+    this.maxDeltaBytes = opts.maxDeltaBytes ?? 4 * 1024 * 1024;
     this.snapshotRequestTimeoutMs = opts.snapshotRequestTimeoutMs ?? 5_000;
     this.snapshotRetryMs = opts.snapshotRetryMs ?? 250;
     this.snapshotRetryMaxMs = opts.snapshotRetryMaxMs ?? 5_000;
@@ -113,7 +112,6 @@ export class TabHub {
       throw new RangeError("snapshotRetryMaxMs must be greater than or equal to snapshotRetryMs");
     }
     this.snapshotRetryDelayMs = this.snapshotRetryMs;
-    this.trimIdleMs = opts.trimIdleMs ?? 750;
     this.now = opts.now ?? Date.now;
     this.rewrite = opts.rewrite ?? identityRewrite;
   }
@@ -124,6 +122,7 @@ export class TabHub {
    * closes the old epoch.
    */
   ingest(msg: AgentMsg): Down[] {
+    this.lastActivity = this.now();
     if (msg.kind === "cmdres") return [];
 
     if (msg.kind === "hello") {
@@ -145,7 +144,7 @@ export class TabHub {
       this.pendingFullSnapshot = null;
       this.pendingSnapshotReason = null;
       this.queuedSnapshotReason = null;
-      this.clearTrimTimer();
+      this.historyDropped = false;
       this.clearSnapshotRetry(true);
       this.clearSnapshotRequest();
       this.requestSnapshot("nav");
@@ -171,7 +170,7 @@ export class TabHub {
     }
 
     // No delta can be replayed safely until its document has a complete snapshot pair.
-    if (this.meta === null || this.snapshot === null) return [];
+    if ((this.meta === null || this.snapshot === null) && !this.historyDropped) return [];
 
     const seq = ++this.seq;
     const down: Down = {
@@ -185,7 +184,12 @@ export class TabHub {
     this.deltaBytes += utf8JsonBytes(down);
 
     if (this.deltas.length > this.maxDeltaEvents || this.deltaBytes > this.maxDeltaBytes) {
-      this.maybeRequestTrimSnapshot();
+      this.historyDropped = true;
+      this.snapshot = null;
+      this.deltas = [];
+      this.deltaBytes = 0;
+      // A viewer that lost only what comes after this point can still resume.
+      this.snapshotSeq = this.seq;
     }
 
     return [down];
@@ -200,7 +204,8 @@ export class TabHub {
    * continue from this hub's buffer instead of receiving a fresh snapshot.
    */
   canResume(epoch: number, nextSeq: number): boolean {
-    if (this.meta === null || this.snapshot === null || epoch !== this.epoch) return false;
+    if (epoch !== this.epoch) return false;
+    if ((this.meta === null || this.snapshot === null) && !this.historyDropped) return false;
     const offset = nextSeq - (this.snapshotSeq + 1);
     return Number.isSafeInteger(offset) && offset >= 0 && offset <= this.deltas.length;
   }
@@ -213,6 +218,7 @@ export class TabHub {
         : [{ t: "delta", tab: this.tabId, epoch: this.epoch, seq: resume.nextSeq, data: tail }];
     }
     const payload: Down[] = [{ t: "resync", tab: this.tabId }];
+    if (this.historyDropped && !this.snapshotRequested) this.requestSnapshot("resync");
     if (this.meta === null || this.snapshot === null) return payload;
 
     payload.push({
@@ -243,6 +249,11 @@ export class TabHub {
     return meta?.type === EventType.Meta && meta.data.width === w && meta.data.height === h;
   }
 
+  /** When the page last reported anything, which is how long it has been sitting idle. */
+  get lastActivityAt(): number {
+    return this.lastActivity;
+  }
+
   /** Fired when thresholds/docId change require a fresh FullSnapshot (caller sends the cmd). */
   onNeedSnapshot(cb: NeedSnapshotListener): void {
     this.needSnapshotListeners.add(cb);
@@ -251,6 +262,7 @@ export class TabHub {
   /** A dead renderer's cached document must never be offered as current page content. */
   invalidateDocument(): void {
     this.hasDocument = false;
+    this.historyDropped = false;
     this.meta = null;
     this.snapshot = null;
     this.deltas = [];
@@ -259,16 +271,14 @@ export class TabHub {
     this.pendingFullSnapshot = null;
     this.pendingSnapshotReason = null;
     this.queuedSnapshotReason = null;
-    this.clearTrimTimer();
     this.clearSnapshotRetry(true);
     this.clearSnapshotRequest();
   }
 
-  /** Record accepted driver activity so routine buffer trims wait for an idle moment. */
+  /** Someone is using the page, even if it has nothing to report yet. */
   noteInput(at = this.now()): void {
     if (!Number.isFinite(at)) throw new RangeError("input timestamp must be finite");
-    this.lastInputAt = at;
-    if (this.isOverDeltaLimit() && !this.snapshotRequested) this.maybeRequestTrimSnapshot();
+    this.lastActivity = at;
   }
 
   /** Force a fresh snapshot for a semantic cause such as viewport geometry change. */
@@ -280,7 +290,6 @@ export class TabHub {
       return;
     }
     this.pendingSnapshotReason = strongerReason(this.pendingSnapshotReason, reason);
-    this.clearTrimTimer();
     // A fresh semantic request supersedes a pending retry timer. Preserve its backoff until an
     // epoch succeeds or a new document resets the recovery chain.
     this.clearSnapshotRetry(false);
@@ -309,17 +318,24 @@ export class TabHub {
 
     this.meta = meta;
     this.snapshot = externalizeSheets(this.pendingFullSnapshot);
+    this.historyDropped = false;
     this.nextMeta = null;
     this.pendingFullSnapshot = null;
     this.deltas = [];
     this.deltaBytes = 0;
-    this.clearTrimTimer();
     this.clearSnapshotRequest();
     this.clearSnapshotRetry(true);
     this.epoch += 1;
     this.snapshotSeq = ++this.seq;
-    const reason = this.pendingSnapshotReason ?? "resync";
-    const queuedReason = this.queuedSnapshotReason;
+    // A page that opened at the agreed size needs no second snapshot to prove it.
+    const settlesViewport =
+      this.queuedSnapshotReason === "viewport" &&
+      this.viewport !== null &&
+      meta.type === EventType.Meta &&
+      meta.data.width === this.viewport.w &&
+      meta.data.height === this.viewport.h;
+    const reason = settlesViewport ? "viewport" : (this.pendingSnapshotReason ?? "resync");
+    const queuedReason = settlesViewport ? null : this.queuedSnapshotReason;
     this.pendingSnapshotReason = null;
     this.queuedSnapshotReason = null;
 
@@ -337,47 +353,7 @@ export class TabHub {
     ];
   }
 
-  private maybeRequestTrimSnapshot(): void {
-    if (!this.isOverDeltaLimit() || this.snapshotRequested) return;
-    // A snapshot makes framed documents report again, which can itself fill the buffer. Without a
-    // pause that repeats forever, so only a far larger buffer may cut the pause short.
-    const pause = this.isFarOverDeltaLimit()
-      ? 0
-      : this.lastTrimAt + TRIM_MIN_INTERVAL_MS - this.now();
-    const waitMs = Math.max(pause, this.lastInputAt + this.trimIdleMs - this.now());
-    if (waitMs <= 0) {
-      this.lastTrimAt = this.now();
-      this.requestSnapshot("trim");
-      return;
-    }
-
-    this.clearTrimTimer();
-    this.trimTimer = setTimeout(() => {
-      this.trimTimer = undefined;
-      this.maybeRequestTrimSnapshot();
-    }, waitMs);
-    this.trimTimer.unref?.();
-  }
-
-  private isFarOverDeltaLimit(): boolean {
-    return (
-      this.deltas.length > this.maxDeltaEvents * TRIM_FORCE_FACTOR ||
-      this.deltaBytes > this.maxDeltaBytes * TRIM_FORCE_FACTOR
-    );
-  }
-
-  private isOverDeltaLimit(): boolean {
-    return this.deltas.length > this.maxDeltaEvents || this.deltaBytes > this.maxDeltaBytes;
-  }
-
-  private clearTrimTimer(): void {
-    if (this.trimTimer !== undefined) clearTimeout(this.trimTimer);
-    this.trimTimer = undefined;
-  }
-
   private failSnapshotRequest(attempt: number): void {
-    // A trim that never produced a snapshot refilled nothing, so its retry need not wait.
-    this.lastTrimAt = Number.NEGATIVE_INFINITY;
     if (!this.snapshotRequested || attempt !== this.snapshotRequestAttempt) return;
     const reason = this.pendingSnapshotReason;
     this.clearSnapshotRequest();

@@ -152,7 +152,6 @@ import { createMirror } from "./mirror";
 import { EventPipeline } from "./pipeline";
 import { RebuildRestoreHooks } from "./rebuild-restore";
 import { REPLAY_CURSOR_PASSTHROUGH_RULE } from "./replay-cursor";
-import { createServerClock } from "./clock";
 
 class FakeElement {
   className = "";
@@ -245,46 +244,18 @@ describe("D10 recovery triggers", () => {
     fakeRrweb.FakeReplayer.instances.length = 0;
   });
 
-  it("requests one calibrated snapshot when measured RTT can reduce the live buffer", () => {
+  it("needs no new snapshot when the round trip is measured", () => {
     const document = new FakeDocument();
     const container = new FakeElement(document) as unknown as HTMLElement;
     const requestResync = vi.fn();
-    const buffers: number[] = [];
-    const mirror = createMirror({
-      container,
-      pipeline: new EventPipeline(),
-      requestResync,
-      onBufferApplied: (value) => buffers.push(value),
-    });
+    const mirror = createMirror({ container, pipeline: new EventPipeline(), requestResync });
     mirror.handle({ t: "snapshot", tab: "T1", epoch: 1, seq: 1, data: [full(1000)] });
     mirror.observeRtt(173);
     mirror.observeRtt(170);
-    expect(requestResync).toHaveBeenCalledOnce();
-    mirror.handle({ t: "snapshot", tab: "T1", epoch: 2, seq: 2, data: [full(1100)] });
-    expect(buffers).toEqual([300, 68]);
+    expect(requestResync).not.toHaveBeenCalled();
     mirror.teardown();
   });
 
-  it("reports the buffer used by the active replay, changing only when a new baseline is applied", () => {
-    const document = new FakeDocument();
-    const container = new FakeElement(document) as unknown as HTMLElement;
-    const clock = createServerClock({ now: () => 10000 });
-    const buffers: number[] = [];
-    const mirror = createMirror({
-      container,
-      pipeline: new EventPipeline(),
-      clock,
-      requestResync: () => {},
-      onBufferApplied: (value) => buffers.push(value),
-    });
-    mirror.handle({ t: "snapshot", tab: "T1", epoch: 1, seq: 1, data: [full(1000)] });
-    expect(buffers).toEqual([300]);
-    clock.observeRtt(173);
-    expect(buffers).toEqual([300]);
-    mirror.handle({ t: "snapshot", tab: "T1", epoch: 2, seq: 2, data: [full(1100)] });
-    expect(buffers).toEqual([300, 69]);
-    mirror.teardown();
-  });
   it("rebuilds the Replayer for a trim epoch and runs interaction restore hooks", () => {
     fakeRrweb.FakeReplayer.instances.length = 0;
     const document = new FakeDocument();
@@ -304,7 +275,6 @@ describe("D10 recovery triggers", () => {
         },
       }),
       requestResync: () => {},
-      adaptiveBuffer: false,
     });
 
     mirror.handle({
@@ -354,7 +324,6 @@ describe("D10 recovery triggers", () => {
       container,
       pipeline: new EventPipeline(),
       requestResync: () => {},
-      adaptiveBuffer: false,
     });
 
     mirror.handle({
@@ -386,7 +355,6 @@ describe("D10 recovery triggers", () => {
       container,
       pipeline: new EventPipeline(),
       requestResync: () => {},
-      adaptiveBuffer: false,
     });
 
     mirror.handle({
@@ -425,7 +393,6 @@ describe("D10 recovery triggers", () => {
       container,
       pipeline: new EventPipeline(),
       requestResync: () => {},
-      adaptiveBuffer: false,
     });
 
     mirror.handle({
@@ -454,7 +421,6 @@ describe("D10 recovery triggers", () => {
         container,
         pipeline: new EventPipeline(),
         requestResync: () => {},
-        adaptiveBuffer: false,
       });
       mirror.handle({
         t: "snapshot",
@@ -493,7 +459,6 @@ describe("D10 recovery triggers", () => {
         container,
         pipeline: new EventPipeline(),
         requestResync: () => {},
-        adaptiveBuffer: false,
       });
       mirror.handle({
         t: "snapshot",
@@ -530,7 +495,6 @@ describe("D10 recovery triggers", () => {
       container: rawContainer as unknown as HTMLElement,
       pipeline: new EventPipeline(),
       requestResync: (_tab, reason) => requests.push(reason),
-      adaptiveBuffer: false,
     });
     mirror.handle({
       t: "snapshot",
@@ -572,7 +536,6 @@ describe("D10 recovery triggers", () => {
       container: rawContainer as unknown as HTMLElement,
       pipeline: new EventPipeline(),
       requestResync: (_tab, reason) => requests.push(reason),
-      adaptiveBuffer: false,
     });
     mirror.handle({
       t: "snapshot",
@@ -601,7 +564,6 @@ describe("D10 recovery triggers", () => {
       container: rawContainer as unknown as HTMLElement,
       pipeline: new EventPipeline(),
       requestResync: (_tab, reason) => requests.push(reason),
-      adaptiveBuffer: false,
     });
     mirror.handle({
       t: "snapshot",
@@ -636,7 +598,6 @@ describe("D10 recovery triggers", () => {
         };
       },
       requestResync: () => {},
-      adaptiveBuffer: false,
     });
 
     mirror.handle({
@@ -675,7 +636,6 @@ describe("D10 recovery triggers", () => {
       container,
       pipeline: new EventPipeline(),
       requestResync: () => {},
-      adaptiveBuffer: false,
       rtc: {
         createLane: () => `lane-${++lane}`,
         send: (tab, rtcLane, payload) => sent.push({ tab, lane: rtcLane, payload }),
@@ -761,7 +721,6 @@ describe("D10 recovery triggers", () => {
         applied.push({ epoch: snapshot.epoch, reason: snapshot.reason });
       },
       requestResync: () => {},
-      adaptiveBuffer: false,
     });
 
     mirror.handle({

@@ -173,54 +173,59 @@ describe("TabHub", () => {
     assertJoinInvariant(hub);
   });
 
-  it("requests one replacement snapshot after event or serialized-byte thresholds", () => {
-    const eventHub = new TabHub({
+  it("drops its history over a limit, keeps viewers going, and snapshots only for a join", () => {
+    const hub = new TabHub({
       sessionId: "s1",
       tabId: "events",
       maxDeltaEvents: 2,
       maxDeltaBytes: Number.MAX_SAFE_INTEGER,
     });
-    let eventRequests = 0;
-    eventHub.onNeedSnapshot(() => eventRequests++);
-    eventHub.ingest(hello(1));
-    eventHub.ingest(rrweb(1, meta(1)));
-    eventHub.ingest(rrweb(1, full(1)));
-    expect(eventRequests).toBe(1);
-    eventHub.ingest(rrweb(1, delta(1, 0)));
-    eventHub.ingest(rrweb(1, delta(1, 1)));
-    expect(eventRequests).toBe(1);
-    eventHub.ingest(rrweb(1, delta(1, 2)));
-    eventHub.ingest(rrweb(1, delta(1, 3)));
-    expect(eventRequests).toBe(2);
+    const requested: string[] = [];
+    hub.onNeedSnapshot((reason) => requested.push(reason));
+    hub.ingest(hello(1));
+    hub.ingest(rrweb(1, meta(1)));
+    hub.ingest(rrweb(1, full(1)));
+    for (let index = 0; index < 3; index++) hub.ingest(rrweb(1, delta(1, index)));
+    expect(hub.deltas).toEqual([]);
+    expect(hub.deltaBytes).toBe(0);
+    expect(requested).toEqual(["nav"]);
 
-    const nextSnapshot = snapshotMessage(eventHub.ingest(rrweb(1, full(1))));
-    expect(nextSnapshot.epoch).toBe(2);
-    expect(eventHub.deltas).toEqual([]);
-    expect(eventHub.deltaBytes).toBe(0);
+    // Those connected keep receiving, and one back from a short gap can still continue.
+    const [live] = hub.ingest(rrweb(1, delta(1, 3)));
+    expect(live).toMatchObject({ t: "delta", epoch: 1 });
+    const seq = (live as Extract<Down, { t: "delta" }>).seq;
+    expect(hub.canResume(1, seq)).toBe(true);
+    expect(hub.canResume(1, seq - 1)).toBe(false);
 
-    const byteHub = new TabHub({
+    // Only someone who cannot continue costs a snapshot.
+    expect(hub.joinPayload().map((message) => message.t)).toEqual(["resync"]);
+    expect(requested).toEqual(["nav", "resync"]);
+    const next = snapshotMessage(hub.ingest(rrweb(1, full(1))));
+    expect(next.epoch).toBe(2);
+    expect(hub.joinPayload().map((message) => message.t)).toEqual(["resync", "snapshot"]);
+  });
+
+  it("measures its limit in serialized bytes", () => {
+    const hub = new TabHub({
       sessionId: "s1",
       tabId: "bytes",
       maxDeltaEvents: Number.MAX_SAFE_INTEGER,
-      maxDeltaBytes: 0,
+      maxDeltaBytes: 1_000,
     });
-    let byteRequests = 0;
-    byteHub.onNeedSnapshot(() => byteRequests++);
-    byteHub.ingest(hello(2));
-    byteHub.ingest(rrweb(2, meta(2)));
-    byteHub.ingest(rrweb(2, full(2)));
+    hub.ingest(hello(2));
+    hub.ingest(rrweb(2, meta(2)));
+    hub.ingest(rrweb(2, full(2)));
     const unicodeDelta: eventWithTime = {
       type: EventType.Custom,
       timestamp: 2_002,
       data: { tag: "wire-bytes", payload: "🙂" },
     };
-    const emitted = byteHub.ingest(rrweb(2, unicodeDelta));
-    expect(byteRequests).toBe(2);
-    expect(byteHub.deltaBytes).toBe(new TextEncoder().encode(encodeMsg(emitted[0]!)).byteLength);
+    const emitted = hub.ingest(rrweb(2, unicodeDelta));
+    expect(hub.deltaBytes).toBe(new TextEncoder().encode(encodeMsg(emitted[0]!)).byteLength);
   });
 
-  it("labels navigation, trim, viewport, and resync snapshots with their cause", () => {
-    const hub = new TabHub({ sessionId: "s1", tabId: "reasons", maxDeltaEvents: 0 });
+  it("labels navigation, viewport, and resync snapshots with their cause", () => {
+    const hub = new TabHub({ sessionId: "s1", tabId: "reasons" });
     const requestedReasons: string[] = [];
     hub.onNeedSnapshot((reason) => requestedReasons.push(reason));
 
@@ -230,136 +235,49 @@ describe("TabHub", () => {
     expect(navigation.reason).toBe("nav");
     expect(snapshotMessage(hub.joinPayload()).reason).toBe("resync");
 
-    hub.ingest(rrweb(1, delta(1, 0)));
-    const trim = snapshotMessage(hub.ingest(rrweb(1, full(1))));
-    expect(trim.reason).toBe("trim");
-
     hub.requestSnapshot("viewport");
     const viewport = snapshotMessage(hub.ingest(rrweb(1, full(1))));
     expect(viewport.reason).toBe("viewport");
-    expect(requestedReasons).toEqual(["nav", "trim", "viewport"]);
+    expect(requestedReasons).toEqual(["nav", "viewport"]);
   });
 
-  it("queues a viewport snapshot behind an in-flight trim without mislabeling either", () => {
-    const hub = new TabHub({ sessionId: "s1", tabId: "queued-reason", maxDeltaEvents: 0 });
-    const requestedReasons: string[] = [];
-    hub.onNeedSnapshot((reason) => requestedReasons.push(reason));
-    hub.ingest(hello(1));
-    hub.ingest(rrweb(1, meta(1)));
-    hub.ingest(rrweb(1, full(1)));
-
-    hub.ingest(rrweb(1, delta(1, 0)));
-    hub.requestSnapshot("viewport");
-    expect(snapshotMessage(hub.ingest(rrweb(1, full(1)))).reason).toBe("trim");
-    expect(requestedReasons).toEqual(["nav", "trim", "viewport"]);
-    expect(snapshotMessage(hub.ingest(rrweb(1, full(1)))).reason).toBe("viewport");
-  });
-
-  it("waits between trims, as a snapshot's framed documents can refill the buffer at once", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(1_000);
-    const hub = new TabHub({ sessionId: "s1", tabId: "loop", maxDeltaEvents: 2, trimIdleMs: 0 });
+  it("settles a viewport agreement with the new page's own snapshot when the size already fits", () => {
+    const hub = new TabHub({ sessionId: "s1", tabId: "fits" });
     const requested: string[] = [];
     hub.onNeedSnapshot((reason) => requested.push(reason));
     hub.ingest(hello(1));
     hub.ingest(rrweb(1, meta(1)));
     hub.ingest(rrweb(1, full(1)));
-    const fill = (from: number, count: number) => {
-      for (let i = 0; i < count; i++) hub.ingest(rrweb(1, delta(1, from + i)));
-    };
-    fill(0, 3);
-    expect(requested).toEqual(["nav", "trim"]);
-    hub.ingest(rrweb(1, meta(1)));
-    hub.ingest(rrweb(1, full(1)));
+    const { width, height } = (
+      hub.joinPayload()[1] as unknown as {
+        data: { data: { width: number; height: number } }[];
+      }
+    ).data[0]!.data;
 
-    fill(10, 3);
-    expect(requested).toEqual(["nav", "trim"]);
-    vi.advanceTimersByTime(30_000);
-    expect(requested).toEqual(["nav", "trim", "trim"]);
-    hub.ingest(rrweb(1, meta(1)));
-    hub.ingest(rrweb(1, full(1)));
+    hub.viewport = { w: width, h: height, dpr: 1 };
+    hub.requestSnapshot("viewport");
+    hub.ingest(hello(2));
+    hub.ingest(rrweb(2, meta(2)));
+    expect(snapshotMessage(hub.ingest(rrweb(2, full(2)))).reason).toBe("viewport");
+    expect(requested).toEqual(["nav", "viewport", "nav"]);
 
-    // A buffer this far over cannot wait.
-    fill(20, 9);
-    expect(requested).toEqual(["nav", "trim", "trim", "trim"]);
+    hub.viewport = { w: width + 1, h: height, dpr: 1 };
+    hub.requestSnapshot("viewport");
+    hub.ingest(hello(3));
+    hub.ingest(rrweb(3, meta(3)));
+    expect(snapshotMessage(hub.ingest(rrweb(3, full(3)))).reason).toBe("nav");
+    expect(requested.at(-1)).toBe("viewport");
   });
 
-  it("defers a threshold trim until driver input has been idle for the quiet window", () => {
+  it("notes when the page was last active, from its messages and from input", () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
-    const hub = new TabHub({
-      sessionId: "s1",
-      tabId: "idle-trim",
-      maxDeltaEvents: 0,
-      trimIdleMs: 750,
-    });
-    const requestedReasons: string[] = [];
-    hub.onNeedSnapshot((reason) => requestedReasons.push(reason));
+    const hub = new TabHub({ sessionId: "s1", tabId: "activity" });
     hub.ingest(hello(1));
-    hub.ingest(rrweb(1, meta(1)));
-    hub.ingest(rrweb(1, full(1)));
-
-    hub.noteInput();
-    hub.ingest(rrweb(1, delta(1, 0)));
-    expect(requestedReasons).toEqual(["nav"]);
+    expect(hub.lastActivityAt).toBe(1_000);
     vi.advanceTimersByTime(500);
     hub.noteInput();
-    vi.advanceTimersByTime(749);
-    expect(requestedReasons).toEqual(["nav"]);
-
-    vi.advanceTimersByTime(1);
-    expect(requestedReasons).toEqual(["nav", "trim"]);
-    expect(hub.lastInputAt).toBe(1_500);
-  });
-
-  it("re-arms after a failed snapshot command and clears the bounded tail on retry", async () => {
-    const hub = new TabHub({
-      sessionId: "s1",
-      tabId: "retry",
-      maxDeltaEvents: 2,
-      maxDeltaBytes: Number.MAX_SAFE_INTEGER,
-    });
-    let requests = 0;
-    hub.onNeedSnapshot(() => {
-      requests += 1;
-      if (requests === 2) return Promise.reject(new Error("snapshot command failed"));
-    });
-
-    hub.ingest(hello(1));
-    hub.ingest(rrweb(1, meta(1)));
-    hub.ingest(rrweb(1, full(1)));
-    for (let index = 0; index < 3; index++) hub.ingest(rrweb(1, delta(1, index)));
-    expect(requests).toBe(2);
-
-    await Promise.resolve();
-    hub.ingest(rrweb(1, delta(1, 3)));
-    expect(requests).toBe(3);
-
-    hub.ingest(rrweb(1, full(1)));
-    expect(hub.deltas).toEqual([]);
-    expect(hub.deltaBytes).toBe(0);
-  });
-
-  it("times out a fire-and-forget snapshot request so the next breach retries", () => {
-    vi.useFakeTimers();
-    const hub = new TabHub({
-      sessionId: "s1",
-      tabId: "timeout-retry",
-      maxDeltaEvents: 0,
-      snapshotRequestTimeoutMs: 25,
-    });
-    let requests = 0;
-    hub.onNeedSnapshot(() => requests++);
-
-    hub.ingest(hello(1));
-    hub.ingest(rrweb(1, meta(1)));
-    hub.ingest(rrweb(1, full(1)));
-    hub.ingest(rrweb(1, delta(1, 0)));
-    expect(requests).toBe(2);
-
-    vi.advanceTimersByTime(25);
-    hub.ingest(rrweb(1, delta(1, 1)));
-    expect(requests).toBe(3);
+    expect(hub.lastActivityAt).toBe(1_500);
   });
 
   it("retries a timed-out navigation snapshot without waiting for a delta breach", async () => {
@@ -581,7 +499,6 @@ describe("TabHub", () => {
           snapshotRetryMaxMs: 10,
         }),
     ).toThrow(RangeError);
-    expect(() => new TabHub({ sessionId: "s", tabId: "t", trimIdleMs: -1 })).toThrow(RangeError);
 
     const hub = new TabHub({ sessionId: "s", tabId: "t" });
     expect(() => hub.noteInput(Number.NaN)).toThrow(RangeError);

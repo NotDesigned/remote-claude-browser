@@ -226,7 +226,8 @@ export function createCommandHandler(
               });
               return;
             }
-            emitSnapshot(cmd.reqId);
+            // Starting has just produced the snapshot that was asked for.
+            emitter.emit({ kind: "cmdres", reqId: cmd.reqId, ok: true });
           });
           return;
         }
