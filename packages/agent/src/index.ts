@@ -31,6 +31,7 @@ import { record } from "@rrweb/record";
 import { addFontsToSnapshot, installFontCapture } from "./font-capture";
 import {
   broadcastStitchSync,
+  createReturnedDocumentCheck,
   installStitchReadyListener,
   installStitchSyncForwarder,
   installStitchSyncListener,
@@ -134,6 +135,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   // Must precede record() so rrweb's shadow observer and initial snapshot use the retained roots.
   installClosedShadowShim();
   // A cross-origin child's snapshot is the only way its fonts reach the replay.
+  const isReturnedDocument = createReturnedDocumentCheck();
   const fontCapture = installFontCapture(window, {
     onLateFont: () => {
       if (!isCrossOriginChild() || !recordReadiness.isStarted()) return;
@@ -243,6 +245,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
               addFontsToSnapshot(event.data.node, fontCapture.css());
               recordReadiness.markStarted();
             }
+            if (isReturnedDocument(event)) broadcastStitchSync();
             return event;
           },
         },

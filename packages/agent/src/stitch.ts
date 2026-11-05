@@ -6,6 +6,11 @@
  * closes both holes while keeping rrweb's parent-side iframe ID transform canonical.
  */
 
+import { EventType, IncrementalSource, type eventWithTime } from "@mirror/protocol";
+
+/** rrweb-snapshot's NodeType.Document. */
+const DOCUMENT_NODE = 0;
+
 export const STITCH_SYNC_MESSAGE_TYPE = "@mirror/stitch-sync";
 export const STITCH_READY_MESSAGE_TYPE = "@mirror/stitch-ready";
 export const STITCH_SYNC_MIN_INTERVAL_MS = 250;
@@ -69,6 +74,27 @@ export function installStitchReadyListener(target: Window = window): () => void 
 
   target.addEventListener("message", onMessage);
   return () => target.removeEventListener("message", onMessage);
+}
+
+/**
+ * A page can move a frame without reloading it, as Claude does when an artifact panel reopens. The
+ * frames inside never restart, so nothing else tells them that the replay has lost their content.
+ * Documents return with the same id, except after a snapshot, which requests the reports itself.
+ */
+export function createReturnedDocumentCheck(): (event: eventWithTime) => boolean {
+  const attached = new Set<number>();
+  return (event) => {
+    if (event.type === EventType.FullSnapshot) attached.clear();
+    if (event.type !== EventType.IncrementalSnapshot) return false;
+    if (event.data.source !== IncrementalSource.Mutation) return false;
+    let returned = false;
+    for (const { node } of event.data.adds) {
+      if (node.type !== DOCUMENT_NODE) continue;
+      if (attached.has(node.id)) returned = true;
+      attached.add(node.id);
+    }
+    return returned;
+  };
 }
 
 /**

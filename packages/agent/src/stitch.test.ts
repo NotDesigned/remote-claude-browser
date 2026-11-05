@@ -4,6 +4,7 @@ import {
   STITCH_READY_MESSAGE_TYPE,
   STITCH_SYNC_MESSAGE_TYPE,
   broadcastStitchSync,
+  createReturnedDocumentCheck,
   installStitchReadyListener,
   installStitchSyncListener,
   isCrossOriginChild,
@@ -11,6 +12,7 @@ import {
   isHiddenBlankFrame,
 } from "./stitch";
 import { createRecordReadiness, type RecordReadiness } from "./commands";
+import { EventType, IncrementalSource, type eventWithTime } from "@mirror/protocol";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -223,5 +225,39 @@ describe("isHiddenBlankFrame", () => {
     const top = { location: { href: "about:blank" } } as unknown as Window & { parent: unknown };
     top.parent = top;
     expect(isHiddenBlankFrame(top)).toBe(false);
+  });
+});
+
+describe("createReturnedDocumentCheck", () => {
+  const attach = (id: number): eventWithTime =>
+    ({
+      type: EventType.IncrementalSnapshot,
+      timestamp: 1,
+      data: {
+        source: IncrementalSource.Mutation,
+        texts: [],
+        attributes: [],
+        removes: [],
+        adds: [{ parentId: 5, nextId: null, node: { type: 0, id, childNodes: [] } }],
+      },
+    }) as unknown as eventWithTime;
+  const snapshot = {
+    type: EventType.FullSnapshot,
+    timestamp: 1,
+    data: { node: { type: 0, id: 1, childNodes: [] }, initialOffset: { top: 0, left: 0 } },
+  } as unknown as eventWithTime;
+
+  it("recognises a document attached a second time", () => {
+    const isReturned = createReturnedDocumentCheck();
+    expect(isReturned(attach(7))).toBe(false);
+    expect(isReturned(attach(8))).toBe(false);
+    expect(isReturned(attach(7))).toBe(true);
+  });
+
+  it("leaves documents attached after a snapshot to the snapshot's own request", () => {
+    const isReturned = createReturnedDocumentCheck();
+    isReturned(attach(7));
+    isReturned(snapshot);
+    expect(isReturned(attach(7))).toBe(false);
   });
 });
