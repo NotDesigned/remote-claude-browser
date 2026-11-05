@@ -199,7 +199,7 @@ describe("createScreencast", () => {
       smooth.controller.dispose();
     });
 
-    it("zooms only while no other session shares the site's zoom, and follows that changing", async () => {
+    it("does not zoom while another session shares the site's zoom, and zooms once alone", async () => {
       let alone = false;
       const { hub, pressed, controller } = await setup(
         2,
@@ -212,6 +212,18 @@ describe("createScreencast", () => {
       alone = true;
       controller.zoomAllowanceChanged();
       await vi.advanceTimersByTimeAsync(50);
+      expect(pressed[0]).toBe(2);
+      controller.dispose();
+    });
+
+    it("leaves its zoom as soon as another session opens", async () => {
+      let alone = true;
+      const { hub, pressed, controller } = await setup(
+        2,
+        () => (alone ? 2 : 1),
+        () => alone,
+      );
+      await controller.handle(px);
       expect(hub.pixelZoom).toBe(2);
       alone = false;
       controller.zoomAllowanceChanged();
