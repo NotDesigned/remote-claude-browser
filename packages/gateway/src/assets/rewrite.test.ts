@@ -201,6 +201,42 @@ describe("rrweb RewriteStage", () => {
     );
   });
 
+  it("takes a stylesheet link through the proxy, and leaves other links alone", () => {
+    const stage = createRewriteStage(KEY);
+    stage(
+      event({
+        type: EventType.Meta,
+        timestamp: 1,
+        data: { href: "https://page.example/index.html", width: 800, height: 600 },
+      }),
+      CTX,
+    );
+    const link = (id: number, attributes: Record<string, string>) => ({
+      type: 2,
+      id,
+      tagName: "link",
+      attributes,
+      childNodes: [],
+    });
+    const rewritten = stage(
+      fullSnapshot({
+        type: 0,
+        id: 1,
+        childNodes: [
+          link(2, { rel: "stylesheet", href: "https://cdn.example/site.css" }),
+          link(3, { rel: "canonical", href: "https://page.example/canonical" }),
+          link(4, { rel: "preload stylesheet", href: "/relative.css" }),
+        ],
+      }),
+      CTX,
+    ) as unknown as { data: { node: { childNodes: { attributes: { href: string } }[] } } };
+    const [sheet, canonical, relative] = rewritten.data.node.childNodes;
+
+    expect(proxiedRef(sheet!.attributes.href).url).toBe("https://cdn.example/site.css");
+    expect(canonical!.attributes.href).toBe("https://page.example/canonical");
+    expect(proxiedRef(relative!.attributes.href).url).toBe("https://page.example/relative.css");
+  });
+
   it("rewrites an @font-face woff2 URL to a sealed session asset route", () => {
     const stage = createRewriteStage(KEY);
     stage(

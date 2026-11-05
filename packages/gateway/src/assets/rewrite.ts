@@ -312,6 +312,12 @@ function rewriteSerializedNode(
   };
 }
 
+/** A change to only the address of a link says nothing about its rel, and only stylesheets change. */
+function isStylesheetLink(attributes: UnknownRecord): boolean {
+  const rel = Object.entries(attributes).find(([name]) => name.toLowerCase() === "rel")?.[1];
+  return rel === undefined || (typeof rel === "string" && /\bstylesheet\b/i.test(rel));
+}
+
 function rewriteAttributes(
   value: unknown,
   key: Buffer,
@@ -347,6 +353,19 @@ function rewriteAttributes(
       continue;
     let rewritten: unknown = original;
     if (DIRECT_URL_ATTRIBUTES.has(lowerName) && typeof original === "string") {
+      rewritten = rewriteUrlPreservingSpace(
+        original,
+        (url) => proxyUrl(url, key, ctx),
+        ctx.baseUrl,
+      );
+    } else if (
+      lowerName === "href" &&
+      tag === "link" &&
+      typeof original === "string" &&
+      isStylesheetLink(value)
+    ) {
+      // A stylesheet the page may not read has no text to mirror, and the viewer may not load it
+      // from its own origin, so it comes through the proxy like the images and fonts it refers to.
       rewritten = rewriteUrlPreservingSpace(
         original,
         (url) => proxyUrl(url, key, ctx),
