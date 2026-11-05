@@ -322,7 +322,9 @@ body {
 /* The mirror still holds the page before this one, as an error page cannot be recorded. */
 #page-load-failed {
   position: absolute;
-  inset: var(--shellbar-height) 0 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   z-index: 40;
   display: flex;
   flex-direction: column;

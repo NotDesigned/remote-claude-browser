@@ -1149,7 +1149,12 @@ export function App() {
       </div>
       <main id="mirror-host" data-input-ready={inputReady ? "true" : "false"} ref={hostRef} />
       {activeChrome?.failed === true && !pixelMode && (
-        <section id="page-load-failed" role="alert">
+        // From where the mirror starts: the address bar above it is how to go somewhere else.
+        <section
+          id="page-load-failed"
+          role="alert"
+          style={{ top: `${hostRef.current?.offsetTop ?? 0}px` }}
+        >
           <h2>这个网页打不开</h2>
           <p>{activeChrome.url}</p>
           <button
