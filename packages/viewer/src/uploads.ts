@@ -1,7 +1,9 @@
 /**
- * File-upload relay, viewer half. A local rrweb-clone input keeps the native mobile picker and
- * stages its File objects until the gateway's authoritative fileChooserOpened key arrives (or
- * vice versa). Each bounded file is streamed as one raw, same-origin request in selection order.
+ * File-upload relay, viewer half. When the remote page asks for a file the local picker opens at
+ * once, on the strength of the tap that made the page ask; a browser that refuses gets a panel with
+ * a button to tap instead. A local rrweb-clone input keeps its own native picker. Either way File
+ * objects are staged until the gateway's authoritative fileChooserOpened key arrives (or vice
+ * versa), and each bounded file is streamed as one raw, same-origin request in selection order.
  */
 import type { Down, TabId } from "@mirror/protocol";
 
@@ -24,7 +26,8 @@ interface Selection {
 
 export interface UploadState {
   tab: TabId;
-  phase: "picking" | "uploading" | "done" | "error";
+  /** `choosing`: the native picker is open, so nothing needs showing. `picking`: it needs a tap. */
+  phase: "choosing" | "picking" | "uploading" | "done" | "error";
   multiple: boolean;
   loaded: number;
   total: number;
@@ -33,6 +36,8 @@ export interface UploadState {
 
 export interface FileUploadRelayOptions {
   onState?: (state: UploadState | null) => void;
+  /** Opens the native picker straight away; false when the browser will not allow it. */
+  openPicker?: (multiple: boolean) => boolean;
   fetch?: typeof fetch;
   stageTimeoutMs?: number;
   setTimer?: typeof setTimeout;
@@ -45,6 +50,8 @@ export interface FileUploadRelay {
   select(tab: TabId, input: HTMLInputElement): void;
   /** Stage files that did not come from a file input (for example a pasted screenshot). */
   selectFiles(tab: TabId, files: readonly File[]): void;
+  /** The native picker was dismissed: gives this tab's pending request back to the remote page. */
+  cancelPick(tab: TabId): void;
   cancel(): void;
   clear(): void;
   dispose(): void;
@@ -148,14 +155,6 @@ export function createFileUploadRelay(options: FileUploadRelayOptions = {}): Fil
         }
       }
       clearPick(message.tab);
-      options.onState?.({
-        tab: message.tab,
-        phase: "picking",
-        multiple: message.multiple,
-        loaded: 0,
-        total: 0,
-        name: "请选择本机文件",
-      });
       const timer = schedule(() => {
         picks.delete(message.tab);
         clearSelection(message.tab);
@@ -170,6 +169,16 @@ export function createFileUploadRelay(options: FileUploadRelayOptions = {}): Fil
       }, stageTimeoutMs);
       picks.set(message.tab, { message, sessionId, timer });
       pair(message.tab);
+      // Files already staged (a paste) have just paired, and there is nothing left to choose.
+      if (!picks.has(message.tab)) return;
+      options.onState?.({
+        tab: message.tab,
+        phase: options.openPicker?.(message.multiple) === true ? "choosing" : "picking",
+        multiple: message.multiple,
+        loaded: 0,
+        total: 0,
+        name: "请选择本机文件",
+      });
     },
     select(tab, input) {
       if (disposed) return;
@@ -184,6 +193,15 @@ export function createFileUploadRelay(options: FileUploadRelayOptions = {}): Fil
       const timer = schedule(() => selections.delete(tab), stageTimeoutMs);
       selections.set(tab, { files: [...files], timer });
       pair(tab);
+    },
+    cancelPick(tab) {
+      const pick = clearPick(tab);
+      clearSelection(tab);
+      if (pick === undefined) return;
+      void request(`/s/${encodeURIComponent(pick.sessionId)}/u/${pick.message.key}`, {
+        method: "DELETE",
+      }).catch(() => undefined);
+      options.onState?.(null);
     },
     cancel() {
       this.clear();

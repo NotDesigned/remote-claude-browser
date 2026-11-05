@@ -26,6 +26,7 @@ const pageErrors = [];
 const uploadedFiles = [];
 const nativeStreams = new Set();
 let uploadSerial = 0;
+let chooserOpened = false;
 let completedFixtureDownload = false;
 let browser;
 let context;
@@ -397,6 +398,19 @@ wss.on("connection", (socket, request) => {
   });
 });
 
+/** The picker opens by itself soon after a click, and asks for a tap once that click is too old. */
+async function pickerReady(page) {
+  const deadline = Date.now() + 5_000;
+  while (
+    !chooserOpened &&
+    !(await page.getByRole("button", { name: "选择本机文件" }).isVisible())
+  ) {
+    assert.ok(Date.now() < deadline, "the file picker neither opened nor asked for a tap");
+    await page.waitForTimeout(50);
+  }
+  chooserOpened = false;
+}
+
 async function ready(page, sid) {
   await page.waitForFunction((expectedSid) => {
     return (
@@ -510,6 +524,9 @@ try {
     };
   });
   firstPage = await context.newPage();
+  firstPage.on("filechooser", () => {
+    chooserOpened = true;
+  });
   await firstPage.goto(`${origin}/?new=1`);
   const firstRequest = await firstCreateObserved.promise;
   await firstPage.waitForTimeout(250);
@@ -596,7 +613,7 @@ try {
       body: JSON.stringify({ tab: "fixture-client-1" }),
     }),
   );
-  await firstPage.getByRole("button", { name: "选择本机文件" }).waitFor();
+  await pickerReady(firstPage);
   await firstPage.locator("#local-file-picker").setInputFiles([
     { name: "DOM附件一.txt", mimeType: "text/plain", buffer: Buffer.from("附件一") },
     { name: "DOM附件二.txt", mimeType: "text/plain", buffer: Buffer.from("附件二") },
@@ -614,7 +631,7 @@ try {
       body: JSON.stringify({ tab: "fixture-client-1" }),
     }),
   );
-  await firstPage.getByRole("button", { name: "选择本机文件" }).waitFor();
+  await pickerReady(firstPage);
   await firstPage.locator("#local-file-picker").setInputFiles({
     name: "图像附件.txt",
     mimeType: "text/plain",

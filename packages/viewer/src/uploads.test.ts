@@ -23,6 +23,70 @@ function input(files: File[]): HTMLInputElement {
 }
 
 describe("viewer file upload relay", () => {
+  it("opens the native picker on a filepick and shows nothing while it is open", () => {
+    const openPicker = vi.fn(() => true);
+    const states: unknown[] = [];
+    const relay = createFileUploadRelay({
+      fetch: vi.fn(async () => new Response(null, { status: 204 })) as unknown as typeof fetch,
+      openPicker,
+      onState: (state) => states.push(state?.phase ?? null),
+    });
+
+    relay.handlePick(pick({ multiple: false }), "session-1");
+
+    expect(openPicker).toHaveBeenCalledExactlyOnceWith(false);
+    expect(states).toEqual(["choosing"]);
+    relay.dispose();
+  });
+
+  it("falls back to asking for a tap when the browser refuses the picker", () => {
+    const states: unknown[] = [];
+    const relay = createFileUploadRelay({
+      fetch: vi.fn(async () => new Response(null, { status: 204 })) as unknown as typeof fetch,
+      openPicker: () => false,
+      onState: (state) => states.push(state?.phase ?? null),
+    });
+
+    relay.handlePick(pick(), "session-1");
+
+    expect(states).toEqual(["picking"]);
+    relay.dispose();
+  });
+
+  it("does not open the picker for files that are already staged", async () => {
+    const openPicker = vi.fn(() => true);
+    const request = vi.fn(async () => new Response(null, { status: 204 }));
+    const relay = createFileUploadRelay({ fetch: request as unknown as typeof fetch, openPicker });
+
+    relay.selectFiles("tab-1", [new File(["image"], "pasted.png")]);
+    relay.handlePick(pick(), "session-1");
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+
+    expect(openPicker).not.toHaveBeenCalled();
+    relay.dispose();
+  });
+
+  it("gives the request back when the native picker is dismissed", async () => {
+    const request = vi.fn(async () => new Response(null, { status: 204 }));
+    const states: unknown[] = [];
+    const relay = createFileUploadRelay({
+      fetch: request as unknown as typeof fetch,
+      openPicker: () => true,
+      onState: (state) => states.push(state?.phase ?? null),
+    });
+
+    relay.handlePick(pick(), "session-1");
+    relay.cancelPick("tab-1");
+
+    expect(request).toHaveBeenCalledExactlyOnceWith("/s/session-1/u/upload-key", {
+      method: "DELETE",
+    });
+    expect(states).toEqual(["choosing", null]);
+    relay.cancelPick("tab-1");
+    expect(request).toHaveBeenCalledOnce();
+    relay.dispose();
+  });
+
   it("pairs a filepick received before local change and resets the cloned input", async () => {
     const request = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(null, { status: 204 }),

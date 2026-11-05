@@ -9,6 +9,10 @@ class FakeElement {
   readonly nodeType = 1;
   tagName = "INPUT";
   type = "file";
+  control?: FakeElement;
+  closest(): FakeElement {
+    return this;
+  }
 }
 
 class FakeDocument {
@@ -49,6 +53,37 @@ describe("file input capture", () => {
     expect(event.preventDefault).not.toHaveBeenCalled();
     detach();
     expect(doc.listeners.get("change")?.size).toBe(0);
+  });
+
+  it("reports a click on a file input or its label, and not on anything else", () => {
+    vi.stubGlobal("Element", FakeElement);
+    const doc = new FakeDocument();
+    const opened = vi.fn();
+    attachFileCapture({ doc: doc as unknown as Document, tab: "tab-1", select: vi.fn(), opened });
+    const label = Object.assign(new FakeElement(), {
+      tagName: "LABEL",
+      control: new FakeElement(),
+    });
+    const textInput = Object.assign(new FakeElement(), { type: "text" });
+
+    doc.fire("click", { target: new FakeElement(), isTrusted: true });
+    expect(opened).toHaveBeenCalledTimes(1);
+    doc.fire("click", { target: label, isTrusted: true });
+    expect(opened).toHaveBeenCalledTimes(2);
+    doc.fire("click", { target: textInput, isTrusted: true });
+    doc.fire("click", { target: new FakeElement(), isTrusted: false });
+    expect(opened).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a dismissed picker for its tab", () => {
+    vi.stubGlobal("Element", FakeElement);
+    const doc = new FakeDocument();
+    const canceled = vi.fn();
+    attachFileCapture({ doc: doc as unknown as Document, tab: "tab-1", select: vi.fn(), canceled });
+
+    doc.fire("cancel", { target: new FakeElement(), isTrusted: true });
+
+    expect(canceled).toHaveBeenCalledExactlyOnceWith("tab-1");
   });
 
   it("ignores synthetic and non-file changes", () => {

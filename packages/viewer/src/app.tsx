@@ -101,6 +101,8 @@ function viewStorage(): Pick<Storage, "getItem" | "setItem"> {
 
 const PICTURE_HOLD_TIMEOUT_MS = 8_000;
 const THEME_CHECK_MS = 3_000;
+/** How long after a click on a mirror file input the page's file request belongs to that click. */
+const MIRROR_PICKER_WINDOW_MS = 5_000;
 
 export function App() {
   const uploadRef = useRef<FileUploadRelay | null>(null);
@@ -454,9 +456,23 @@ export function App() {
           socket?.send({ t: "resync-req", tab: currentTab, reason: "editable-clear" });
       },
     });
+    // A file input in the mirror opens its own picker, and the same click reaches the remote page.
+    let mirrorPickerOpenedAt = Number.NEGATIVE_INFINITY;
     const uploads = createFileUploadRelay({
       onState: (state) => {
         if (!disposed) setUploadState(state);
+      },
+      openPicker: (multiple) => {
+        if (Date.now() - mirrorPickerOpenedAt < MIRROR_PICKER_WINDOW_MS) return true;
+        const input = fileInputRef.current;
+        if (input === null || typeof input.showPicker !== "function") return false;
+        input.multiple = multiple;
+        try {
+          input.showPicker();
+          return true;
+        } catch {
+          return false;
+        }
       },
     });
     uploadRef.current = uploads;
@@ -576,6 +592,10 @@ export function App() {
             if (driver) uploads.select(tab, input);
             else input.value = "";
           },
+          onFilePickerOpened: () => {
+            mirrorPickerOpenedAt = Date.now();
+          },
+          onFilePickerCanceled: (tab) => uploads.cancelPick(tab),
           onPasteFiles: (tab, files) => {
             if (driver && sessionId !== null) void uploadPastedFiles(tab, files, sessionId);
           },
@@ -1171,21 +1191,25 @@ export function App() {
         />
       )}
       <aside id="transfer-panels" aria-label="文件与剪贴板">
-        {uploadState !== null && (
+        <input
+          ref={fileInputRef}
+          id="local-file-picker"
+          type="file"
+          multiple={uploadState?.multiple ?? false}
+          hidden
+          onChange={(event) => {
+            if (uploadState === null) event.currentTarget.value = "";
+            else uploadRef.current?.select(uploadState.tab, event.currentTarget);
+          }}
+          onCancel={() => {
+            if (uploadState !== null) uploadRef.current?.cancelPick(uploadState.tab);
+          }}
+        />
+        {uploadState !== null && uploadState.phase !== "choosing" && (
           <section id="upload-panel" role="status">
             <span>{uploadState.name}</span>
             {uploadState.phase === "picking" && (
               <>
-                <input
-                  ref={fileInputRef}
-                  id="local-file-picker"
-                  type="file"
-                  multiple={uploadState.multiple}
-                  hidden
-                  onChange={(event) =>
-                    uploadRef.current?.select(uploadState.tab, event.currentTarget)
-                  }
-                />
                 <button type="button" onClick={() => fileInputRef.current?.click()}>
                   选择本机文件
                 </button>

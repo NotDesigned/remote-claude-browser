@@ -19,6 +19,8 @@ export interface MirrorInputOptions {
   onEditableInput?(focus: EditableFocus): void;
   onKeyDown?(event: KeyboardEvent, focus: EditableFocus | null): void;
   onFileSelection?(tab: TabId, input: HTMLInputElement): void;
+  onFilePickerOpened?(): void;
+  onFilePickerCanceled?(tab: TabId): void;
   /** Files pasted into the mirror; they are uploaded to the remote page as attachments. */
   onPasteFiles?(tab: TabId, files: File[]): void;
   scrollFilter?: ScrollFilter;
@@ -47,7 +49,19 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
       attachDefaultActionContainment({ doc }),
       ...(options.onFileSelection === undefined
         ? []
-        : [attachFileCapture({ doc, tab: options.tab, select: options.onFileSelection })]),
+        : [
+            attachFileCapture({
+              doc,
+              tab: options.tab,
+              select: options.onFileSelection,
+              ...(options.onFilePickerOpened === undefined
+                ? {}
+                : { opened: options.onFilePickerOpened }),
+              ...(options.onFilePickerCanceled === undefined
+                ? {}
+                : { canceled: options.onFilePickerCanceled }),
+            }),
+          ]),
       attachWheelCapture({ doc, rootDoc, tab: options.tab, getNodeId, send: options.send }),
     );
     const change = attachChangeCapture({
