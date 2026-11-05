@@ -59,6 +59,26 @@ describe("P1 local-first scroll", () => {
     filter.reset();
   });
 
+  it("does not echo the last steps of a smooth replay, and takes a scroll away as the person's", () => {
+    let now = 1_000;
+    const sent: Up[] = [];
+    const filter = createScrollFilter({ send: (message) => sent.push(message), now: () => now });
+    filter(scrollEvent(8, 0, 1_000), { tab: "T1", nowMs: now });
+
+    filter.localScroll("T1", 8, 0, 400);
+    now = 1_100;
+    filter.localScroll("T1", 8, 0, 998);
+    now = 1_120;
+    filter.localScroll("T1", 8, 0, 999);
+    filter.localScroll("T1", 8, 0, 1_000);
+    expect(sent).toEqual([]);
+
+    now = 1_150;
+    filter.localScroll("T1", 8, 0, 700);
+    expect(sent).toEqual([{ t: "scroll", tab: "T1", nodeId: 8, x: 0, y: 700 }]);
+    filter.reset();
+  });
+
   it("matches fractional and scaled native positions to the server scroll within a few pixels", () => {
     let now = 1_000;
     const sent: Up[] = [];

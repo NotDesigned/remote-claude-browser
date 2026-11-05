@@ -185,6 +185,20 @@ function setNativeSelectedValues(node: HTMLSelectElement, values: string[]): voi
   for (const option of node.options) setter.call(option, selectedValues.has(option.value));
 }
 
+/** Rounding in the mirror moves it this far without anyone scrolling. */
+const SCROLL_UP_MIN_PX = 3;
+
+/**
+ * A page that follows a live transcript to its end puts back any scroll it did not see a person
+ * start, and only wheel input tells it one did. Without this it stays at the bottom while the mirror
+ * shows the place the person scrolled to, and its own "scroll to bottom" control has nothing to do.
+ */
+function announceScrollUp(scroller: Element, y: number): void {
+  const deltaY = y - scroller.scrollTop;
+  if (deltaY >= -SCROLL_UP_MIN_PX) return;
+  scroller.dispatchEvent(new WheelEvent("wheel", { deltaY, bubbles: true, cancelable: true }));
+}
+
 export function createCommandHandler(
   emitter: Pick<Emitter, "emit">,
   dependencies: CommandDependencies = {},
@@ -278,6 +292,8 @@ export function createCommandHandler(
         }
         case "scroll": {
           if (cmd.nodeId === 0) {
+            const root = document.scrollingElement;
+            if (root !== null) announceScrollUp(root, cmd.y);
             window.scrollTo(cmd.x, cmd.y);
           } else {
             const node = getMirrorNode(nodeMirror, cmd.nodeId);
@@ -290,6 +306,7 @@ export function createCommandHandler(
               });
               return;
             }
+            announceScrollUp(node, cmd.y);
             node.scrollTo(cmd.x, cmd.y);
           }
           emitter.emit({ kind: "cmdres", reqId: cmd.reqId, ok: true });

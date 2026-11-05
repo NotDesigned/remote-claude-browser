@@ -85,6 +85,78 @@ describe("resolve command", () => {
   });
 });
 
+describe("scroll command", () => {
+  class FakeWheelEvent {
+    constructor(
+      readonly type: string,
+      readonly init: { deltaY: number; bubbles: boolean; cancelable: boolean },
+    ) {}
+  }
+
+  function scroller(scrollTop: number) {
+    const calls: unknown[] = [];
+    return {
+      calls,
+      node: {
+        nodeType: 1,
+        isConnected: true,
+        scrollTop,
+        dispatchEvent: (event: FakeWheelEvent) => calls.push(["wheel", event.init.deltaY]),
+        scrollTo: (x: number, y: number) => calls.push(["scrollTo", x, y]),
+      } as unknown as Element & Node,
+    };
+  }
+
+  function stubDom() {
+    vi.stubGlobal("Node", { ELEMENT_NODE: 1 });
+    vi.stubGlobal("WheelEvent", FakeWheelEvent);
+  }
+
+  it("tells the page a person is scrolling up before moving, so it does not put the scroll back", () => {
+    stubDom();
+    const { node, calls } = scroller(1_000);
+    const { handler, messages } = harness(new Map([[7, node]]), null);
+
+    handler({ cmd: "scroll", reqId: 1, nodeId: 7, x: 0, y: 400 });
+
+    expect(calls).toEqual([
+      ["wheel", -600],
+      ["scrollTo", 0, 400],
+    ]);
+    expect(messages).toEqual([{ kind: "cmdres", reqId: 1, ok: true }]);
+  });
+
+  it("sends no wheel for a scroll down, no movement, or the mirror's rounding", () => {
+    stubDom();
+    const { node, calls } = scroller(1_000);
+    const { handler } = harness(new Map([[7, node]]), null);
+
+    handler({ cmd: "scroll", reqId: 1, nodeId: 7, x: 0, y: 1_400 });
+    handler({ cmd: "scroll", reqId: 2, nodeId: 7, x: 0, y: 1_000 });
+    handler({ cmd: "scroll", reqId: 3, nodeId: 7, x: 0, y: 998 });
+
+    expect(calls).toEqual([
+      ["scrollTo", 0, 1_400],
+      ["scrollTo", 0, 1_000],
+      ["scrollTo", 0, 998],
+    ]);
+  });
+
+  it("does the same for the page's own scroller", () => {
+    stubDom();
+    const { node, calls } = scroller(500);
+    const scrollTo = vi.fn();
+    vi.stubGlobal("document", { scrollingElement: node });
+    vi.stubGlobal("window", { scrollTo });
+    const { handler } = harness(new Map(), null);
+
+    handler({ cmd: "scroll", reqId: 1, nodeId: 0, x: 0, y: 100 });
+
+    expect(calls).toEqual([["wheel", -400]]);
+    expect(scrollTo).toHaveBeenCalledExactlyOnceWith(0, 100);
+  });
+});
+
 describe("snapshot command readiness", () => {
   it("waits for recording to start, whose own snapshot answers the request", async () => {
     const messages: AgentMsg[] = [];

@@ -28,6 +28,7 @@ interface ExpectedServerScroll {
   x: number;
   y: number;
   expiresAt: number;
+  arrived?: boolean;
 }
 
 interface DocumentScrollReconcile {
@@ -45,6 +46,8 @@ interface PendingServerSnap {
 
 /** Browser/scaling/anchoring differences below this distance are the same semantic position. */
 export const SCROLL_MATCH_EPSILON_PX = 3;
+/** Replay's smooth scroll keeps stepping for a moment after coming within the distance above. */
+const SERVER_SCROLL_TAIL_MS = 200;
 
 export interface ScrollFilter extends Stage {
   localScroll(tab: TabId, nodeId: number, x: number, y: number): void;
@@ -164,12 +167,14 @@ export function createScrollFilter(options: ScrollFilterOptions): ScrollFilter {
   filter.localScroll = (tab, nodeId, x, y) => {
     const expected = expectedServer.get(nodeId);
     if (expected !== undefined) {
-      if (expected.expiresAt >= now()) {
-        if (
-          Math.abs(expected.x - x) <= SCROLL_MATCH_EPSILON_PX &&
-          Math.abs(expected.y - y) <= SCROLL_MATCH_EPSILON_PX
-        ) {
-          expectedServer.delete(nodeId);
+      const nearTarget =
+        Math.abs(expected.x - x) <= SCROLL_MATCH_EPSILON_PX &&
+        Math.abs(expected.y - y) <= SCROLL_MATCH_EPSILON_PX;
+      // Once replay has arrived, a scroll away from the target is the person's.
+      if (expected.expiresAt >= now() && (nearTarget || expected.arrived !== true)) {
+        if (nearTarget && expected.arrived !== true) {
+          expected.arrived = true;
+          expected.expiresAt = Math.min(expected.expiresAt, now() + SERVER_SCROLL_TAIL_MS);
         }
         // Smooth replay produces intermediate native scroll events before reaching the server
         // target. None of those steps are fresh user input and must be echoed upstream.
