@@ -9,6 +9,10 @@ import type { CdpSend, TargetRef } from "../types";
 export type ClaudeTheme = "light" | "dark" | "auto";
 
 const STORAGE_KEY = "LSS-userThemeMode";
+/** Writing here is this gateway's change. Writing the setting itself is the page's. */
+const PUSH_KEY = `${STORAGE_KEY}:mirror-push`;
+/** Reads back what the page itself last chose, if it has chosen since the last push. */
+const CHOSEN_KEY = `${STORAGE_KEY}:mirror-chosen`;
 const CLAUDE_ORIGIN = "https://claude.ai";
 
 export function isClaudeTheme(value: unknown): value is ClaudeTheme {
@@ -31,33 +35,46 @@ export function setThemeExpression(theme: ClaudeTheme): string {
   const mode = JSON.stringify(theme === "auto" ? "system" : theme);
   return `(() => {
     if (!(${onClaude})) return false;
-    localStorage.setItem(${key}, ${stored});
+    localStorage.setItem(${JSON.stringify(PUSH_KEY)}, ${stored});
     window.dispatchEvent(new StorageEvent("storage", { key: ${key}, newValue: ${stored} }));
     document.documentElement.dataset.mode = ${mode};
     return true;
   })()`;
 }
 
-export const READ_THEME_EXPRESSION = `(${onClaude}) ? localStorage.getItem(${JSON.stringify(STORAGE_KEY)}) : undefined`;
+/** [the page's copy, what the page itself chose, what it is showing]; undefined off Claude. */
+export const READ_THEME_EXPRESSION = `(${onClaude}) ? [localStorage.getItem(${JSON.stringify(STORAGE_KEY)}), localStorage.getItem(${JSON.stringify(CHOSEN_KEY)}), document.documentElement.dataset.mode ?? null] : undefined`;
 
 /** Runs before the page's scripts, so that Claude starts in this client's mode. */
 export function themeCopySource(theme: ClaudeTheme): string {
   return `(() => {
     if (!(${onClaude})) return;
     const key = ${JSON.stringify(STORAGE_KEY)};
+    const pushKey = ${JSON.stringify(PUSH_KEY)};
+    const chosenKey = ${JSON.stringify(CHOSEN_KEY)};
     let value = ${JSON.stringify(JSON.stringify(theme))};
+    let chosen = null;
     const { getItem, setItem, removeItem } = Storage.prototype;
-    const isSetting = (storage, name) => storage === window.localStorage && String(name) === key;
+    const isLocal = (storage) => storage === window.localStorage;
     Storage.prototype.getItem = function (name) {
-      return isSetting(this, name) ? value : getItem.call(this, name);
+      if (isLocal(this) && String(name) === key) return value;
+      if (isLocal(this) && String(name) === chosenKey) return chosen;
+      return getItem.call(this, name);
     };
     Storage.prototype.setItem = function (name, next) {
-      if (isSetting(this, name)) value = String(next);
-      else setItem.call(this, name, next);
+      if (isLocal(this) && String(name) === pushKey) {
+        value = String(next);
+        chosen = null;
+      } else if (isLocal(this) && String(name) === key) {
+        value = String(next);
+        chosen = value;
+      } else setItem.call(this, name, next);
     };
     Storage.prototype.removeItem = function (name) {
-      if (isSetting(this, name)) value = null;
-      else removeItem.call(this, name);
+      if (isLocal(this) && String(name) === key) {
+        value = null;
+        chosen = null;
+      } else removeItem.call(this, name);
     };
   })()`;
 }
@@ -129,21 +146,28 @@ export function createClaudeTheme(deps: ClaudeThemeDeps) {
       const results = await applyEverywhere(theme);
       return results.some((result) => result.status === "fulfilled" && result.value === true);
     },
-    /** What Claude has now, which the person may have changed under Settings in one of its pages. */
+    /**
+     * This client's mode, or null when this gateway has not been told it, as after a restart. Only
+     * what a page itself chose counts as a change, so a page that has merely not caught up, or a
+     * read that overlaps a change, cannot undo the person's choice. Such a page is put right.
+     */
     async read(): Promise<ClaudeTheme | null> {
-      let onClaudePage = false;
+      if (wanted === null) return null;
       for (const target of deps.pages()) {
-        const stored = await evaluate(target, READ_THEME_EXPRESSION).catch(() => undefined);
-        if (stored === undefined) continue;
-        onClaudePage = true;
-        const current = parseStoredTheme(stored);
-        if (current !== null && current !== wanted) {
-          wanted = current;
-          await applyEverywhere(current);
-          return current;
+        const seen = await evaluate(target, READ_THEME_EXPRESSION).catch(() => undefined);
+        if (!Array.isArray(seen)) continue;
+        const chosen = parseStoredTheme(seen[1]);
+        if (chosen !== null && chosen !== wanted) {
+          wanted = chosen;
+          await applyEverywhere(chosen);
+          return chosen;
+        }
+        const showsWrongMode = wanted !== "auto" && seen[2] !== wanted;
+        if (parseStoredTheme(seen[0]) !== wanted || showsWrongMode) {
+          await evaluate(target, setThemeExpression(wanted)).catch(() => undefined);
         }
       }
-      return onClaudePage ? wanted : null;
+      return wanted;
     },
   };
 }

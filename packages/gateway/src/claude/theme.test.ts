@@ -26,9 +26,10 @@ describe("Claude's theme", () => {
     expect(parseStoredTheme(null)).toBeNull();
   });
 
-  it("writes JSON, tells the running page and uses Claude's name for automatic", () => {
+  it("pushes JSON, tells the running page and uses Claude's name for automatic", () => {
     const script = setThemeExpression("auto");
-    expect(script).toContain('"LSS-userThemeMode", "\\"auto\\""');
+    expect(script).toContain('"LSS-userThemeMode:mirror-push", "\\"auto\\""');
+    expect(script).toContain('key: "LSS-userThemeMode", newValue: "\\"auto\\""');
     expect(script).toContain('dataset.mode = "system"');
     expect(setThemeExpression("dark")).toContain('dataset.mode = "dark"');
   });
@@ -64,25 +65,74 @@ describe("Claude's theme", () => {
     });
   });
 
-  it("gives a Claude page without a setting the viewer's choice, instead of adopting its default", async () => {
-    const value = { current: undefined as unknown };
-    const send = vi.fn(async (_session: string, method: string, params: { expression?: string }) =>
-      method === "Runtime.evaluate" && params.expression === READ_THEME_EXPRESSION
-        ? { result: { value: value.current } }
-        : {},
-    );
-    const theme = createClaudeTheme({
-      send: send as never,
-      pages: () => [PAGE],
-      copies: copies(send),
+  describe("reading back", () => {
+    const setup = (seen: { current: unknown }) => {
+      const send = vi.fn(
+        async (_session: string, method: string, params: { expression?: string }) =>
+          method === "Runtime.evaluate" && params.expression === READ_THEME_EXPRESSION
+            ? { result: { value: seen.current } }
+            : {},
+      );
+      const theme = createClaudeTheme({
+        send: send as never,
+        pages: () => [PAGE],
+        copies: copies(send),
+      });
+      const pushes = () =>
+        send.mock.calls.filter(([, method, params]) => {
+          return method === "Runtime.evaluate" && params.expression !== READ_THEME_EXPRESSION;
+        }).length;
+      return { send, theme, pushes };
+    };
+
+    it("says it does not know until told, as after a restart, whatever the page starts with", async () => {
+      const { theme } = setup({ current: ['"auto"', '"auto"', "system"] });
+      expect(await theme.read()).toBeNull();
+      expect(theme.current()).toBeNull();
     });
-    expect(await theme.read()).toBeNull();
-    value.current = null;
-    expect(await theme.read()).toBeNull();
-    await theme.set("light", false);
-    expect(await theme.read()).toBe("light");
-    value.current = '"dark"';
-    expect(await theme.read()).toBe("dark");
+
+    it("takes what a page itself chose", async () => {
+      const seen = { current: ['"light"', null, "light"] as unknown[] };
+      const { theme } = setup(seen);
+      await theme.set("light", false);
+      seen.current = ['"dark"', '"dark"', "dark"];
+      expect(await theme.read()).toBe("dark");
+      expect(theme.current()).toBe("dark");
+    });
+
+    it("does not take a page that has merely not caught up, and puts it right", async () => {
+      const seen = { current: ['"light"', null, "light"] as unknown[] };
+      const { theme, pushes } = setup(seen);
+      await theme.set("dark", false);
+      const before = pushes();
+
+      expect(await theme.read()).toBe("dark");
+
+      expect(theme.current()).toBe("dark");
+      expect(pushes()).toBe(before + 1);
+    });
+
+    it("puts right a page that has drifted from the mode it holds", async () => {
+      const seen = { current: ['"dark"', null, "light"] as unknown[] };
+      const { theme, pushes } = setup(seen);
+      await theme.set("dark", false);
+      const before = pushes();
+
+      await theme.read();
+
+      expect(pushes()).toBe(before + 1);
+    });
+
+    it("leaves a page alone when it matches, including the mode Claude resolves automatic to", async () => {
+      const seen = { current: ['"auto"', null, "dark"] as unknown[] };
+      const { theme, pushes } = setup(seen);
+      await theme.set("auto", true);
+      const before = pushes();
+
+      expect(await theme.read()).toBe("auto");
+
+      expect(pushes()).toBe(before);
+    });
   });
 
   describe("each client's own copy", () => {
@@ -118,7 +168,12 @@ describe("Claude's theme", () => {
       const { shared, localStorage } = page("dark");
       localStorage.setItem("LSS-userThemeMode", '"auto"');
       expect(localStorage.getItem("LSS-userThemeMode")).toBe('"auto"');
+      expect(localStorage.getItem("LSS-userThemeMode:mirror-chosen")).toBe('"auto"');
       expect(shared.get("LSS-userThemeMode")).toBe('"light"');
+      localStorage.setItem("LSS-userThemeMode:mirror-push", '"dark"');
+      expect(localStorage.getItem("LSS-userThemeMode")).toBe('"dark"');
+      expect(localStorage.getItem("LSS-userThemeMode:mirror-chosen")).toBeNull();
+      expect(shared.has("LSS-userThemeMode:mirror-push")).toBe(false);
       localStorage.removeItem("LSS-userThemeMode");
       expect(shared.get("LSS-userThemeMode")).toBe('"light"');
     });
@@ -168,7 +223,12 @@ describe("Claude's theme", () => {
       const send = vi.fn(
         async (session: string, method: string, params: { expression?: string }) =>
           method === "Runtime.evaluate" && params.expression === READ_THEME_EXPRESSION
-            ? { result: { value: session === "o" ? '"dark"' : '"light"' } }
+            ? {
+                result: {
+                  value:
+                    session === "o" ? ['"dark"', '"dark"', "dark"] : ['"light"', null, "light"],
+                },
+              }
             : {},
       );
       const theme = createClaudeTheme({
