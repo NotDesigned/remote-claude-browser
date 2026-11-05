@@ -40,7 +40,7 @@ import { registerSecurityHeaders } from "./security-headers";
 import { gatewayHost, LOOPBACK_PROXIES, registerViewerStatic } from "./serving";
 import { createTabLifecycle } from "./session/tabs";
 import { CLIENT_SLOTS, ClientSessionError, createClientSessions } from "./session/clients";
-import { createIdleReaper } from "./session/idle-reaper";
+import { createIdleReaper, PAGE_GENERATING_EXPRESSION } from "./session/idle-reaper";
 import { createResourceSampler } from "./monitor/resources";
 import type { TargetRef, AgentLink } from "./types";
 import { createRoleManager } from "./ws/roles";
@@ -423,7 +423,7 @@ export async function startClientGateway(): Promise<void> {
         if (runtime.recovery.isBlocked(target.targetId)) continue;
         const response = (await Promise.race([
           runtime.browser.send(target.sessionId, "Runtime.evaluate", {
-            expression: `(() => [...document.querySelectorAll('button')].some(e => e.getClientRects().length > 0 && /stop|停止/i.test((e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-testid') || ''))))()`,
+            expression: PAGE_GENERATING_EXPRESSION,
             returnByValue: true,
           }),
           new Promise<never>((_resolve, reject) => {

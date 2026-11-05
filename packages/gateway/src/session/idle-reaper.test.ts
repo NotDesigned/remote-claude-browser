@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { createIdleReaper, type IdleSession } from "./idle-reaper";
+import vm from "node:vm";
+
+import { createIdleReaper, PAGE_GENERATING_EXPRESSION, type IdleSession } from "./idle-reaper";
 
 function setup() {
   let at = 0;
@@ -190,5 +192,25 @@ describe("idle workspace reaper", () => {
     await pending;
     await h.reaper.sweep();
     expect(h.release).not.toHaveBeenCalled();
+  });
+});
+
+describe("PAGE_GENERATING_EXPRESSION", () => {
+  const button = {
+    getClientRects: () => [{}],
+    getAttribute: (name: string) => (name === "aria-label" ? "Stop response" : null),
+  };
+  const generating = (pathname: string, buttons: unknown[] = [button]) =>
+    vm.runInNewContext(PAGE_GENERATING_EXPRESSION, {
+      location: { pathname },
+      document: { querySelectorAll: () => buttons },
+    }) as boolean;
+
+  it("holds a page writing a reply but not a Claude Code page", () => {
+    expect(generating("/chat/abc")).toBe(true);
+    expect(generating("/chat/abc", [])).toBe(false);
+    expect(generating("/code")).toBe(false);
+    expect(generating("/code/session_abc")).toBe(false);
+    expect(generating("/codex")).toBe(true);
   });
 });

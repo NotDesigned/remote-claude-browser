@@ -1,3 +1,9 @@
+/**
+ * True while a reply is being written into a page, which closing the page would cut short. Claude
+ * Code shows the same button, but its work runs on another machine and goes on without the page.
+ */
+export const PAGE_GENERATING_EXPRESSION = `(() => !/^\\/code(\\/|$)/.test(location.pathname) && [...document.querySelectorAll('button')].some(e => e.getClientRects().length > 0 && /stop|停止/i.test((e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-testid') || ''))))()`;
+
 export interface IdleSession {
   sid: string;
   /** Stable record identity, replaced whenever the workspace is assigned to another owner. */

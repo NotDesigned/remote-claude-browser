@@ -84,7 +84,10 @@ export async function createSeenMarks(browser: BrowserHandle, file: string): Pro
         return identifier;
       });
       // A page that has gone only leaves the old script behind in a target that no longer exists.
-      scripts.set(sessionId, next.catch(() => undefined));
+      scripts.set(
+        sessionId,
+        next.catch(() => undefined),
+      );
     }
   };
 
@@ -124,7 +127,10 @@ export async function createSeenMarks(browser: BrowserHandle, file: string): Pro
       try {
         await browser.send(target.sessionId, "DOMStorage.enable");
         const script = register(target.sessionId);
-        scripts.set(target.sessionId, script.catch(() => undefined));
+        scripts.set(
+          target.sessionId,
+          script.catch(() => undefined),
+        );
         await script;
       } catch (error) {
         console.warn("Could not prepare the seen marks:", (error as Error).message);
