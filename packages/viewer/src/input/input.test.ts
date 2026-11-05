@@ -9,6 +9,7 @@ import {
   attachPointerCapture,
   createTouchMouseFilter,
   pointerPosition,
+  resolveClickTarget,
   resolvePointerTarget,
   toRootViewport,
 } from "./pointer";
@@ -1232,6 +1233,20 @@ describe("P1 input capture", () => {
     doc.defaultView.scrollY = 80;
     (after as (() => void) | null)?.();
     expect(sent).toEqual([]);
+  });
+
+  it("aims a click at the control around its target, whose insides may be animating", () => {
+    const button = new FakeElement(7);
+    const dot = new FakeElement(9);
+    dot.closest = () => button;
+    const ids = (node: Node) => (node as unknown as FakeElement).nodeId;
+
+    expect(resolveClickTarget(dot as unknown as EventTarget, ids)?.nodeId).toBe(7);
+    expect(resolvePointerTarget(dot as unknown as EventTarget, ids)?.nodeId).toBe(9);
+
+    const unmapped = new FakeElement(-1);
+    dot.closest = () => unmapped;
+    expect(resolveClickTarget(dot as unknown as EventTarget, ids)?.nodeId).toBe(9);
   });
 
   it("clamps fallback-relative coordinates", () => {

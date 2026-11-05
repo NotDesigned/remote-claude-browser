@@ -2,7 +2,7 @@ import type { TabId } from "@mirror/protocol";
 import {
   eventMods,
   pointerPosition,
-  resolvePointerTarget,
+  resolveClickTarget,
   type SendInput,
   type TouchMouseFilter,
 } from "./pointer";
@@ -58,7 +58,7 @@ export function attachTouchCapture(options: TouchCaptureOptions): () => void {
     dx: number,
     dy: number,
   ) => {
-    const target = resolvePointerTarget(current.target, options.getNodeId);
+    const target = resolveClickTarget(current.target, options.getNodeId);
     options.send({
       t: "ptr",
       tab: options.tab,
@@ -73,7 +73,7 @@ export function attachTouchCapture(options: TouchCaptureOptions): () => void {
 
   const forwardTap = (current: TouchGesture, touch: Touch, event: TouchEvent) => {
     options.beforePointerDown?.();
-    const target = resolvePointerTarget(current.target, options.getNodeId);
+    const target = resolveClickTarget(current.target, options.getNodeId);
     const position = pointerPosition(touch, target, options.doc, options.rootDoc);
     options.send({
       t: "ptr",

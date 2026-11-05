@@ -9,6 +9,9 @@ type Listener = (event: never) => void;
 class FakeElement {
   readonly nodeType = 1;
   parentElement: FakeElement | null = null;
+  closest(): FakeElement | null {
+    return null;
+  }
   scrollLeft = 0;
   scrollTop = 0;
   scrollWidth = 100;

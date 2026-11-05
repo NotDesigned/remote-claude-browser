@@ -83,6 +83,24 @@ export function resolvePointerTarget(
   return null;
 }
 
+const CLICK_CONTROL = "button,a[href],summary,[role='button'],[role='menuitem'],[role='tab']";
+
+/**
+ * The gateway finds a pointer's place from where its target is in the remote page right now. What is
+ * inside a control can be mid-animation there (Claude's "scroll to bottom" button pulses a dot while
+ * generating), which sends the click outside the control, while the control itself stays put.
+ */
+export function resolveClickTarget(
+  target: EventTarget | null,
+  getNodeId: (node: Node) => number,
+): ResolvedPointerTarget | null {
+  const control = isElement(target) ? target.closest(CLICK_CONTROL) : null;
+  return resolvePointerTarget(
+    control !== null && getNodeId(control) >= 0 ? control : target,
+    getNodeId,
+  );
+}
+
 /** DOM nodes come from the iframe realm, so parent-realm `instanceof Element` is incorrect. */
 export function isElement(target: EventTarget | null): target is Element {
   return target !== null && typeof target === "object" && (target as Node).nodeType === 1;
@@ -154,7 +172,7 @@ export function attachPointerCapture(options: PointerCaptureOptions): () => void
   let trailingTimer: ReturnType<typeof setTimeout> | null = null;
 
   const sendPointer = (event: MouseEvent, kind: "move" | "down" | "up") => {
-    const target = resolvePointerTarget(event.target, options.getNodeId);
+    const target = resolveClickTarget(event.target, options.getNodeId);
     options.send({
       t: "ptr",
       tab: options.tab,
