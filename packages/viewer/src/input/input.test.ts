@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { decodeUp, encodeMsg, type Up } from "@mirror/protocol";
 import { attachChangeCapture } from "./change";
-import { attachDefaultActionContainment } from "./default-actions";
+import { attachDefaultActionContainment, externalLink } from "./default-actions";
 import { createForwardedInputClock } from "./forwarded";
 import { attachKeyCapture, isLocalShortcut, shouldPreventEchoFieldDefault } from "./keys";
 import {
@@ -1247,6 +1247,33 @@ describe("P1 input capture", () => {
     const unmapped = new FakeElement(-1);
     dot.closest = () => unmapped;
     expect(resolveClickTarget(dot as unknown as EventTarget, ids)?.nodeId).toBe(9);
+  });
+
+  describe("external links", () => {
+    const link = (href: string) => {
+      const anchor = new FakeElement(3);
+      anchor.tagName = "A";
+      anchor.href = href;
+      return anchor as unknown as EventTarget;
+    };
+    const page = "https://claude.ai/chat/1";
+
+    it("picks out a link to another site", () => {
+      expect(externalLink(link("https://support.anthropic.com/a"), page)).toBe(
+        "https://support.anthropic.com/a",
+      );
+    });
+
+    it("leaves Claude's own links, which need the remote login, to the remote browser", () => {
+      expect(externalLink(link("https://claude.ai/api/org/files/1"), page)).toBeNull();
+      expect(externalLink(link("https://platform.claude.ai/x"), "https://example.com/")).toBeNull();
+    });
+
+    it("leaves moving around within the site in view, and anything that is not a web address", () => {
+      expect(externalLink(link("https://example.com/b"), "https://example.com/a")).toBeNull();
+      expect(externalLink(link("mailto:a@example.com"), page)).toBeNull();
+      expect(externalLink(new FakeElement(4) as unknown as EventTarget, page)).toBeNull();
+    });
   });
 
   it("clamps fallback-relative coordinates", () => {

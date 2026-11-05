@@ -9,6 +9,8 @@ import {
 import { scrollCandidates } from "./wheel";
 
 export interface TouchCaptureOptions {
+  linkToOpen?(target: EventTarget | null): string | null;
+  openLink?(url: string): void;
   doc: Document;
   rootDoc?: Document;
   tab: TabId;
@@ -72,6 +74,13 @@ export function attachTouchCapture(options: TouchCaptureOptions): () => void {
   };
 
   const forwardTap = (current: TouchGesture, touch: Touch, event: TouchEvent) => {
+    const url = options.linkToOpen?.(current.target);
+    if (url) {
+      // Stops the click that would follow, and the link would open a second time.
+      event.preventDefault();
+      options.openLink?.(url);
+      return;
+    }
     options.beforePointerDown?.();
     const target = resolveClickTarget(current.target, options.getNodeId);
     const position = pointerPosition(touch, target, options.doc, options.rootDoc);

@@ -11,6 +11,7 @@ import type { ViewMode } from "./client-session";
 
 export type ThemePreference = "auto" | "light" | "dark";
 export type StatusTone = "ok" | "busy" | "bad";
+export type LinkTarget = "inside" | "device";
 
 export interface ShellBarProps {
   viewMode: ViewMode;
@@ -22,6 +23,8 @@ export interface ShellBarProps {
   children?: ComponentChildren;
   theme: ThemePreference;
   onTheme(theme: ThemePreference): void;
+  linkTarget: LinkTarget;
+  onLinkTarget(target: LinkTarget): void;
   pxQuality: PxQuality;
   onPxQuality(quality: PxQuality): void;
   serverStatus: ReceivedServerStatus | null;
@@ -158,6 +161,26 @@ export function ShellBar(props: ShellBarProps) {
                   type="button"
                   aria-pressed={props.theme === value}
                   onClick={() => props.onTheme(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div class="shell-menu-section" role="group" aria-label="页面里的外部链接">
+            <span>页面里的外部链接</span>
+            <div class="shell-menu-choices">
+              {(
+                [
+                  ["inside", "内部标签"],
+                  ["device", "本机浏览器"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={props.linkTarget === value}
+                  onClick={() => props.onLinkTarget(value)}
                 >
                   {label}
                 </button>

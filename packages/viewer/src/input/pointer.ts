@@ -47,6 +47,8 @@ export interface PointerCaptureOptions {
   getNodeId(node: Node): number;
   send: SendInput;
   beforePointerDown?(): void;
+  /** A link this press belongs to is opened here, so the remote page must not be clicked. */
+  opensLocally?(event: MouseEvent): boolean;
   ignoreMouse?(event: MouseEvent): boolean;
   now?: () => number;
   setTimer?: typeof setTimeout;
@@ -170,6 +172,7 @@ export function attachPointerCapture(options: PointerCaptureOptions): () => void
   let lastMoveAt = Number.NEGATIVE_INFINITY;
   let trailingMove: MouseEvent | null = null;
   let trailingTimer: ReturnType<typeof setTimeout> | null = null;
+  let localPress = false;
 
   const sendPointer = (event: MouseEvent, kind: "move" | "down" | "up") => {
     const target = resolveClickTarget(event.target, options.getNodeId);
@@ -210,6 +213,8 @@ export function attachPointerCapture(options: PointerCaptureOptions): () => void
   };
   const onMouseDown = (event: MouseEvent) => {
     if (event.isTrusted && !options.ignoreMouse?.(event)) {
+      localPress = options.opensLocally?.(event) === true;
+      if (localPress) return;
       options.beforePointerDown?.();
       if (trailingTimer !== null) cancel(trailingTimer);
       if (trailingMove !== null) flushMove();
@@ -217,7 +222,9 @@ export function attachPointerCapture(options: PointerCaptureOptions): () => void
     }
   };
   const onMouseUp = (event: MouseEvent) => {
-    if (event.isTrusted && !options.ignoreMouse?.(event)) sendPointer(event, "up");
+    if (!event.isTrusted || options.ignoreMouse?.(event)) return;
+    if (localPress) localPress = false;
+    else sendPointer(event, "up");
   };
   const onContextMenu = (event: MouseEvent) => {
     if (event.isTrusted) event.preventDefault();

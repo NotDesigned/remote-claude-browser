@@ -22,12 +22,13 @@ import { createPxView, type PxView } from "./pxview";
 import { HudLayer, type FrameRates } from "./hud";
 import { videoOption } from "./px-video";
 import { pollServerStatus, receiveServerStatus, type ReceivedServerStatus } from "./server-status";
-import { ShellBar, type ThemePreference } from "./shell-bar";
+import { ShellBar, type LinkTarget, type ThemePreference } from "./shell-bar";
 import { createVoiceLink, type VoiceLink } from "./media/voice";
 import { createServerClock, DEFAULT_LIVE_BUFFER_MS } from "./clock";
 import { createResyncController, type ResyncTabState, RESYNC_WINDOW_MS } from "./resync";
 import { connectGateway, type GatewayConnectionState, type GatewaySocket } from "./ws";
 import { createFileUploadRelay, type FileUploadRelay, type UploadState } from "./uploads";
+import { externalLink } from "./input/default-actions";
 import { createPresentationState } from "./presentation";
 import {
   ClientSessionError,
@@ -47,7 +48,7 @@ import {
 import "@rrweb/replay/dist/style.css";
 import "./app.css";
 import "./shell.css";
-import { DOWNLOAD_NOTICE_MS, DOWNLOAD_REVEAL_MS, startClientDownload } from "./auto-download";
+import { DOWNLOAD_NOTICE_MS, startClientDownload } from "./auto-download";
 
 /** A viewer that never gets input (for example a follower) must still see the page. */
 const SESSION_CHECK_INTERVAL_MS = 5_000;
@@ -191,6 +192,14 @@ export function App() {
   const theme: "light" | "dark" =
     themePreference === "auto" ? (systemDark ? "dark" : "light") : themePreference;
   const [pxQuality, setPxQuality] = useState(() => preferredPxQuality(viewStorage()));
+  const [linkTarget, setLinkTarget] = useState<LinkTarget>(() =>
+    viewStorage().getItem("mirror.links") === "device" ? "device" : "inside",
+  );
+  const linkTargetRef = useRef(linkTarget);
+  linkTargetRef.current = linkTarget;
+  useEffect(() => {
+    viewStorage().setItem("mirror.links", linkTarget);
+  }, [linkTarget]);
   // The page changes shape while the picture starts, which the mirror should not show.
   const pictureHoldRef = useRef<{
     tab: TabId;
@@ -264,31 +273,45 @@ export function App() {
     if (themeSid === null) return;
     let active = true;
     const url = `/s/${encodeURIComponent(themeSid)}/theme`;
+    const send = async () => {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ theme: themePreference, systemDark }),
+      });
+      if (!response.ok) return;
+      const { applied } = (await response.json()) as { applied: boolean };
+      if (active && applied) syncedThemeRef.current = themeKey;
+    };
     const sync = async () => {
       if (document.hidden) return;
       if (syncedThemeRef.current !== themeKey) {
-        const response = await fetch(url, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ theme: themePreference, systemDark }),
-        });
-        if (!response.ok) return;
-        const { applied } = (await response.json()) as { applied: boolean };
-        if (active && applied) syncedThemeRef.current = themeKey;
+        await send();
         return;
       }
       const response = await fetch(url);
       if (!response.ok) return;
       const { theme: remote } = (await response.json()) as { theme: ThemePreference | null };
-      if (!active || remote === null || remote === themePreference) return;
+      if (!active) return;
+      // The gateway has restarted and does not know this client's choice.
+      if (remote === null) {
+        syncedThemeRef.current = null;
+        await send();
+        return;
+      }
+      if (remote === themePreference) return;
       syncedThemeRef.current = `${remote}:${systemDark}`;
       setThemePreference(remote);
     };
     void sync().catch(() => {});
     const timer = setInterval(() => void sync().catch(() => {}), THEME_CHECK_MS);
+    // A phone coming back should not show the old mode for up to a whole check.
+    const onVisible = () => void sync().catch(() => {});
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       active = false;
       clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [themeSid, themeKey]);
 
@@ -415,6 +438,7 @@ export function App() {
     const entryTab = entryParams.get("tab");
     const presentation = createPresentationState();
     const knownModes = new Map<TabId, "dom" | "px">();
+    const pageUrls = new Map<TabId, string>();
     const autoStarted = new Set<string>();
     const shownDownloads = new Set<string>();
     const showDownload = (id: string) => {
@@ -431,7 +455,6 @@ export function App() {
       downloadTimers.add(timer);
     };
     const downloadTimers = new Set<ReturnType<typeof setTimeout>>();
-    const revealTimers = new Map<string, ReturnType<typeof setTimeout>>();
     let reconnectPending = false;
     let viewportBeforeDisconnect: ReturnType<typeof presentation.currentViewport>;
     let pxView: PxView | null = null;
@@ -604,6 +627,11 @@ export function App() {
           onFileSelection: (tab, input) => {
             if (driver) uploads.select(tab, input);
             else input.value = "";
+          },
+          linkToOpen: (target) =>
+            linkTargetRef.current === "device" ? externalLink(target, pageUrls.get(tab)) : null,
+          openLink: (url) => {
+            window.open(url, "_blank", "noopener,noreferrer");
           },
           onFilePickerOpened: () => {
             mirrorPickerOpenedAt = Date.now();
@@ -806,12 +834,11 @@ export function App() {
               const listed = (await response.json()) as DownloadEntry[];
               setDownloads(listed);
               // Finished before this page connected: offer the link briefly, never re-download.
-              for (const entry of listed)
-                if (entry.state !== "active") {
-                  autoStarted.add(entry.id);
-                  showDownload(entry.id);
-                  dismissDownloadSoon(entry.id);
-                } else showDownload(entry.id);
+              for (const entry of listed) {
+                autoStarted.add(entry.id);
+                showDownload(entry.id);
+                if (entry.state !== "active") dismissDownloadSoon(entry.id);
+              }
             })
             .catch(() => undefined);
           driver = message.role === "driver";
@@ -847,6 +874,7 @@ export function App() {
           scheduleViewport(0);
         }
         if (message.t === "chrome") {
+          pageUrls.set(message.tab, message.url);
           setChromeByTab((current) => ({ ...current, [message.tab]: message }));
           setActiveTab((current) => current ?? message.tab);
         }
@@ -900,18 +928,13 @@ export function App() {
         }
         if (message.t === "download" && !dismissedDownloadIdsRef.current.has(message.id)) {
           setDownloads((current) => updateDownloads(current, message));
-          if (message.state === "active" && !shownDownloads.has(message.id)) {
-            const timer = setTimeout(() => showDownload(message.id), DOWNLOAD_REVEAL_MS);
-            downloadTimers.add(timer);
-            revealTimers.set(message.id, timer);
-          } else if (message.state !== "active") {
-            clearTimeout(revealTimers.get(message.id));
-            revealTimers.delete(message.id);
-          }
-          if (message.state === "canceled") showDownload(message.id);
-          if (message.state === "done" && message.href && !autoStarted.has(message.id)) {
+          // The link works from the start: the browser saves the file as it arrives, and shows that.
+          if (message.href && !autoStarted.has(message.id)) {
             autoStarted.add(message.id);
             startClientDownload(message.href, message.name);
+          }
+          if (message.state === "canceled") showDownload(message.id);
+          if (message.state === "done") {
             // A phone's browser may refuse a save nobody tapped for, so it keeps the button.
             if (/\bMobi/.test(navigator.userAgent)) showDownload(message.id);
             if (shownDownloads.has(message.id)) dismissDownloadSoon(message.id);
@@ -1066,6 +1089,8 @@ export function App() {
         status={shellStatus}
         theme={themePreference}
         onTheme={setThemePreference}
+        linkTarget={linkTarget}
+        onLinkTarget={setLinkTarget}
         pxQuality={pxQuality}
         onPxQuality={(quality) => {
           setPxQuality(quality);

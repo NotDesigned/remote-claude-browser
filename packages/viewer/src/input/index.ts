@@ -21,6 +21,9 @@ export interface MirrorInputOptions {
   onFileSelection?(tab: TabId, input: HTMLInputElement): void;
   onFilePickerOpened?(): void;
   onFilePickerCanceled?(tab: TabId): void;
+  /** The address of a link to open in this device's browser instead of clicking it remotely. */
+  linkToOpen?(target: EventTarget | null): string | null;
+  openLink?(url: string): void;
   /** Files pasted into the mirror; they are uploaded to the remote page as attachments. */
   onPasteFiles?(tab: TabId, files: File[]): void;
   scrollFilter?: ScrollFilter;
@@ -46,7 +49,11 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
       for (const cleanup of cleanups) cleanup();
     });
     cleanups.push(
-      attachDefaultActionContainment({ doc }),
+      attachDefaultActionContainment({
+        doc,
+        ...(options.linkToOpen === undefined ? {} : { linkToOpen: options.linkToOpen }),
+        ...(options.openLink === undefined ? {} : { openLink: options.openLink }),
+      }),
       ...(options.onFileSelection === undefined
         ? []
         : [
@@ -82,6 +89,13 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
         getNodeId,
         send: options.send,
         ignoreMouse: mouseFilter.ignore,
+        opensLocally: (event) =>
+          event.button === 0 &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.shiftKey &&
+          (options.linkToOpen?.(event.target) ?? null) !== null,
         beforePointerDown: () => {
           const focused = deepActiveElement(rootDoc);
           if (focused && isEchoField(focused)) change.flush(focused, true);
@@ -94,6 +108,8 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
         getNodeId,
         send: options.send,
         mouseFilter,
+        ...(options.linkToOpen === undefined ? {} : { linkToOpen: options.linkToOpen }),
+        ...(options.openLink === undefined ? {} : { openLink: options.openLink }),
         beforePointerDown: () => {
           const focused = deepActiveElement(rootDoc);
           if (focused && isEchoField(focused)) change.flush(focused, true);
