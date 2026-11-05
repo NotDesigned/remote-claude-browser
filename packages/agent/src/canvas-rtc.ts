@@ -44,12 +44,21 @@ interface RecordMirrors {
 
 type InitializedRecordPlugin = ReturnType<RRWebPluginCanvasWebRTCRecord["initPlugin"]>;
 
+interface RecordPeer extends DestroyablePeer {
+  connected?: boolean;
+  addTrack?: (track: MediaStreamTrack, stream: MediaStream) => void;
+  _pc?: RTCPeerConnection;
+}
+
 interface RecordPluginAdapter {
   initPlugin(): InitializedRecordPlugin;
   setupPeer(source?: WindowProxy): unknown;
   setupStream(id: number, rootId?: number): boolean | MediaStream;
+  startStream?(id: number, stream: MediaStream): void;
   signalReceive(signal: RTCSessionDescriptionInit): void;
-  peer?: DestroyablePeer | null;
+  peer?: RecordPeer | null;
+  /** The streams the plugin has already put on its peer. */
+  outgoingStreams?: Set<MediaStream>;
 }
 
 export interface CanvasRtcRecord {
@@ -229,34 +238,34 @@ function createNativePlugin(
 }
 
 /**
- * A video element captures new tracks whenever its source changes, as when an advert gives way to
- * the film, and the old ones go silent. The viewer keeps the receivers it has, so the senders switch
- * to the new tracks in place. A kind the stream did not have before needs adding to the connection.
+ * A video element has no tracks until it has loaded something, and captures new ones whenever its
+ * source changes, as when an advert gives way to the film. The viewer keeps the receivers it has, so
+ * a sender this stream already has moves to the new track in place, and a kind it has not sent yet
+ * joins the connection. Other videos on the same connection keep their own senders.
  */
 function followStreamTracks(state: Lane, stream: MediaStream): void {
-  stream.addEventListener?.("addtrack", (event) => {
-    const track = (event as MediaStreamTrackEvent).track;
-    const peer = state.plugin.peer as
-      | (typeof state.plugin.peer & {
-          _pc?: RTCPeerConnection;
-          addTrack?: (track: MediaStreamTrack, stream: MediaStream) => void;
-        })
-      | null
-      | undefined;
+  const ownTracks = new Set<MediaStreamTrack>(stream.getTracks());
+  stream.addEventListener?.("addtrack", () => {
+    for (const track of stream.getTracks()) ownTracks.add(track);
+    const peer = state.plugin.peer;
     const pc = peer?._pc;
     if (pc === undefined || !state.streams.has(stream)) return;
-    const senders = pc.getSenders();
-    if (senders.some((sender) => sender.track === track)) return;
-    const sender = senders.find(
-      (candidate) =>
-        candidate.track?.kind === track.kind ||
-        (candidate.track === null &&
-          pc
-            .getTransceivers()
-            .some((t) => t.sender === candidate && t.receiver.track.kind === track.kind)),
-    );
-    if (sender !== undefined) void sender.replaceTrack(track).catch(() => undefined);
-    else if (senders.length > 0) peer?.addTrack?.(track, stream);
+    // Until then, the plugin sends whatever the stream holds when the peer connects.
+    if (state.plugin.outgoingStreams?.has(stream) !== true) return;
+    // The viewer shows a stream from its video track on.
+    if (stream.getVideoTracks().length === 0) return;
+    for (const track of [...stream.getVideoTracks(), ...stream.getAudioTracks()]) {
+      const senders = pc.getSenders();
+      if (senders.some((sender) => sender.track === track)) continue;
+      const sender = senders.find(
+        (candidate) =>
+          candidate.track !== null &&
+          candidate.track.kind === track.kind &&
+          ownTracks.has(candidate.track),
+      );
+      if (sender !== undefined) void sender.replaceTrack(track).catch(() => undefined);
+      else peer?.addTrack?.(track, stream);
+    }
   });
 }
 
@@ -408,7 +417,10 @@ export function installCanvasRtcRecord(options: CanvasRtcRecordOptions): CanvasR
       const stream = withCapturedRtc(scope, options.constructors, () =>
         state.plugin.setupStream(request.id, request.rootId),
       );
-      if (!isMediaStream(stream) || stream.getVideoTracks().length === 0) {
+      // A video that has not loaded yet has no tracks at all, and they arrive with its metadata.
+      const stillLoading =
+        request.type === "video" && isMediaStream(stream) && stream.getTracks().length === 0;
+      if (!isMediaStream(stream) || (stream.getVideoTracks().length === 0 && !stillLoading)) {
         if (isMediaStream(stream)) stopStream(stream);
         if (request.type === "video") {
           sendVideoNotice(message.peer, message.lane, "unavailable", request.id);
@@ -416,8 +428,14 @@ export function installCanvasRtcRecord(options: CanvasRtcRecordOptions): CanvasR
         if (state.streams.size === 0) disposeLane(key);
         return false;
       }
-      state.streams.add(stream);
-      followStreamTracks(state, stream);
+      if (!state.streams.has(stream)) {
+        state.streams.add(stream);
+        followStreamTracks(state, stream);
+      }
+      // The plugin starts its streams when the peer connects, which misses any asked for later.
+      if (state.plugin.peer?.connected === true) {
+        state.plugin.startStream?.(request.rootId ?? request.id, stream);
+      }
       return true;
     } catch (error) {
       if (message.payload.type === "video") {

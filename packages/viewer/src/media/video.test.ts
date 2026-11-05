@@ -91,7 +91,10 @@ describe("viewer video tiers", () => {
   });
 
   describe("sound from a stream", () => {
-    function streamed(hasUserActivation: () => boolean) {
+    function streamed(
+      hasUserActivation: () => boolean,
+      playing: (video: { srcObject: unknown }) => Promise<void> = async () => undefined,
+    ) {
       const listeners = new Map<string, Set<() => void>>();
       const document = {
         addEventListener(name: string, listener: () => void) {
@@ -109,7 +112,7 @@ describe("viewer video tiers", () => {
         addEventListener() {},
         removeEventListener() {},
         pause() {},
-        play: async () => undefined,
+        play: () => playing(video),
       };
       const track = { addEventListener() {}, removeEventListener() {} };
       const stream = { getVideoTracks: () => [track] };
@@ -137,6 +140,46 @@ describe("viewer video tiers", () => {
 
     it("has sound at once for someone already using the viewer", () => {
       expect(streamed(() => true).video.muted).toBe(false);
+    });
+
+    it("keeps the sound when the only thing stopping a play is a new load", async () => {
+      const { video } = streamed(
+        () => true,
+        () => Promise.reject(new DOMException("interrupted by a new load", "AbortError")),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(video.muted).toBe(false);
+    });
+
+    it("assigns the stream before any play, so nothing interrupts the play that has the sound", () => {
+      const sources: unknown[] = [];
+      const { video } = streamed(
+        () => true,
+        (played) => {
+          sources.push(played.srcObject);
+          return Promise.resolve();
+        },
+      );
+      expect(sources.length).toBeGreaterThan(0);
+      expect(new Set(sources)).toEqual(new Set([video.srcObject]));
+      expect(video.srcObject).not.toBeNull();
+    });
+
+    it("goes back to muted when the browser refuses, and tries again at the next press", async () => {
+      let refuse = true;
+      const { video, press } = streamed(
+        () => true,
+        () =>
+          refuse
+            ? Promise.reject(new DOMException("no sound yet", "NotAllowedError"))
+            : Promise.resolve(),
+      );
+      await new Promise((resolve) => setTimeout(resolve));
+      expect(video.muted).toBe(true);
+      refuse = false;
+      press();
+      expect(video.muted).toBe(false);
     });
 
     it("leaves clicks to the remote page's own controls", () => {

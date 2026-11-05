@@ -83,26 +83,36 @@ function allowSoundAfterGesture(
 ): () => void {
   const document = video.ownerDocument;
   const events = ["pointerdown", "keydown"] as const;
-  const stop = () => {
+  let stopped = false;
+  const listen = () => {
+    for (const name of events) document.addEventListener(name, unmute, true);
+  };
+  const stopListening = () => {
     for (const name of events) document.removeEventListener(name, unmute, true);
   };
   function unmute() {
-    stop();
+    stopListening();
     video.muted = false;
     try {
-      void video.play().catch(() => {
-        // Refused after all: keep the picture, and let the next press try again.
+      void video.play().catch((error: unknown) => {
+        // Only the browser refusing sound means muting again: a new load interrupting this play
+        // says nothing about sound, and the stream plays on with it.
+        if (stopped || (error as { name?: unknown } | null)?.name !== "NotAllowedError") return;
+        // Keep the picture, and let the next press try again.
         video.muted = true;
         void video.play().catch(() => undefined);
-        for (const name of events) document.addEventListener(name, unmute, true);
+        listen();
       });
     } catch {
       video.muted = true;
     }
   }
-  for (const name of events) document.addEventListener(name, unmute, true);
+  listen();
   if (hasUserActivation()) unmute();
-  return stop;
+  return () => {
+    stopped = true;
+    stopListening();
+  };
 }
 
 function renderHudNotice(document: Document | undefined): HTMLElement | null {
@@ -213,10 +223,11 @@ export function createVideoCompositor(options: VideoCompositorOptions = {}): Vid
       video.addEventListener("error", failed, { once: true });
       // The page's own controls are mirrored over this, and clicks on them belong to the remote page.
       video.controls = false;
-      const stopSound = allowSoundAfterGesture(video, options.hasUserActivation);
       // Assign the original stream, not a video-only copy: WebRTC timestamps keep audio/video synced.
       video.srcObject = stream;
       play(video, onFailure);
+      // After the stream is in place, as assigning it interrupts any play already asked for.
+      const stopSound = allowSoundAfterGesture(video, options.hasUserActivation);
       let stopped = false;
       return () => {
         if (stopped) return;

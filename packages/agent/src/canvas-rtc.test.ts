@@ -105,64 +105,151 @@ describe("agent canvas WebRTC adapter", () => {
     expect(stream.getTracks()).toEqual([videoTrack, audioTrack]);
   });
 
-  it("moves the connection onto the new tracks when a video's source changes", () => {
-    const scope = {
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    } as unknown as typeof globalThis;
-    const video = { kind: "video", stop: vi.fn() } as unknown as MediaStreamTrack;
-    const audio = { kind: "audio", stop: vi.fn() } as unknown as MediaStreamTrack;
-    const replaced: MediaStreamTrack[] = [];
-    const sender = (track: MediaStreamTrack) => ({
-      track,
-      replaceTrack: vi.fn(async (next: MediaStreamTrack) => {
-        replaced.push(next);
-      }),
-    });
-    const senders = [sender(video), sender(audio)];
-    const added: MediaStreamTrack[] = [];
-    let onTrack: ((event: { track: MediaStreamTrack }) => void) | undefined;
-    const stream = {
-      getTracks: () => [video, audio],
-      getVideoTracks: () => [video],
-      addEventListener: (_name: string, listener: typeof onTrack) => {
-        onTrack = listener;
-      },
-    } as unknown as MediaStream;
-    const plugin = {
-      initPlugin: () => ({ name: "fake", getMirror: vi.fn() }),
-      setupPeer: vi.fn(),
-      setupStream: () => stream,
-      signalReceive: vi.fn(),
-      peer: {
+  describe("a video's tracks", () => {
+    function capture(tracks: MediaStreamTrack[]) {
+      let onTrack: (() => void) | undefined;
+      const stream = {
+        getTracks: () => tracks,
+        getVideoTracks: () => tracks.filter((track) => track.kind === "video"),
+        getAudioTracks: () => tracks.filter((track) => track.kind === "audio"),
+        addEventListener: (_name: string, listener: () => void) => {
+          onTrack = listener;
+        },
+      } as unknown as MediaStream;
+      return {
+        stream,
+        tracks,
+        arrive: (...next: MediaStreamTrack[]) => {
+          tracks.splice(0, tracks.length, ...next);
+          onTrack?.();
+        },
+      };
+    }
+    const track = (kind: string) => ({ kind, stop: vi.fn() }) as unknown as MediaStreamTrack;
+
+    function connect(captures: Record<number, ReturnType<typeof capture>>, connected = true) {
+      const senders: Array<{
+        track: MediaStreamTrack | null;
+        replaceTrack: ReturnType<typeof vi.fn>;
+      }> = [];
+      const sender = (sent: MediaStreamTrack) => {
+        const created = {
+          track: sent as MediaStreamTrack | null,
+          replaceTrack: vi.fn(async (next: MediaStreamTrack) => {
+            created.track = next;
+          }),
+        };
+        senders.push(created);
+        return created;
+      };
+      const added: MediaStreamTrack[] = [];
+      const outgoingStreams = new Set<MediaStream>();
+      const peer = {
+        connected,
         destroy: vi.fn(),
-        addTrack: (track: MediaStreamTrack) => added.push(track),
-        _pc: { getSenders: () => senders, getTransceivers: () => [] },
-      },
-    };
-    const rtc = installCanvasRtcRecord({
-      constructors: captureRtcConstructors({} as typeof globalThis),
-      scope,
-      createPlugin: () => plugin as never,
-      exposeReceiver: false,
+        addTrack: (next: MediaStreamTrack) => {
+          added.push(next);
+          sender(next);
+        },
+        _pc: { getSenders: () => senders },
+      };
+      const startStream = vi.fn((_id: number, stream: MediaStream) => {
+        if (outgoingStreams.has(stream)) return;
+        outgoingStreams.add(stream);
+        for (const sent of stream.getTracks()) sender(sent);
+      });
+      const scope = { addEventListener: vi.fn(), removeEventListener: vi.fn() };
+      const binding = vi.fn();
+      const rtc = installCanvasRtcRecord({
+        constructors: captureRtcConstructors({} as typeof globalThis),
+        scope: { ...scope, [RTC_SIGNAL_BINDING_NAME]: binding } as unknown as typeof globalThis,
+        createPlugin: () =>
+          ({
+            initPlugin: () => ({ name: "fake", getMirror: vi.fn() }),
+            setupPeer: vi.fn(),
+            setupStream: (id: number) => captures[id]?.stream,
+            startStream,
+            signalReceive: vi.fn(),
+            peer,
+            outgoingStreams,
+          }) as never,
+        exposeReceiver: false,
+      });
+      rtc.plugin.getMirror?.({
+        nodeMirror: { getNode: () => ({ nodeType: 1, nodeName: "VIDEO", captureStream: vi.fn() }) },
+      } as never);
+      const ask = (id: number) =>
+        rtc.receiveSignal({ peer: "viewer", lane: "lane", payload: { type: "video", id } });
+      return { ask, added, senders, startStream, binding, peer };
+    }
+
+    it("waits for a video that has not loaded yet, then sends picture and sound together", () => {
+      const loading = capture([]);
+      const { ask, added, binding, startStream } = connect({ 1: loading });
+
+      expect(ask(1)).toBe(true);
+      expect(binding).not.toHaveBeenCalled();
+      expect(startStream).toHaveBeenCalledOnce();
+
+      const picture = track("video");
+      const sound = track("audio");
+      loading.arrive(sound, picture);
+      expect(added).toEqual([picture, sound]);
     });
-    rtc.plugin.getMirror?.({
-      nodeMirror: { getNode: () => ({ nodeType: 1, nodeName: "VIDEO", captureStream: vi.fn() }) },
-    } as never);
-    rtc.receiveSignal({ peer: "viewer", lane: "lane", payload: { type: "video", id: 1 } });
 
-    const nextVideo = { kind: "video" } as unknown as MediaStreamTrack;
-    onTrack?.({ track: nextVideo });
-    expect(replaced).toEqual([nextVideo]);
-    expect(senders[0]?.replaceTrack).toHaveBeenCalledWith(nextVideo);
-    expect(senders[1]?.replaceTrack).not.toHaveBeenCalled();
+    it("leaves the tracks to the plugin until its peer has connected", () => {
+      const loading = capture([]);
+      const { ask, added, startStream } = connect({ 1: loading }, false);
 
-    // A kind it was not sending yet needs adding.
-    const none = senders.splice(1, 1);
-    expect(none).toHaveLength(1);
-    const firstAudio = { kind: "audio" } as unknown as MediaStreamTrack;
-    onTrack?.({ track: firstAudio });
-    expect(added).toEqual([firstAudio]);
+      ask(1);
+      loading.arrive(track("video"), track("audio"));
+
+      expect(startStream).not.toHaveBeenCalled();
+      expect(added).toEqual([]);
+    });
+
+    it("starts a stream asked for after the peer has connected", () => {
+      const first = capture([track("video")]);
+      const second = capture([track("video")]);
+      const { ask, startStream } = connect({ 1: first, 2: second });
+
+      ask(1);
+      ask(2);
+
+      expect(startStream).toHaveBeenCalledWith(2, second.stream);
+    });
+
+    it("moves its own senders onto new tracks when the source changes", () => {
+      const oldPicture = track("video");
+      const oldSound = track("audio");
+      const playing = capture([oldPicture, oldSound]);
+      const { ask, added, senders } = connect({ 1: playing });
+      ask(1);
+
+      const picture = track("video");
+      const sound = track("audio");
+      playing.arrive(picture, sound);
+
+      expect(senders[0]?.replaceTrack).toHaveBeenCalledWith(picture);
+      expect(senders[1]?.replaceTrack).toHaveBeenCalledWith(sound);
+      expect(added).toEqual([]);
+    });
+
+    it("leaves another video's senders alone", () => {
+      const firstPicture = track("video");
+      const first = capture([firstPicture]);
+      const loading = capture([]);
+      const { ask, added, senders } = connect({ 1: first, 2: loading });
+      ask(1);
+      ask(2);
+
+      const secondPicture = track("video");
+      loading.arrive(secondPicture);
+
+      expect(senders[0]?.replaceTrack).not.toHaveBeenCalled();
+      expect(senders[0]?.track).toBe(firstPicture);
+      expect(added).toEqual([secondPicture]);
+    });
   });
 
   it("turns a tainted video captureStream exception into the DRM/blocked notice", () => {
