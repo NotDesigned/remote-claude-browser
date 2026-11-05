@@ -234,7 +234,6 @@ describe("download flow", () => {
   it("checks the route SID before consuming a shared manager's completed file", async () => {
     const root = await mkdtemp(join(tmpdir(), "mirror-shared-download-test-"));
     tempDirs.push(root);
-    await writeFile(join(root, "guid-a"), "client one only");
     const browser = new DownloadBrowser();
     const manager = await createDownloadManager({
       sessionId: "shared-browser",
@@ -245,6 +244,7 @@ describe("download flow", () => {
       createKey: () => "owned-key",
     });
     managers.push(manager);
+    await writeFile(join(root, "guid-a"), "client one only");
     browser.emit("Browser.downloadWillBegin", {
       frameId: "owned-frame",
       guid: "guid-a",
@@ -426,10 +426,27 @@ describe("download flow", () => {
     });
   });
 
+  it("starts with an empty spool, as no link leads to what a previous run left", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mirror-spool-test-"));
+    tempDirs.push(root);
+    await writeFile(join(root, "old-guid"), "left behind");
+    await writeFile(join(root, "other-guid.crdownload"), "cut short");
+
+    managers.push(
+      await createDownloadManager({
+        sessionId: "client-1",
+        browser: new DownloadBrowser(),
+        downloadDir: root,
+        publish: () => undefined,
+      }),
+    );
+
+    expect(await readdir(root)).toEqual([]);
+  });
+
   it("keeps a fully delivered file only for a short retry window", async () => {
     const root = await mkdtemp(join(tmpdir(), "mirror-delivered-download-test-"));
     tempDirs.push(root);
-    await writeFile(join(root, "guid-d"), "delivered body");
     const browser = new DownloadBrowser();
     let clock = 1_000_000;
     const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
@@ -441,6 +458,7 @@ describe("download flow", () => {
       createKey: () => "delivered-key",
     });
     managers.push(manager);
+    await writeFile(join(root, "guid-d"), "delivered body");
     browser.emit("Browser.downloadWillBegin", {
       frameId: "frame",
       guid: "guid-d",
@@ -552,7 +570,6 @@ describe("download flow", () => {
     tempDirs.push(root);
     const downloadDir = join(root, "downloads");
     await mkdir(downloadDir);
-    await writeFile(join(downloadDir, "guid-safe"), "download bytes");
 
     const browser = new DownloadBrowser();
     const manager = await createDownloadManager({
@@ -563,6 +580,7 @@ describe("download flow", () => {
       createKey: () => "single-use",
     });
     managers.push(manager);
+    await writeFile(join(downloadDir, "guid-safe"), "download bytes");
     browser.emit("Browser.downloadWillBegin", {
       frameId: "frame-1",
       guid: "guid-safe",

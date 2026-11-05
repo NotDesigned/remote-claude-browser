@@ -19,7 +19,7 @@ import type { FastifyInstance } from "fastify";
 import { randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { join } from "node:path";
-import { open, rm, stat, type FileHandle } from "node:fs/promises";
+import { open, readdir, rm, stat, type FileHandle } from "node:fs/promises";
 import { Readable } from "node:stream";
 
 import type { SessionGuard } from "./auth/middleware";
@@ -130,7 +130,10 @@ export async function createDownloadManager(
           options.sessionForFrame === undefined
             ? sessionId
             : options.sessionForFrame(event.frameId);
-        if (ownerSessionId === undefined) return;
+        if (ownerSessionId === undefined) {
+          report(new Error(`Download from a frame no client owns: ${event.frameId}`));
+          return;
+        }
         nonEmpty(ownerSessionId, "download sessionId");
         const key = uniqueKey(createKey, links);
         const record: DownloadRecord = {
@@ -182,6 +185,14 @@ export async function createDownloadManager(
         report(error);
       }
     },
+  );
+
+  // No link leads to what a previous run left, and nothing is writing here before the behaviour below.
+  const leftovers = await readdir(downloadDir).catch(() => [] as string[]);
+  await Promise.all(
+    leftovers.map((name) =>
+      rm(join(downloadDir, name), { force: true, recursive: true }).catch(report),
+    ),
   );
 
   try {
