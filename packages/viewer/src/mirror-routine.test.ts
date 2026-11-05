@@ -75,6 +75,7 @@ const fakeRrweb = vi.hoisted(() => {
         style: { pointerEvents: "none" },
         contentDocument: {
           querySelectorAll: () => this.mediaElements,
+          querySelector: () => null,
         },
         setAttribute: vi.fn((name: string, value: string) => {
           this.iframeAttributes.set(name, value);
@@ -161,6 +162,7 @@ class FakeElement {
   clientWidth = 800;
   clientHeight = 600;
   readonly children: FakeElement[] = [];
+  parent: FakeElement | null = null;
   removed = false;
 
   constructor(readonly ownerDocument: FakeDocument) {}
@@ -170,6 +172,7 @@ class FakeElement {
   }
 
   appendChild(child: FakeElement) {
+    child.parent = this;
     this.children.push(child);
     return child;
   }
@@ -178,6 +181,8 @@ class FakeElement {
 
   remove() {
     this.removed = true;
+    this.parent?.children.splice(this.parent.children.indexOf(this), 1);
+    this.parent = null;
   }
 }
 
@@ -345,6 +350,183 @@ describe("D10 recovery triggers", () => {
       mirror.selectTab("T2");
       mirror.handle({ t: "snapshot", tab: "T2", epoch: 1, seq: 1, data: [full(1100)] });
       expect(capture).toHaveBeenCalledOnce();
+      mirror.teardown();
+    });
+  });
+
+  describe("returning to a tab left behind", () => {
+    function tabs(parkedTabs = 2) {
+      vi.useFakeTimers();
+      fakeRrweb.FakeReplayer.instances.length = 0;
+      const container = new FakeElement(new FakeDocument());
+      const requestResync = vi.fn();
+      const applied = vi.fn();
+      const mirror = createMirror({
+        container: container as unknown as HTMLElement,
+        pipeline: new EventPipeline(),
+        requestResync,
+        onSnapshotApplied: applied,
+        parkedTabs,
+      });
+      const open = (tab: string, epoch = 1, at = 1000) => {
+        mirror.selectTab(tab);
+        mirror.handle({ t: "resync", tab });
+        mirror.handle({ t: "snapshot", tab, epoch, seq: 1, data: [full(at)] });
+      };
+      return { container, mirror, requestResync, applied, open };
+    }
+    const replayers = () => fakeRrweb.FakeReplayer.instances;
+    afterEach(() => {
+      vi.useRealTimers();
+      fakeRrweb.FakeReplayer.instances.length = 0;
+    });
+
+    it("shows the page it kept at once, and applies only what it missed", () => {
+      const { mirror, requestResync, applied, open } = tabs();
+      open("T1");
+      mirror.handle({ t: "delta", tab: "T1", epoch: 1, seq: 2, data: [delta(1001)] });
+      open("T2");
+      expect(replayers()).toHaveLength(2);
+
+      mirror.selectTab("T1");
+
+      // On screen before the gateway has said anything, with no rebuild.
+      expect(mirror.getReplayer()).toBe(replayers()[0]);
+      expect(replayers()).toHaveLength(2);
+
+      applied.mockClear();
+      mirror.handle({ t: "resync", tab: "T1" });
+      mirror.handle({ t: "snapshot", tab: "T1", epoch: 1, seq: 1, data: [full(1000)] });
+      mirror.handle({
+        t: "delta",
+        tab: "T1",
+        epoch: 1,
+        seq: 2,
+        data: [delta(1001), delta(1002), delta(1003)],
+      });
+
+      expect(replayers()).toHaveLength(2);
+      expect(replayers()[0]?.added.map((event) => event.timestamp)).toEqual([1001, 1002, 1003]);
+      expect(applied).toHaveBeenCalledOnce();
+
+      mirror.handle({ t: "delta", tab: "T1", epoch: 1, seq: 5, data: [delta(1004)] });
+      expect(replayers()[0]?.added).toHaveLength(4);
+      vi.advanceTimersByTime(5_000);
+      expect(requestResync).not.toHaveBeenCalled();
+      mirror.teardown();
+    });
+
+    it("takes no input until the gateway has answered", () => {
+      const { container, mirror, open } = tabs();
+      open("T1");
+      const stage = container.children[0] as unknown as { inert?: boolean };
+      open("T2");
+
+      mirror.selectTab("T1");
+      expect(stage.inert).toBe(true);
+      mirror.handle({ t: "resync", tab: "T1" });
+      mirror.handle({ t: "snapshot", tab: "T1", epoch: 1, seq: 1, data: [full(1000)] });
+      expect(stage.inert).toBe(false);
+      mirror.teardown();
+    });
+
+    it("rebuilds when the page moved on while it was away", () => {
+      const { mirror, open } = tabs();
+      open("T1");
+      open("T2");
+
+      mirror.selectTab("T1");
+      mirror.handle({ t: "resync", tab: "T1" });
+      mirror.handle({ t: "snapshot", tab: "T1", epoch: 2, seq: 7, data: [full(2000)] });
+
+      expect(replayers()).toHaveLength(3);
+      expect(mirror.getReplayer()).toBe(replayers()[2]);
+      mirror.teardown();
+    });
+
+    it("asks for a snapshot if the gateway never answers, and input comes back", () => {
+      const { container, mirror, requestResync, open } = tabs();
+      open("T1");
+      const stage = container.children[0] as unknown as { inert?: boolean };
+      open("T2");
+
+      mirror.selectTab("T1");
+      vi.advanceTimersByTime(1_500);
+
+      expect(requestResync).toHaveBeenCalledExactlyOnceWith("T1", "tab selected");
+      expect(stage.inert).toBe(false);
+      mirror.teardown();
+    });
+
+    it("never moves a hidden page, which would reload its iframe", () => {
+      const { container, mirror, open } = tabs();
+      open("T1");
+      const stage = container.children[0] as FakeElement;
+      const replaced = vi.spyOn(container, "replaceChildren");
+      open("T2");
+
+      expect(stage.dataset.parked).toBe("true");
+      expect(container.children).toContain(stage);
+      expect(stage.removed).toBe(false);
+      expect(replaced).not.toHaveBeenCalled();
+
+      mirror.selectTab("T1");
+      expect(stage.dataset.parked).toBeUndefined();
+      expect(container.children).toContain(stage);
+      mirror.teardown();
+      expect(container.children).not.toContain(stage);
+    });
+
+    it("keeps only as many as it was told to, dropping the oldest", () => {
+      const { mirror, open } = tabs(1);
+      open("T1");
+      open("T2");
+      open("T3");
+
+      expect(replayers()[0]?.destroyed).toBe(true);
+      expect(replayers()[1]?.destroyed).toBe(false);
+      mirror.teardown();
+    });
+
+    it("does not keep a page whose canvases and video cannot come back", () => {
+      const { mirror, open } = tabs();
+      open("T1");
+      (
+        replayers()[0]?.iframe.contentDocument as unknown as { querySelector: () => unknown }
+      ).querySelector = () => ({});
+      open("T2");
+
+      expect(replayers()[0]?.destroyed).toBe(true);
+      mirror.selectTab("T1");
+      expect(mirror.getReplayer()).toBe(replayers()[1]);
+      mirror.teardown();
+    });
+
+    it("does not bring back a page that picture mode took off the surface", () => {
+      const { container, mirror, open } = tabs();
+      open("T1");
+      const stage = container.children[0] as unknown as { isConnected?: boolean };
+      open("T2");
+      stage.isConnected = false;
+
+      mirror.selectTab("T1");
+
+      expect(replayers()[0]?.destroyed).toBe(true);
+      expect(mirror.getReplayer()).toBe(replayers()[1]);
+      mirror.teardown();
+    });
+
+    it("lets go of the page of a tab that was closed, and of all of them on a lost connection", () => {
+      const { mirror, open } = tabs();
+      open("T1");
+      open("T2");
+      open("T3");
+      mirror.keepTabs(["T2", "T3"]);
+      expect(replayers()[0]?.destroyed).toBe(true);
+      expect(replayers()[1]?.destroyed).toBe(false);
+
+      mirror.connectionLost();
+      expect(replayers()[1]?.destroyed).toBe(true);
       mirror.teardown();
     });
   });

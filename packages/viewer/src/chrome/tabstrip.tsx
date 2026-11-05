@@ -15,6 +15,8 @@ export interface TabStripProps {
   onActivate?(tab: TabId): void;
 }
 
+const NEW_TAB_URL = "https://claude.ai/new";
+
 export function TabStrip({ tabs, chromeByTab = {}, send, onActivate }: TabStripProps) {
   const activeTab = tabs.find((tab) => tab.active) ?? tabs[0];
   const activate = (tab: TabId) => {
@@ -96,7 +98,9 @@ export function TabStrip({ tabs, chromeByTab = {}, send, onActivate }: TabStripP
           type="button"
           aria-label="New tab"
           title="新建标签页"
-          onClick={() => send({ t: "nav", tab: activeTab?.id ?? "", action: "newtab" })}
+          onClick={() =>
+            send({ t: "nav", tab: activeTab?.id ?? "", action: "newtab", url: NEW_TAB_URL })
+          }
         >
           <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
             <path d="M12 5v14M5 12h14" />

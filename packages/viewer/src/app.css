@@ -91,9 +91,9 @@ body,
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 26px;
-  flex: 0 1 210px;
+  flex: 0 1 260px;
   min-width: 104px;
-  max-width: 240px;
+  max-width: 300px;
   height: 29px;
   color: var(--chrome-muted);
   background: transparent;
@@ -540,6 +540,15 @@ body,
   /* A follower's remote-size child is transformed only in the paint coordinate space. Clip at
      a viewport-size boundary so that unscaled child geometry cannot become host scroll extent. */
   overflow: clip;
+}
+
+/* A tab left behind stays laid out where it was, as an iframe cannot be moved or undisplayed
+   without losing what it holds. */
+.mirror-stage[data-parked] {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /* Only a switch that takes a while shows that the page in view is on its way out. */

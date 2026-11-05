@@ -544,6 +544,8 @@ export function App() {
       container: host,
       pipeline,
       clock,
+      // Each hidden tab costs this browser its page's memory, which a phone has least of.
+      parkedTabs: /\bMobi/.test(navigator.userAgent) ? 1 : 2,
       onBufferApplied: (buffer) => {
         if (!disposed) setBufferMs(buffer);
       },
@@ -857,6 +859,7 @@ export function App() {
         }
         if (message.t === "tabs") {
           setTabs(message.tabs);
+          mirror.keepTabs(message.tabs.map((tab) => tab.id));
           const active = message.tabs.find((tab) => tab.active);
           // A list sent before the gateway saw this viewer's click still names the old tab.
           const outdated =

@@ -91,7 +91,7 @@ describe("P2 viewer tab strip", () => {
     expect(sent).toEqual([
       { t: "nav", tab: "tab-a", action: "activate" },
       { t: "nav", tab: "tab-a", action: "close" },
-      { t: "nav", tab: "tab-b", action: "newtab" },
+      { t: "nav", tab: "tab-b", action: "newtab", url: "https://claude.ai/new" },
     ]);
   });
 
@@ -103,6 +103,6 @@ describe("P2 viewer tab strip", () => {
     expect(newTab?.props.disabled).toBeUndefined();
     (newTab?.props.onClick as () => void)();
 
-    expect(sent).toEqual([{ t: "nav", tab: "", action: "newtab" }]);
+    expect(sent).toEqual([{ t: "nav", tab: "", action: "newtab", url: "https://claude.ai/new" }]);
   });
 });

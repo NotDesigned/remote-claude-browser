@@ -53,6 +53,8 @@ export interface Mirror {
   observeRtt(rttMs: number): void;
   /** Recompute follower fit scaling after the outer viewer changes size. */
   refreshViewportLayout(): void;
+  /** Lets go of hidden pages of tabs that no longer exist. */
+  keepTabs(tabs: readonly TabId[]): void;
   /** Tear down the Replayer and its iframe. */
   teardown(): void;
 }
@@ -73,6 +75,8 @@ export interface MirrorOpts {
   onBufferApplied?(bufferMs: number): void;
   /** WebRTC is created and destroyed with each Replayer generation. */
   rtc?: MirrorRtcOptions;
+  /** How many tabs left behind stay built, hidden, so that returning to them is immediate. */
+  parkedTabs?: number;
 }
 
 export interface MirrorRtcOptions {
@@ -203,6 +207,11 @@ export function createMirror(opts: MirrorOpts): Mirror {
   let state: LiveState | null = null;
   let resyncRequested = false;
   let switchTimer: ReturnType<typeof setTimeout> | null = null;
+  const parkedLimit = opts.parkedTabs ?? 0;
+  /** Oldest first. Never moved in the DOM, which would reload their iframes. */
+  const parked = new Map<TabId, LiveState>();
+  /** A page back in view until the gateway's catch-up for its tab, which it mostly already has. */
+  let catchUp: { answered: boolean; snapshotSeen: boolean } | null = null;
   let pendingRestore: RebuildRestorePoint | null = null;
   let viewerId: string | null = null;
   let isDriver = true;
@@ -244,8 +253,16 @@ export function createMirror(opts: MirrorOpts): Mirror {
     if (live !== null) pendingRestore = restoreHooks.capture(live.replayer.iframe);
   };
 
+  /** Clears the visible surface, and only that: hidden pages have to stay where they are. */
+  const clearForeground = (keep?: Element) => {
+    const hidden = new Set<Element>([...parked.values()].map((live) => live.stage));
+    for (const child of [...opts.container.children]) {
+      if (child !== keep && !hidden.has(child)) child.remove();
+    }
+  };
+
   const renderStatus = (message: string) => {
-    opts.container.replaceChildren();
+    clearForeground();
     opts.container.dataset.mirrorState = "waiting";
     const status = opts.container.ownerDocument.createElement("p");
     status.className = "mirror-status";
@@ -259,27 +276,101 @@ export function createMirror(opts: MirrorOpts): Mirror {
     if (preserveInteraction) captureInteraction(oldState);
     state = null;
     opts.pipeline.reset();
-    if (oldState !== null) {
-      const rtc = oldState.rtc;
-      oldState.rtc = null;
-      disposeRtc(oldState.tab, rtc);
-      oldState.detachInteraction();
-      oldState.detachMediaRestore();
-      try {
-        oldState.replayer.destroy();
-      } catch {
-        // The stage is removed below even if rrweb's irreversible destroy encounters bad state.
-      }
-      oldState.stage.remove();
+    if (oldState !== null) destroyLive(oldState);
+    renderStatus(message);
+  };
+
+  const destroyLive = (live: LiveState) => {
+    const rtc = live.rtc;
+    live.rtc = null;
+    disposeRtc(live.tab, rtc);
+    live.detachInteraction();
+    live.detachMediaRestore();
+    try {
+      live.replayer.destroy();
+    } catch {
+      // The stage is removed below even if rrweb's irreversible destroy encounters bad state.
     }
+    live.stage.remove();
+  };
+
+  const dropParked = (tab: TabId) => {
+    const live = parked.get(tab);
+    if (live === undefined) return;
+    parked.delete(tab);
+    destroyLive(live);
+  };
+
+  /** Canvases and video arrive over WebRTC, which ends with the view, so they cannot come back. */
+  const canPark = (live: LiveState): boolean => {
+    if (parkedLimit < 1) return false;
+    try {
+      const page = live.replayer.iframe.contentDocument;
+      return page !== null && page !== undefined && page.querySelector("canvas,video") === null;
+    } catch {
+      return false;
+    }
+  };
+
+  const park = (live: LiveState) => {
+    const rtc = live.rtc;
+    live.rtc = null;
+    disposeRtc(live.tab, rtc);
+    live.detachInteraction();
+    live.detachInteraction = () => {};
+    live.stage.inert = true;
+    live.stage.dataset.parked = "true";
+    dropParked(live.tab);
+    parked.set(live.tab, live);
+    for (const tab of parked.keys()) {
+      if (parked.size <= parkedLimit) break;
+      dropParked(tab);
+    }
+  };
+
+  /** Takes the page in view off the screen, keeping it if it can be kept. */
+  const setAside = (message: string) => {
+    const live = state;
+    if (live === null || !canPark(live)) {
+      discard(message);
+      return;
+    }
+    state = null;
+    opts.pipeline.reset();
+    park(live);
     renderStatus(message);
   };
 
   const endTabSwitch = () => {
     if (switchTimer !== null) clearTimeout(switchTimer);
     switchTimer = null;
+    catchUp = null;
     delete opts.container.dataset.switching;
     if (state !== null) state.stage.inert = false;
+  };
+
+  /** The page is shown at once, but input waits for the gateway to say what it has missed. */
+  const awaitCatchUp = (tab: TabId) => {
+    catchUp = { answered: false, snapshotSeen: false };
+    if (state !== null) state.stage.inert = true;
+    switchTimer = setTimeout(() => {
+      switchTimer = null;
+      const waiting = catchUp;
+      if (state !== null) state.stage.inert = false;
+      if (waiting === null || waiting.snapshotSeen || waiting.answered) return;
+      catchUp = null;
+      requestFreshSnapshot(tab, "tab selected");
+    }, TAB_SWITCH_WAIT_MS);
+  };
+
+  const settleCatchUp = (message: Snapshot) => {
+    if (switchTimer !== null) clearTimeout(switchTimer);
+    switchTimer = null;
+    if (catchUp !== null) catchUp.snapshotSeen = true;
+    if (state !== null) state.stage.inert = false;
+    remoteViewport = extractSnapshotViewport(message) ?? remoteViewport;
+    applyViewportLayout();
+    opts.onSnapshotApplied?.(message);
   };
 
   const requestFreshSnapshot = (tab: TabId, reason: string) => {
@@ -344,14 +435,17 @@ export function createMirror(opts: MirrorOpts): Mirror {
     // The teardown and replacement happen in one synchronous websocket task. Browsers cannot
     // paint or run the chaos sampler between these operations, so the last good frame remains on
     // screen until this task commits the new iframe without overlapping two rrweb instances.
-    discard("Building the mirror…");
+    if (state !== null && state.tab !== message.tab) setAside("Building the mirror…");
+    else discard("Building the mirror…");
+    dropParked(message.tab);
     activeTab = message.tab;
     const stage = opts.container.ownerDocument.createElement("div");
     stage.className = "mirror-stage";
     const mount = opts.container.ownerDocument.createElement("div");
     mount.className = "mirror-replayer";
     stage.appendChild(mount);
-    opts.container.replaceChildren(stage);
+    clearForeground();
+    opts.container.appendChild(stage);
     opts.container.dataset.mirrorState = "building";
 
     const initialEvents: eventWithTime[] = [];
@@ -491,20 +585,30 @@ export function createMirror(opts: MirrorOpts): Mirror {
 
     // Frozen protocol assumption: delta.seq is the first event's per-tab sequence.
     const expectedSeq = live.lastSeq + 1;
-    if (message.seq !== expectedSeq || message.data.length === 0) {
+    let seq = message.seq;
+    let data = message.data;
+    if (catchUp !== null) {
+      // A catch-up repeats the tab's whole buffer, and this page has already applied the start.
+      const applied = expectedSeq - seq;
+      if (applied > 0) {
+        if (applied >= data.length && data.length > 0) return;
+        data = data.slice(applied);
+        seq = expectedSeq;
+      }
+      if (catchUp.snapshotSeen) catchUp = null;
+    }
+    if (seq !== expectedSeq || data.length === 0) {
       requestFreshSnapshot(
         message.tab,
-        message.data.length === 0
-          ? "empty delta"
-          : `seq gap: expected ${expectedSeq}, got ${message.seq}`,
+        data.length === 0 ? "empty delta" : `seq gap: expected ${expectedSeq}, got ${seq}`,
       );
       return;
     }
 
-    for (const event of message.data) {
+    for (const event of data) {
       if (!addEvent(live, event)) return;
     }
-    live.lastSeq = message.seq + message.data.length - 1;
+    live.lastSeq = seq + data.length - 1;
   };
 
   renderStatus("Waiting for a snapshot…");
@@ -525,7 +629,9 @@ export function createMirror(opts: MirrorOpts): Mirror {
           break;
         case "snapshot":
           if (activeTab === null || msg.tab === activeTab) {
-            if (
+            if (catchUp !== null && state?.tab === msg.tab && msg.epoch === state.epoch) {
+              settleCatchUp(msg);
+            } else if (
               state === null ||
               state.tab !== msg.tab ||
               msg.epoch > state.epoch ||
@@ -539,7 +645,9 @@ export function createMirror(opts: MirrorOpts): Mirror {
           if (activeTab === null || msg.tab === activeTab) applyDelta(msg);
           break;
         case "resync":
-          if (activeTab === null || msg.tab === activeTab) {
+          if (catchUp !== null && state?.tab === msg.tab) {
+            catchUp.answered = true;
+          } else if (activeTab === null || msg.tab === activeTab) {
             activeTab = msg.tab;
             resyncRequested = true;
             opts.container.dataset.resyncPending = "true";
@@ -560,6 +668,8 @@ export function createMirror(opts: MirrorOpts): Mirror {
       }
     },
     connectionLost() {
+      for (const tab of [...parked.keys()]) dropParked(tab);
+      endTabSwitch();
       if (state?.rtc !== null && state !== null) {
         const rtc = state.rtc;
         state.rtc = null;
@@ -584,7 +694,33 @@ export function createMirror(opts: MirrorOpts): Mirror {
       pendingRestore = null;
       resyncRequested = false;
       endTabSwitch();
-      if (state?.tab === tab) return;
+      let saved = parked.get(tab);
+      // Picture mode clears the shared surface, and an iframe does not survive leaving the page.
+      if (saved?.stage.isConnected === false) {
+        dropParked(tab);
+        saved = undefined;
+      }
+      if (saved !== undefined) {
+        parked.delete(tab);
+        const leaving = state;
+        state = saved;
+        opts.pipeline.reset();
+        if (leaving !== null) {
+          if (canPark(leaving)) park(leaving);
+          else destroyLive(leaving);
+        }
+        clearForeground(saved.stage);
+        delete saved.stage.dataset.parked;
+        saved.detachInteraction = opts.attachInteraction?.(tab, saved.replayer) ?? (() => {});
+        opts.container.dataset.mirrorState = "live";
+        applyViewportLayout();
+        awaitCatchUp(tab);
+        return;
+      }
+      if (state?.tab === tab) {
+        if (canPark(state)) awaitCatchUp(tab);
+        return;
+      }
       // The gateway answers an activated tab with its snapshot, and the page in view stays until
       // that replaces it. It can no longer be used, as input would reach the tab being left.
       if (state === null) renderStatus("Switching tabs…");
@@ -599,7 +735,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
         switchTimer = null;
         delete opts.container.dataset.switching;
         if (activeTab !== tab || state?.tab === tab) return;
-        discard("Switching tabs…");
+        setAside("Switching tabs…");
         // Already set when the gateway has answered and its snapshot is on the way.
         requestFreshSnapshot(tab, "tab selected");
       }, TAB_SWITCH_WAIT_MS);
@@ -609,8 +745,12 @@ export function createMirror(opts: MirrorOpts): Mirror {
     getReplayer: () => state?.replayer ?? null,
     observeRtt: (rttMs) => clock.observeRtt(rttMs),
     refreshViewportLayout: applyViewportLayout,
+    keepTabs(tabs) {
+      for (const tab of [...parked.keys()]) if (!tabs.includes(tab)) dropParked(tab);
+    },
     teardown() {
       endTabSwitch();
+      for (const tab of [...parked.keys()]) dropParked(tab);
       pendingRestore = null;
       discard("Mirror stopped.");
       delete opts.container.dataset.resyncPending;
