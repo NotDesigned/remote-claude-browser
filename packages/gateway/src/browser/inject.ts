@@ -108,7 +108,11 @@ function injectionsFor(browser: BrowserHandle): Map<string, Promise<void>> {
 }
 
 /** Inject once per flat session. Repeated callers share the same ordered attach promise. */
-export function injectAgent(browser: BrowserHandle, target: TargetRef): Promise<void> {
+export function injectAgent(
+  browser: BrowserHandle,
+  target: TargetRef,
+  prepare?: (target: TargetRef) => Promise<void>,
+): Promise<void> {
   const browserInjections = injectionsFor(browser);
 
   const existing = browserInjections.get(target.sessionId);
@@ -132,6 +136,7 @@ export function injectAgent(browser: BrowserHandle, target: TargetRef): Promise<
       },
     });
     await browser.send(target.sessionId, "Page.enable");
+    await prepare?.(target);
     await browser.send(target.sessionId, "Page.addScriptToEvaluateOnNewDocument", {
       source: WEBDRIVER_NORMALIZER,
       runImmediately: true,

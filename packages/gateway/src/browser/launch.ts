@@ -65,6 +65,8 @@ export interface FlatSessionEventMap {
   "Page.lifecycleEvent": Protocol.Page.LifecycleEventEvent;
   "Page.screencastFrame": Protocol.Page.ScreencastFrameEvent;
   "Page.fileChooserOpened": Protocol.Page.FileChooserOpenedEvent;
+  "DOMStorage.domStorageItemAdded": Protocol.DOMStorage.DomStorageItemAddedEvent;
+  "DOMStorage.domStorageItemUpdated": Protocol.DOMStorage.DomStorageItemUpdatedEvent;
 }
 
 /** Browser-domain notifications are deliberately separate from flat target-session events.
@@ -144,6 +146,14 @@ type ScreencastFrameCallback = (
   sessionId: string,
   event: Protocol.Page.ScreencastFrameEvent,
 ) => void;
+type StorageAddedCallback = (
+  sessionId: string,
+  event: Protocol.DOMStorage.DomStorageItemAddedEvent,
+) => void;
+type StorageUpdatedCallback = (
+  sessionId: string,
+  event: Protocol.DOMStorage.DomStorageItemUpdatedEvent,
+) => void;
 type FileChooserOpenedCallback = (
   sessionId: string,
   event: Protocol.Page.FileChooserOpenedEvent,
@@ -221,6 +231,8 @@ async function browserHandle(browser: Browser): Promise<BrowserHandle> {
     const lifecycleEventCallbacks = new Set<LifecycleEventCallback>();
     const screencastFrameCallbacks = new Set<ScreencastFrameCallback>();
     const fileChooserOpenedCallbacks = new Set<FileChooserOpenedCallback>();
+    const storageAddedCallbacks = new Set<StorageAddedCallback>();
+    const storageUpdatedCallbacks = new Set<StorageUpdatedCallback>();
     const browserEventCallbacks = new Map<
       keyof BrowserSessionEventMap,
       Set<(event: BrowserSessionEventMap[keyof BrowserSessionEventMap]) => void>
@@ -309,6 +321,12 @@ async function browserHandle(browser: Browser): Promise<BrowserHandle> {
       session.on("Page.fileChooserOpened", (event) => {
         for (const callback of fileChooserOpenedCallbacks) callback(session.id(), event);
       });
+      session.on("DOMStorage.domStorageItemAdded", (event) => {
+        for (const callback of storageAddedCallbacks) callback(session.id(), event);
+      });
+      session.on("DOMStorage.domStorageItemUpdated", (event) => {
+        for (const callback of storageUpdatedCallbacks) callback(session.id(), event);
+      });
     }
 
     watchSession(rootSession);
@@ -377,6 +395,16 @@ async function browserHandle(browser: Browser): Promise<BrowserHandle> {
             const chooserCallback = callback as FileChooserOpenedCallback;
             fileChooserOpenedCallbacks.add(chooserCallback);
             return () => fileChooserOpenedCallbacks.delete(chooserCallback);
+          }
+          case "DOMStorage.domStorageItemAdded": {
+            const addedCallback = callback as StorageAddedCallback;
+            storageAddedCallbacks.add(addedCallback);
+            return () => storageAddedCallbacks.delete(addedCallback);
+          }
+          case "DOMStorage.domStorageItemUpdated": {
+            const updatedCallback = callback as StorageUpdatedCallback;
+            storageUpdatedCallbacks.add(updatedCallback);
+            return () => storageUpdatedCallbacks.delete(updatedCallback);
           }
         }
       },

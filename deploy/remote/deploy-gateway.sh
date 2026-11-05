@@ -43,6 +43,10 @@ systemctl restart claude-browser
 for attempt in $(seq 1 20); do
   if curl --fail --silent http://127.0.0.1:3010/healthz >/dev/null; then
     echo "Gateway healthy: $release"
+    # Same retention as deploy.sh. Later releases share files with this one by hard link.
+    ls -1 /opt/claude-browser/releases | sort -r | tail -n +6 | while read -r old; do
+      [ "/opt/claude-browser/releases/$old" = "$release" ] || rm -rf -- "/opt/claude-browser/releases/$old"
+    done
     exit 0
   fi
   sleep 1

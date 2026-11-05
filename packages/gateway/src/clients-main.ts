@@ -13,6 +13,7 @@ import { createAssetCache } from "./assets/cache";
 import { createAssetFetcher } from "./assets/fetch";
 import { registerAssetRoutes } from "./assets/route";
 import { createAgentLink } from "./browser/agentlink";
+import { createSeenMarks } from "./browser/seen-marks";
 import { agentBridgeChannel, callAgentBridge } from "./browser/bridge";
 import {
   afterSignInUrl,
@@ -201,7 +202,9 @@ export async function startClientGateway(): Promise<void> {
   const micTabs = new Set<string>();
   const hasViewer = (sid: string) =>
     [...viewers.values()].some((connection) => connection.sid === sid);
+  const seenMarks = await createSeenMarks(browser, join(profile, "seen-marks.json"));
   const agent = createAgentLink(browser, {
+    prepareTarget: seenMarks.prepare,
     publishClipboard(message, target) {
       const sid = pool.ownerOf(target);
       if (sid) publish(sid, message);
