@@ -25,7 +25,7 @@ import { createNavigationController } from "./browser/nav";
 import { createRendererRecovery } from "./browser/recovery";
 import { createDownloadManager, registerDownloadRoutes } from "./downloads";
 import { createUploadManager, registerUploadRoutes } from "./uploads";
-import { clearSavedZoom, createBrowserZoom } from "./browser/browser-zoom";
+import { createBrowserZoom, installZoomExtension } from "./browser/browser-zoom";
 import { createGrabSlots, createPixelWindow } from "./browser/pixel-window";
 import { createViewportAgreement } from "./hub/viewport";
 import { createInputRelay, type InputMsg } from "./input/relay";
@@ -84,13 +84,13 @@ export async function startClientGateway(): Promise<void> {
   const managedProfile = !process.env.CHROME_USER_DATA_DIR;
   const profile =
     process.env.CHROME_USER_DATA_DIR ?? (await mkdtemp(join(tmpdir(), "mirror-clients-")));
-  await clearSavedZoom(profile);
   const browser = process.env.BROWSER_CDP_URL
     ? await connectRemoteBrowser(process.env.BROWSER_CDP_URL)
     : await launchBrowser({
         userDataDir: profile,
         executablePath: process.env.CHROME_PATH,
         headful: process.env.CHROME_HEADFUL === "1",
+        enableExtensions: true,
         // Sets the first window. On this display's wide screen it would otherwise be huge.
         // Nobody is at this browser to click: Claude's sound starts without a gesture here, and the
         // viewer's own browser applies its own rule.
@@ -104,8 +104,20 @@ export async function startClientGateway(): Promise<void> {
           "--disable-features=SpareRendererForSitePerProcess",
           // Sessions share the profile now, so a restart would otherwise offer to restore them.
           "--hide-crash-restore-bubble",
+          // Only over this private pipe: it lets the picture's zoom extension be loaded below.
+          "--enable-unsafe-extension-debugging",
         ],
       });
+  const zoomExtensionReady = await installZoomExtension(
+    browser,
+    join(profile, "zoom-extension"),
+  ).then(
+    () => true,
+    (error: unknown) => {
+      console.warn("The picture will stop at CSS pixels:", (error as Error).message);
+      return false;
+    },
+  );
   const pool = createClientBrowserPool(browser, {
     onSignedIn: () => {
       for (const runtime of runtimes.values()) {
@@ -177,9 +189,6 @@ export async function startClientGateway(): Promise<void> {
   };
   const runtimePromises = new Map<string, Promise<ClientRuntime>>();
   const runtimes = new Map<string, ClientRuntime>();
-  const zoomAllowanceChanged = () => {
-    for (const runtime of runtimes.values()) runtime.pixels.zoomAllowanceChanged();
-  };
   const closing = new Set<string>();
   const viewerIds = new WeakMap<ViewerConn, string>();
   const viewers = new Map<string, { viewer: ViewerConn; sid: string; owner: string }>();
@@ -581,9 +590,7 @@ export async function startClientGateway(): Promise<void> {
           (connection) =>
             connection.sid === sid && connection.viewer.socket.bufferedAmount > VIDEO_BACKLOG_BYTES,
         ),
-      browserZoom,
-      // Zoom belongs to a site across the whole profile, so it would reshape other sessions' pages.
-      canZoom: () => runtimes.size <= 1,
+      ...(zoomExtensionReady ? { browserZoom } : {}),
       ...(displayGrabbable && scoped.sendBrowser
         ? {
             grab: {
@@ -670,7 +677,6 @@ export async function startClientGateway(): Promise<void> {
         onError: (error) => report("client media failed", error),
       });
     runtimes.set(sid, runtime);
-    zoomAllowanceChanged();
     try {
       if (tabs.size === 0)
         await tabs.handle({
@@ -874,7 +880,6 @@ export async function startClientGateway(): Promise<void> {
       for (const [frame, session] of frameOwners) if (session === sid) frameOwners.delete(frame);
     } finally {
       runtimes.delete(sid);
-      zoomAllowanceChanged();
       runtimePromises.delete(sid);
       closing.delete(sid);
       broadcastStatus();

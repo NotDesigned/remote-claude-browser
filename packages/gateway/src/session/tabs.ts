@@ -6,6 +6,7 @@
  * ingests its agent stream, including while it is in the background. Only the activated tab's
  * live hub output is published; activation publishes its canonical join payload first.
  */
+import { isZoomTitle } from "../browser/browser-zoom";
 import { randomUUID } from "node:crypto";
 import type { AgentLink } from "../types";
 import type { Down, Up } from "@mirror/protocol";
@@ -122,6 +123,8 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
       try {
         const value = JSON.parse(event.payload) as { url?: unknown; title?: unknown };
         if (typeof value.url !== "string" || typeof value.title !== "string") return;
+        // The picture's zoom borrows the title for a moment, which nobody should see.
+        if (isZoomTitle(value.title)) return;
         state.observedTitle = { url: value.url, title: value.title.slice(0, 4096) };
         scheduleTabsBroadcast();
       } catch {

@@ -53,10 +53,9 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
     onError: (error) => errors.push(error),
     backlogged: () => backlog.value,
     browserZoom: {
-      press: async (_target, level) => {
+      set: async (_target, level) => {
         calls.push({ method: `press ${level}` });
       },
-      forget: () => {},
     },
     createVideoEncoder: () => ({ write: () => {}, close: () => {} }),
     grab: {

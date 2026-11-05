@@ -131,7 +131,7 @@ describe("createScreencast", () => {
   afterEach(() => vi.useRealTimers());
 
   describe("browser zoom", () => {
-    const setup = async (dpr: number, density = () => dpr, canZoom?: () => boolean) => {
+    const setup = async (dpr: number, density = () => dpr) => {
       vi.useFakeTimers();
       const browser = new MockBrowser();
       browser.respond = async (_session, method) =>
@@ -148,10 +148,8 @@ describe("createScreencast", () => {
         onError: (error) => errors.push(error),
         createVideoEncoder: () => ({ write: () => {}, close: () => {} }),
         browserZoom: {
-          press: async (_target, level) => void pressed.push(level),
-          forget: () => {},
+          set: async (_target, level) => void pressed.push(level),
         },
-        ...(canZoom ? { canZoom } : {}),
       });
       browser.attach({ targetId: "tab-1", sessionId: "cdp-1", type: "page" });
       const metrics = () =>
@@ -197,40 +195,6 @@ describe("createScreencast", () => {
       await smooth.controller.handle({ ...px, quality: "smooth" });
       expect(smooth.pressed).toEqual([]);
       smooth.controller.dispose();
-    });
-
-    it("does not zoom while another session shares the site's zoom, and zooms once alone", async () => {
-      let alone = false;
-      const { hub, pressed, controller } = await setup(
-        2,
-        () => (alone ? 2 : 1),
-        () => alone,
-      );
-      await controller.handle(px);
-      expect(pressed).toEqual([]);
-      expect(hub.pixelZoom).toBe(1);
-      alone = true;
-      controller.zoomAllowanceChanged();
-      await vi.advanceTimersByTimeAsync(50);
-      expect(pressed[0]).toBe(2);
-      controller.dispose();
-    });
-
-    it("leaves its zoom as soon as another session opens", async () => {
-      let alone = true;
-      const { hub, pressed, controller } = await setup(
-        2,
-        () => (alone ? 2 : 1),
-        () => alone,
-      );
-      await controller.handle(px);
-      expect(hub.pixelZoom).toBe(2);
-      alone = false;
-      controller.zoomAllowanceChanged();
-      await vi.advanceTimersByTimeAsync(50);
-      expect(hub.pixelZoom).toBe(1);
-      expect(pressed).toEqual([2, 1]);
-      controller.dispose();
     });
 
     it("stops at the zoom the chosen preset allows", async () => {

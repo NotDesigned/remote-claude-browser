@@ -1,30 +1,15 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import vm from "node:vm";
 import { describe, expect, it, vi } from "vitest";
-import { clearSavedZoom, createBrowserZoom, zoomKeys, zoomLevelFor } from "./browser-zoom";
-
-describe("clearSavedZoom", () => {
-  it("removes only the saved zoom and accepts a profile without preferences", async () => {
-    const profile = await mkdtemp(join(tmpdir(), "zoom-profile-"));
-    try {
-      await clearSavedZoom(profile);
-      await mkdir(join(profile, "Default"));
-      const file = join(profile, "Default", "Preferences");
-      await writeFile(
-        file,
-        JSON.stringify({ keep: 1, partition: { per_host_zoom_levels: { x: {} }, other: 2 } }),
-      );
-      await clearSavedZoom(profile);
-      expect(JSON.parse(await readFile(file, "utf8"))).toEqual({
-        keep: 1,
-        partition: { other: 2 },
-      });
-    } finally {
-      await rm(profile, { recursive: true, force: true });
-    }
-  });
-});
+import {
+  createBrowserZoom,
+  installZoomExtension,
+  isZoomTitle,
+  ZOOM_EXTENSION_WORKER,
+  zoomLevelFor,
+} from "./browser-zoom";
 
 describe("zoom levels", () => {
   it("follows the display density without going over it", () => {
@@ -40,65 +25,72 @@ describe("zoom levels", () => {
     expect(zoomLevelFor(2, 2560, 1440)).toBe(1.5);
     expect(zoomLevelFor(2, 3840, 2160)).toBe(1);
   });
-
-  it("presses from a known starting point", () => {
-    expect(zoomKeys(1)).toEqual(["ctrl+0"]);
-    expect(zoomKeys(2)).toEqual(["ctrl+0", ...Array(5).fill("ctrl+equal")]);
-    expect(() => zoomKeys(1.3)).toThrow("Unsupported");
-  });
 });
 
-describe("browser zoom", () => {
-  const target = { targetId: "tab", sessionId: "session" };
-  const setup = (focused: () => string = () => "42") => {
-    const evaluate = vi.fn(async (_session: string, expression: string) =>
-      expression.includes("return title") ? "Claude" : undefined,
-    );
-    const xdotool = vi.fn(async (...args: string[]) => {
-      if (args[0] === "search") return "41\n42";
-      if (args[0] === "getwindowfocus") return focused();
-      return "";
+describe("browser zoom through the extension", () => {
+  const zoomFor = (page: { title: string }, sleep: () => Promise<void>) => {
+    const context = vm.createContext({ document: page });
+    return createBrowserZoom({
+      evaluate: async (_session, expression) => vm.runInContext(expression, context) as unknown,
+      sleep,
     });
-    return {
-      evaluate,
-      xdotool,
-      zoom: createBrowserZoom({ evaluate, xdotool, sleep: async () => {} }),
-    };
   };
 
-  it("finds the window by a temporary title, restores it and presses the keys", async () => {
-    const { zoom, evaluate, xdotool } = setup();
-    await zoom.press(target, 1.25);
-    expect(evaluate.mock.calls[1]![1]).toContain('document.title = "Claude"');
-    expect(xdotool).toHaveBeenCalledWith("windowfocus", "--sync", "42");
-    expect(xdotool).toHaveBeenLastCalledWith(
-      "key",
-      "--delay",
-      "25",
-      "ctrl+0",
-      "ctrl+equal",
-      "ctrl+equal",
-    );
+  it("names the level in the title, then puts the page's own title back", async () => {
+    const page = { title: "Claude" };
+    let seen = "";
+    await zoomFor(page, async () => {
+      seen = page.title;
+    }).set({ sessionId: "s" }, 1.5);
+    expect(seen).toMatch(/^mirror-zoom:1\.5:/);
+    expect(isZoomTitle(seen)).toBe(true);
+    expect(isZoomTitle("Claude")).toBe(false);
+    expect(page.title).toBe("Claude");
   });
 
-  it("remembers the window afterwards", async () => {
-    const { zoom, evaluate } = setup();
-    await zoom.press(target, 2);
-    evaluate.mockClear();
-    await zoom.press(target, 1);
-    expect(evaluate).not.toHaveBeenCalled();
+  it("keeps a title the page changed to meanwhile", async () => {
+    const page = { title: "Claude" };
+    await zoomFor(page, async () => {
+      page.title = "New chat";
+    }).set({ sessionId: "s" }, 2);
+    expect(page.title).toBe("New chat");
   });
 
-  it("never presses keys while another window has focus", async () => {
-    const { zoom, xdotool } = setup(() => "99");
-    await expect(zoom.press(target, 2)).rejects.toThrow("focused");
-    expect(xdotool.mock.calls.some(([command]) => command === "key")).toBe(false);
+  it("zooms only the tab that asked, in the extension", async () => {
+    const calls: unknown[][] = [];
+    let listener: (tab: number, change: { title?: string }) => void = () => {};
+    vm.runInNewContext(ZOOM_EXTENSION_WORKER, {
+      chrome: {
+        tabs: {
+          onUpdated: { addListener: (callback: typeof listener) => (listener = callback) },
+          setZoomSettings: async (...args: unknown[]) => void calls.push(["settings", ...args]),
+          setZoom: async (...args: unknown[]) => void calls.push(["zoom", ...args]),
+        },
+      },
+    });
+    listener(7, { title: "Claude" });
+    listener(8, {});
+    listener(9, { title: "mirror-zoom:2:abc" });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(JSON.parse(JSON.stringify(calls))).toEqual([
+      ["settings", 9, { mode: "automatic", scope: "per-tab" }],
+      ["zoom", 9, 2],
+    ]);
   });
 
-  it("still restores the title when the window cannot be found", async () => {
-    const { zoom, evaluate, xdotool } = setup();
-    xdotool.mockImplementation(async () => "");
-    await expect(zoom.press(target, 2)).rejects.toThrow("not found");
-    expect(evaluate).toHaveBeenCalledTimes(2);
+  it("writes the extension and asks the browser to load it", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "zoom-extension-"));
+    try {
+      const sendBrowser = vi.fn(async () => ({ id: "x" }));
+      await installZoomExtension({ sendBrowser }, directory);
+      expect(sendBrowser).toHaveBeenCalledWith("Extensions.loadUnpacked", { path: directory });
+      const manifest = JSON.parse(await readFile(join(directory, "manifest.json"), "utf8")) as {
+        permissions: string[];
+      };
+      expect(manifest.permissions).toEqual(["tabs"]);
+      await expect(installZoomExtension({}, directory)).rejects.toThrow("no root session");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

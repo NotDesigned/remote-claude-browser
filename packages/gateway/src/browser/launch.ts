@@ -34,11 +34,14 @@ export interface LaunchOpts {
   headful?: boolean;
   /** Additional Chromium flags for development fixtures and diagnostics. */
   args?: readonly string[];
+  /** Leaves Chromium able to load an extension, which it otherwise refuses by default. */
+  enableExtensions?: boolean;
 }
 
 interface ChromiumLaunchArgOptions {
   headful?: boolean;
   userDataDir?: string;
+  enableExtensions?: boolean;
 }
 
 const DISABLE_FEATURES_PREFIX = "--disable-features=";
@@ -435,7 +438,11 @@ export async function launchBrowser(opts: LaunchOpts): Promise<BrowserHandle> {
   }
 
   const headful = opts.headful ?? true;
-  const args = await chromiumLaunchArgs(opts.args, { headful, userDataDir: opts.userDataDir });
+  const args = await chromiumLaunchArgs(opts.args, {
+    headful,
+    userDataDir: opts.userDataDir,
+    ...(opts.enableExtensions ? { enableExtensions: true } : {}),
+  });
   // Local development in this repository can run as root; production runs unprivileged in
   // the P3-SESSIONS browser container.
   if (typeof process.getuid === "function" && process.getuid() === 0) {
@@ -481,6 +488,7 @@ export async function chromiumLaunchArgs(
     args: callerArgs,
     headless: !(options.headful ?? true),
     ...(options.userDataDir === undefined ? {} : { userDataDir: options.userDataDir }),
+    ...(options.enableExtensions ? { enableExtensions: true } : {}),
   });
 
   // Keep these launcher invariants even if a future Puppeteer release changes its defaults.
