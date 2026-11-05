@@ -30,6 +30,7 @@ import {
   type CanvasRtcMessage,
   type CanvasRtcOptions,
 } from "./media/canvas-rtc";
+import { REPLAY_ANCHOR_RULES } from "./replay-anchors";
 import { REPLAY_THUMBNAIL_RULES } from "./replay-thumbnails";
 
 /** How long the page in view waits for the snapshot of the tab that is replacing it. */
@@ -384,7 +385,11 @@ export function createMirror(opts: MirrorOpts): Mirror {
         mouseTail: false,
         // rrweb inserts these rules into the replay document again after every FullSnapshot.
         // Keep replay cursor chrome visible, but permanently remove it from hit testing.
-        insertStyleRules: [REPLAY_CURSOR_PASSTHROUGH_RULE, ...REPLAY_THUMBNAIL_RULES],
+        insertStyleRules: [
+          REPLAY_CURSOR_PASSTHROUGH_RULE,
+          ...REPLAY_THUMBNAIL_RULES,
+          ...REPLAY_ANCHOR_RULES,
+        ],
         // Old join-buffer deltas are applied synchronously. rrweb's virtual-DOM optimization
         // otherwise waits for a replay Flush event that live addEvent() does not emit.
         useVirtualDom: false,
