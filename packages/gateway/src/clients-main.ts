@@ -13,7 +13,7 @@ import { createAssetCache } from "./assets/cache";
 import { createAssetFetcher } from "./assets/fetch";
 import { registerAssetRoutes } from "./assets/route";
 import { createAgentLink } from "./browser/agentlink";
-import { createPhoneTargetPreparer, isPhoneRequest } from "./browser/phone-identity";
+import { createPhoneTargetPreparer, isPhoneRequest, waitForOwner } from "./browser/phone-identity";
 import { agentBridgeChannel, callAgentBridge } from "./browser/bridge";
 import {
   afterSignInUrl,
@@ -34,7 +34,7 @@ import { createScreencast } from "./px";
 import { createPixelCapacity } from "./px-capacity";
 import { ANY_SESSION_TAB } from "./assets/token";
 import { createRtcSignalRelay } from "./rtcsig";
-import { createClaudeTheme, isClaudeTheme } from "./claude/theme";
+import { createClaudeTheme, createThemeCopies, isClaudeTheme } from "./claude/theme";
 import { registerSecurityHeaders } from "./security-headers";
 import { gatewayHost, LOOPBACK_PROXIES, registerViewerStatic } from "./serving";
 import { createTabLifecycle } from "./session/tabs";
@@ -214,9 +214,25 @@ export async function startClientGateway(): Promise<void> {
     ownerOf: (targetId) => pool.ownerOf(targetId),
     isPhoneSession: (sid) => clientSessions.get(sid)?.phone === true,
   });
+  const themeCopies = createThemeCopies(browser.send);
+  browser.onDetached((target) => themeCopies.forget(target.sessionId));
+  const prepareThemeCopy = async (target: TargetRef): Promise<void> => {
+    if (target.type !== "page") return;
+    const owner = await waitForOwner(target, { ownerOf: (id) => pool.ownerOf(id) });
+    if (owner === undefined) return;
+    await themeCopies.install(
+      target.sessionId,
+      runtimes.get(owner)?.theme.current() ?? "auto",
+      true,
+    );
+  };
   const agent = createAgentLink(browser, {
-    prepareTarget: (target) =>
-      preparePhoneTarget(target).catch((error) => report("phone identity failed", error)),
+    prepareTarget: async (target) => {
+      await Promise.all([
+        preparePhoneTarget(target).catch((error) => report("phone identity failed", error)),
+        prepareThemeCopy(target).catch((error) => report("client theme failed", error)),
+      ]);
+    },
     publishClipboard(message, target) {
       const sid = pool.ownerOf(target);
       if (sid) publish(sid, message);
@@ -581,6 +597,7 @@ export async function startClientGateway(): Promise<void> {
       },
     });
     const theme = createClaudeTheme({
+      copies: themeCopies,
       send: scoped.send,
       pages: () => [...targets.values()].filter((target) => target.type === "page"),
     });

@@ -54,16 +54,24 @@ export interface PhoneIdentityDeps {
   sleep?(ms: number): Promise<void>;
 }
 
+/** A new window attaches before its createTarget is acknowledged, which is what names its owner. */
+export async function waitForOwner(
+  target: TargetRef,
+  deps: Pick<PhoneIdentityDeps, "ownerOf" | "sleep">,
+): Promise<string | undefined> {
+  const sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  let owner = deps.ownerOf(target.targetId);
+  for (let waited = 0; owner === undefined && waited < OWNER_WAIT_MS; waited += OWNER_POLL_MS) {
+    await sleep(OWNER_POLL_MS);
+    owner = deps.ownerOf(target.targetId);
+  }
+  return owner;
+}
+
 /** For a target still paused, so that its first document already sees the identity. */
 export function createPhoneTargetPreparer(deps: PhoneIdentityDeps) {
-  const sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   return async (target: TargetRef): Promise<void> => {
-    // A new window attaches before its createTarget is acknowledged, which is what names its owner.
-    let owner = deps.ownerOf(target.targetId);
-    for (let waited = 0; owner === undefined && waited < OWNER_WAIT_MS; waited += OWNER_POLL_MS) {
-      await sleep(OWNER_POLL_MS);
-      owner = deps.ownerOf(target.targetId);
-    }
+    const owner = await waitForOwner(target, deps);
     if (owner === undefined || !deps.isPhoneSession(owner)) return;
     await deps.send(target.sessionId, "Page.addScriptToEvaluateOnNewDocument", {
       source: PHONE_IDENTITY_SOURCE,
