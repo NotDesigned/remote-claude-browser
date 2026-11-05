@@ -277,6 +277,25 @@ body {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+.shell-menu-warning {
+  margin: 0;
+  color: var(--warn-ink);
+  font-size: 13px;
+  line-height: 1.5;
+}
+#shell-menu-toggle[data-warn] {
+  position: relative;
+}
+#shell-menu-toggle[data-warn]::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warn-ink);
+}
 .shell-menu-stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -299,10 +318,17 @@ body {
 }
 
 /* Banners */
+/* Over the page rather than above it: taking height would resize the remote page. */
+#shell-banners {
+  position: relative;
+  z-index: 50;
+  height: 0;
+}
 #shell-banners:empty {
   display: none;
 }
 .shell-banner {
+  pointer-events: none;
   margin: 0;
   padding: 9px 16px;
   border-bottom: 1px solid var(--line);

@@ -22,7 +22,7 @@ import { createPxView, type PxView } from "./pxview";
 import { HudLayer, type FrameRates } from "./hud";
 import { videoOption } from "./px-video";
 import { pollServerStatus, receiveServerStatus, type ReceivedServerStatus } from "./server-status";
-import { ShellBar, resourceWarning, type ThemePreference } from "./shell-bar";
+import { ShellBar, type ThemePreference } from "./shell-bar";
 import { createVoiceLink, type VoiceLink } from "./media/voice";
 import { createServerClock, DEFAULT_LIVE_BUFFER_MS } from "./clock";
 import { createResyncController, type ResyncTabState, RESYNC_WINDOW_MS } from "./resync";
@@ -981,7 +981,6 @@ export function App() {
           : inputReady
             ? { text: "已连接", tone: "ok" }
             : { text: "同步中", tone: "busy" };
-  const warning = resourceWarning(serverStatus);
   const changeView = (mode: ViewMode, remember = true) => {
     if (remember) rememberViewMode(viewStorage(), mode);
     if (mode === viewMode) return;
@@ -1045,11 +1044,6 @@ export function App() {
         send={(message) => socketRef.current?.send(message)}
       />
       <div id="shell-banners">
-        {warning && (
-          <p class="shell-banner" data-tone="warn" role="status">
-            {warning}
-          </p>
-        )}
         {activeTab !== null && pageStates[activeTab] && pageStates[activeTab] !== "ready" && (
           <p id="page-recovery-state" class="shell-banner" data-tone="warn" role="alert">
             {pageStates[activeTab] === "recovering"

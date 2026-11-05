@@ -2,6 +2,7 @@
 import type { ServerStatusMsg } from "@mirror/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { pollServerStatus, receiveServerStatus } from "./server-status";
+import { resourceWarning } from "./shell-bar";
 
 const value: ServerStatusMsg = {
   t: "server-status",
@@ -19,6 +20,18 @@ const value: ServerStatusMsg = {
 };
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 afterEach(() => vi.useRealTimers());
+
+describe("resource warning", () => {
+  const warned = (change: Partial<ServerStatusMsg>) =>
+    resourceWarning({ value: { ...value, ...change }, receivedAt: 1 });
+
+  it("names full sessions and short memory, and otherwise says nothing", () => {
+    expect(warned({})).toBeNull();
+    expect(resourceWarning(null)).toBeNull();
+    expect(warned({ clientsAllocated: 16 })).toContain("会话名额已满");
+    expect(warned({ memoryUsedBytes: 1.7 * 1024 ** 3 })).toContain("内存紧张");
+  });
+});
 
 describe("server B status", () => {
   it("ignores duplicate and late sample timestamps", () => {

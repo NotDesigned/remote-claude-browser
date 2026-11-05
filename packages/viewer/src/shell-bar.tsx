@@ -66,6 +66,7 @@ export function ShellBar(props: ShellBarProps) {
     props.serverStatus && Date.now() - props.serverStatus.receivedAt < SERVER_STATUS_STALE_MS
       ? props.serverStatus.value
       : null;
+  const warning = sample ? resourceWarning(props.serverStatus) : null;
   const gib = (bytes: number | null | undefined) =>
     bytes === null || bytes === undefined ? "—" : (bytes / 1024 ** 3).toFixed(1);
 
@@ -104,7 +105,8 @@ export function ShellBar(props: ShellBarProps) {
           type="button"
           class="shell-icon"
           id="shell-menu-toggle"
-          aria-label="更多"
+          aria-label={warning ? "更多（服务器资源紧张）" : "更多"}
+          data-warn={warning ? "true" : undefined}
           aria-haspopup="true"
           aria-expanded={menuOpen}
           onClick={() => setMenuOpen((open) => !open)}
@@ -164,6 +166,11 @@ export function ShellBar(props: ShellBarProps) {
           </div>
           <div class="shell-menu-section" aria-label="服务状态">
             <span>服务状态</span>
+            {warning && (
+              <p class="shell-menu-warning" role="status">
+                {warning}
+              </p>
+            )}
             <dl class="shell-menu-stats">
               <div>
                 <dt>在线设备</dt>
@@ -209,7 +216,7 @@ export function ShellBar(props: ShellBarProps) {
   );
 }
 
-/** Resource pressure worth telling every user about, rather than only in the menu. */
+/** Only matters to someone opening a session, so it waits in the menu instead of taking up the page. */
 export function resourceWarning(received: ReceivedServerStatus | null): string | null {
   const sample = received?.value;
   if (!sample) return null;
