@@ -131,7 +131,7 @@ describe("createScreencast", () => {
   afterEach(() => vi.useRealTimers());
 
   describe("browser zoom", () => {
-    const setup = async (dpr: number, density = () => dpr) => {
+    const setup = async (dpr: number, density = () => dpr, canZoom?: () => boolean) => {
       vi.useFakeTimers();
       const browser = new MockBrowser();
       browser.respond = async (_session, method) =>
@@ -151,6 +151,7 @@ describe("createScreencast", () => {
           press: async (_target, level) => void pressed.push(level),
           forget: () => {},
         },
+        ...(canZoom ? { canZoom } : {}),
       });
       browser.attach({ targetId: "tab-1", sessionId: "cdp-1", type: "page" });
       const metrics = () =>
@@ -196,6 +197,28 @@ describe("createScreencast", () => {
       await smooth.controller.handle({ ...px, quality: "smooth" });
       expect(smooth.pressed).toEqual([]);
       smooth.controller.dispose();
+    });
+
+    it("zooms only while no other session shares the site's zoom, and follows that changing", async () => {
+      let alone = false;
+      const { hub, pressed, controller } = await setup(
+        2,
+        () => (alone ? 2 : 1),
+        () => alone,
+      );
+      await controller.handle(px);
+      expect(pressed).toEqual([]);
+      expect(hub.pixelZoom).toBe(1);
+      alone = true;
+      controller.zoomAllowanceChanged();
+      await vi.advanceTimersByTimeAsync(50);
+      expect(hub.pixelZoom).toBe(2);
+      alone = false;
+      controller.zoomAllowanceChanged();
+      await vi.advanceTimersByTimeAsync(50);
+      expect(hub.pixelZoom).toBe(1);
+      expect(pressed).toEqual([2, 1]);
+      controller.dispose();
     });
 
     it("stops at the zoom the chosen preset allows", async () => {

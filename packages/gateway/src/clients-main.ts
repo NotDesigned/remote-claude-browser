@@ -13,12 +13,10 @@ import { createAssetCache } from "./assets/cache";
 import { createAssetFetcher } from "./assets/fetch";
 import { registerAssetRoutes } from "./assets/route";
 import { createAgentLink } from "./browser/agentlink";
-import { createSeenMarks } from "./browser/seen-marks";
 import { agentBridgeChannel, callAgentBridge } from "./browser/bridge";
 import {
   afterSignInUrl,
   createClientBrowserPool,
-  isClaudeUrl,
   type ClientBrowserScope,
 } from "./browser/client-scope";
 import { launchBrowser, type BrowserTargetInfo } from "./browser/launch";
@@ -27,7 +25,7 @@ import { createNavigationController } from "./browser/nav";
 import { createRendererRecovery } from "./browser/recovery";
 import { createDownloadManager, registerDownloadRoutes } from "./downloads";
 import { createUploadManager, registerUploadRoutes } from "./uploads";
-import { createBrowserZoom } from "./browser/browser-zoom";
+import { clearSavedZoom, createBrowserZoom } from "./browser/browser-zoom";
 import { createGrabSlots, createPixelWindow } from "./browser/pixel-window";
 import { createViewportAgreement } from "./hub/viewport";
 import { createInputRelay, type InputMsg } from "./input/relay";
@@ -86,6 +84,7 @@ export async function startClientGateway(): Promise<void> {
   const managedProfile = !process.env.CHROME_USER_DATA_DIR;
   const profile =
     process.env.CHROME_USER_DATA_DIR ?? (await mkdtemp(join(tmpdir(), "mirror-clients-")));
+  await clearSavedZoom(profile);
   const browser = process.env.BROWSER_CDP_URL
     ? await connectRemoteBrowser(process.env.BROWSER_CDP_URL)
     : await launchBrowser({
@@ -103,27 +102,22 @@ export async function startClientGateway(): Promise<void> {
           // enough not to need a renderer waiting for them.
           "--js-flags=--optimize-for-size",
           "--disable-features=SpareRendererForSitePerProcess",
+          // Sessions share the profile now, so a restart would otherwise offer to restore them.
+          "--hide-crash-restore-bubble",
         ],
       });
   const pool = createClientBrowserPool(browser, {
-    isolatedStorage: true,
-    downloadDir: join(profile, "downloads"),
-    // A shared login reached this session: leave any sign-in page it is stuck on.
-    onLoginShared: (sid) => {
-      const runtime = runtimes.get(sid);
-      for (const target of runtime?.targets.values() ?? []) {
-        if (target.type !== "page") continue;
-        const destination = afterSignInUrl(runtime!.metadata.get(target.targetId)?.url);
-        if (destination === null) continue;
-        void runtime!.browser
-          .send(target.sessionId, "Page.navigate", { url: destination })
-          .catch((error) => report("shared login navigation failed", error));
+    onSignedIn: () => {
+      for (const runtime of runtimes.values()) {
+        for (const target of runtime.targets.values()) {
+          if (target.type !== "page") continue;
+          const destination = afterSignInUrl(runtime.metadata.get(target.targetId)?.url);
+          if (destination === null) continue;
+          void runtime.browser
+            .send(target.sessionId, "Page.navigate", { url: destination })
+            .catch((error) => report("shared login navigation failed", error));
+        }
       }
-    },
-    // Only a session that is visibly signed in may refresh everyone's shared login cookies.
-    canPersistCookies: (sid) => {
-      const urls = [...(runtimes.get(sid)?.metadata.values() ?? [])].map((info) => info.url);
-      return urls.some(isClaudeUrl) && !urls.some((url) => afterSignInUrl(url) !== null);
     },
   });
   const app = Fastify({ logger: false, trustProxy: LOOPBACK_PROXIES });
@@ -183,6 +177,9 @@ export async function startClientGateway(): Promise<void> {
   };
   const runtimePromises = new Map<string, Promise<ClientRuntime>>();
   const runtimes = new Map<string, ClientRuntime>();
+  const zoomAllowanceChanged = () => {
+    for (const runtime of runtimes.values()) runtime.pixels.zoomAllowanceChanged();
+  };
   const closing = new Set<string>();
   const viewerIds = new WeakMap<ViewerConn, string>();
   const viewers = new Map<string, { viewer: ViewerConn; sid: string; owner: string }>();
@@ -202,9 +199,7 @@ export async function startClientGateway(): Promise<void> {
   const micTabs = new Set<string>();
   const hasViewer = (sid: string) =>
     [...viewers.values()].some((connection) => connection.sid === sid);
-  const seenMarks = await createSeenMarks(browser, join(profile, "seen-marks.json"));
   const agent = createAgentLink(browser, {
-    prepareTarget: seenMarks.prepare,
     publishClipboard(message, target) {
       const sid = pool.ownerOf(target);
       if (sid) publish(sid, message);
@@ -587,6 +582,8 @@ export async function startClientGateway(): Promise<void> {
             connection.sid === sid && connection.viewer.socket.bufferedAmount > VIDEO_BACKLOG_BYTES,
         ),
       browserZoom,
+      // Zoom belongs to a site across the whole profile, so it would reshape other sessions' pages.
+      canZoom: () => runtimes.size <= 1,
       ...(displayGrabbable && scoped.sendBrowser
         ? {
             grab: {
@@ -673,6 +670,7 @@ export async function startClientGateway(): Promise<void> {
         onError: (error) => report("client media failed", error),
       });
     runtimes.set(sid, runtime);
+    zoomAllowanceChanged();
     try {
       if (tabs.size === 0)
         await tabs.handle({
@@ -876,6 +874,7 @@ export async function startClientGateway(): Promise<void> {
       for (const [frame, session] of frameOwners) if (session === sid) frameOwners.delete(frame);
     } finally {
       runtimes.delete(sid);
+      zoomAllowanceChanged();
       runtimePromises.delete(sid);
       closing.delete(sid);
       broadcastStatus();

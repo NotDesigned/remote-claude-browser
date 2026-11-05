@@ -1105,7 +1105,7 @@ export function App() {
                     ? "已停止本页面的输入和连接，正在释放会话名额。"
                     : clientPhase === "error"
                       ? clientError?.message
-                      : "共用当前 Claude 登录，各自保留独立页面和输入。首次打开可能需要一些时间。"}
+                      : "共用当前 Claude 登录和浏览器数据，各自保留独立页面。首次打开可能需要一些时间。"}
             </p>
             <p class="session-policy">
               共用账号，历史、设置和额度共享。关闭网页后保留 60

@@ -92,6 +92,8 @@ export interface ScreencastOpts {
   createVideoEncoder?: VideoEncoderFactory;
   /** Lets the highest quality reach device resolution; without it frames stop at CSS pixels. */
   browserZoom?: BrowserZoom;
+  /** Whether a zoom would stay within this session. Call `zoomAllowanceChanged` when it changes. */
+  canZoom?(): boolean;
   grab?: ScreenGrab;
   /** Supply both hooks to track pixel ownership. Acquisition must be synchronous. */
   acquirePixel?(tabId: string): boolean;
@@ -106,6 +108,8 @@ export interface ScreencastController {
   /** The viewer's decoder needs a new stream beginning with a keyframe. */
   requestKeyframe(tabId: string): void;
   modeFor(tabId: string): "dom" | "px" | undefined;
+  /** `canZoom` now answers differently, so pictures move to the zoom they should use. */
+  zoomAllowanceChanged(): void;
   dispose(): void;
 }
 
@@ -188,7 +192,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   const zoomWanted = (state: TabState): number => {
     const viewport = state.hub.viewport;
     if (!viewport || !opts.browserZoom || zoomBroken || videoBroken) return 1;
-    if (!videoWanted) return 1;
+    if (!videoWanted || opts.canZoom?.() === false) return 1;
     const density = Math.min(viewport.dpr, CAPTURE_PRESETS[quality].maxZoom);
     return zoomLevelFor(density, viewport.w, viewport.h);
   };
@@ -905,6 +909,10 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   grabTimer?.unref?.();
 
   return {
+    zoomAllowanceChanged() {
+      for (const state of tabs.values())
+        if (state.hub.mode === "px" && zoomWanted(state) !== state.hub.pixelZoom) reapply(state);
+    },
     handle(msg) {
       const state = tabs.get(msg.tab);
       if (state === undefined)

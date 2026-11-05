@@ -1,5 +1,30 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createBrowserZoom, zoomKeys, zoomLevelFor } from "./browser-zoom";
+import { clearSavedZoom, createBrowserZoom, zoomKeys, zoomLevelFor } from "./browser-zoom";
+
+describe("clearSavedZoom", () => {
+  it("removes only the saved zoom and accepts a profile without preferences", async () => {
+    const profile = await mkdtemp(join(tmpdir(), "zoom-profile-"));
+    try {
+      await clearSavedZoom(profile);
+      await mkdir(join(profile, "Default"));
+      const file = join(profile, "Default", "Preferences");
+      await writeFile(
+        file,
+        JSON.stringify({ keep: 1, partition: { per_host_zoom_levels: { x: {} }, other: 2 } }),
+      );
+      await clearSavedZoom(profile);
+      expect(JSON.parse(await readFile(file, "utf8"))).toEqual({
+        keep: 1,
+        partition: { other: 2 },
+      });
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("zoom levels", () => {
   it("follows the display density without going over it", () => {

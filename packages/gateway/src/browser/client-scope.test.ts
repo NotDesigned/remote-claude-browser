@@ -485,251 +485,56 @@ describe("shared-browser client scopes", () => {
     await expect(creating).rejects.toThrow("closed while creating");
     pool.dispose();
   });
-  it("creates private website storage and clones saved login cookies for each workspace", async () => {
+  it("opens every window in the shared profile, so its website storage outlasts the session", async () => {
     const browser = new FakeBrowser();
-    let contextNumber = 0,
-      pageNumber = 0;
     const original = browser.sendBrowser.getMockImplementation()!;
+    let pageNumber = 0;
     browser.sendBrowser.mockImplementation(async (method, params = {}) => {
-      if (method === "Target.createBrowserContext")
-        return { browserContextId: `private-${++contextNumber}` };
-      if (method === "Storage.getCookies")
-        return {
-          cookies: [
-            {
-              name: "sessionKey",
-              value: params.browserContextId ? "fixture-refreshed" : "fixture-only",
-              domain: ".claude.ai",
-              path: "/",
-              httpOnly: true,
-              session: true,
-              size: 10,
-            },
-            {
-              name: "__Host-ant_trusted_device",
-              value: "fixture-device",
-              domain: "claude.ai",
-              path: "/",
-              secure: true,
-            },
-          ],
-        };
-      return original(method, params);
+      if (method !== "Target.createTarget") return original(method, params);
+      const targetId = `shared-page-${++pageNumber}`;
+      browser.attach({ targetId, sessionId: `session-${pageNumber}`, type: "page" });
+      return { targetId };
     });
-    browser.create = async () => {
-      const target = page(`private-page-${++pageNumber}`);
-      browser.attach(target);
-      return { targetId: target.targetId };
-    };
-    const pool = createClientBrowserPool(browser, {
-      isolatedStorage: true,
-      downloadDir: "/fixture/downloads",
-    });
-    const a = pool.scope("a"),
-      b = pool.scope("b");
-    await Promise.all([
-      a.sendBrowser!("Target.createTarget", { url: "https://claude.ai/new" }),
-      b.sendBrowser!("Target.createTarget", { url: "https://claude.ai/new" }),
-    ]);
-    const createdPages = browser.sendBrowser.mock.calls.filter(
-      ([method]) => method === "Target.createTarget",
-    );
-    expect(new Set(createdPages.map(([, params]) => params?.browserContextId)).size).toBe(2);
-    const setCookies = browser.sendBrowser.mock.calls.filter(
-      ([method]) => method === "Storage.setCookies",
-    );
-    expect(setCookies).toHaveLength(2);
-    expect(setCookies[0]?.[1]?.cookies).toEqual([
-      {
-        name: "sessionKey",
-        value: "fixture-only",
-        domain: ".claude.ai",
-        path: "/",
-        httpOnly: true,
-      },
-      // A __Host- cookie may not name a domain, or it would not reach the new workspace.
-      {
-        name: "__Host-ant_trusted_device",
-        value: "fixture-device",
-        url: "https://claude.ai/",
-        path: "/",
-        secure: true,
-      },
-    ]);
-    expect(
-      browser.sendBrowser.mock.calls.filter(([method]) => method === "Browser.setDownloadBehavior"),
-    ).toHaveLength(2);
+    const pool = createClientBrowserPool(browser as never);
+    const a = pool.scope("client-a");
+    await a.sendBrowser!("Target.createTarget", { url: "about:blank" });
+    await pool.scope("client-b").sendBrowser!("Target.createTarget", { url: "about:blank" });
     await a.close();
-    expect(browser.sendBrowser).toHaveBeenCalledWith("Target.disposeBrowserContext", {
-      browserContextId: "private-1",
-    });
-    expect(browser.sendBrowser).toHaveBeenCalledWith("Storage.setCookies", {
-      cookies: [
-        {
-          name: "sessionKey",
-          value: "fixture-refreshed",
-          domain: ".claude.ai",
-          path: "/",
-          httpOnly: true,
-        },
-      ],
-    });
-    expect(b.isAlive?.()).toBe(true);
-    await b.close();
+    const methods = browser.sendBrowser.mock.calls.map(([method]) => method);
+    expect(methods).not.toContain("Target.createBrowserContext");
+    expect(methods).not.toContain("Target.disposeBrowserContext");
+    expect(
+      browser.sendBrowser.mock.calls.filter(([method]) => method === "Target.createTarget"),
+    ).toSatisfy((calls: [string, Record<string, unknown>][]) =>
+      calls.every(([, params]) => params.browserContextId === undefined),
+    );
     pool.dispose();
   });
 });
 
-describe("shared login cookie write-back", () => {
-  function setup(contextCookie: { value: string } | null, canPersist: () => boolean) {
-    const browser = new FakeBrowser();
-    let sharedValue = "shared";
-    let contextNumber = 0,
-      pageNumber = 0;
-    const original = browser.sendBrowser.getMockImplementation()!;
-    browser.sendBrowser.mockImplementation(async (method, params = {}) => {
-      if (method === "Target.createBrowserContext")
-        return { browserContextId: `private-${++contextNumber}` };
-      if (method === "Storage.setCookies" && !params.browserContextId) {
-        const written = (params.cookies as { name: string; value: string }[]).find(
-          (cookie) => cookie.name === "sessionKey",
-        );
-        if (written) sharedValue = written.value;
-      }
-      if (method === "Storage.getCookies") {
-        const shared = { name: "sessionKey", value: sharedValue, domain: ".claude.ai", path: "/" };
-        if (!params.browserContextId) return { cookies: [shared] };
-        return {
-          cookies:
-            contextCookie === null
-              ? [{ name: "other", value: "x", domain: ".claude.ai", path: "/" }]
-              : [{ ...shared, value: contextCookie.value }],
-        };
-      }
-      return original(method, params);
-    });
-    browser.create = async () => {
-      const target = page(`cookie-page-${++pageNumber}`);
-      browser.attach(target);
-      return { targetId: target.targetId };
-    };
-    const pool = createClientBrowserPool(browser, {
-      isolatedStorage: true,
-      canPersistCookies: canPersist,
-      cookieSyncIntervalMs: 1_000,
-    });
-    const writeBacks = () =>
-      browser.sendBrowser.mock.calls.filter(
-        ([method, params]) => method === "Storage.setCookies" && !params?.browserContextId,
-      );
-    return { browser, pool, writeBacks };
-  }
-
-  it("does not write back a session that is on a sign-in page when it closes", async () => {
-    const { pool, writeBacks } = setup({ value: "refreshed" }, () => false);
-    const a = pool.scope("a");
-    await a.sendBrowser!("Target.createTarget", { url: "https://claude.ai/login" });
-    await a.close();
-    expect(writeBacks()).toHaveLength(0);
-    pool.dispose();
+describe("noticing a sign-in", () => {
+  const login = (value?: string) => ({
+    cookies: value ? [{ name: "sessionKey", domain: ".claude.ai", value }] : [],
   });
 
-  it("never spreads a forced logout that cleared the login cookie", async () => {
-    for (const lost of [null, { value: "" }]) {
-      const { pool, writeBacks } = setup(lost, () => true);
-      const a = pool.scope("a");
-      await a.sendBrowser!("Target.createTarget", { url: "https://claude.ai/new" });
-      await a.close();
-      expect(writeBacks()).toHaveLength(0);
-      pool.dispose();
-    }
-  });
-
-  it("shares a refreshed login token periodically, without waiting for the session to end", async () => {
-    vi.useFakeTimers();
-    try {
-      const { pool, writeBacks } = setup({ value: "rotated" }, () => true);
-      const a = pool.scope("a");
-      await a.sendBrowser!("Target.createTarget", { url: "https://claude.ai/new" });
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(writeBacks()).toEqual([
-        [
-          "Storage.setCookies",
-          { cookies: [{ name: "sessionKey", value: "rotated", domain: ".claude.ai", path: "/" }] },
-        ],
-      ]);
-      // Already shared: the next round and the final close have nothing new to write.
-      await vi.advanceTimersByTimeAsync(1_000);
-      await a.close();
-      expect(writeBacks()).toHaveLength(1);
-      pool.dispose();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("hands a new login to the other open sessions once, even if it later fails", async () => {
+  it("reports a new login once, and neither the first reading nor a sign-out", async () => {
     vi.useFakeTimers();
     try {
       const browser = new FakeBrowser();
-      const jar = new Map<string, string | null>([["shared", "old"]]);
-      let contexts = 0,
-        pages = 0;
-      const original = browser.sendBrowser.getMockImplementation()!;
-      browser.sendBrowser.mockImplementation(async (method, params = {}) => {
-        const key = (params.browserContextId as string | undefined) ?? "shared";
-        if (method === "Target.createBrowserContext") {
-          const id = `private-${++contexts}`;
-          return { browserContextId: id };
-        }
-        if (method === "Storage.getCookies") {
-          const value = jar.get(key);
-          return {
-            cookies: value
-              ? [{ name: "sessionKey", value, domain: ".claude.ai", path: "/" }]
-              : [{ name: "other", value: "x", domain: ".example.com", path: "/" }],
-          };
-        }
-        if (method === "Storage.setCookies") {
-          const cookie = (params.cookies as { name: string; value: string }[]).find(
-            (item) => item.name === "sessionKey",
-          );
-          if (cookie) jar.set(key, cookie.value);
-          return {};
-        }
-        return original(method, params);
-      });
-      browser.create = async () => {
-        const target = page(`login-page-${++pages}`);
-        browser.attach(target);
-        return { targetId: target.targetId };
-      };
-      const shared: string[] = [];
-      const signedIn = new Set(["a"]);
-      const pool = createClientBrowserPool(browser, {
-        isolatedStorage: true,
-        canPersistCookies: (sid) => signedIn.has(sid),
-        onLoginShared: (sid) => shared.push(sid),
-        cookieSyncIntervalMs: 1_000,
-      });
-      const a = pool.scope("a"),
-        b = pool.scope("b");
-      await a.sendBrowser!("Target.createTarget", { url: "https://claude.ai/new" });
-      await b.sendBrowser!("Target.createTarget", { url: "https://claude.ai/login" });
-
-      // Session b was forced out; a signs in again.
-      jar.set("private-2", null);
-      jar.set("private-1", "fresh");
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(jar.get("shared")).toBe("fresh");
-      expect(jar.get("private-2")).toBe("fresh");
-      expect(shared).toEqual(["b"]);
-
-      // The token turns out dead and logs b out again: it must not be pushed in a loop.
-      jar.set("private-2", null);
+      let current = login("first");
+      browser.sendBrowser.mockImplementation(async (method) =>
+        method === "Storage.getCookies" ? current : {},
+      );
+      const onSignedIn = vi.fn();
+      const pool = createClientBrowserPool(browser as never, { onSignedIn });
       await vi.advanceTimersByTimeAsync(5_000);
-      expect(jar.get("private-2")).toBeNull();
-      expect(shared).toEqual(["b"]);
+      expect(onSignedIn).not.toHaveBeenCalled();
+      current = login();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(onSignedIn).not.toHaveBeenCalled();
+      current = login("second");
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(onSignedIn).toHaveBeenCalledTimes(1);
       pool.dispose();
     } finally {
       vi.useRealTimers();

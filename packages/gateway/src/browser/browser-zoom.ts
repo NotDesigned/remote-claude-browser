@@ -8,6 +8,8 @@
  */
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFile, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 /** Chromium's zoom steps, reached by pressing Ctrl+= that many times from 100%. */
 export const ZOOM_LEVELS = [1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3] as const;
@@ -21,6 +23,23 @@ export function zoomLevelFor(dpr: number, w: number, h: number): number {
     if (level <= dpr + 0.01 && w * level <= MAX_ZOOMED_SIDE && h * level <= MAX_ZOOMED_SIDE)
       chosen = level;
   return chosen;
+}
+
+/** A restart forgets which picture was zoomed, but the profile would keep the page zoomed. */
+export async function clearSavedZoom(profile: string): Promise<void> {
+  const file = join(profile, "Default", "Preferences");
+  try {
+    const preferences = JSON.parse(await readFile(file, "utf8")) as {
+      partition?: { per_host_zoom_levels?: unknown };
+    };
+    if (!preferences.partition?.per_host_zoom_levels) return;
+    delete preferences.partition.per_host_zoom_levels;
+    await writeFile(`${file}.next`, JSON.stringify(preferences), { mode: 0o600 });
+    await rename(`${file}.next`, file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+      console.warn("Could not clear the saved zoom:", (error as Error).message);
+  }
 }
 
 export function zoomKeys(level: number): string[] {

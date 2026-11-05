@@ -1,6 +1,6 @@
 /**
  * Claude's Appearance setting, which the viewer's own theme choice mirrors. It lives in the page's
- * storage for each client, so setting it there is the same as choosing it under Settings.
+ * storage, shared by every session, so setting it there is the same as choosing it under Settings.
  */
 import type { CdpSend, TargetRef } from "../types";
 

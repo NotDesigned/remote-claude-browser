@@ -630,23 +630,14 @@ try {
     "a",
     first.sid,
     aTab,
-    "localStorage.setItem('qa-private-draft', 'client A draft'); true",
+    "localStorage.setItem('qa-shared-draft', 'client A draft'); true",
   );
   assert.equal(
-    await evaluate("b", second.sid, bTab, "localStorage.getItem('qa-private-draft')"),
-    null,
-  );
-  await evaluate(
-    "b",
-    second.sid,
-    bTab,
-    "localStorage.setItem('qa-private-draft', 'client B draft'); true",
-  );
-  assert.equal(
-    await evaluate("a", first.sid, aTab, "localStorage.getItem('qa-private-draft')"),
+    await evaluate("b", second.sid, bTab, "localStorage.getItem('qa-shared-draft')"),
     "client A draft",
   );
-  checks.websiteStorageIsolated = true;
+  await evaluate("b", second.sid, bTab, "localStorage.removeItem('qa-shared-draft'); true");
+  checks.websiteStorageShared = true;
 
   await evaluate(
     "a",

@@ -37,30 +37,17 @@ interface ScopeState {
   pendingCreates: Map<string, { resolve(): void; reject(error: Error): void }>;
   creates: Set<Promise<unknown>>;
   closePromise?: Promise<void>;
-  context?: Promise<string>;
-  initialCookies?: Map<string, string>;
-  /** The newest login value this session has held or been offered. */
-  loginSeen?: string;
 }
 
 const CREATE_ATTACH_TIMEOUT_MS = 10_000;
+const LOGIN_CHECK_MS = 5_000;
 /** Fits every new window in the part of the screen left of the picture slots. */
 const WINDOW_OFFSET_STEP = 10;
 const WINDOW_OFFSETS = 24;
 
 export interface ClientBrowserPoolOptions {
-  /** Separate website storage while bootstrapping each context from the saved login cookies. */
-  isolatedStorage?: boolean;
-  downloadDir?: string;
-  /**
-   * Whether a session's cookies may be written back to the shared login store right now. A
-   * session sitting on a sign-in or forced-logout page must never overwrite everyone's login.
-   */
-  canPersistCookies?(sid: string): boolean;
-  /** How often signed-in sessions share a new or refreshed login with all the others. */
-  cookieSyncIntervalMs?: number;
-  /** A session just received another session's login; pages on sign-in screens should leave. */
-  onLoginShared?(sid: string): void;
+  /** Someone signed in, so pages waiting on a sign-in screen can leave it. */
+  onSignedIn?(): void;
 }
 
 export function createClientBrowserPool(
@@ -169,83 +156,22 @@ export function createClientBrowserPool(
     return browser.sendBrowser(method, params);
   };
 
-  /**
-   * Copy cookies that changed in a session's context since its last sync into the shared store,
-   * so refreshed or rotated login tokens reach new sessions without waiting for this one to end.
-   * Skipped when the session lost its login (no session cookie left), which would otherwise
-   * spread a forced logout to every later session.
-   */
-  async function persistScopeCookies(state: ScopeState): Promise<boolean> {
-    if (!state.context || !state.initialCookies) return false;
-    const id = await state.context.catch(() => undefined);
-    if (!id) return false;
-    const saved = (await poolSend("Storage.getCookies", { browserContextId: id })) as {
-      cookies?: Record<string, unknown>[];
-    };
-    const current = cookieParameters(saved.cookies ?? []);
-    const login = loginValue(current);
-    if (login === undefined) return false;
-    state.loginSeen = login;
-    const changed = current.filter(
-      (cookie) => state.initialCookies?.get(cookieIdentity(cookie)) !== JSON.stringify(cookie),
-    );
-    if (changed.length === 0) return true;
-    await poolSend("Storage.setCookies", { cookies: settableCookies(changed) });
-    for (const cookie of changed)
-      state.initialCookies.set(cookieIdentity(cookie), JSON.stringify(cookie));
-    return true;
-  }
-
-  /**
-   * Everyone shares one Claude login: hand the shared login to any open session that has not
-   * been offered this value yet. Offering a value only once stops a dead token from being pushed
-   * again after it logged a session out.
-   */
-  async function distributeLogin(): Promise<void> {
-    const saved = (await poolSend("Storage.getCookies")) as {
-      cookies?: Record<string, unknown>[];
-    };
-    const shared = cookieParameters(saved.cookies ?? []);
-    const login = loginValue(shared);
-    if (login === undefined) return;
-    for (const [sid, state] of scopes) {
-      if (state.disposed || state.closing || !state.context || state.loginSeen === login) continue;
-      const id = await state.context.catch(() => undefined);
-      if (!id) continue;
-      state.loginSeen = login;
-      const own = (await poolSend("Storage.getCookies", { browserContextId: id })) as {
-        cookies?: Record<string, unknown>[];
-      };
-      if (loginValue(cookieParameters(own.cookies ?? [])) === login) continue;
-      const site = shared.filter(isSiteCookie);
-      await poolSend("Storage.setCookies", {
-        browserContextId: id,
-        cookies: settableCookies(site),
-      });
-      for (const cookie of site)
-        state.initialCookies?.set(cookieIdentity(cookie), JSON.stringify(cookie));
-      options.onLoginShared?.(sid);
-    }
-  }
-
-  let cookieSyncRunning = false;
-  const cookieSyncTimer =
-    options.isolatedStorage && options.canPersistCookies
-      ? setInterval(() => {
-          if (cookieSyncRunning) return;
-          cookieSyncRunning = true;
-          void (async () => {
-            for (const [sid, state] of scopes) {
-              if (state.disposed || state.closing || !options.canPersistCookies!(sid)) continue;
-              await persistScopeCookies(state).catch(() => undefined);
-            }
-            await distributeLogin().catch(() => undefined);
-          })().finally(() => {
-            cookieSyncRunning = false;
-          });
-        }, options.cookieSyncIntervalMs ?? 5_000)
-      : undefined;
-  cookieSyncTimer?.unref?.();
+  let login: string | undefined;
+  let loginRead = false;
+  const loginTimer = options.onSignedIn
+    ? setInterval(() => {
+        void poolSend("Storage.getCookies")
+          .then((saved) => {
+            const current = loginValue((saved as { cookies?: Record<string, unknown>[] }).cookies);
+            const signedIn = loginRead && current !== undefined && current !== login;
+            login = current;
+            loginRead = true;
+            if (signedIn && !disposed) options.onSignedIn!();
+          })
+          .catch(() => undefined);
+      }, LOGIN_CHECK_MS)
+    : undefined;
+  loginTimer?.unref?.();
 
   function scope(sid: string): ClientBrowserScope {
     if (disposed) throw new Error("Client browser pool is disposed");
@@ -312,58 +238,8 @@ export function createClientBrowserPool(
         // Keep ownership on cleanup failure so no other client can adopt a surviving page.
       }
     };
-    const contextForScope = (): Promise<string> => {
-      if (state.context) return state.context;
-      state.context = (async () => {
-        const created = (await rootSend("Target.createBrowserContext", {
-          disposeOnDetach: true,
-        })) as { browserContextId?: string };
-        const id = created.browserContextId;
-        if (!id) throw new Error("Browser context was not created");
-        try {
-          const saved = (await rootSend("Storage.getCookies")) as {
-            cookies?: Record<string, unknown>[];
-          };
-          const cookies = cookieParameters(saved.cookies ?? []);
-          state.initialCookies = new Map(
-            cookies.map((cookie) => [cookieIdentity(cookie), JSON.stringify(cookie)]),
-          );
-          state.loginSeen = loginValue(cookies);
-          if (cookies.length) {
-            await rootSend("Storage.setCookies", {
-              browserContextId: id,
-              cookies: settableCookies(cookies),
-            });
-            const copied = (await rootSend("Storage.getCookies", {
-              browserContextId: id,
-            })) as { cookies?: Record<string, unknown>[] };
-            const present = new Set((copied.cookies ?? []).map((cookie) => cookie.name));
-            const missing = cookies
-              .map((cookie) => cookie.name)
-              .filter((name) => !present.has(name));
-            // Names only. A lost device cookie makes the site register this session as a new device.
-            if (missing.length) console.warn("client cookies not copied:", missing.join(", "));
-          }
-          if (options.downloadDir)
-            await rootSend("Browser.setDownloadBehavior", {
-              behavior: "allowAndName",
-              downloadPath: options.downloadDir,
-              eventsEnabled: true,
-              browserContextId: id,
-            });
-          return id;
-        } catch (error) {
-          await rootSend("Target.disposeBrowserContext", { browserContextId: id }).catch(
-            () => undefined,
-          );
-          throw error;
-        }
-      })();
-      return state.context;
-    };
     const createPage = async (url: string): Promise<unknown> => {
       // Force an independent window rather than another background tab in a client's window.
-      const browserContextId = options.isolatedStorage ? await contextForScope() : undefined;
       const offset = (openedWindows++ % WINDOW_OFFSETS) * WINDOW_OFFSET_STEP;
       const result = (await rootSend("Target.createTarget", {
         url,
@@ -374,7 +250,6 @@ export function createClientBrowserPool(
         top: offset,
         width: 1050,
         height: 980,
-        ...(browserContextId ? { browserContextId } : {}),
       })) as {
         targetId?: string;
       };
@@ -403,8 +278,6 @@ export function createClientBrowserPool(
       if (state.closePromise) return state.closePromise;
       ensureActive();
       state.closing = true;
-      // Decide before the pages close: afterwards their URLs are gone.
-      const persistCookies = options.canPersistCookies?.(sid) ?? true;
       state.closePromise = (async () => {
         try {
           for (const pending of [...state.pendingCreates.values()])
@@ -433,20 +306,7 @@ export function createClientBrowserPool(
           const failure = results.find((result) => result.status === "rejected");
           if (failure?.status === "rejected") throw failure.reason;
         } finally {
-          try {
-            if (state.context) {
-              const id = await state.context.catch(() => undefined);
-              if (id) {
-                try {
-                  if (persistCookies) await persistScopeCookies(state);
-                } finally {
-                  await rootSend("Target.disposeBrowserContext", { browserContextId: id });
-                }
-              }
-            }
-          } finally {
-            facade.dispose();
-          }
+          facade.dispose();
         }
       })();
       return state.closePromise;
@@ -597,7 +457,7 @@ export function createClientBrowserPool(
     dispose() {
       if (disposed) return;
       disposed = true;
-      if (cookieSyncTimer) clearInterval(cookieSyncTimer);
+      if (loginTimer) clearInterval(loginTimer);
       for (const state of scopes.values()) state.facade.dispose();
       scopes.clear();
       owners.clear();
@@ -610,57 +470,14 @@ export function createClientBrowserPool(
   };
 }
 
-/** CDP Cookie and CookieParam have different fields. Keep only accepted cookie parameters. */
-function cookieParameters(cookies: Record<string, unknown>[]): Record<string, unknown>[] {
-  const fields = [
-    "name",
-    "value",
-    "domain",
-    "path",
-    "secure",
-    "httpOnly",
-    "sameSite",
-    "expires",
-    "priority",
-    "sourceScheme",
-    "sourcePort",
-    "partitionKey",
-  ];
-  return cookies.map((cookie) =>
-    Object.fromEntries(
-      fields.filter((field) => cookie[field] !== undefined).map((field) => [field, cookie[field]]),
-    ),
-  );
-}
-
-/**
- * A host-only cookie (no leading dot) must be set by URL. Naming its domain asks for a domain
- * cookie, which `__Host-` cookies such as Claude's trusted-device mark are not allowed to be.
- */
-function settableCookies(cookies: Record<string, unknown>[]): Record<string, unknown>[] {
-  return cookies.map((cookie) => {
-    if (typeof cookie.domain !== "string" || cookie.domain.startsWith(".")) return cookie;
-    const { domain, ...rest } = cookie;
-    const scheme = cookie.secure === false ? "http" : "https";
-    return {
-      ...rest,
-      url: `${scheme}://${domain}${typeof cookie.path === "string" ? cookie.path : "/"}`,
-    };
-  });
-}
-
 function isSiteCookie(cookie: Record<string, unknown>): boolean {
   return typeof cookie.domain === "string" && /(^|\.)claude\.ai$/i.test(cookie.domain);
 }
 
 /** The site's login token; a forced logout clears it. Undefined means signed out. */
-function loginValue(cookies: Record<string, unknown>[]): string | undefined {
+function loginValue(cookies: Record<string, unknown>[] = []): string | undefined {
   const cookie = cookies.find((item) => item.name === "sessionKey" && isSiteCookie(item));
   return typeof cookie?.value === "string" && cookie.value !== "" ? cookie.value : undefined;
-}
-
-function cookieIdentity(cookie: Record<string, unknown>): string {
-  return JSON.stringify([cookie.domain, cookie.path, cookie.name, cookie.partitionKey]);
 }
 
 export function isClaudeUrl(url: string | undefined): boolean {
