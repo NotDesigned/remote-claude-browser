@@ -16,6 +16,8 @@ export type VideoTier = "direct" | "rtc";
 export interface VideoCompositorOptions {
   /** Trusted viewer document containing #viewer-hud-layer. */
   document?: Document;
+  /** Whether this viewer has been used yet, which is what lets a video start with sound. */
+  hasUserActivation?: () => boolean;
   onNotice?: (notice: VideoNotice) => void;
   onError?: (error: unknown) => void;
 }
@@ -67,6 +69,40 @@ function play(video: HTMLVideoElement, onError?: (error: unknown) => void): void
   } catch (error) {
     onError?.(error);
   }
+}
+
+/**
+ * A stream starts muted, as a browser may refuse to play it otherwise. It takes its sound as soon as
+ * the browser allows that: at once for someone who has been using the viewer, or else at their next
+ * press in the page. If the remote page mutes its video, the stream is silent whatever this says.
+ */
+function allowSoundAfterGesture(
+  video: HTMLVideoElement,
+  hasUserActivation: () => boolean = () =>
+    (globalThis.navigator as Navigator | undefined)?.userActivation?.hasBeenActive === true,
+): () => void {
+  const document = video.ownerDocument;
+  const events = ["pointerdown", "keydown"] as const;
+  const stop = () => {
+    for (const name of events) document.removeEventListener(name, unmute, true);
+  };
+  function unmute() {
+    stop();
+    video.muted = false;
+    try {
+      void video.play().catch(() => {
+        // Refused after all: keep the picture, and let the next press try again.
+        video.muted = true;
+        void video.play().catch(() => undefined);
+        for (const name of events) document.addEventListener(name, unmute, true);
+      });
+    } catch {
+      video.muted = true;
+    }
+  }
+  for (const name of events) document.addEventListener(name, unmute, true);
+  if (hasUserActivation()) unmute();
+  return stop;
 }
 
 function renderHudNotice(document: Document | undefined): HTMLElement | null {
@@ -175,6 +211,9 @@ export function createVideoCompositor(options: VideoCompositorOptions = {}): Vid
       const failed = () => onFailure(new Error("video WebRTC media track ended"));
       videoTrack.addEventListener("ended", failed, { once: true });
       video.addEventListener("error", failed, { once: true });
+      // The page's own controls are mirrored over this, and clicks on them belong to the remote page.
+      video.controls = false;
+      const stopSound = allowSoundAfterGesture(video, options.hasUserActivation);
       // Assign the original stream, not a video-only copy: WebRTC timestamps keep audio/video synced.
       video.srcObject = stream;
       play(video, onFailure);
@@ -182,6 +221,7 @@ export function createVideoCompositor(options: VideoCompositorOptions = {}): Vid
       return () => {
         if (stopped) return;
         stopped = true;
+        stopSound();
         videoTrack.removeEventListener("ended", failed);
         video.removeEventListener("error", failed);
         video.pause();

@@ -16,6 +16,7 @@ function fakeVideo(src: string | null) {
   return {
     nodeType: 1,
     nodeName: "VIDEO",
+    ownerDocument: { addEventListener: vi.fn(), removeEventListener: vi.fn() },
     autoplay: false,
     controls: false,
     currentTime: 0,
@@ -72,7 +73,7 @@ describe("viewer video tiers", () => {
     expect(video.srcObject).toBe(stream);
     expect(stream.getAudioTracks()).toEqual([audioTrack]);
     expect(video.muted).toBe(true);
-    expect(video.controls).toBe(true);
+    expect(video.controls).toBe(false);
     cleanup();
     expect(video.srcObject).toBeNull();
   });
@@ -87,5 +88,65 @@ describe("viewer video tiers", () => {
       expect.objectContaining({ notice: "drm", id: 12, message: DRM_VIDEO_NOTICE }),
     );
     expect(DRM_VIDEO_NOTICE).toBe("Media unavailable in DOM view — use pixel view");
+  });
+
+  describe("sound from a stream", () => {
+    function streamed(hasUserActivation: () => boolean) {
+      const listeners = new Map<string, Set<() => void>>();
+      const document = {
+        addEventListener(name: string, listener: () => void) {
+          (listeners.get(name) ?? listeners.set(name, new Set()).get(name)!).add(listener);
+        },
+        removeEventListener(name: string, listener: () => void) {
+          listeners.get(name)?.delete(listener);
+        },
+      };
+      const video = {
+        ownerDocument: document,
+        muted: true,
+        controls: true,
+        srcObject: null as unknown,
+        addEventListener() {},
+        removeEventListener() {},
+        pause() {},
+        play: async () => undefined,
+      };
+      const track = { addEventListener() {}, removeEventListener() {} };
+      const stream = { getVideoTracks: () => [track] };
+      const compositor = createVideoCompositor({
+        document: null as never,
+        hasUserActivation,
+      });
+      const stop = compositor.startStream(
+        video as unknown as HTMLVideoElement,
+        stream as unknown as MediaStream,
+        () => undefined,
+      );
+      const press = () => {
+        for (const listener of [...(listeners.get("pointerdown") ?? [])]) listener();
+      };
+      return { video, press, stop, listeners };
+    }
+
+    it("starts muted for someone who has not used the viewer, and takes sound at their first press", () => {
+      const { video, press } = streamed(() => false);
+      expect(video.muted).toBe(true);
+      press();
+      expect(video.muted).toBe(false);
+    });
+
+    it("has sound at once for someone already using the viewer", () => {
+      expect(streamed(() => true).video.muted).toBe(false);
+    });
+
+    it("leaves clicks to the remote page's own controls", () => {
+      expect(streamed(() => false).video.controls).toBe(false);
+    });
+
+    it("stops listening when the stream ends", () => {
+      const { stop, listeners } = streamed(() => false);
+      stop();
+      expect(listeners.get("pointerdown")?.size).toBe(0);
+    });
   });
 });

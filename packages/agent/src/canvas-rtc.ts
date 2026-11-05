@@ -228,6 +228,38 @@ function createNativePlugin(
   };
 }
 
+/**
+ * A video element captures new tracks whenever its source changes, as when an advert gives way to
+ * the film, and the old ones go silent. The viewer keeps the receivers it has, so the senders switch
+ * to the new tracks in place. A kind the stream did not have before needs adding to the connection.
+ */
+function followStreamTracks(state: Lane, stream: MediaStream): void {
+  stream.addEventListener?.("addtrack", (event) => {
+    const track = (event as MediaStreamTrackEvent).track;
+    const peer = state.plugin.peer as
+      | (typeof state.plugin.peer & {
+          _pc?: RTCPeerConnection;
+          addTrack?: (track: MediaStreamTrack, stream: MediaStream) => void;
+        })
+      | null
+      | undefined;
+    const pc = peer?._pc;
+    if (pc === undefined || !state.streams.has(stream)) return;
+    const senders = pc.getSenders();
+    if (senders.some((sender) => sender.track === track)) return;
+    const sender = senders.find(
+      (candidate) =>
+        candidate.track?.kind === track.kind ||
+        (candidate.track === null &&
+          pc
+            .getTransceivers()
+            .some((t) => t.sender === candidate && t.receiver.track.kind === track.kind)),
+    );
+    if (sender !== undefined) void sender.replaceTrack(track).catch(() => undefined);
+    else if (senders.length > 0) peer?.addTrack?.(track, stream);
+  });
+}
+
 export function installCanvasRtcRecord(options: CanvasRtcRecordOptions): CanvasRtcRecord {
   const scope = options.scope ?? globalThis;
   const pendingMessages: unknown[] = [];
@@ -385,6 +417,7 @@ export function installCanvasRtcRecord(options: CanvasRtcRecordOptions): CanvasR
         return false;
       }
       state.streams.add(stream);
+      followStreamTracks(state, stream);
       return true;
     } catch (error) {
       if (message.payload.type === "video") {

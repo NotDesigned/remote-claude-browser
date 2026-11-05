@@ -105,6 +105,66 @@ describe("agent canvas WebRTC adapter", () => {
     expect(stream.getTracks()).toEqual([videoTrack, audioTrack]);
   });
 
+  it("moves the connection onto the new tracks when a video's source changes", () => {
+    const scope = {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as typeof globalThis;
+    const video = { kind: "video", stop: vi.fn() } as unknown as MediaStreamTrack;
+    const audio = { kind: "audio", stop: vi.fn() } as unknown as MediaStreamTrack;
+    const replaced: MediaStreamTrack[] = [];
+    const sender = (track: MediaStreamTrack) => ({
+      track,
+      replaceTrack: vi.fn(async (next: MediaStreamTrack) => {
+        replaced.push(next);
+      }),
+    });
+    const senders = [sender(video), sender(audio)];
+    const added: MediaStreamTrack[] = [];
+    let onTrack: ((event: { track: MediaStreamTrack }) => void) | undefined;
+    const stream = {
+      getTracks: () => [video, audio],
+      getVideoTracks: () => [video],
+      addEventListener: (_name: string, listener: typeof onTrack) => {
+        onTrack = listener;
+      },
+    } as unknown as MediaStream;
+    const plugin = {
+      initPlugin: () => ({ name: "fake", getMirror: vi.fn() }),
+      setupPeer: vi.fn(),
+      setupStream: () => stream,
+      signalReceive: vi.fn(),
+      peer: {
+        destroy: vi.fn(),
+        addTrack: (track: MediaStreamTrack) => added.push(track),
+        _pc: { getSenders: () => senders, getTransceivers: () => [] },
+      },
+    };
+    const rtc = installCanvasRtcRecord({
+      constructors: captureRtcConstructors({} as typeof globalThis),
+      scope,
+      createPlugin: () => plugin as never,
+      exposeReceiver: false,
+    });
+    rtc.plugin.getMirror?.({
+      nodeMirror: { getNode: () => ({ nodeType: 1, nodeName: "VIDEO", captureStream: vi.fn() }) },
+    } as never);
+    rtc.receiveSignal({ peer: "viewer", lane: "lane", payload: { type: "video", id: 1 } });
+
+    const nextVideo = { kind: "video" } as unknown as MediaStreamTrack;
+    onTrack?.({ track: nextVideo });
+    expect(replaced).toEqual([nextVideo]);
+    expect(senders[0]?.replaceTrack).toHaveBeenCalledWith(nextVideo);
+    expect(senders[1]?.replaceTrack).not.toHaveBeenCalled();
+
+    // A kind it was not sending yet needs adding.
+    const none = senders.splice(1, 1);
+    expect(none).toHaveLength(1);
+    const firstAudio = { kind: "audio" } as unknown as MediaStreamTrack;
+    onTrack?.({ track: firstAudio });
+    expect(added).toEqual([firstAudio]);
+  });
+
   it("turns a tainted video captureStream exception into the DRM/blocked notice", () => {
     const binding = vi.fn();
     const failure = new DOMException("Cannot capture tainted media", "SecurityError");

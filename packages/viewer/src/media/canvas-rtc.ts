@@ -34,6 +34,8 @@ export type CanvasTrackRenderer = (
 
 export interface CanvasRtcOptions {
   send(message: CanvasRtcMessage): void;
+  /** Off, only videos are asked for. Each stream costs the server an encoder and the viewer's bandwidth. */
+  requestCanvases?: boolean;
   /** Trusted outer viewer document used for the explicit media-unavailable HUD notice. */
   document?: Document;
   createPlugin?: (callbacks: {
@@ -178,7 +180,7 @@ export function createCanvasRtc(options: CanvasRtcOptions): CanvasRtc {
   const canvasFound = (canvas: HTMLCanvasElement, id: number) => {
     if (disposed || !Number.isSafeInteger(id) || id < 0) return;
     canvasIds.set(canvas, id);
-    options.send({ type: "canvas", id });
+    if (options.requestCanvases !== false) options.send({ type: "canvas", id });
   };
   const signalSend = (signal: RTCSessionDescriptionInit) => {
     if (!disposed) options.send({ type: "signal", signal });

@@ -81,6 +81,7 @@ export interface MirrorOpts {
 
 export interface MirrorRtcOptions {
   send(tab: TabId, lane: string, payload: CanvasRtcMessage | { type: "close" }): void;
+  requestCanvases?: boolean;
   create?: (options: CanvasRtcOptions) => CanvasRtc;
   createLane?: () => string;
   onError?: (error: unknown) => void;
@@ -465,6 +466,9 @@ export function createMirror(opts: MirrorOpts): Mirror {
         const controller = (opts.rtc.create ?? createCanvasRtc)({
           document: opts.container.ownerDocument,
           send: (payload) => opts.rtc?.send(message.tab, lane, payload),
+          ...(opts.rtc.requestCanvases === undefined
+            ? {}
+            : { requestCanvases: opts.rtc.requestCanvases }),
           onError: opts.rtc.onError,
         });
         rtc = { lane, controller };

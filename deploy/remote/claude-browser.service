@@ -19,7 +19,6 @@ Environment=VIEWER_DIST_ROOT=/opt/claude-browser/current/viewer
 Environment=GATEWAY_HOST=127.0.0.1
 Environment=GATEWAY_PORT=3010
 Environment=MIRROR_CLIENTS=16
-Environment=MIRROR_DISABLE_RTC=1
 Environment=MIRROR_CANVAS_SNAPSHOTS=0
 Environment=MIRROR_START_URL=https://claude.ai/new
 ExecStart=/usr/local/bin/node /opt/claude-browser/current/dist/main.mjs

@@ -176,4 +176,25 @@ describe("canvas WebRTC upgrade lane", () => {
     expect(cleanup).toHaveBeenCalledOnce();
     expect(videoCompositor.dispose).toHaveBeenCalledOnce();
   });
+
+  it("asks for nothing when a canvas appears, if told to ask only for videos", () => {
+    const sent: unknown[] = [];
+    let found: ((canvas: HTMLCanvasElement, id: number) => void) | undefined;
+    createCanvasRtc({
+      send: (message) => sent.push(message),
+      requestCanvases: false,
+      createPlugin(callbacks) {
+        found = callbacks.canvasFound;
+        return {
+          initPlugin: () => ({}) as never,
+          signalReceive: () => undefined,
+          startStream: () => undefined,
+        };
+      },
+    });
+
+    found?.({} as HTMLCanvasElement, 7);
+
+    expect(sent).toEqual([]);
+  });
 });

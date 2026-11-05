@@ -582,6 +582,8 @@ export function App() {
       },
       restoreHooks,
       rtc: {
+        // A site's video has no other way here. Canvases are few on these pages, and blank is fine.
+        requestCanvases: false,
         send(tab, lane, payload) {
           socket?.send({ t: "rtc-sig", tab, lane, payload });
         },
