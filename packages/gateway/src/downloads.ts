@@ -7,14 +7,20 @@
  * the BROWSER session, not the page session); `download` progress msgs; expiring random link
  * /s/:sid/d/:key — cookie-guarded via auth/middleware.ts (SEC-2), retryable range reads, filename
  * only ever used in Content-Disposition (path traversal via suggestedFilename is a bug even in
- * a trusted-viewer tool). Files expire after 30 minutes or when the session ends.
+ * a trusted-viewer tool).
+ *
+ * The link exists from the moment a download begins, and a request for it follows the file as
+ * Chromium writes it, so the client is receiving the file while this browser is. Chromium writes to
+ * <guid>.crdownload and renames it to <guid> when finished, which an open file survives. A file
+ * goes soon after it has been delivered, and otherwise after 30 minutes or when the session ends.
  */
 import type { Down } from "@mirror/protocol";
 import type { FastifyInstance } from "fastify";
 import { randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { join } from "node:path";
-import { rm, stat } from "node:fs/promises";
+import { open, rm, stat, type FileHandle } from "node:fs/promises";
+import { Readable } from "node:stream";
 
 import type { SessionGuard } from "./auth/middleware";
 import type { BrowserHandle, BrowserSessionEventMap } from "./browser/launch";
@@ -28,11 +34,18 @@ interface DownloadRecord {
   href?: string;
   message?: DownloadMsg;
   expiresAt?: number;
+  removal?: ReturnType<typeof setTimeout>;
+  changed: Set<() => void>;
 }
 
 interface DownloadClaim {
   filePath: string;
   name: string;
+  state(): DownloadMsg["state"];
+  /** 0 until Chromium knows, which for a response without a length is when it has finished. */
+  total(): number;
+  /** Resolves at the next progress from Chromium, or after this long. */
+  changed(waitMs: number): Promise<void>;
 }
 
 export interface DownloadManagerOptions {
@@ -91,11 +104,14 @@ export async function createDownloadManager(
   const links = new Map<string, DownloadRecord>();
   let closed = false;
   const lifetimeMs = 30 * 60 * 1000;
-  const deliveredGraceMs = 2 * 60 * 1000;
+  const deliveredGraceMs = 10 * 1000;
   const removeRecord = (record: DownloadRecord) => {
+    if (record.removal !== undefined) clearTimeout(record.removal);
     downloads.delete(record.guid);
     for (const [key, link] of links) if (link === record) links.delete(key);
+    for (const notify of record.changed) notify();
     void rm(join(downloadDir, record.guid), { force: true }).catch(report);
+    void rm(join(downloadDir, `${record.guid}.crdownload`), { force: true }).catch(report);
   };
   const sweep = setInterval(() => {
     for (const record of downloads.values()) {
@@ -116,11 +132,26 @@ export async function createDownloadManager(
             : options.sessionForFrame(event.frameId);
         if (ownerSessionId === undefined) return;
         nonEmpty(ownerSessionId, "download sessionId");
-        downloads.set(event.guid, {
+        const key = uniqueKey(createKey, links);
+        const record: DownloadRecord = {
           guid: event.guid,
           sessionId: ownerSessionId,
           name: event.suggestedFilename || "download",
-        });
+          href: `/s/${encodeURIComponent(ownerSessionId)}/d/${key}`,
+          changed: new Set(),
+        };
+        downloads.set(event.guid, record);
+        links.set(key, record);
+        record.message = {
+          t: "download",
+          id: event.guid,
+          name: record.name,
+          recv: 0,
+          total: 0,
+          state: "active",
+          href: record.href!,
+        };
+        options.publish(record.message, ownerSessionId);
       } catch (error) {
         report(error);
       }
@@ -134,11 +165,6 @@ export async function createDownloadManager(
         const record = downloads.get(event.guid);
         if (record === undefined) return;
         const state = wireState(event.state);
-        if (state === "done" && record.href === undefined) {
-          const key = uniqueKey(createKey, links);
-          record.href = `/s/${encodeURIComponent(record.sessionId)}/d/${key}`;
-          links.set(key, record);
-        }
         record.message = {
           t: "download",
           id: event.guid,
@@ -150,6 +176,7 @@ export async function createDownloadManager(
         };
         if (state !== "active") record.expiresAt = Date.now() + lifetimeMs;
         options.publish(record.message, record.sessionId);
+        for (const notify of record.changed) notify();
         if (state === "canceled") removeRecord(record);
       } catch (error) {
         report(error);
@@ -202,7 +229,7 @@ export async function createDownloadManager(
       const ownerSessionId =
         requestedSessionId ?? (options.sessionForFrame === undefined ? sessionId : undefined);
       if (record.sessionId !== ownerSessionId) return undefined;
-      if ((record.expiresAt ?? 0) <= Date.now()) {
+      if (record.expiresAt !== undefined && record.expiresAt <= Date.now()) {
         removeRecord(record);
         return undefined;
       }
@@ -210,12 +237,28 @@ export async function createDownloadManager(
         // allowAndName writes the GUID. The suggested filename never participates in this path.
         filePath: join(downloadDir, record.guid),
         name: record.name,
+        state: () =>
+          downloads.get(record.guid) === record ? (record.message?.state ?? "active") : "canceled",
+        total: () => record.message?.total ?? 0,
+        changed: (waitMs) =>
+          new Promise((resolve) => {
+            const done = () => {
+              clearTimeout(timer);
+              record.changed.delete(done);
+              resolve();
+            };
+            const timer = setTimeout(done, waitMs);
+            record.changed.add(done);
+          }),
       };
     },
     delivered(key, deliveredSessionId) {
       const record = links.get(key);
       if (record === undefined || record.sessionId !== deliveredSessionId) return;
       record.expiresAt = Math.min(record.expiresAt ?? Infinity, Date.now() + deliveredGraceMs);
+      if (record.removal !== undefined) clearTimeout(record.removal);
+      record.removal = setTimeout(() => removeRecord(record), deliveredGraceMs);
+      record.removal.unref?.();
     },
     revokeSession(revokedSessionId) {
       nonEmpty(revokedSessionId, "sessionId");
@@ -278,6 +321,19 @@ export function registerDownloadRoutes(app: FastifyInstance, options: DownloadRo
       if (claim === undefined) {
         return reply.code(404).send({ error: "Download not found" });
       }
+      const manager = options.managerFor(request.params.sid);
+      // Only a response that actually reached the last byte counts as a delivery.
+      const markDeliveredOnFinish = () =>
+        reply.raw.once("finish", () => manager?.delivered(request.params.key, request.params.sid));
+      if (claim.state() === "active") {
+        reply.header("cache-control", "private, no-store");
+        reply.header("content-disposition", contentDisposition(claim.name));
+        reply.header("accept-ranges", "none");
+        reply.type("application/octet-stream");
+        if (claim.total() > 0) reply.header("content-length", claim.total());
+        markDeliveredOnFinish();
+        return reply.send(Readable.from(followDownload(claim), { objectMode: false }));
+      }
       const file = await stat(claim.filePath).catch(() => undefined);
       if (!file?.isFile()) return reply.code(404).send({ error: "Download not found" });
       reply.header("cache-control", "private, no-store");
@@ -285,10 +341,6 @@ export function registerDownloadRoutes(app: FastifyInstance, options: DownloadRo
       reply.header("accept-ranges", "bytes");
       reply.type("application/octet-stream");
       const range = request.headers.range;
-      const manager = options.managerFor(request.params.sid);
-      // Only a response that actually reached the last byte counts as a delivery.
-      const markDeliveredOnFinish = () =>
-        reply.raw.once("finish", () => manager?.delivered(request.params.key, request.params.sid));
       if (range === undefined) {
         reply.header("content-length", file.size);
         markDeliveredOnFinish();
@@ -322,6 +374,48 @@ export function registerDownloadRoutes(app: FastifyInstance, options: DownloadRo
       return reply.send(createReadStream(claim.filePath, { start, end }));
     },
   );
+}
+
+/** How long to look for a file Chromium has announced before it has written any of it. */
+const SPOOL_OPEN_TIMEOUT_MS = 30_000;
+const FOLLOW_POLL_MS = 100;
+
+async function openSpool(claim: DownloadClaim): Promise<FileHandle> {
+  const deadline = Date.now() + SPOOL_OPEN_TIMEOUT_MS;
+  for (;;) {
+    for (const path of [`${claim.filePath}.crdownload`, claim.filePath]) {
+      const handle = await open(path, "r").catch(() => undefined);
+      if (handle !== undefined) return handle;
+    }
+    if (claim.state() === "canceled" || Date.now() >= deadline) {
+      throw new Error("Download is not available");
+    }
+    await claim.changed(FOLLOW_POLL_MS);
+  }
+}
+
+/** The file so far and then whatever Chromium adds, ending when it reports the download finished. */
+async function* followDownload(claim: DownloadClaim): AsyncGenerator<Buffer> {
+  const file = await openSpool(claim);
+  try {
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let position = 0;
+    for (;;) {
+      // Read before trusting the state: Chromium finishes writing before it reports finishing.
+      const state = claim.state();
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, position);
+      if (bytesRead > 0) {
+        position += bytesRead;
+        yield Buffer.from(buffer.subarray(0, bytesRead));
+        continue;
+      }
+      if (state === "done") return;
+      if (state === "canceled") throw new Error("Download was canceled");
+      await claim.changed(FOLLOW_POLL_MS);
+    }
+  } finally {
+    await file.close();
+  }
 }
 
 function wireState(

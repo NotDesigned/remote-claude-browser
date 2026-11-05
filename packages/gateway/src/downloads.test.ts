@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -96,17 +96,17 @@ describe("download flow", () => {
     finish("old-done");
     finish("old-pending");
     expect(publish).toHaveBeenCalledTimes(sentBeforeOldProgress);
-    expect(manager.claim("key-2", "client-2")).toMatchObject({ name: "b-download.txt" });
+    expect(manager.claim("key-3", "client-2")).toMatchObject({ name: "b-download.txt" });
     begin("new-owner");
     finish("new-owner");
     expect(publish).toHaveBeenLastCalledWith(
       expect.objectContaining({
         id: "new-owner",
-        href: "/s/client-1/d/key-3",
+        href: "/s/client-1/d/key-4",
       }),
       "client-1",
     );
-    expect(manager.claim("key-3", "client-1")).toMatchObject({ name: "new-owner.txt" });
+    expect(manager.claim("key-4", "client-1")).toMatchObject({ name: "new-owner.txt" });
   });
 
   it("freezes frame ownership, directs progress by SID, and never lets a wrong SID consume a link", async () => {
@@ -157,7 +157,39 @@ describe("download flow", () => {
     expect(browser.sendBrowser).toHaveBeenCalledTimes(1);
     expect(publish.mock.calls).toEqual([
       [
-        { t: "download", id: "guid-a", name: "guid-a.txt", recv: 20, total: 100, state: "active" },
+        {
+          t: "download",
+          id: "guid-a",
+          name: "guid-a.txt",
+          recv: 0,
+          total: 0,
+          state: "active",
+          href: "/s/client-1/d/key-1",
+        },
+        "client-1",
+      ],
+      [
+        {
+          t: "download",
+          id: "guid-b",
+          name: "guid-b.txt",
+          recv: 0,
+          total: 0,
+          state: "active",
+          href: "/s/client-2/d/key-2",
+        },
+        "client-2",
+      ],
+      [
+        {
+          t: "download",
+          id: "guid-a",
+          name: "guid-a.txt",
+          recv: 20,
+          total: 100,
+          state: "active",
+          href: "/s/client-1/d/key-1",
+        },
         "client-1",
       ],
       [
@@ -187,13 +219,13 @@ describe("download flow", () => {
     ]);
     expect(manager.claim("key-1", "client-2")).toBeUndefined();
     expect(manager.claim("key-1")).toBeUndefined();
-    expect(manager.claim("key-1", "client-1")).toEqual({
+    expect(manager.claim("key-1", "client-1")).toMatchObject({
       filePath: "/shared/downloads/guid-a",
       name: "guid-a.txt",
     });
     expect(manager.claim("key-1", "client-1")).toMatchObject({ name: "guid-a.txt" });
     expect(manager.claim("key-2", "client-1")).toBeUndefined();
-    expect(manager.claim("key-2", "client-2")).toEqual({
+    expect(manager.claim("key-2", "client-2")).toMatchObject({
       filePath: "/shared/downloads/guid-b",
       name: "guid-b.txt",
     });
@@ -272,6 +304,128 @@ describe("download flow", () => {
     }
   });
 
+  describe("while the browser is still receiving", () => {
+    const setup = async () => {
+      const root = await mkdtemp(join(tmpdir(), "mirror-streamed-download-test-"));
+      tempDirs.push(root);
+      const browser = new DownloadBrowser();
+      const publish = vi.fn();
+      const manager = await createDownloadManager({
+        sessionId: "client-1",
+        browser,
+        downloadDir: root,
+        publish,
+        createKey: () => "streamed-key",
+      });
+      managers.push(manager);
+      const app = Fastify();
+      const guard = createSessionGuard({ key: KEY, now: () => NOW });
+      registerDownloadRoutes(app, { preHandler: guard.preHandler, managerFor: () => manager });
+      const headers = {
+        cookie: `${SESSION_COOKIE}=${mintInvite({ sid: "client-1", role: "driver", exp: NOW + 60 }, KEY)}`,
+      };
+      browser.emit("Browser.downloadWillBegin", {
+        frameId: "frame",
+        guid: "guid-s",
+        url: "https://files.test/file",
+        suggestedFilename: "report.txt",
+      });
+      const progress = (state: string, receivedBytes: number, totalBytes: number) =>
+        browser.emit("Browser.downloadProgress", {
+          guid: "guid-s",
+          receivedBytes,
+          totalBytes,
+          state,
+        } as never);
+      return { root, publish, manager, app, headers, progress };
+    };
+
+    it("offers the link the moment a download begins", async () => {
+      const { publish, app } = await setup();
+      expect(publish).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          t: "download",
+          state: "active",
+          name: "report.txt",
+          href: "/s/client-1/d/streamed-key",
+        }),
+        "client-1",
+      );
+      await app.close();
+    });
+
+    it("sends the file as it is written, through the rename, without waiting for the end", async () => {
+      const { root, app, headers, progress } = await setup();
+      const partial = join(root, "guid-s.crdownload");
+      await writeFile(partial, "first ");
+      progress("inProgress", 6, 12);
+
+      const response = app.inject({ url: "/s/client-1/d/streamed-key", headers });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await appendFile(partial, "second");
+      await rename(partial, join(root, "guid-s"));
+      progress("completed", 12, 12);
+
+      const done = await response;
+      expect(done.statusCode).toBe(200);
+      expect(done.body).toBe("first second");
+      expect(done.headers["content-length"]).toBe("12");
+      expect(done.headers["accept-ranges"]).toBe("none");
+      expect(done.headers["content-disposition"]).toContain("report.txt");
+      await app.close();
+    });
+
+    it("sends a response of unknown length, and waits for a file not yet created", async () => {
+      const { root, app, headers, progress } = await setup();
+      progress("inProgress", 0, 0);
+
+      const response = app.inject({ url: "/s/client-1/d/streamed-key", headers });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await writeFile(join(root, "guid-s.crdownload"), "late body");
+      await rename(join(root, "guid-s.crdownload"), join(root, "guid-s"));
+      progress("completed", 9, 9);
+
+      const done = await response;
+      expect(done.body).toBe("late body");
+      expect(done.headers["content-length"]).toBeUndefined();
+      await app.close();
+    });
+
+    it("removes the file soon after a delivery that reached the end", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        const { root, app, headers, progress, manager } = await setup();
+        await writeFile(join(root, "guid-s"), "body");
+        progress("completed", 4, 4);
+
+        const done = await app.inject({ url: "/s/client-1/d/streamed-key", headers });
+        expect(done.body).toBe("body");
+        expect(manager.claim("streamed-key", "client-1")).toBeDefined();
+
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(manager.claim("streamed-key", "client-1")).toBeUndefined();
+        await vi.waitFor(async () => expect(await readdir(root)).toEqual([]));
+        await app.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("fails the transfer when the download is canceled, so a partial file is not taken as whole", async () => {
+      const { root, app, headers, progress } = await setup();
+      await writeFile(join(root, "guid-s.crdownload"), "part");
+      progress("inProgress", 4, 8);
+
+      const response = app.inject({ url: "/s/client-1/d/streamed-key", headers });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      progress("canceled", 4, 8);
+
+      // The light-my-request client reports a response destroyed mid-way as a rejection.
+      await expect(response).rejects.toThrow();
+      await app.close();
+    });
+  });
+
   it("keeps a fully delivered file only for a short retry window", async () => {
     const root = await mkdtemp(join(tmpdir(), "mirror-delivered-download-test-"));
     tempDirs.push(root);
@@ -315,9 +469,9 @@ describe("download flow", () => {
       expect(manager.claim("delivered-key", "client-1")).toBeDefined();
       const full = await app.inject({ url: "/s/client-1/d/delivered-key", headers });
       expect(full.body).toBe("delivered body");
-      clock += 60 * 1000;
+      clock += 5 * 1000;
       expect(manager.claim("delivered-key", "client-1")).toBeDefined();
-      clock += 61 * 1000;
+      clock += 6 * 1000;
       expect(manager.claim("delivered-key", "client-1")).toBeUndefined();
     } finally {
       now.mockRestore();
@@ -367,9 +521,19 @@ describe("download flow", () => {
         t: "download",
         id: "guid-1",
         name: "report.pdf",
+        recv: 0,
+        total: 0,
+        state: "active",
+        href: "/s/s1/d/one-time-key",
+      },
+      {
+        t: "download",
+        id: "guid-1",
+        name: "report.pdf",
         recv: 35,
         total: 100,
         state: "active",
+        href: "/s/s1/d/one-time-key",
       },
       {
         t: "download",
