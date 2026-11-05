@@ -66,6 +66,13 @@ async function bindIsolatedBridgeWorld(
   });
 }
 
+/** The frame reached its next document between two commands, and its navigation binds that one. */
+function frameMovedOn(error: unknown): boolean {
+  return /Cannot find (?:execution )?context|No frame for given id|Frame with the given id/i.test(
+    error instanceof Error ? error.message : String(error),
+  );
+}
+
 async function bindCurrentFrameTree(
   browser: BrowserHandle,
   sessionId: string,
@@ -78,7 +85,11 @@ async function bindCurrentFrameTree(
   const pending = [response.frameTree];
   while (pending.length > 0) {
     const tree = pending.shift()!;
-    await bindIsolatedBridgeWorld(browser, sessionId, tree.frame.id, channel);
+    await bindIsolatedBridgeWorld(browser, sessionId, tree.frame.id, channel).catch(
+      (error: unknown) => {
+        if (!frameMovedOn(error)) throw error;
+      },
+    );
     pending.push(...(tree.childFrames ?? []));
   }
 }

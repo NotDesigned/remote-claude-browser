@@ -181,4 +181,29 @@ describe("injectAgent", () => {
     ]);
     expect(browser.calls.some((call) => call.method === "Runtime.enable")).toBe(false);
   });
+
+  it("survives a frame navigating during injection, and fails on anything else", async () => {
+    const lost = new RecordingBrowser();
+    const send = lost.send;
+    lost.send = async (sessionId, method, params) => {
+      if (method === "Runtime.addBinding")
+        throw new Error(
+          "Protocol error (Runtime.addBinding): Cannot find execution context with given executionContextId",
+        );
+      return send(sessionId, method, params);
+    };
+    await expect(
+      injectAgent(lost, { targetId: "page-2", sessionId: "session-2", type: "page" }),
+    ).resolves.toBeUndefined();
+
+    const broken = new RecordingBrowser();
+    const brokenSend = broken.send;
+    broken.send = async (sessionId, method, params) => {
+      if (method === "Runtime.addBinding") throw new Error("Target closed");
+      return brokenSend(sessionId, method, params);
+    };
+    await expect(
+      injectAgent(broken, { targetId: "page-3", sessionId: "session-3", type: "page" }),
+    ).rejects.toThrow("Target closed");
+  });
 });
