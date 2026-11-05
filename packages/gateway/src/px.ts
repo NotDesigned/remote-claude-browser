@@ -92,6 +92,8 @@ export interface ScreencastOpts {
   createVideoEncoder?: VideoEncoderFactory;
   /** Lets the highest quality reach device resolution; without it frames stop at CSS pixels. */
   browserZoom?: BrowserZoom;
+  /** The page lays out as on a phone, following its viewport meta tag. */
+  mobile?: boolean;
   grab?: ScreenGrab;
   /** Supply both hooks to track pixel ownership. Acquisition must be synchronous. */
   acquirePixel?(tabId: string): boolean;
@@ -199,7 +201,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       width: Math.round(viewport.w * zoom),
       height: Math.round(viewport.h * zoom),
       deviceScaleFactor: zoom > 1 || state.hub.pixelGrabbing ? 1 : viewport.dpr,
-      mobile: false,
+      mobile: opts.mobile === true,
     });
   };
   const pageDensity = async (state: TabState): Promise<number> => {

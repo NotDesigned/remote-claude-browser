@@ -30,6 +30,8 @@ export interface ViewportAgreementDeps {
   sessionFor(tabId: TabId): string | undefined;
   hubFor(tabId: TabId): ViewportHub | undefined;
   isDriver(viewerId: string): boolean;
+  /** The page lays out as on a phone, following its viewport meta tag. */
+  mobile?: boolean;
   /**
    * Tells a viewer its unchanged geometry already holds, so it needs no viewport snapshot. Without
    * this every `view` takes the full negotiation.
@@ -291,7 +293,7 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
         width: Math.round(desired.w * zoom),
         height: Math.round(desired.h * zoom),
         deviceScaleFactor: zoom > 1 || hub.pixelGrabbing ? 1 : desired.dpr,
-        mobile: false,
+        mobile: deps.mobile === true,
       });
       if (!current(tabId, state)) return;
       hub.viewport = { w: desired.w, h: desired.h, dpr: desired.dpr };

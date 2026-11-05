@@ -25,6 +25,8 @@ export interface ClientRecord {
   owner: string;
   clientKey: string;
   createdAt: number;
+  /** Opened from a phone, so it lives in the browser that asks for Claude's phone interface. */
+  phone?: boolean;
 }
 export class ClientSessionError extends Error {
   constructor(
@@ -87,7 +89,7 @@ export async function createClientSessions(options: { file?: string; now?: () =>
     available() {
       return CLIENT_SLOTS.length - records.size;
     },
-    async acquire(owner: string, clientKey: unknown, requested?: unknown) {
+    async acquire(owner: string, clientKey: unknown, requested?: unknown, phone = false) {
       if (!owner || typeof clientKey !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(clientKey))
         throw new ClientSessionError(400, "INVALID_CLIENT_KEY", "客户端标识无效，请刷新重试");
       if (requested !== undefined) {
@@ -109,7 +111,13 @@ export async function createClientSessions(options: { file?: string; now?: () =>
           "CLIENT_CAPACITY",
           "16 个会话均已占用，离线会话会自动回收，请稍后重试",
         );
-      const record: ClientRecord = { sid, owner, clientKey, createdAt: now() };
+      const record: ClientRecord = {
+        sid,
+        owner,
+        clientKey,
+        createdAt: now(),
+        ...(phone ? { phone } : {}),
+      };
       records.set(sid, record);
       try {
         await persist();

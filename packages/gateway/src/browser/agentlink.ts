@@ -38,6 +38,8 @@ export interface AgentLinkOptions {
   publishVoice?: (message: VoiceAgentMsg, targetId: string) => void;
   /** Relays private agent clipboard messages onto the frozen viewer Down lane. */
   publishClipboard?: (message: ClipboardDown, targetId: string) => void;
+  /** Runs on a new target while it is still paused, before its first document can load. */
+  prepareTarget?: (target: TargetRef) => Promise<void>;
 }
 
 interface Waiter<T> {
@@ -270,7 +272,7 @@ export function createAgentLink(browser: BrowserHandle, options: AgentLinkOption
     statesByTarget.set(target.targetId, state);
     statesBySession.set(target.sessionId, state);
 
-    void injectAgent(browser, target).catch(async (cause: unknown) => {
+    void injectAgent(browser, target, options.prepareTarget).catch(async (cause: unknown) => {
       // Do not leave Chromium paused if an attach step fails. The failed stream makes the
       // injection error observable to its consumer.
       await browser

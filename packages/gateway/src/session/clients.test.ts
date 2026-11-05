@@ -60,4 +60,12 @@ describe("client ownership", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it("remembers that a session was opened from a phone, across a later request", async () => {
+    const sessions = await createClientSessions();
+    const phone = await sessions.acquire("device-a", "tab-a", undefined, true);
+    expect(phone.phone).toBe(true);
+    expect(await sessions.acquire("device-a", "tab-a")).toBe(phone);
+    expect((await sessions.acquire("device-b", "tab-b")).phone).toBeUndefined();
+  });
 });

@@ -13,6 +13,7 @@ import { createAssetCache } from "./assets/cache";
 import { createAssetFetcher } from "./assets/fetch";
 import { registerAssetRoutes } from "./assets/route";
 import { createAgentLink } from "./browser/agentlink";
+import { createPhoneTargetPreparer, isPhoneRequest } from "./browser/phone-identity";
 import { agentBridgeChannel, callAgentBridge } from "./browser/bridge";
 import {
   afterSignInUrl,
@@ -208,7 +209,14 @@ export async function startClientGateway(): Promise<void> {
   const micTabs = new Set<string>();
   const hasViewer = (sid: string) =>
     [...viewers.values()].some((connection) => connection.sid === sid);
+  const preparePhoneTarget = createPhoneTargetPreparer({
+    send: browser.send,
+    ownerOf: (targetId) => pool.ownerOf(targetId),
+    isPhoneSession: (sid) => clientSessions.get(sid)?.phone === true,
+  });
   const agent = createAgentLink(browser, {
+    prepareTarget: (target) =>
+      preparePhoneTarget(target).catch((error) => report("phone identity failed", error)),
     publishClipboard(message, target) {
       const sid = pool.ownerOf(target);
       if (sid) publish(sid, message);
@@ -539,6 +547,7 @@ export async function startClientGateway(): Promise<void> {
       sessionFor: (tab) => targets.get(tab)?.sessionId,
       hubFor: (tab) => tabs.hubFor(tab),
       isDriver: (id) => roles.isDriver(id) && viewers.get(id)?.sid === sid,
+      mobile: clientSessions.get(sid)?.phone === true,
       confirmViewport: (_viewer, tab, { w, h }) => publish(sid, { t: "view-ok", tab, w, h }),
     });
     const input = createInputRelay({
@@ -591,6 +600,7 @@ export async function startClientGateway(): Promise<void> {
             connection.sid === sid && connection.viewer.socket.bufferedAmount > VIDEO_BACKLOG_BYTES,
         ),
       ...(zoomExtensionReady ? { browserZoom } : {}),
+      mobile: clientSessions.get(sid)?.phone === true,
       ...(displayGrabbable && scoped.sendBrowser
         ? {
             grab: {
@@ -829,6 +839,7 @@ export async function startClientGateway(): Promise<void> {
           owner,
           request.body?.clientKey,
           request.body?.sid,
+          isPhoneRequest(request.headers["user-agent"]),
         );
         idleReaper.touch(record.sid);
         broadcastStatus();
