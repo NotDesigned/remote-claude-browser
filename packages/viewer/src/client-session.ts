@@ -195,15 +195,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-export type ViewMode = "chat" | "dom" | "px";
-// A new key, as everyone had "chat" remembered from when it was the default.
+export type ViewMode = "dom" | "px";
 export const VIEW_MODE_STORAGE_KEY = "mirror.view-mode.v2";
 
-/** The page view is the everyday view; chat and the pixel view are remembered when chosen. */
+/** The page view is the everyday view; the pixel view is remembered when chosen. */
 export function preferredViewMode(storage: Pick<Storage, "getItem">): ViewMode {
   try {
     const value = storage.getItem(VIEW_MODE_STORAGE_KEY);
-    return value === "chat" || value === "px" ? value : "dom";
+    return value === "px" ? "px" : "dom";
   } catch {
     return "dom";
   }

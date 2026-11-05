@@ -13,11 +13,9 @@ export interface TabStripProps {
   chromeByTab?: Readonly<Record<TabId, ChromeState | undefined>>;
   send(message: TabNav): void;
   onActivate?(tab: TabId): void;
-  /** Shows the tabs without the controls that change them. */
-  readOnly?: boolean;
 }
 
-export function TabStrip({ tabs, chromeByTab = {}, send, onActivate, readOnly }: TabStripProps) {
+export function TabStrip({ tabs, chromeByTab = {}, send, onActivate }: TabStripProps) {
   const activeTab = tabs.find((tab) => tab.active) ?? tabs[0];
   const activate = (tab: TabId) => {
     onActivate?.(tab);
@@ -78,11 +76,9 @@ export function TabStrip({ tabs, chromeByTab = {}, send, onActivate, readOnly }:
                     title="网页加载中"
                   />
                 </button>
-                {/* Hidden rather than absent, so the tab keeps its size between the views. */}
                 <button
                   className="tab-close"
                   type="button"
-                  style={readOnly ? { visibility: "hidden" } : undefined}
                   aria-label={`Close ${label}`}
                   title={`关闭 ${label}`}
                   onClick={() => send({ t: "nav", tab: tab.id, action: "close" })}
@@ -98,7 +94,6 @@ export function TabStrip({ tabs, chromeByTab = {}, send, onActivate, readOnly }:
         <button
           id="new-tab"
           type="button"
-          style={readOnly ? { visibility: "hidden" } : undefined}
           aria-label="New tab"
           title="新建标签页"
           onClick={() => send({ t: "nav", tab: activeTab?.id ?? "", action: "newtab" })}

@@ -56,15 +56,6 @@ const servedHtml = await (await get("/")).text();
 assert.ok(servedHtml.includes(entry), "latest viewer index");
 const js = await (await get(entry)).text();
 assert.ok(js.includes("server-status") && js.includes("会话占用"), "status UI bundle");
-const chatHtml = await readFile("packages/viewer/dist/chat.html", "utf8");
-const chatEntry = chatHtml.match(/src="([^"]+\.js)"/)?.[1];
-assert.ok(chatEntry);
-assert.ok((await (await get("/chat.html")).text()).includes(chatEntry), "latest text-chat index");
-assert.equal(
-  await (await get(chatEntry)).text(),
-  await readFile("packages/viewer/dist" + chatEntry, "utf8"),
-  "text-chat diagnostic fixture uses the exact production bundle",
-);
 const health = await fetch(origin + "/healthz").then((response) => response.json());
 assert.equal(health.ok, true);
 assert.equal(health.maxClients, 16);
@@ -74,7 +65,6 @@ const result = {
   allocatedNoWorkspaces: true,
   authenticationRequired: true,
   latestViewerEntry: entry,
-  latestChatEntry: chatEntry,
   samples,
   health,
 };

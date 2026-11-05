@@ -23,8 +23,6 @@ export interface ViewportHub {
   pixelGrabbing?: boolean;
   requestSnapshot(reason: SnapshotReason): void;
   hasGeometry?(w: number, h: number): boolean;
-  expectRecorderSnapshot?(reason: SnapshotReason): boolean;
-  readonly recorderAwaitsRestart?: boolean;
 }
 
 export interface ViewportAgreementDeps {
@@ -37,8 +35,6 @@ export interface ViewportAgreementDeps {
    * this every `view` takes the full negotiation.
    */
   confirmViewport?(viewerId: string, tab: TabId, viewport: { w: number; h: number }): void;
-  /** Restarts a stopped recorder, whose first snapshot then carries the applied geometry. */
-  restartRecorder?(tab: TabId): void;
   debounceMs?: number;
   /** Slightly longer than TabHub's default request timeout, then recurring until recovery. */
   snapshotRetryMs?: number;
@@ -261,12 +257,7 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
       deps.confirmViewport(viewerId, msg.tab, { w: msg.w, h: msg.h });
       return true;
     }
-    if (!hub.expectRecorderSnapshot?.("viewport")) return false;
-    gate.beginViewportChange(msg.tab);
-    state.appliedRevision = state.desired.revision;
-    state.inFlight = true;
-    scheduleSnapshotRetry(msg.tab, state);
-    return true;
+    return false;
   }
 
   function current(tabId: TabId, state: TabNegotiation): boolean {
@@ -307,10 +298,7 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
       state.appliedRevision = desired.revision;
       state.inFlight = true;
       scheduleSnapshotRetry(tabId, state);
-      if (deps.restartRecorder && hub.recorderAwaitsRestart) {
-        hub.expectRecorderSnapshot?.("viewport");
-        deps.restartRecorder(tabId);
-      } else hub.requestSnapshot("viewport");
+      hub.requestSnapshot("viewport");
     } catch {
       if (!current(tabId, state)) return;
       // Keep input locked and retry the latest request. A detached tab simply has no session on

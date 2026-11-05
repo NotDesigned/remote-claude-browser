@@ -264,7 +264,7 @@ describe("client session bootstrap", () => {
     expect(forbidden).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps independent sessions in WebSocket, chat, and return URLs", () => {
+  it("keeps independent sessions in WebSocket and return URLs", () => {
     expect(clientGatewayUrl("https://viewer.test/?new=1", "client-2")).toBe(
       "wss://viewer.test/ws?sid=client-2",
     );

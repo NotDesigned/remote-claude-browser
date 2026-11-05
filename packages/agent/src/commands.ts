@@ -35,7 +35,6 @@ export interface RecordReadiness {
 
 export interface RecordReadinessController extends RecordReadiness {
   markStarted(): void;
-  markStopped(): void;
 }
 
 export interface CommandDependencies {
@@ -44,7 +43,6 @@ export interface CommandDependencies {
   recordReadiness?: RecordReadiness;
   snapshotReadyTimeoutMs?: number;
   takeFullSnapshot?: () => void;
-  setRecording?: (enabled: boolean) => void;
 }
 
 const DEFAULT_SNAPSHOT_READY_TIMEOUT_MS = 2_000;
@@ -57,9 +55,6 @@ export function createRecordReadiness(): RecordReadinessController {
 
   return {
     isStarted: () => started,
-    markStopped() {
-      started = false;
-    },
     onStarted(listener) {
       if (started) {
         queueMicrotask(listener);
@@ -215,12 +210,6 @@ export function createCommandHandler(
     try {
       const nodeMirror = getNodeMirror();
       switch (cmd.cmd) {
-        case "recording": {
-          if (!dependencies.setRecording) throw new Error("recording control unavailable");
-          dependencies.setRecording(cmd.enabled);
-          emitter.emit({ kind: "cmdres", reqId: cmd.reqId, ok: true });
-          return;
-        }
         case "snapshot": {
           const readiness = dependencies.recordReadiness;
           if (readiness === undefined || readiness.isStarted()) {

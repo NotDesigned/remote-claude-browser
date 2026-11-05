@@ -161,50 +161,6 @@ const server = createServer(async (request, response) => {
       const sid = scoped[1],
         path = scoped[2],
         tab = `fixture-${sid}`;
-      if (path === "api/claude/events") {
-        response.writeHead(200, {
-          "content-type": "text/event-stream",
-          "cache-control": "no-store",
-        });
-        response.write(
-          `data: ${JSON.stringify({
-            type: "snapshot",
-            seq: 1,
-            controller: "fixture-controller",
-            state: {
-              tab,
-              epoch: "fixture-chat",
-              url: "https://claude.fixture.invalid/new",
-              title: "受控文字聊天",
-              ready: true,
-              generating: false,
-              messages: [
-                {
-                  id: "assistant",
-                  role: "assistant",
-                  text: String.raw`受控回复，支持中文附件。行内 $E=mc^2$ 与 \(\alpha+\beta\)。
-$$\frac{1}{2}+\int_0^1 x^2\,dx+d_{\text{model}}$$
-\[\begin{pmatrix}1&2\\3&4\end{pmatrix}\]
-
-${"```"}python
-def f(x):
-    return x
-${"```"}`,
-                  steps: [{ summary: "Searched the web, read a page", state: "done" }],
-                  files: [{ id: "0", name: "结果.txt" }],
-                },
-                { id: "r1", role: "assistant", text: "", pending: true },
-              ],
-              attachments: [{ name: "传错了.txt", removable: true }],
-              history: { loaded: 1, total: 2 },
-              conversations: [],
-            },
-          })}\n\n`,
-        );
-        nativeStreams.add(response);
-        response.on("close", () => nativeStreams.delete(response));
-        return;
-      }
       if (path === "uploads/prepare" && request.method === "POST") {
         const body = await bodyJson(request);
         assert.equal(body.tab, tab);
@@ -236,15 +192,6 @@ ${"```"}`,
           name: decodeURIComponent(request.headers["x-mirror-file-name"]),
           text: Buffer.concat(chunks).toString("utf8"),
         });
-        response.writeHead(204).end();
-        return;
-      }
-      if (path === "api/claude/file" && request.method === "POST") {
-        const body = await bodyJson(request);
-        assert.equal(body.controller, "fixture-controller");
-        assert.equal(body.message, 0);
-        assert.equal(body.file, "0");
-        completedFixtureDownload = true;
         response.writeHead(204).end();
         return;
       }
@@ -635,138 +582,10 @@ try {
     await firstPage
       .locator("#shell-bar [data-view-mode]")
       .evaluateAll((buttons) => buttons.map((button) => button.dataset.viewMode)),
-    ["chat", "dom", "px"],
+    ["dom", "px"],
   );
   // Switching views happens inside the unified page: no navigation, no reload.
   await firstPage.evaluate(() => (window.__samePage = true));
-  await viewButton("chat").click();
-  await firstPage.locator("#chat-view #draft").waitFor();
-  assert.equal(await viewButton("chat").getAttribute("aria-pressed"), "true");
-  assert.equal(await firstPage.evaluate(() => window.__samePage), true);
-  const chat = new URL(firstPage.url());
-  assert.equal(chat.pathname, "/");
-  assert.equal(chat.searchParams.get("mode"), "chat");
-  assert.equal(chat.searchParams.get("sid"), "client-1");
-  assert.equal(await firstPage.locator("#mirror-host").isHidden(), true);
-  await firstPage.locator("#messages .katex").first().waitFor({ state: "visible" });
-  assert.equal(await firstPage.locator("#messages .katex").count(), 4);
-  const nativeFonts = await firstPage.evaluate(() =>
-    [
-      document.querySelector("#messages .text"),
-      document.querySelector("#draft"),
-      document.querySelector("#send"),
-    ].map((element) => getComputedStyle(element).fontFamily),
-  );
-  assert.equal(new Set(nativeFonts).size, 1);
-  const presentation = await firstPage.evaluate(() => {
-    const block = document.querySelector("#messages .chat-code-block");
-    const code = block?.querySelector("code");
-    return {
-      language: block?.querySelector("figcaption span")?.textContent,
-      codeFont: code && getComputedStyle(code).fontFamily,
-      code: code?.textContent,
-      stepIcon: !!document.querySelector("#messages .message-step[data-kind='search'] svg"),
-      idleHidden: document.querySelector("#generation-status")?.hidden,
-      resize: getComputedStyle(document.querySelector("#draft")).resize,
-    };
-  });
-  assert.equal(presentation.language, "python");
-  assert.match(presentation.codeFont, /mono/i);
-  assert.equal(presentation.code, "def f(x):\n    return x\n");
-  assert.equal(presentation.stepIcon, true);
-  assert.equal(presentation.idleHidden, true);
-  assert.equal(presentation.resize, "none");
-  // Opening a collapsed row asks the remote page for its detail.
-  const stepRequest = firstPage.waitForRequest((request) =>
-    request.url().endsWith("/api/claude/step"),
-  );
-  await firstPage.locator("#messages .message-step summary").click();
-  assert.deepEqual(
-    (({ message, step }) => ({ message, step }))((await stepRequest).postDataJSON()),
-    { message: 0, step: 0 },
-  );
-  await firstPage.locator("#messages .message-step summary").click();
-  // An unread transcript row stays out of sight, with its progress shown instead.
-  assert.equal(await firstPage.locator("#messages .message:visible").count(), 1);
-  assert.match(await firstPage.locator("#history-status").textContent(), /1\/2/);
-  // A wrongly added file can be removed from the remote composer.
-  const removeRequest = firstPage.waitForRequest((request) =>
-    request.url().endsWith("/api/claude/attachment"),
-  );
-  await firstPage.locator('#attachments button[aria-label="移除附件 传错了.txt"]').click();
-  assert.deepEqual(
-    (({ attachment, name }) => ({ attachment, name }))((await removeRequest).postDataJSON()),
-    { attachment: 0, name: "传错了.txt" },
-  );
-  const draftBox = firstPage.locator("#draft");
-  const draftBefore = (await draftBox.boundingBox()).height;
-  await draftBox.fill("第一行\n第二行\n第三行\n第四行\n第五行\n第六行");
-  assert.ok((await draftBox.boundingBox()).height > draftBefore, "composer grows with its text");
-  await draftBox.fill("");
-  assert.equal((await draftBox.boundingBox()).height, draftBefore, "composer shrinks back");
-  // KaTeX's \\text{} spans also carry the class "text"; message styles must not reach them.
-  const subscript = await firstPage.evaluate(() => {
-    const math = document.querySelector("#messages .katex-display .katex");
-    const text = math.querySelector(".text");
-    return {
-      math: parseFloat(getComputedStyle(math).fontSize),
-      text: parseFloat(getComputedStyle(text).fontSize),
-    };
-  });
-  assert.ok(
-    subscript.text < subscript.math * 0.85,
-    `\\text subscript is ${subscript.text}px in ${subscript.math}px math`,
-  );
-  checks.formulasAndUnifiedFonts = true;
-  await firstPage.locator("#attach").waitFor({ state: "visible" });
-  await firstPage.waitForFunction(() => document.querySelector("#attach")?.disabled === false);
-  await firstPage.locator("#attach").click();
-  await firstPage.locator("#file-picker").waitFor({ state: "visible" });
-  await firstPage.locator("#file-picker").setInputFiles({
-    name: "文字附件.txt",
-    mimeType: "text/plain",
-    buffer: Buffer.from("文字模式中文附件"),
-  });
-  await firstPage.waitForFunction(() =>
-    document.querySelector("#upload-status")?.textContent.includes("已上传 1"),
-  );
-  assert.deepEqual(uploadedFiles.at(-1), {
-    sid: "client-1",
-    name: "文字附件.txt",
-    text: "文字模式中文附件",
-  });
-  const textDownloadButton = firstPage.getByRole("button", { name: "↓ 结果.txt" });
-  // A finished remote download starts in this browser by itself; no save click is needed.
-  const [autoSaved] = await Promise.all([
-    firstPage.waitForEvent("download", { timeout: 20000 }),
-    textDownloadButton.click(),
-  ]);
-  assert.equal(await autoSaved.failure(), null);
-  // The fixture's Content-Disposition says result.txt; browsers prefer it over the link's name.
-  assert.ok(["结果.txt", "result.txt"].includes(autoSaved.suggestedFilename()));
-  // The fallback link stays for a moment in case the browser blocked the automatic download.
-  await firstPage.locator("#downloads a").waitFor({ state: "visible" });
-  const [saved] = await Promise.all([
-    firstPage.waitForEvent("download"),
-    firstPage.locator("#downloads a").click(),
-  ]);
-  assert.equal(await saved.failure(), null);
-  await firstPage.screenshot({
-    path: resolve(artifacts, "client-ui-native-chat.png"),
-    fullPage: true,
-  });
-  await firstPage.setViewportSize({ width: 375, height: 812 });
-  await firstPage.screenshot({
-    path: resolve(artifacts, "client-ui-native-chat-mobile.png"),
-    fullPage: true,
-  });
-  assert.equal(await viewButton("chat").isVisible(), true);
-  assert.equal(
-    await firstPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
-    true,
-  );
-  await firstPage.setViewportSize({ width: 1360, height: 900 });
-  checks.nativeAttachmentUploadAndDownload = true;
   await viewButton("dom").click();
   await ready(firstPage, "client-1");
   assert.equal(await firstPage.evaluate(() => window.__samePage), true);
@@ -807,8 +626,8 @@ try {
   await viewButton("dom").click();
   await firstPage.locator('#shell-bar [data-view-mode="dom"][aria-pressed="true"]').waitFor();
   checks.domAndPixelAttachmentUploads = true;
-  checks.refreshReusesSessionAndChatScope = true;
-  checks.actualThreeModeNavigation = true;
+  checks.refreshReusesSession = true;
+  checks.actualModeNavigation = true;
 
   const thirdPage = await context.newPage();
   await thirdPage.goto(`${origin}/?new=1`);

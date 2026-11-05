@@ -1,9 +1,9 @@
 /*
- * Unified shell: one top bar for chat, page (DOM) and screen (pixel) views.
+ * Unified shell: one top bar for page (DOM) and screen (pixel) views.
  * Palette A — warm paper and terracotta — shared by every view, light and dark.
  */
 :root {
-  /* Claude's own palette, so switching between chat and the page does not change the colours. */
+  /* Claude's own palette, so the shell around the page does not clash with it. */
   --bg: #faf9f5;
   --surface: #ffffff;
   --sunken: #f5f4ed;
@@ -56,7 +56,7 @@ body {
   background: var(--bg);
 }
 
-/* Layout: a column whose middle part is either the chat view or the mirrored page. */
+/* Layout: a column whose middle part is the mirrored page. */
 #shell {
   display: flex !important;
   flex-direction: column;
@@ -73,8 +73,7 @@ body {
   /* The tabs share the top bar. */
   --tabstrip-height: 0px;
 }
-#shell > #mirror-host,
-#shell > #chat-view {
+#shell > #mirror-host {
   flex: 1 1 auto;
   min-height: 0;
 }
@@ -323,23 +322,6 @@ body {
   color: var(--warn-ink);
 }
 
-/* The chat view sits directly under the bar; it no longer needs its own page header. */
-#chat-view {
-  display: flex;
-  flex-direction: column;
-  color: var(--ink);
-  background: var(--bg);
-}
-#chat-view .chat-subbar {
-  display: none;
-}
-#chat-view .chat-subbar:has(#retry-chat:not([hidden])) {
-  display: flex;
-}
-:root[data-theme="dark"] #chat-view {
-  background: var(--bg);
-}
-
 @media (max-width: 760px) {
   #shell-bar {
     gap: 6px;
@@ -383,10 +365,6 @@ body {
   --chrome-muted: var(--muted);
   --chrome-accent: var(--accent);
 }
-#shell > #chat-view {
-  height: auto;
-}
-
 /* The browser's bars and status pill take their colours from the same tokens as everything else. */
 #shell #urlbar {
   color: var(--muted);
@@ -470,18 +448,4 @@ body {
 /* Native progress bars follow the accent instead of the platform blue. */
 #shell progress {
   accent-color: var(--accent);
-}
-
-/* Switching from chat: hide the mirror (it keeps its size) until the viewport is agreed. */
-#mirror-host[data-settling="true"] > * {
-  visibility: hidden;
-}
-#mirror-host[data-settling="true"]::before {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  color: var(--muted);
-  font-size: 14px;
-  content: "正在同步页面…";
 }

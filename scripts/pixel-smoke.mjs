@@ -147,7 +147,7 @@ const browser = await chromium.launch({
   headless: true,
 });
 const page = await browser.newPage({ viewport: { width: 1360, height: 1000 } });
-// The root page opens text chat by default; these checks exercise the DOM view.
+// These checks exercise the DOM view, whatever the page remembers.
 await page.addInitScript(() => {
   // The first about:blank document has an opaque origin and no storage.
   try {

@@ -1,4 +1,4 @@
-// Read-only production check of the unified page: opens a temporary workspace, records the chat
+// Read-only production check of the unified page: opens a temporary workspace, records the page
 // state and both views' screenshots, and never clicks inside the remote page.
 // Run with: bash scripts/limited-run.sh node scripts/shell-production-check.mjs
 import assert from "node:assert/strict";
@@ -68,19 +68,6 @@ try {
   page.on("pageerror", (error) => errors.push(String(error).slice(0, 300)));
   await page.goto(`${origin}/?sid=${sid}`);
   await page.locator("#shell-bar").waitFor({ timeout: 60000 });
-  await page.locator("#chat-view #draft").waitFor({ timeout: 60000 });
-  await page.waitForTimeout(12000);
-  report.chat = await page.evaluate(() => ({
-    view: new URL(location.href).searchParams.get("mode"),
-    status: document.querySelector("#shell-status")?.textContent,
-    notice: document.querySelector("#chat-view #notice")?.hidden
-      ? null
-      : document.querySelector("#chat-view #notice")?.textContent,
-    conversations: document.querySelectorAll("#chat-view #conversations button").length,
-    newChatEnabled: document.querySelector("#chat-view #new-chat")?.disabled === false,
-    title: document.title,
-  }));
-  await page.screenshot({ path: "artifacts/production-shell-chat.png" });
   await page.locator('#shell-bar [data-view-mode="dom"]').click();
   const switchedAt = Date.now();
   const domState = () =>
@@ -112,10 +99,9 @@ try {
   }));
   await page.screenshot({ path: "artifacts/production-shell-page.png" });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.locator('#shell-bar [data-view-mode="chat"]').click();
-  await page.locator("#chat-view #draft").waitFor();
+  await page.locator('#shell-bar [data-view-mode="dom"]').click();
   await page.waitForTimeout(6000);
-  await page.screenshot({ path: "artifacts/production-shell-chat-mobile.png" });
+  await page.screenshot({ path: "artifacts/production-shell-page-mobile.png" });
   report.pageErrors = errors;
 } catch (error) {
   report.failure = String(error.stack || error);

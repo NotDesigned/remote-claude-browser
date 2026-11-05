@@ -75,6 +75,5 @@ describe("gateway production serving", () => {
       "private, max-age=31536000, immutable",
     );
     expect(staticCacheControl("/opt/viewer/index.html")).toBe("private, no-cache");
-    expect(staticCacheControl("/opt/viewer/chat.html")).toBe("private, no-cache");
   });
 });

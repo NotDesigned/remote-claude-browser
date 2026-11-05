@@ -1,5 +1,5 @@
 /**
- * The unified page's single top bar: view switch (聊天 / 页面 / 画面), the browser's tabs when it is
+ * The unified page's single top bar: view switch (页面 / 画面), the browser's tabs when it is
  * showing, connection status and the ⋯ menu.
  */
 import type { PxQuality } from "@mirror/protocol";
@@ -31,8 +31,7 @@ export interface ShellBarProps {
 }
 
 const VIEWS: { mode: ViewMode; label: string; title: string }[] = [
-  { mode: "chat", label: "聊天", title: "文字聊天：日常使用" },
-  { mode: "dom", label: "页面", title: "页面：登录、设置等网页操作" },
+  { mode: "dom", label: "页面", title: "页面：Claude 的网页，日常使用" },
   { mode: "px", label: "画面", title: "画面：远程浏览器的实时图像，用于验证码等" },
 ];
 

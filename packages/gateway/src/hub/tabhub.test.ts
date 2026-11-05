@@ -90,52 +90,6 @@ describe("TabHub viewport across navigation", () => {
   });
 });
 
-describe("TabHub recorder pause", () => {
-  const ready = () => {
-    const hub = new TabHub({ sessionId: "session", tabId: "tab" });
-    hub.ingest(hello(1));
-    hub.ingest(rrweb(1, meta(1)));
-    hub.ingest(rrweb(1, full(1)));
-    return hub;
-  };
-
-  it("offers no stale snapshot while paused and labels the recorder's restart snapshot", () => {
-    const hub = ready();
-    const requested = vi.fn();
-    hub.onNeedSnapshot(requested);
-    requested.mockClear();
-    hub.pauseRecorder();
-    expect(hub.joinPayload().map((message) => message.t)).toEqual(["resync"]);
-    expect(hub.hasGeometry(1280, 720)).toBe(false);
-    expect(hub.expectRecorderSnapshot("viewport")).toBe(true);
-    expect(hub.recorderAwaitsRestart).toBe(true);
-    hub.resumeRecorder();
-    expect(hub.recorderAwaitsRestart).toBe(false);
-    hub.ingest(rrweb(1, meta(2)));
-    expect(snapshotMessage(hub.ingest(rrweb(1, full(2)))).reason).toBe("viewport");
-    expect(requested).not.toHaveBeenCalled();
-    expect(hub.joinPayload().map((message) => message.t)).toEqual(["resync", "snapshot"]);
-    expect(hub.hasGeometry(1280, 720)).toBe(true);
-    expect(hub.hasGeometry(1000, 720)).toBe(false);
-    expect(hub.expectRecorderSnapshot("viewport")).toBe(false);
-  });
-
-  it("requests a snapshot when the resumed recorder sends none", () => {
-    vi.useFakeTimers();
-    try {
-      const hub = ready();
-      const requested = vi.fn();
-      hub.onNeedSnapshot(requested);
-      hub.pauseRecorder();
-      hub.resumeRecorder();
-      vi.advanceTimersByTime(1_500);
-      expect(requested).toHaveBeenCalledWith("resync");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-});
-
 describe("TabHub", () => {
   afterEach(() => vi.useRealTimers());
 

@@ -640,30 +640,6 @@ describe("replacing a workspace viewer", () => {
     }
   });
 
-  it("lets chat on the same page take over without retiring that page's WebSocket key", async () => {
-    const test = await replacementHarness();
-    try {
-      const page = await test.connect("a", "unified-page");
-      // Chat on the same page takes control: its socket closes but the key stays usable.
-      test.wsServer.replaceSession("a", undefined, "unified-page");
-      expect(await page.closed).toEqual({ code: 4009, reason: "replaced" });
-      const back = await test.connect("a", "unified-page");
-      await vi.waitFor(() =>
-        expect(back.messages.find((message) => message.t === "hello")).toMatchObject({
-          role: "driver",
-        }),
-      );
-      // Chat from another page still retires this page's key for good.
-      test.wsServer.replaceSession("a", undefined, "another-page");
-      expect(await back.closed).toEqual({ code: 4009, reason: "replaced" });
-      const retired = await test.connect("a", "unified-page");
-      expect(await retired.closed).toEqual({ code: 4009, reason: "replaced" });
-      expect(retired.messages).toEqual([]);
-    } finally {
-      await test.close();
-    }
-  });
-
   it("rejects the retired page's network reconnect while allowing the same active page to reconnect", async () => {
     const test = await replacementHarness();
     try {
@@ -757,49 +733,6 @@ describe("replacing a workspace viewer", () => {
       expect(b.socket.readyState).toBe(WebSocket.OPEN);
       expect(test.wsServer.fanout.viewerCount).toBe(1);
     } finally {
-      await test.close();
-    }
-  });
-
-  it("hands a SID to chat without allowing old sockets or pending upgrades to retake it", async () => {
-    let finishSlow!: (allowed: boolean) => void;
-    const slow = new Promise<boolean>((resolve) => {
-      finishSlow = resolve;
-    });
-    const started = vi.fn();
-    const test = await replacementHarness((request) => {
-      if (request.headers["x-slow"] === "1") {
-        started();
-        return slow;
-      }
-      return true;
-    });
-    try {
-      const current = await test.connect("a", "old-page"),
-        other = await test.connect("b", "other-page");
-      const pending = test.connect("a", "old-pending", { "x-slow": "1" });
-      void pending.catch(() => {});
-      await vi.waitFor(() => expect(started).toHaveBeenCalledOnce());
-      test.wsServer.replaceSession("a");
-      expect(await current.closed).toEqual({ code: 4009, reason: "replaced" });
-      finishSlow(true);
-      const oldPending = await pending;
-      expect(await oldPending.closed).toEqual({ code: 4009, reason: "replaced" });
-      for (const key of ["old-page", "old-pending"]) {
-        const retry = await test.connect("a", key);
-        expect(await retry.closed).toEqual({ code: 4009, reason: "replaced" });
-        expect(retry.messages).toEqual([]);
-      }
-      expect(test.peers).toHaveLength(2);
-      expect(other.socket.readyState).toBe(WebSocket.OPEN);
-      const newPage = await test.connect("a", "intentional-new-page");
-      await vi.waitFor(() =>
-        expect(newPage.messages.find((message) => message.t === "hello")).toMatchObject({
-          role: "driver",
-        }),
-      );
-    } finally {
-      finishSlow(false);
       await test.close();
     }
   });

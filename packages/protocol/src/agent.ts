@@ -51,7 +51,6 @@ export type AgentMsg =
  */
 export type AgentCmd =
   | { cmd: "snapshot"; reqId: number } // record.takeFullSnapshot(true)
-  | { cmd: "recording"; reqId: number; enabled: boolean }
   | { cmd: "resolve"; reqId: number; nodeId: number } // -> ResolveResult, one OOPIF level
   | { cmd: "rect"; reqId: number; nodeId: number } // -> RectResult, or ok:false if node gone
   | { cmd: "scroll"; reqId: number; nodeId: number; x: number; y: number } // nodeId 0 = window

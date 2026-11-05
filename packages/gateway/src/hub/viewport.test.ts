@@ -336,53 +336,6 @@ describe("ViewportAgreement", () => {
       agreement.dispose();
     });
 
-    it("waits for the restarting recorder's snapshot instead of requesting another", async () => {
-      const requestSnapshot = vi.fn();
-      const { send, confirmViewport, agreement } = setup({
-        viewport: { w: 1360, h: 900, dpr: 1 },
-        requestSnapshot,
-        hasGeometry: () => false,
-        expectRecorderSnapshot: () => true,
-      });
-      agreement.handle("viewer", view);
-      expect(confirmViewport).not.toHaveBeenCalled();
-      expect(agreement.gate.allowsInput("viewer", "tab")).toBe(false);
-      await new Promise((resolve) => setTimeout(resolve, 350));
-      expect(send).not.toHaveBeenCalled();
-      expect(requestSnapshot).not.toHaveBeenCalled();
-      agreement.noteSnapshot({ tab: "tab", epoch: 8, reason: "viewport" });
-      expect(agreement.handle("viewer", { t: "view-ack", tab: "tab", epoch: 8 })).toBe(true);
-      expect(agreement.gate.allowsInput("viewer", "tab")).toBe(true);
-      agreement.dispose();
-    });
-
-    it("restarts a stopped recorder after a changed viewport is applied", async () => {
-      const requestSnapshot = vi.fn();
-      const expectRecorderSnapshot = vi.fn(() => true);
-      const restartRecorder = vi.fn();
-      const send = vi.fn(async () => ({}));
-      const agreement = createViewportAgreement({
-        send,
-        sessionFor: () => "session",
-        hubFor: () => ({
-          viewport: null,
-          requestSnapshot,
-          expectRecorderSnapshot,
-          recorderAwaitsRestart: true,
-        }),
-        isDriver: () => true,
-        restartRecorder,
-      });
-      agreement.handle("viewer", { t: "view", tab: "tab", w: 390, h: 780, dpr: 2 });
-      expect(restartRecorder).not.toHaveBeenCalled();
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(send).toHaveBeenCalledOnce();
-      expect(expectRecorderSnapshot).toHaveBeenCalledWith("viewport");
-      expect(restartRecorder).toHaveBeenCalledOnce();
-      expect(requestSnapshot).not.toHaveBeenCalled();
-      agreement.dispose();
-    });
-
     it("negotiates as usual when the geometry changed", async () => {
       const requestSnapshot = vi.fn();
       const { send, confirmViewport, agreement } = setup({

@@ -236,9 +236,8 @@ export interface WsServer {
   closeSession(sessionId: string): void;
   /** Revoke input/fanout and notify disconnection synchronously before closing the transport. */
   closeViewer(viewer: ViewerConn, code?: number, reason?: string): boolean;
-  /** Keep this viewer, or revoke all for a chat handoff. Other SIDs are never affected. */
-  /** `spareKey`: the taking-over page's own key, closed but kept usable for its return. */
-  replaceSession(sessionId: string, keepViewer?: ViewerConn, spareKey?: string): void;
+  /** Keep this viewer and revoke the others of its session. Other SIDs are never affected. */
+  replaceSession(sessionId: string, keepViewer: ViewerConn): void;
   close(): Promise<void>;
 }
 
@@ -308,24 +307,17 @@ export function createWsServer(opts: WsServerOpts): WsServer {
     socket.once("close", () => clearTimeout(deadline));
     return true;
   };
-  const replaceSession = (sid: string, keepViewer?: ViewerConn, spareKey?: string) => {
+  const replaceSession = (sid: string, keepViewer: ViewerConn) => {
     assertSessionId(sid);
-    if (keepViewer && (viewerSessions.get(keepViewer) !== sid || !viewerSockets.has(keepViewer)))
+    if (viewerSessions.get(keepViewer) !== sid || !viewerSockets.has(keepViewer))
       throw new Error("replacement viewer does not belong to this session");
-    if (!keepViewer) {
-      // Chat can take control while an older WS is still awaiting async authorization.
-      latestUpgrade.set(sid, ++nextUpgrade);
-      if (activeKeys.get(sid) !== spareKey) retireKey(sid, activeKeys.get(sid));
-      activeKeys.delete(sid);
-    }
     for (const [viewer] of [...viewerSockets]) {
       if (viewer === keepViewer || viewerSessions.get(viewer) !== sid) continue;
       closeViewer(
         viewer,
         VIEWER_REPLACED_CODE,
         "replaced",
-        (!keepViewer || viewerKeys.get(viewer) !== viewerKeys.get(keepViewer)) &&
-          (spareKey === undefined || viewerKeys.get(viewer) !== spareKey),
+        viewerKeys.get(viewer) !== viewerKeys.get(keepViewer),
       );
     }
   };
@@ -541,7 +533,7 @@ function knownSheetsFor(request: IncomingMessage): string[] | undefined {
     .slice(0, MAX_KNOWN_SHEETS);
 }
 
-export function connectionKeyFor(request: IncomingMessage): string | undefined {
+function connectionKeyFor(request: IncomingMessage): string | undefined {
   const key = new URL(request.url ?? "/", "http://gateway.invalid").searchParams.get(
     "connectionKey",
   );

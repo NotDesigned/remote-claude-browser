@@ -23,17 +23,7 @@ import { HudLayer, type FrameRates } from "./hud";
 import { videoOption } from "./px-video";
 import { pollServerStatus, receiveServerStatus, type ReceivedServerStatus } from "./server-status";
 import { ShellBar, resourceWarning, type ThemePreference } from "./shell-bar";
-import { ChatHost } from "./chat-host";
 import { createVoiceLink, type VoiceLink } from "./media/voice";
-import {
-  applyPageFonts,
-  loadPageLook,
-  readPageLook,
-  readPageView,
-  savePageLook,
-  type PageLook,
-  type PageView,
-} from "./page-look";
 import { createServerClock, DEFAULT_LIVE_BUFFER_MS } from "./clock";
 import { createResyncController, type ResyncTabState, RESYNC_WINDOW_MS } from "./resync";
 import { connectGateway, type GatewayConnectionState, type GatewaySocket } from "./ws";
@@ -60,7 +50,6 @@ import "./shell.css";
 import { DOWNLOAD_NOTICE_MS, startClientDownload } from "./auto-download";
 
 /** A viewer that never gets input (for example a follower) must still see the page. */
-const MIRROR_SETTLE_TIMEOUT_MS = 5_000;
 const SESSION_CHECK_INTERVAL_MS = 5_000;
 
 function configuredResyncWindowMs(): number {
@@ -111,8 +100,6 @@ function viewStorage(): Pick<Storage, "getItem" | "setItem"> {
 }
 
 const PICTURE_HOLD_TIMEOUT_MS = 8_000;
-const CHAT_TAB = "chat";
-const PAGE_LOOK_DELAY_MS = 3_000;
 const THEME_CHECK_MS = 3_000;
 
 export function App() {
@@ -151,12 +138,6 @@ export function App() {
     {},
   );
   const [activeTab, setActiveTab] = useState<TabId | null>(null);
-  const [pageLook, setPageLook] = useState<PageLook | null>(() => {
-    const look = loadPageLook(viewStorage());
-    if (look !== null) applyPageFonts(document, look.fonts);
-    return look;
-  });
-  const pageViewRef = useRef<PageView | null>(null);
   const voiceRef = useRef<VoiceLink | null>(null);
   useEffect(() => {
     const voice = createVoiceLink();
@@ -189,14 +170,10 @@ export function App() {
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     if (fixturePath !== null) return "dom";
     const requested = new URLSearchParams(window.location.search).get("mode");
-    return requested === "chat" || requested === "dom" || requested === "px"
-      ? requested
-      : preferredViewMode(viewStorage());
+    return requested === "dom" || requested === "px" ? requested : preferredViewMode(viewStorage());
   });
-  // A browser view opened from chat (or the entry URL) applies its pixel/DOM mode once tabs exist.
-  const pendingModeRef = useRef<"dom" | "px" | null>(viewMode === "chat" ? null : viewMode);
-  // A claude.ai link clicked in chat: opened in the remote browser once the page view connects.
-  const pendingUrlRef = useRef<string | null>(null);
+  // The view the entry URL or memory asks for applies once tabs exist.
+  const pendingModeRef = useRef<"dom" | "px" | null>(viewMode);
   const pageKey = useRef(globalThis.crypto.randomUUID()).current;
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => {
     const stored = viewStorage().getItem("mirror.theme");
@@ -208,10 +185,6 @@ export function App() {
   const theme: "light" | "dark" =
     themePreference === "auto" ? (systemDark ? "dark" : "light") : themePreference;
   const [pxQuality, setPxQuality] = useState(() => preferredPxQuality(viewStorage()));
-  // Coming from chat, the remote page may still have chat's geometry. Keep the mirror covered until
-  // this window's viewport is agreed, so the old layout never flashes before the real one.
-  const [settling, setSettling] = useState(false);
-  const [chatLocation, setChatLocation] = useState({ url: "", title: "" });
   // The page changes shape while the picture starts, which the mirror should not show.
   const pictureHoldRef = useRef<{
     tab: TabId;
@@ -233,29 +206,14 @@ export function App() {
       timer: setTimeout(() => releasePictureHold(true), PICTURE_HOLD_TIMEOUT_MS),
     };
   };
-  const [chatStatus, setChatStatus] = useState<{ text: string; connected: boolean }>({
-    text: "连接中",
-    connected: false,
-  });
   const [chromeByTab, setChromeByTab] = useState<
     Record<TabId, Extract<Down, { t: "chrome" }> | undefined>
   >({});
   const activeTitle = tabs.find((tab) => tab.id === activeTab)?.title.trim() ?? "";
 
   useEffect(() => {
-    // The chat view titles the page after the current conversation itself.
-    if (viewMode !== "chat") document.title = activeTitle || "远程 Claude";
-  }, [activeTitle, viewMode]);
-
-  useEffect(() => {
-    if (!settling) return;
-    if (inputReady) {
-      setSettling(false);
-      return;
-    }
-    const timer = setTimeout(() => setSettling(false), MIRROR_SETTLE_TIMEOUT_MS);
-    return () => clearTimeout(timer);
-  }, [settling, inputReady]);
+    document.title = activeTitle || "远程 Claude";
+  }, [activeTitle]);
 
   useEffect(() => {
     const query = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -381,9 +339,7 @@ export function App() {
   // An open page outlives its session when the service restarts. While it cannot reconnect, check
   // whether the session still exists, and start over with a live one if it does not.
   const sessionUnreachable =
-    clientPhase === "ready" &&
-    clientSession !== null &&
-    (viewMode === "chat" ? chatStatus?.connected === false : connection === "closed");
+    clientPhase === "ready" && clientSession !== null && connection === "closed";
   useEffect(() => {
     if (!sessionUnreachable || clientSession === null) return;
     const sid = clientSession.sid;
@@ -412,7 +368,7 @@ export function App() {
     setStatusReachable(false);
     if (
       fixturePath !== null ||
-      (clientPhase === "ready" && viewMode !== "chat") ||
+      clientPhase === "ready" ||
       statusAuthRejected ||
       clientError?.status === 401 ||
       clientError?.status === 403
@@ -427,11 +383,11 @@ export function App() {
       onReachable: setStatusReachable,
       onAuthFailure: () => setStatusAuthRejected(true),
     });
-  }, [clientPhase, clientError?.status, fixturePath, statusAuthRejected, viewMode === "chat"]);
+  }, [clientPhase, clientError?.status, fixturePath, statusAuthRejected]);
 
   useEffect(() => {
     const host = hostRef.current;
-    if (host === null || clientPhase !== "ready" || viewMode === "chat") return;
+    if (host === null || clientPhase !== "ready") return;
     let disposed = false;
     const controller = new AbortController();
     let socket: GatewaySocket | null = null;
@@ -669,8 +625,8 @@ export function App() {
       inputsReady = false;
       host.inert = true;
       for (const timer of downloadTimers) clearTimeout(timer);
-      // Leaving the browser view (e.g. for chat) must not leave a stale "ready" behind: the next
-      // connection unlocks input only after its own hello and viewport agreement.
+      // A stale "ready" must not stay behind: the next connection unlocks input only after its own
+      // hello and viewport agreement.
       if (mountedRef.current) setInputReady(false);
       socket?.close();
       resizeObserver.disconnect();
@@ -855,8 +811,7 @@ export function App() {
         if (message.t === "mode") {
           setModeByTab((current) => ({ ...current, [message.tab]: message.mode }));
           knownModes.set(message.tab, message.mode);
-          if (message.tab === currentTab)
-            setViewMode((view) => (view === "chat" ? view : message.mode));
+          if (message.tab === currentTab) setViewMode(message.mode);
           if (message.mode === "dom" && message.tab === currentTab) scheduleViewport(0);
         }
         if (message.t === "tabs") {
@@ -870,7 +825,7 @@ export function App() {
             // about the new one, so the view must follow what this tab is really showing.
             if (tabChanged) {
               const shown = knownModes.get(active.id) ?? entryMode ?? "dom";
-              setViewMode((view) => (view === "chat" ? view : shown));
+              setViewMode(shown);
             }
             pxView?.selectTab(active.id);
             if (mirror.getActiveTab() !== null && mirror.getActiveTab() !== active.id) {
@@ -893,10 +848,6 @@ export function App() {
                     }
                   : { t: "mode", tab, mode: "dom" },
               );
-              if (pendingUrlRef.current !== null) {
-                socket?.send({ t: "nav", tab, action: "go", url: pendingUrlRef.current });
-                pendingUrlRef.current = null;
-              }
             }
           }
         }
@@ -966,7 +917,7 @@ export function App() {
     voiceRef.current?.setSender((message) => socket?.send(message));
 
     return cleanup;
-  }, [clientPhase, clientSession?.sid, fixturePath, viewMode === "chat"]);
+  }, [clientPhase, clientSession?.sid, fixturePath]);
 
   const closeClientSession = async () => {
     if (clientSession === null || endControllerRef.current !== null) return;
@@ -1019,58 +970,23 @@ export function App() {
                 ? "连接中"
                 : "重新连接中";
 
-  const browserView = viewMode !== "chat";
   const activeChrome = activeTab === null ? null : (chromeByTab[activeTab] ?? null);
   const shellStatus: { text: string; tone: "ok" | "busy" | "bad" } =
     clientPhase !== "ready"
       ? { text: connectionLabel, tone: clientPhase === "starting" ? "busy" : "bad" }
-      : !browserView
-        ? { text: chatStatus.text, tone: chatStatus.connected ? "ok" : "busy" }
-        : connection !== "open"
-          ? { text: connectionLabel, tone: "busy" }
-          : activeTab !== null && inputFailures[activeTab]
-            ? { text: "输入未同步", tone: "bad" }
-            : inputReady
-              ? { text: "已连接", tone: "ok" }
-              : { text: "同步中", tone: "busy" };
+      : connection !== "open"
+        ? { text: connectionLabel, tone: "busy" }
+        : activeTab !== null && inputFailures[activeTab]
+          ? { text: "输入未同步", tone: "bad" }
+          : inputReady
+            ? { text: "已连接", tone: "ok" }
+            : { text: "同步中", tone: "busy" };
   const warning = resourceWarning(serverStatus);
-  const chatFavicon = tabs.find((tab) => tab.id === activeTab)?.favicon;
-  const mirrorDocument = (): Document | null =>
-    hostRef.current?.querySelector("iframe")?.contentDocument ?? null;
-  const refreshPageLook = () => {
-    const page = mirrorDocument();
-    const look =
-      page === null
-        ? null
-        : readPageLook(page, document.documentElement.dataset.theme ?? "", pageLook);
-    if (look === null) return;
-    savePageLook(viewStorage(), look);
-    applyPageFonts(document, look.fonts);
-    setPageLook(look);
-  };
-  // Read once the page is up, so the fonts are loaded before anyone switches to chat.
-  useEffect(() => {
-    if (viewMode !== "dom" || !inputReady) return;
-    const timer = setTimeout(refreshPageLook, PAGE_LOOK_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [viewMode, inputReady]);
   const changeView = (mode: ViewMode, remember = true) => {
     if (remember) rememberViewMode(viewStorage(), mode);
     if (mode === viewMode) return;
-    if (mode === "chat") {
-      refreshPageLook();
-      const page = mirrorDocument();
-      const url = activeChrome?.url ?? tabs.find((tab) => tab.id === activeTab)?.url;
-      pageViewRef.current =
-        viewMode === "dom" && page !== null && url
-          ? readPageView(page, new URL(url).pathname, document.documentElement.dataset.theme ?? "")
-          : null;
-      setViewMode("chat");
-      return;
-    }
-    if (viewMode === "chat" || activeTab === null) {
+    if (activeTab === null) {
       pendingModeRef.current = mode;
-      setSettling(viewMode === "chat");
       setViewMode(mode);
       return;
     }
@@ -1084,9 +1000,9 @@ export function App() {
   };
 
   return (
-    <div id="shell" data-theme={theme} data-view={browserView ? "browser" : "chat"}>
+    <div id="shell" data-theme={theme}>
       <ShellBar
-        viewMode={browserView ? (activeTab !== null && modeByTab[activeTab]) || viewMode : "chat"}
+        viewMode={(activeTab !== null && modeByTab[activeTab]) || viewMode}
         onViewMode={changeView}
         pixelAvailable={pixelAvailable}
         status={shellStatus}
@@ -1107,76 +1023,41 @@ export function App() {
             });
         }}
         serverStatus={serverStatus}
-        rttMs={browserView ? rttMs : null}
-        speedBps={browserView ? speedBps : null}
-        frameRate={browserView && pixelMode ? (frameRates?.display ?? null) : null}
+        rttMs={rttMs}
+        speedBps={speedBps}
+        frameRate={pixelMode ? (frameRates?.display ?? null) : null}
       >
-        {browserView ? (
-          <TabStrip
-            tabs={tabs}
-            chromeByTab={chromeByTab}
-            onActivate={(tab) => {
-              pxViewRef.current?.selectTab(tab);
-              if (modeByTab[tab] !== "px") mirrorRef.current?.selectTab(tab);
-              setActiveTab(tab);
-            }}
-            send={(message) => socketRef.current?.send(message)}
-          />
-        ) : (
-          <TabStrip
-            readOnly
-            tabs={[
-              {
-                id: CHAT_TAB,
-                title: chatLocation.title || "Claude",
-                url: chatLocation.url,
-                active: true,
-                // The page view's icon, while the tab still shows the same site.
-                ...(chatFavicon === undefined ? {} : { favicon: chatFavicon }),
-              },
-            ]}
-            send={() => {}}
-          />
-        )}
-      </ShellBar>
-      {browserView ? (
-        <UrlBar
-          tab={activeTab}
-          chrome={activeChrome}
-          fallbackUrl={tabs.find((tab) => tab.id === activeTab)?.url ?? ""}
+        <TabStrip
+          tabs={tabs}
+          chromeByTab={chromeByTab}
+          onActivate={(tab) => {
+            pxViewRef.current?.selectTab(tab);
+            if (modeByTab[tab] !== "px") mirrorRef.current?.selectTab(tab);
+            setActiveTab(tab);
+          }}
           send={(message) => socketRef.current?.send(message)}
         />
-      ) : (
-        <UrlBar
-          tab={CHAT_TAB}
-          chrome={null}
-          fallbackUrl={chatLocation.url}
-          send={(message) => {
-            // The address leads to the remote browser; chat only ever shows a conversation.
-            if (message.action === "reload") window.location.reload();
-            if (message.action !== "go") return;
-            pendingUrlRef.current = message.url ?? null;
-            changeView("dom", false);
-          }}
-        />
-      )}
+      </ShellBar>
+      <UrlBar
+        tab={activeTab}
+        chrome={activeChrome}
+        fallbackUrl={tabs.find((tab) => tab.id === activeTab)?.url ?? ""}
+        send={(message) => socketRef.current?.send(message)}
+      />
       <div id="shell-banners">
         {warning && (
           <p class="shell-banner" data-tone="warn" role="status">
             {warning}
           </p>
         )}
-        {browserView &&
-          activeTab !== null &&
-          pageStates[activeTab] &&
-          pageStates[activeTab] !== "ready" && (
-            <p id="page-recovery-state" class="shell-banner" data-tone="warn" role="alert">
-              {pageStates[activeTab] === "recovering"
-                ? "远程网页已崩溃，正在恢复…"
-                : "远程网页恢复失败，请刷新页面"}
-            </p>
-          )}
-        {browserView && clipboardError && (
+        {activeTab !== null && pageStates[activeTab] && pageStates[activeTab] !== "ready" && (
+          <p id="page-recovery-state" class="shell-banner" data-tone="warn" role="alert">
+            {pageStates[activeTab] === "recovering"
+              ? "远程网页已崩溃，正在恢复…"
+              : "远程网页恢复失败，请刷新页面"}
+          </p>
+        )}
+        {clipboardError && (
           <p class="shell-banner clipboard-error" data-tone="warn" role="status">
             {clipboardError}
           </p>
@@ -1190,29 +1071,7 @@ export function App() {
           />
         )}
       </div>
-      {!browserView && clientPhase === "ready" && clientSession !== null && (
-        <ChatHost
-          sid={clientSession.sid}
-          tab={activeTab}
-          connectionKey={pageKey}
-          onStatus={setChatStatus}
-          onLocation={setChatLocation}
-          pageLook={pageLook}
-          pageView={pageViewRef.current}
-          onOpenRemote={(url) => {
-            // A visit from chat, so the remembered everyday view stays as it is.
-            pendingUrlRef.current = url ?? null;
-            changeView("dom", false);
-          }}
-        />
-      )}
-      <main
-        id="mirror-host"
-        hidden={!browserView}
-        data-input-ready={inputReady ? "true" : "false"}
-        data-settling={settling ? "true" : undefined}
-        ref={hostRef}
-      />
+      <main id="mirror-host" data-input-ready={inputReady ? "true" : "false"} ref={hostRef} />
       {clientPhase !== "ready" && (
         <section
           id="client-session-overlay"
@@ -1303,7 +1162,7 @@ export function App() {
           </div>
         </section>
       )}
-      {clientPhase === "ready" && browserView && (
+      {clientPhase === "ready" && (
         <HudLayer
           connection={connection}
           rttMs={rttMs}
@@ -1317,7 +1176,7 @@ export function App() {
           frames={frameRates}
         />
       )}
-      <aside id="transfer-panels" aria-label="文件与剪贴板" hidden={!browserView}>
+      <aside id="transfer-panels" aria-label="文件与剪贴板">
         {uploadState !== null && (
           <section id="upload-panel" role="status">
             <span>{uploadState.name}</span>

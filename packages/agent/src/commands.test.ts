@@ -86,37 +86,6 @@ describe("resolve command", () => {
 });
 
 describe("snapshot command readiness", () => {
-  it("controls recording and waits for readiness again after a pause", async () => {
-    const messages: AgentMsg[] = [];
-    const readiness = createRecordReadiness();
-    const setRecording = vi.fn((enabled: boolean) => {
-      if (!enabled) readiness.markStopped();
-    });
-    const takeFullSnapshot = vi.fn();
-    const handler = createCommandHandler(
-      { emit: (message) => messages.push(message) },
-      {
-        getNodeMirror: () => ({ getIds: () => [], getNode: () => null }),
-        recordReadiness: readiness,
-        setRecording,
-        takeFullSnapshot,
-      },
-    );
-    readiness.markStarted();
-    handler({ cmd: "recording", reqId: 20, enabled: false });
-    handler({ cmd: "snapshot", reqId: 21 });
-    expect(takeFullSnapshot).not.toHaveBeenCalled();
-    handler({ cmd: "recording", reqId: 22, enabled: true });
-    readiness.markStarted();
-    await Promise.resolve();
-    expect(setRecording.mock.calls).toEqual([[false], [true]]);
-    expect(takeFullSnapshot).toHaveBeenCalledOnce();
-    expect(messages).toEqual([
-      { kind: "cmdres", reqId: 20, ok: true },
-      { kind: "cmdres", reqId: 22, ok: true },
-      { kind: "cmdres", reqId: 21, ok: true },
-    ]);
-  });
   it("waits for recording to start and then takes the snapshot", async () => {
     const messages: AgentMsg[] = [];
     const readiness = createRecordReadiness();

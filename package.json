@@ -32,7 +32,6 @@
     "typecheck": "bash scripts/limited-run.sh pnpm -r --workspace-concurrency=1 --if-present run typecheck",
     "test": "bash scripts/limited-run.sh pnpm -r --workspace-concurrency=1 --if-present run test",
     "test:remote": "bash scripts/limited-run.sh node scripts/remote-smoke.mjs",
-    "test:semantic": "bash scripts/limited-run.sh pnpm exec tsx scripts/semantic-smoke.mts",
     "format": "bash scripts/limited-run.sh bash -c 'prettier --write .'",
     "format:check": "bash scripts/limited-run.sh bash -c 'prettier --check .'",
     "audit:prod": "bash scripts/limited-run.sh bash -c 'pnpm audit --prod --audit-level high'",

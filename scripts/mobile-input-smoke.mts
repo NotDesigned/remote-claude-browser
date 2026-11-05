@@ -218,7 +218,7 @@ try {
     hasTouch: true,
     deviceScaleFactor: 2,
   });
-  // The root page opens text chat by default; these checks exercise the DOM view.
+  // These checks exercise the DOM view, whatever the page remembers.
   await context.addInitScript(() => {
     // The first about:blank document has an opaque origin and no storage.
     try {

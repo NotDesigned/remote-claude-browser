@@ -177,17 +177,6 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
     onError: (error) => console.warn("mirror EME detection unavailable", error),
   });
   const recordCanvas = config.canvas.enabled && canStartCanvasSnapshotWorker();
-  let stopRecording: (() => void) | undefined;
-  const setRecording = (enabled: boolean) => {
-    if (enabled) {
-      if (!stopRecording) startRecording();
-    } else if (stopRecording) {
-      stopRecording();
-      stopRecording = undefined;
-      recordReadiness.markStopped();
-      crossOriginIframeMirror = null;
-    }
-  };
 
   installStitchReadyListener(window);
   if (isCrossOriginChild()) {
@@ -203,7 +192,6 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   const commandHandler = createCommandHandler(emitter, {
     getCrossOriginIframeMirror: () => crossOriginIframeMirror,
     recordReadiness,
-    setRecording,
   });
   const mirrorNode = (nodeId: number): Node | null => record.mirror.getNode(nodeId);
   if (legacyBridge) {
@@ -223,7 +211,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   emitter.emit({ kind: "hello", docId, url: location.href, isTop, ts: Date.now() });
 
   function startRecording() {
-    stopRecording = record({
+    record({
       ...MIRROR_RECORD_CLASSES,
       recordCrossOriginIframes: true,
       recordCanvas,

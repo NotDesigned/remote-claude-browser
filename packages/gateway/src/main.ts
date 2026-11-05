@@ -36,7 +36,6 @@ import { createTabLifecycle, type TabLifecycle } from "./session/tabs";
 import type { TargetRef } from "./types";
 import { createRoleManager } from "./ws/roles";
 import { createWsServer } from "./ws/server";
-import { registerClaudeChat } from "./claude/routes";
 import type { ViewerConn } from "./ws/viewerconn";
 import { startClientGateway } from "./clients-main";
 import { assertProductionSafe } from "./production-guard";
@@ -181,7 +180,6 @@ async function main(): Promise<void> {
   let screencast: ScreencastController | undefined;
   let rtc: RtcSignalRelay | undefined;
   let tabs: TabLifecycle | undefined;
-  let chat: Awaited<ReturnType<typeof registerClaudeChat>> | undefined;
   let recovery: ReturnType<typeof createRendererRecovery> | undefined;
   const chaosRandom = seededRandom(process.env.P2_DIFF_CHAOS_SEED);
 
@@ -213,7 +211,6 @@ async function main(): Promise<void> {
     server: app.server,
     hubs: () => tabs?.hubs() ?? [],
     authorizeUpgrade: (request) =>
-      !chat?.hasController() &&
       (!process.env.MIRROR_PUBLIC_ORIGIN ||
         request.headers.origin === process.env.MIRROR_PUBLIC_ORIGIN) &&
       (e2eMode || (accessGate.authorizeUpgrade(request) && sessionGuard.authorizeUpgrade(request))),
@@ -425,19 +422,6 @@ async function main(): Promise<void> {
     return reply.code(ok ? 200 : 503).send({ ok, browser: alive, pages });
   });
 
-  if (process.env.CLAUDE_CHAT_ENABLED === "1") {
-    chat = await registerClaudeChat(app, {
-      browser,
-      profileDir: userDataDir,
-      preHandler: sessionGuard.preHandler,
-      isOwner: (request) => sessionGuard.session(request)?.role === "driver",
-      mirrorHasController: () => [...connectedViewerIds].some((id) => roles.isDriver(id)),
-      targets: () => [...targets.values()],
-      metadata: (tab) => targetInfo.get(tab),
-      documentId: (tab) => tabs?.hubFor(tab)?.docId ?? 0,
-    });
-  }
-
   // The live smoke harness needs a pipe-safe way to drive the authoritative Chromium. These
   // routes do not exist in normal development or production and add no page-content policy.
   if (e2eMode) {
@@ -513,7 +497,6 @@ async function main(): Promise<void> {
     stopping = true;
     clearInterval(healthTimer);
     recovery?.dispose();
-    chat?.close();
     if (signal !== undefined) console.log(`gateway stopping on ${signal}`);
     uploads.close();
     downloads.close();

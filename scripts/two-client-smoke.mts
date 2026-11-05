@@ -17,7 +17,6 @@ function pixelDown(raw: Buffer): Down {
   if (frame === null) throw new Error("unknown binary frame");
   return { t: "px", tab: frame.tab, w: frame.w, h: frame.h, data: "" };
 }
-import { CHAT_EXPRESSION, fileDownloadExpression } from "../packages/gateway/src/claude/extract";
 
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Run through scripts/limited-run.sh");
 const require = createRequire(new URL("../packages/gateway/package.json", import.meta.url));
@@ -363,7 +362,6 @@ try {
       CHROME_USER_DATA_DIR: profile,
       VIEWER_DIST_ROOT: resolve("packages/viewer/dist"),
       MIRROR_ACCESS_PASSWORD: "two-client-fixture-only",
-      CLAUDE_CHAT_ENABLED: "1",
     },
   });
   for (const stream of [gateway.stdout, gateway.stderr])
@@ -841,52 +839,21 @@ try {
   checks.popupAndNewTabOwnership = true;
 
   if (process.env.TWO_CLIENT_SKIP_DOWNLOAD !== "1") {
-    const extracted = await evaluate<{ messages: { files: { id: string; name: string }[] }[] }>(
-      "a",
-      first.sid,
-      aTab,
-      CHAT_EXPRESSION,
-    );
-    assert.deepEqual(extracted.messages[0].files, [
-      { id: "0", name: "Download fixture" },
-      { id: "1", name: "fixture-card.csv" },
-    ]);
     assert.equal(
-      (extracted.messages[0] as unknown as { text: string }).text,
-      "受控回复Download fixture",
-    );
-    assert.equal(
-      await evaluate("a", first.sid, aTab, fileDownloadExpression(0, 1, "fixture-card.csv")),
+      await evaluate(
+        "a",
+        first.sid,
+        aTab,
+        `(() => {
+          const button = [...document.querySelectorAll('[data-testid="file-card-block"] button[aria-label]')]
+            .find((candidate) => candidate.getAttribute('aria-label').includes('fixture-card.csv'));
+          if (!button) return false;
+          button.click();
+          return true;
+        })()`,
+      ),
       true,
     );
-    checks.realNativeFileExtraction = true;
-    await evaluate(
-      "a",
-      first.sid,
-      aTab,
-      String.raw`(() => {
-      const message = document.createElement('div');
-      message.id = 'formula-extraction-fixture';
-      message.dataset.testid = 'assistant-message';
-      message.innerHTML = '<p>公式 <span class="katex"><annotation encoding="application/x-tex">E=mc^2\n</annotation><span aria-hidden="true">visual duplicate</span></span></p><span class="katex-display"><span class="katex"><annotation encoding="application/x-tex">\n\\frac{1}{2}\n</annotation></span></span>';
-      document.body.append(message);
-      return true;
-    })()`,
-    );
-    const formulas = await evaluate<{ messages: { text: string }[] }>(
-      "a",
-      first.sid,
-      aTab,
-      CHAT_EXPRESSION,
-    );
-    assert.equal(formulas.messages.at(-1)!.text, "公式 $E=mc^2$\n\n$$\n\\frac{1}{2}\n$$");
-    await evaluate(
-      "a",
-      first.sid,
-      aTab,
-      "document.querySelector('#formula-extraction-fixture').remove(); true",
-    );
-    checks.realFormulaAnnotationExtraction = true;
     await waitFor(
       () => a.messages.some((m) => m.t === "download" && m.state === "done" && !!m.href),
       "owned download completion",
@@ -911,102 +878,6 @@ try {
     checks.downloadRoutingAndOwnership = true;
     checks.retryAndRangeDownload = true;
   } else checks.downloadRoutingAndOwnership = false;
-
-  const nativeResponse = await request(
-    "a",
-    `/s/${first.sid}/api/claude/events?connectionKey=${randomUUID()}&tab=${aTab}`,
-  );
-  assert.equal(nativeResponse.status, 200);
-  const nativeReader = nativeResponse.body!.getReader();
-  let nativeState: Record<string, any> | undefined,
-    nativeController = "",
-    nativeDeltas = 0;
-  const nativePump = (async () => {
-    let pending = "";
-    const decoder = new TextDecoder();
-    for (;;) {
-      const chunk = await nativeReader.read();
-      if (chunk.done) break;
-      pending += decoder.decode(chunk.value, { stream: true });
-      const frames = pending.split("\n\n");
-      pending = frames.pop()!;
-      for (const frame of frames) {
-        if (!frame.startsWith("data: ")) continue;
-        const data = JSON.parse(frame.slice(6));
-        nativeController = data.controller;
-        if (data.type === "snapshot") nativeState = data.state;
-        if (data.type === "delta" && nativeState) {
-          nativeDeltas++;
-          for (const change of data.edits) {
-            if (change.message) nativeState.messages[change.index] = change.message;
-            else if (change.edit) {
-              const e = change.edit,
-                m = nativeState.messages[change.index];
-              m.text = m.text.slice(0, e.at) + e.insert + m.text.slice(e.at + e.delete);
-            }
-          }
-          nativeState.messages.length = data.length;
-          Object.assign(nativeState, {
-            epoch: data.epoch,
-            url: data.url,
-            ready: data.ready,
-            generating: data.generating,
-          });
-        }
-      }
-    }
-  })();
-  await waitFor(() => Boolean(nativeState?.ready), "native SSE ready", 20000);
-  await delay(200);
-  const pausedSequence = (await state("a", first.sid)).tabs.find((tab) => tab.tab === aTab)!.seq;
-  const nativeSent = await request("a", `/s/${first.sid}/api/claude/action`, {
-    method: "POST",
-    headers: { "content-type": "application/json", Origin: origin },
-    body: JSON.stringify({
-      id: randomUUID(),
-      controller: nativeController,
-      epoch: nativeState!.epoch,
-      type: "send",
-      text: "原生文字全链路测试",
-    }),
-  });
-  assert.equal(nativeSent.status, 200, await nativeSent.clone().text());
-  assert.equal(((await nativeSent.json()) as { status: string }).status, "confirmed");
-  await waitFor(
-    () =>
-      Boolean(
-        nativeState?.messages.some(
-          (m: any) => m.role === "assistant" && m.text.includes("流式回复6"),
-        ),
-      ),
-    "native streamed reply",
-    12000,
-  );
-  assert.ok(nativeDeltas > 0);
-  assert.equal(
-    (await state("a", first.sid)).tabs.find((tab) => tab.tab === aTab)!.seq,
-    pausedSequence,
-    "native messages must not record an unused DOM mutation stream",
-  );
-  checks.nativePausesUnusedDomRecording = true;
-  checks.nativeSseSendAndStreaming = true;
-  await nativeReader.cancel();
-  await nativePump;
-  a = await new Viewer("a", first.sid).open();
-  await a.negotiate(aTab, 680, 480);
-  const resumedSequence = (await state("a", first.sid)).tabs.find((tab) => tab.tab === aTab)!.seq;
-  await evaluate(
-    "a",
-    first.sid,
-    aTab,
-    "document.querySelector('#editor').textContent='恢复DOM录制'; true",
-  );
-  await waitFor(
-    async () =>
-      (await state("a", first.sid)).tabs.find((tab) => tab.tab === aTab)!.seq > resumedSequence,
-    "DOM recording resumes after returning from native chat",
-  );
-  checks.nativeDomRecordingRoundTrip = true;
 
   const released = await request("a", `/api/client/session/${first.sid}`, { method: "DELETE" });
   assert.ok([200, 204].includes(released.status));

@@ -33,7 +33,6 @@ import { createInputRelay, type InputMsg } from "./input/relay";
 import { createScreencast } from "./px";
 import { createPixelCapacity } from "./px-capacity";
 import { createRtcSignalRelay } from "./rtcsig";
-import { registerClaudeChat } from "./claude/routes";
 import { createClaudeTheme, isClaudeTheme } from "./claude/theme";
 import { registerSecurityHeaders } from "./security-headers";
 import { gatewayHost, LOOPBACK_PROXIES, registerViewerStatic } from "./serving";
@@ -43,7 +42,7 @@ import { createIdleReaper } from "./session/idle-reaper";
 import { createResourceSampler } from "./monitor/resources";
 import type { TargetRef, AgentLink } from "./types";
 import { createRoleManager } from "./ws/roles";
-import { connectionKeyFor, createWsServer, resumeCursorsFor } from "./ws/server";
+import { createWsServer, resumeCursorsFor } from "./ws/server";
 import type { ViewerConn } from "./ws/viewerconn";
 
 interface ClientRuntime {
@@ -59,15 +58,10 @@ interface ClientRuntime {
   navigation: ReturnType<typeof createNavigationController>;
   recovery: ReturnType<typeof createRendererRecovery>;
   uploads: Awaited<ReturnType<typeof createUploadManager>>;
-  setRecording(enabled: boolean): Promise<void>;
-  resumeRecordingForViewer(): void;
   rtc?: ReturnType<typeof createRtcSignalRelay>;
   stop(): Promise<void>;
 }
 
-/** Claude keeps its conversation sidebar at this width, which chat mode reads history from. */
-const DESKTOP_LAYOUT_MIN_WIDTH = 1024;
-const RECORDER_RESTART_WAIT_MS = 1_000;
 /** Frames wait before encoding beyond this, since a viewer cannot skip one once it is encoded. */
 const VIDEO_BACKLOG_BYTES = 512 * 1024;
 
@@ -227,7 +221,6 @@ export async function startClientGateway(): Promise<void> {
   });
   const sidFromRequest = (request: IncomingMessage) =>
     new URL(request.url ?? "/", "http://local").searchParams.get("sid") ?? undefined;
-  const chats = new Map<string, Awaited<ReturnType<typeof registerClaudeChat>>>();
   const ws = createWsServer({
     server: app.server,
     replaceSessionOnConnect: true,
@@ -267,7 +260,6 @@ export async function startClientGateway(): Promise<void> {
       const id = `viewer-${nextViewer++}`;
       viewerIds.set(viewer, id);
       viewers.set(id, { viewer, sid, owner: currentOwner(request)! });
-      chats.get(sid)?.yieldTo(connectionKeyFor(request));
       idleReaper.touch(sid);
       const runtime = runtimes.get(sid)!;
       // A reconnect whose replay position is still buffered keeps its geometry agreement: the
@@ -285,7 +277,6 @@ export async function startClientGateway(): Promise<void> {
         send: (message, serialized) => viewer.send(message, serialized),
         resumed,
       });
-      runtime.resumeRecordingForViewer();
       viewer.send(
         {
           t: "mode",
@@ -361,11 +352,7 @@ export async function startClientGateway(): Promise<void> {
       broadcastStatus();
     },
   });
-  const onlineSessions = () =>
-    new Set([
-      ...[...viewers.values()].map((connection) => connection.sid),
-      ...[...chats].filter(([, chat]) => chat.hasController()).map(([sid]) => sid),
-    ]);
+  const onlineSessions = () => new Set([...viewers.values()].map((connection) => connection.sid));
   const onlineOwnerCount = () => {
     const owners = new Set<string>();
     for (const sid of onlineSessions()) {
@@ -481,26 +468,6 @@ export async function startClientGateway(): Promise<void> {
     const scoped = pool.scope(sid),
       targets = new Map<string, TargetRef>(),
       metadata = new Map<string, BrowserTargetInfo>();
-    let recordingEnabled = true;
-    let recordingRestart: ReturnType<typeof setTimeout> | undefined;
-    const resumeRecording = () => {
-      clearTimeout(recordingRestart);
-      recordingRestart = undefined;
-      void runtimes
-        .get(sid)
-        ?.setRecording(true)
-        .catch((error) => report("client recorder resume failed", error));
-    };
-    let recordingWork = Promise.resolve();
-    const setTargetRecording = (targetId: string, enabled: boolean) => {
-      const task = recordingWork.then(async () => {
-        if (!targets.has(targetId)) return;
-        const response = await agent.sendCmd(targetId, { cmd: "recording", enabled });
-        if (!response.ok) throw new Error(response.err ?? "recorder control failed");
-      });
-      recordingWork = task.catch(() => undefined);
-      return task;
-    };
     scoped.onAttached((target) => {
       targets.set(target.targetId, target);
       if (target.type === "page")
@@ -519,10 +486,6 @@ export async function startClientGateway(): Promise<void> {
       msgs: async function* (target) {
         if (!scoped.ownsTarget(target)) throw new Error("Foreign recorder target");
         for await (const message of agent.msgs(target)) {
-          if (message.kind === "hello" && !recordingEnabled)
-            void setTargetRecording(target, false).catch((error) =>
-              report("client recorder pause failed", error),
-            );
           yield message;
         }
       },
@@ -547,7 +510,6 @@ export async function startClientGateway(): Promise<void> {
       hubFor: (tab) => tabs.hubFor(tab),
       isDriver: (id) => roles.isDriver(id) && viewers.get(id)?.sid === sid,
       confirmViewport: (_viewer, tab, { w, h }) => publish(sid, { t: "view-ok", tab, w, h }),
-      restartRecorder: () => resumeRecording(),
     });
     const input = createInputRelay({
       onValueStatus: (tab, failed) => publish(sid, { t: "input-status", tab, failed }),
@@ -657,33 +619,6 @@ export async function startClientGateway(): Promise<void> {
       navigation,
       recovery,
       uploads,
-      // Chat replaced a narrow viewport: the recorder restarts once the viewer's geometry is back,
-      // so its first snapshot is usable. The timeout covers a viewer that never asks for one.
-      resumeRecordingForViewer() {
-        const tab = tabs.activeTabId;
-        const hub = tab ? tabs.hubFor(tab) : undefined;
-        if (hub?.viewport !== null || !hub.recorderAwaitsRestart) return resumeRecording();
-        clearTimeout(recordingRestart);
-        recordingRestart = setTimeout(resumeRecording, RECORDER_RESTART_WAIT_MS);
-        recordingRestart.unref?.();
-      },
-      async setRecording(enabled) {
-        if (!enabled) {
-          clearTimeout(recordingRestart);
-          recordingRestart = undefined;
-        }
-        if (enabled && recordingEnabled) return;
-        recordingEnabled = enabled;
-        for (const target of targets.keys()) {
-          const hub = tabs.hubFor(target);
-          if (enabled) hub?.resumeRecorder();
-          else hub?.pauseRecorder();
-        }
-        const results = await Promise.allSettled(
-          [...targets.keys()].map((target) => setTargetRecording(target, enabled)),
-        );
-        for (const result of results) if (result.status === "rejected") throw result.reason;
-      },
       async stop() {
         uploads.close();
         runtime.rtc?.dispose();
@@ -892,7 +827,6 @@ export async function startClientGateway(): Promise<void> {
           roles.disconnect(id);
           viewers.delete(id);
         }
-      chats.get(sid)?.disconnectController();
       const runtime = await runtimePromises.get(sid);
       if (runtime) await runtime.stop();
       else await pool.scope(sid).close();
@@ -932,8 +866,6 @@ export async function startClientGateway(): Promise<void> {
     }
   });
   for (const sid of CLIENT_SLOTS) {
-    const chatDir = join(profile, "client-data", sid);
-    await mkdir(chatDir, { recursive: true });
     app.get(`/s/${sid}/theme`, { preHandler: requireSession(sid) }, async () => ({
       theme:
         (await runtimes
@@ -951,46 +883,6 @@ export async function startClientGateway(): Promise<void> {
         return { applied };
       },
     );
-    const chat = await registerClaudeChat(app, {
-      routePrefix: `/s/${sid}`,
-      browser,
-      profileDir: chatDir,
-      preHandler: requireSession(sid),
-      isOwner: (request) => clientSessions.owns(currentOwner(request), sid),
-      mirrorHasController: () =>
-        [...viewers].some(([id, connection]) => connection.sid === sid && roles.isDriver(id)),
-      takeControl: (connectionKey) => ws.replaceSession(sid, undefined, connectionKey),
-      ensureRuntime: () => ensureRuntime(sid).then(() => undefined),
-      keepsDesktopLayout: (tab) =>
-        (runtimes.get(sid)?.tabs.hubFor(tab)?.viewport?.w ?? 0) >= DESKTOP_LAYOUT_MIN_WIDTH,
-      onNativeViewport: async (tab) => {
-        const runtime = runtimes.get(sid);
-        if (!runtime) return;
-        // Chat reads the page itself, and the picture's browser zoom must not stay behind.
-        if (runtime.pixels.modeFor(tab) === "px")
-          await runtime.pixels
-            .handle({ t: "mode", tab, mode: "dom" })
-            .catch((error) => report("client picture stop failed", error));
-        runtime.viewport.resetTab(tab);
-        // Chat overrides a narrower viewport with its desktop layout, so that geometry is gone.
-        const hub = runtime.tabs.hubFor(tab);
-        if (hub && (hub.viewport?.w ?? 0) < DESKTOP_LAYOUT_MIN_WIDTH) hub.viewport = null;
-        await runtime
-          .setRecording(false)
-          .catch((error) => report("native recorder pause failed", error));
-      },
-      ...(e2e
-        ? { testOrigin: new URL(process.env.MIRROR_START_URL ?? "https://claude.ai").origin }
-        : {}),
-      onControllerChange: () => {
-        idleReaper.touch(sid);
-        broadcastStatus();
-      },
-      targets: () => [...(runtimes.get(sid)?.targets.values() ?? [])],
-      metadata: (tab) => runtimes.get(sid)?.metadata.get(tab),
-      documentId: (tab) => runtimes.get(sid)?.tabs.hubFor(tab)?.docId ?? 0,
-    });
-    chats.set(sid, chat);
   }
   app.get("/healthz", async (_request, reply) => {
     const alive = browser.isAlive?.() !== false,
@@ -1083,7 +975,6 @@ export async function startClientGateway(): Promise<void> {
     clearInterval(statusTimer);
     clearInterval(idleTimer);
     idleReaper.dispose();
-    for (const chat of chats.values()) chat.close();
     downloads.close();
     await ws.close().catch(() => {});
     for (const runtime of runtimes.values()) {

@@ -250,7 +250,7 @@ try {
     socket.on("close", () => clearInterval(frameTimer));
   });
   const page = await browser.newPage({ viewport: { width: 1100, height: 850 } });
-  // The root page opens text chat by default; these checks exercise the DOM view.
+  // These checks exercise the DOM view, whatever the page remembers.
   await page.addInitScript(() => {
     // The first about:blank document has an opaque origin and no storage.
     try {
