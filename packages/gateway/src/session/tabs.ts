@@ -25,6 +25,8 @@ type TabBrowser = Pick<
   "send" | "sendBrowser" | "onAttached" | "onDetached" | "onTargetInfoChanged" | "onSessionEvent"
 >;
 
+const NEW_TAB_URL = "https://claude.ai/new";
+
 export interface TabLifecycleOpts {
   browser: TabBrowser;
   agentLink: AgentLink;
@@ -58,6 +60,7 @@ interface TabState {
   target: TargetRef;
   hub: TabHub;
   faviconLookup?: Promise<string | undefined>;
+  favicon?: string | undefined;
   observedTitle?: { url: string; title: string };
 }
 
@@ -223,6 +226,20 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
     return `/s/${encodeURIComponent(opts.sessionId)}/a/${token}`;
   };
 
+  const tabEntry = (tabId: string, state: TabState, favicon: string | undefined) => {
+    const info = targetInfo.get(tabId);
+    return {
+      id: tabId,
+      url: info?.url ?? "",
+      title:
+        state.observedTitle && state.observedTitle.url === info?.url
+          ? state.observedTitle.title
+          : (info?.title ?? ""),
+      ...(favicon === undefined ? {} : { favicon }),
+      active: tabId === activeTabId,
+    };
+  };
+
   const tabsMessage = async (): Promise<TabsMsg> => {
     if (tabs.size === 0) await create(undefined);
     const metadata = await Promise.all(
@@ -231,18 +248,8 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
         if (state === undefined) return [];
         return [
           (async () => {
-            const favicon = await faviconFor(tabId, state);
-            const info = targetInfo.get(tabId);
-            return {
-              id: tabId,
-              url: info?.url ?? "",
-              title:
-                state.observedTitle && state.observedTitle.url === info?.url
-                  ? state.observedTitle.title
-                  : (info?.title ?? ""),
-              ...(favicon === undefined ? {} : { favicon }),
-              active: tabId === activeTabId,
-            };
+            state.favicon = await faviconFor(tabId, state);
+            return tabEntry(tabId, state, state.favicon);
           })(),
         ];
       }),
@@ -279,7 +286,17 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
     const changed = activeTabId !== tabId;
     activeTabId = tabId;
     scheduleTabsBroadcast();
-    if (changed) publishCatchUp(state);
+    if (!changed) return;
+    // A viewer only takes a tab's snapshot once it knows that tab is active, and a page's own new
+    // window, or its closing, is news to it. Looking up favicons can wait for the broadcast above.
+    opts.publish({
+      t: "tabs",
+      tabs: order.flatMap((id) => {
+        const tab = tabs.get(id);
+        return tab === undefined ? [] : [tabEntry(id, tab, tab.favicon)];
+      }),
+    });
+    publishCatchUp(state);
   };
 
   const remove = (tabId: string): { wasActive: boolean; neighbor?: string } => {
@@ -306,7 +323,7 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
 
   const create = async (url: string | undefined): Promise<void> => {
     const result = (await sendBrowser("Target.createTarget", {
-      url: url === undefined || url.trim() === "" ? "about:blank" : url,
+      url: url === undefined || url.trim() === "" ? NEW_TAB_URL : url,
     })) as { targetId?: unknown } | undefined;
     if (typeof result?.targetId !== "string") {
       throw new Error("Target.createTarget returned no targetId");
@@ -332,7 +349,11 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
     if (state?.target.sessionId !== target.sessionId) return;
     const { neighbor } = remove(target.targetId);
     if (tabs.size === 0) void create(undefined).catch(report);
-    if (neighbor !== undefined) void activate(neighbor).catch(report);
+    if (neighbor !== undefined) {
+      // A window that closes itself, as one that only starts a download does, returns to its opener.
+      const opener = state.target.openerTabId;
+      void activate(opener !== undefined && tabs.has(opener) ? opener : neighbor).catch(report);
+    }
   });
 
   opts.browser.onAttached((target) => {
@@ -355,6 +376,10 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
     void watchTitle(state).catch(report);
     if (!order.includes(target.targetId)) order.push(target.targetId);
     activeTabId ??= target.targetId;
+    // A page's new window comes to the front, as it would in any browser.
+    if (target.openerTabId !== undefined && activeTabId !== target.targetId) {
+      void activate(target.targetId).catch(report);
+    }
     hub.onNeedSnapshot(() =>
       opts.agentLink.sendCmd(target.targetId, { cmd: "snapshot" }).then((result) => {
         if (!result.ok) throw new Error(result.err ?? "snapshot command failed");

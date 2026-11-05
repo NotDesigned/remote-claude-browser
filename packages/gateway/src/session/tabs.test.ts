@@ -346,6 +346,98 @@ describe("createTabLifecycle", () => {
     }
   });
 
+  describe("a page's new window", () => {
+    const setup = () => {
+      const browser = new MockBrowser();
+      const agentLink: AgentLink = {
+        msgs: () => new MessageQueue(),
+        sendCmd: vi.fn(async () => ({ reqId: 1, ok: true })),
+      };
+      const lifecycle = createTabLifecycle({
+        browser,
+        agentLink,
+        sessionId: "session/a",
+        assetTokenKey: Buffer.alloc(32, 7),
+        publish: () => {},
+      });
+      const active = () =>
+        lifecycle.tabsMessage().then((message) => message.tabs.find((tab) => tab.active)?.id);
+      return { browser, active };
+    };
+
+    it("comes to the front, and a page opened without an opener stays behind", async () => {
+      const { browser, active } = setup();
+      browser.attach({ targetId: "opener", sessionId: "cdp-opener", type: "page" });
+      browser.attach({ targetId: "behind", sessionId: "cdp-behind", type: "page" });
+      expect(await active()).toBe("opener");
+
+      browser.attach({
+        targetId: "window",
+        sessionId: "cdp-window",
+        type: "page",
+        openerTabId: "opener",
+      });
+
+      await vi.waitFor(async () => expect(await active()).toBe("window"));
+    });
+
+    it("tells viewers it is active before sending what it shows, which they would otherwise drop", async () => {
+      const browser = new MockBrowser();
+      const published: Down[] = [];
+      createTabLifecycle({
+        browser,
+        agentLink: {
+          msgs: () => new MessageQueue(),
+          sendCmd: vi.fn(async () => ({ reqId: 1, ok: true })),
+        },
+        sessionId: "session/a",
+        assetTokenKey: Buffer.alloc(32, 7),
+        publish: (message) => published.push(message),
+      });
+      browser.attach({ targetId: "opener", sessionId: "cdp-opener", type: "page" });
+
+      browser.attach({
+        targetId: "window",
+        sessionId: "cdp-window",
+        type: "page",
+        openerTabId: "opener",
+      });
+
+      await vi.waitFor(() =>
+        expect(
+          published.some((message) => message.t === "resync" && message.tab === "window"),
+        ).toBe(true),
+      );
+      const announced = published.findIndex(
+        (message) =>
+          message.t === "tabs" && message.tabs.some((tab) => tab.id === "window" && tab.active),
+      );
+      const caughtUp = published.findIndex(
+        (message) => message.t === "resync" && message.tab === "window",
+      );
+      expect(announced).toBeGreaterThanOrEqual(0);
+      expect(announced).toBeLessThan(caughtUp);
+    });
+
+    it("returns to its opener when it closes itself, as one that starts a download does", async () => {
+      const { browser, active } = setup();
+      const window: TargetRef = {
+        targetId: "window",
+        sessionId: "cdp-window",
+        type: "page",
+        openerTabId: "opener",
+      };
+      browser.attach({ targetId: "opener", sessionId: "cdp-opener", type: "page" });
+      browser.attach({ targetId: "other", sessionId: "cdp-other", type: "page" });
+      browser.attach(window);
+      await vi.waitFor(async () => expect(await active()).toBe("window"));
+
+      browser.detach(window);
+
+      await vi.waitFor(async () => expect(await active()).toBe("opener"));
+    });
+  });
+
   it("creates per-page hubs, debounces proxied tab metadata, buffers background tabs, and activates a neighbor on close", async () => {
     vi.useFakeTimers();
     const browser = new MockBrowser();
@@ -373,7 +465,6 @@ describe("createTabLifecycle", () => {
       targetId: "tab-2",
       sessionId: "cdp-2",
       type: "page",
-      openerTabId: "tab-1",
     };
 
     browser.attach(first);
@@ -527,7 +618,7 @@ describe("createTabLifecycle", () => {
     await lifecycle.handle({ t: "nav", tab: "old-tab", action: "close" });
 
     expect(browser.browserCalls).toEqual([
-      { method: "Target.createTarget", params: { url: "about:blank" } },
+      { method: "Target.createTarget", params: { url: "https://claude.ai/new" } },
       { method: "Target.activateTarget", params: { targetId: "created-tab" } },
       { method: "Target.closeTarget", params: { targetId: "old-tab" } },
     ]);
@@ -597,7 +688,7 @@ describe("createTabLifecycle", () => {
 
     await vi.waitFor(() =>
       expect(browser.browserCalls).toEqual([
-        { method: "Target.createTarget", params: { url: "about:blank" } },
+        { method: "Target.createTarget", params: { url: "https://claude.ai/new" } },
         { method: "Target.activateTarget", params: { targetId: "created-tab" } },
       ]),
     );
@@ -623,7 +714,7 @@ describe("createTabLifecycle", () => {
     const message = await lifecycle.tabsMessage();
 
     expect(browser.browserCalls).toEqual([
-      { method: "Target.createTarget", params: { url: "about:blank" } },
+      { method: "Target.createTarget", params: { url: "https://claude.ai/new" } },
       { method: "Target.activateTarget", params: { targetId: "created-tab" } },
     ]);
     expect(message.tabs.map(({ id, active }) => ({ id, active }))).toEqual([

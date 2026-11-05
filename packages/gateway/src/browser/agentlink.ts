@@ -38,7 +38,10 @@ export interface AgentLinkOptions {
   publishVoice?: (message: VoiceAgentMsg, targetId: string) => void;
   /** Relays private agent clipboard messages onto the frozen viewer Down lane. */
   publishClipboard?: (message: ClipboardDown, targetId: string) => void;
-  /** Runs on a new target while it is still paused, before its first document can load. */
+  /**
+   * Runs on a new target while it is still paused, before its first document can load. It resolves
+   * once its commands are sent: a paused target may not answer them until it has been resumed.
+   */
   prepareTarget?: (target: TargetRef) => Promise<void>;
 }
 

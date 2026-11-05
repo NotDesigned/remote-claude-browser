@@ -213,6 +213,7 @@ export async function startClientGateway(): Promise<void> {
     send: browser.send,
     ownerOf: (targetId) => pool.ownerOf(targetId),
     isPhoneSession: (sid) => clientSessions.get(sid)?.phone === true,
+    onError: (error) => report("phone identity failed", error),
   });
   const themeCopies = createThemeCopies(browser.send);
   browser.onDetached((target) => themeCopies.forget(target.sessionId));
@@ -220,18 +221,13 @@ export async function startClientGateway(): Promise<void> {
     if (target.type !== "page") return;
     const owner = await waitForOwner(target, { ownerOf: (id) => pool.ownerOf(id) });
     if (owner === undefined) return;
-    await themeCopies.install(
-      target.sessionId,
-      runtimes.get(owner)?.theme.current() ?? "auto",
-      true,
-    );
+    void themeCopies
+      .install(target.sessionId, runtimes.get(owner)?.theme.current() ?? "auto", true)
+      .catch((error) => report("client theme failed", error));
   };
   const agent = createAgentLink(browser, {
     prepareTarget: async (target) => {
-      await Promise.all([
-        preparePhoneTarget(target).catch((error) => report("phone identity failed", error)),
-        prepareThemeCopy(target).catch((error) => report("client theme failed", error)),
-      ]);
+      await Promise.all([preparePhoneTarget(target), prepareThemeCopy(target)]);
     },
     publishClipboard(message, target) {
       const sid = pool.ownerOf(target);
@@ -261,6 +257,8 @@ export async function startClientGateway(): Promise<void> {
   let stopping = false,
     nextViewer = 1;
   const report = (message: string, error: unknown) => {
+    // A window that only starts a download closes itself while its setup is still being answered.
+    if (error instanceof Error && error.name === "TargetCloseError") return;
     if (!stopping) console.error(message, error);
   };
   const roles = createRoleManager({

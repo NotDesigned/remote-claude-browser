@@ -52,6 +52,7 @@ export interface PhoneIdentityDeps {
   ownerOf(targetId: string): string | undefined;
   isPhoneSession(sid: string): boolean;
   sleep?(ms: number): Promise<void>;
+  onError?(error: unknown): void;
 }
 
 /** A new window attaches before its createTarget is acknowledged, which is what names its owner. */
@@ -73,14 +74,19 @@ export function createPhoneTargetPreparer(deps: PhoneIdentityDeps) {
   return async (target: TargetRef): Promise<void> => {
     const owner = await waitForOwner(target, deps);
     if (owner === undefined || !deps.isPhoneSession(owner)) return;
-    await deps.send(target.sessionId, "Page.addScriptToEvaluateOnNewDocument", {
-      source: PHONE_IDENTITY_SOURCE,
-      runImmediately: true,
-    });
-    if (target.type === "page")
-      await deps.send(target.sessionId, "Emulation.setTouchEmulationEnabled", {
-        enabled: true,
-        maxTouchPoints: 5,
-      });
+    void Promise.all([
+      deps.send(target.sessionId, "Page.addScriptToEvaluateOnNewDocument", {
+        source: PHONE_IDENTITY_SOURCE,
+        runImmediately: true,
+      }),
+      ...(target.type === "page"
+        ? [
+            deps.send(target.sessionId, "Emulation.setTouchEmulationEnabled", {
+              enabled: true,
+              maxTouchPoints: 5,
+            }),
+          ]
+        : []),
+    ]).catch((error: unknown) => deps.onError?.(error));
   };
 }

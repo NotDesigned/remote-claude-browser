@@ -127,6 +127,33 @@ describe("injectAgent", () => {
     ]);
   });
 
+  it("resumes a page that answers nothing until it is resumed, as a new window does", async () => {
+    const browser = new RecordingBrowser();
+    const target: TargetRef = { targetId: "page-1", sessionId: "session-1", type: "page" };
+    let resume = () => {};
+    const resumed = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const record = browser.send.bind(browser);
+    browser.send = (async (sessionId: string, method: string, params?: Record<string, unknown>) => {
+      const reply = record(sessionId as never, method as never, params as never);
+      if (method === "Runtime.runIfWaitingForDebugger") resume();
+      else if (browser.calls.every((call) => call.method !== "Runtime.runIfWaitingForDebugger")) {
+        await resumed;
+      }
+      return reply;
+    }) as typeof browser.send;
+    const order: string[] = [];
+    const prepare = vi.fn(async () => {
+      order.push(browser.calls.at(-1)?.method ?? "");
+    });
+
+    await injectAgent(browser, target, prepare);
+
+    expect(order).toEqual(["Page.enable"]);
+    expect(browser.calls.map((call) => call.method)).toContain("Page.getFrameTree");
+  });
+
   it("coalesces duplicate injection requests for one flat session", async () => {
     const browser = new RecordingBrowser();
     const target: TargetRef = { targetId: "page-1", sessionId: "session-1", type: "page" };

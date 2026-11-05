@@ -166,6 +166,26 @@ describe("shared-browser client scopes", () => {
     pool.dispose();
   });
 
+  it("hands over a new window after every other listener has seen it attach", async () => {
+    const browser = new FakeBrowser(),
+      pool = createClientBrowserPool(browser),
+      a = pool.scope("a");
+    browser.attach(page("opener"));
+    pool.adopt("a", "opener");
+    const order: string[] = [];
+    browser.onAttached((target) => order.push(`later listener ${target.targetId}`));
+    a.onAttached((target) => order.push(`session ${target.targetId}`));
+
+    browser.attach({ ...page("window"), openerTabId: "opener" });
+    await Promise.resolve();
+
+    expect(order.filter((entry) => entry.endsWith("window"))).toEqual([
+      "later listener window",
+      "session window",
+    ]);
+    expect(pool.ownerOf("window")).toBe("a");
+  });
+
   it("claims attach-before-create results and all pending popup/iframe descendants", async () => {
     const browser = new FakeBrowser(),
       pool = createClientBrowserPool(browser),

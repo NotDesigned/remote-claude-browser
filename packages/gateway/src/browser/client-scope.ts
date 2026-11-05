@@ -109,7 +109,17 @@ export function createClientBrowserPool(
       liveScope(owner)?.pendingCreates.get(target.targetId)?.resolve();
     } else {
       const parentOwner = inheritedOwner(target);
-      if (parentOwner !== undefined) claim(parentOwner, target.targetId);
+      if (parentOwner === undefined) return;
+      if (target.type !== "page") {
+        claim(parentOwner, target.targetId);
+        return;
+      }
+      // A session starts reading a claimed page at once. Every other listener for this attach has to
+      // have run first, or the agent link has nothing to give it and the page stays unmirrored.
+      queueMicrotask(() => {
+        if (disposed || targets.get(target.targetId) !== target) return;
+        if (!owners.has(target.targetId)) claim(parentOwner, target.targetId);
+      });
     }
   });
   browser.onDetached((target) => {

@@ -146,25 +146,32 @@ export function injectAgent(
         readyEventName: channel.readyEventName,
       },
     });
-    await browser.send(target.sessionId, "Page.enable");
+    // A page opened in a new window does not answer these until it is resumed, so they are sent in
+    // order and only then awaited. Awaiting each one left that window blank until the protocol timed
+    // out. The session delivers them in the order they were sent.
+    const replies: Promise<unknown>[] = [];
+    const send = (method: string, params?: Record<string, unknown>): void => {
+      const reply = browser.send(target.sessionId, method, params);
+      reply.catch(() => undefined);
+      replies.push(reply);
+    };
+    send("Page.enable");
     await prepare?.(target);
-    await browser.send(target.sessionId, "Page.addScriptToEvaluateOnNewDocument", {
+    send("Page.addScriptToEvaluateOnNewDocument", {
       source: WEBDRIVER_NORMALIZER,
       runImmediately: true,
     });
-    await browser.send(target.sessionId, "Page.addScriptToEvaluateOnNewDocument", {
+    send("Page.addScriptToEvaluateOnNewDocument", {
       source: isolatedAgentBridgeSource(channel),
       worldName: channel.worldName,
       runImmediately: true,
     });
-    await browser.send(target.sessionId, "Page.addScriptToEvaluateOnNewDocument", {
-      source,
-      runImmediately: true,
-    });
+    send("Page.addScriptToEvaluateOnNewDocument", { source, runImmediately: true });
     // Resume before creating the current isolated world: Page.createIsolatedWorld can wait on a
     // debugger-paused OOPIF, while its parent waits for that child to finish loading. The MAIN
     // agent queues safely until the context-scoped bridge becomes ready.
-    await browser.send(target.sessionId, "Runtime.runIfWaitingForDebugger");
+    send("Runtime.runIfWaitingForDebugger");
+    await Promise.all(replies);
     // Runtime.bindingCalled does not require Runtime.enable. Scope both native bindings to the
     // isolated bridge context so no CDP binding property is ever installed in MAIN.
     await bindCurrentFrameTree(browser, target.sessionId, channel);
