@@ -8,6 +8,7 @@ const RENDER_MAX_INTERVAL_MS = 1000;
 const MORE_AREA_PX = 30;
 const NOTICE_DELAY_MS = 4_000;
 const TITLE_BAR_PX = 48;
+const MIN_EDITOR_PX = 280;
 const VOICE_ICON =
   '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.6 9.6v.8M6.8 7.6v4.8M10 3.6v12.8M13.2 7.6v4.8M16.4 9.6v.8"/></svg>';
 
@@ -178,10 +179,14 @@ export function mountChatView(root, options) {
     $("recents-toggle").setAttribute("aria-expanded", String(open));
     $("conversations").hidden = !open;
   };
-  $("compose-project").onclick = $("compose-mode").onclick = () => options.onOpenRemote?.();
+  $("compose-project").onclick = () => options.onOpenRemote?.();
   $("compose-model").onclick = (event) => {
     event.stopPropagation();
-    openModelMenu();
+    openModelMenu("model");
+  };
+  $("compose-mode").onclick = (event) => {
+    event.stopPropagation();
+    openModelMenu("mode");
   };
   listen(document, "click", (event) => {
     if (!$("model-menu").hidden && !event.target.closest?.("#model-menu")) closeModelMenu();
@@ -593,8 +598,95 @@ export function mountChatView(root, options) {
       drawReplica($("new-header"), newPage.header);
     }
   }
-  /** Claude's own model menu, read from the page and acted on there. */
-  let modelRows = null;
+  async function postMessageAction(path, body) {
+    const response = await fetch(`${apiBase}/${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ controller, epoch: state?.epoch, ...body }),
+    });
+    if (!response.ok) throw new Error((await response.json()).error);
+    // Whatever comes next is the newest thing in the conversation.
+    following = true;
+  }
+  async function retryMessage(message) {
+    if (state?.generating) return;
+    try {
+      await postMessageAction("retry", { message });
+    } catch (error) {
+      transientStatus(error.message || "暂时无法重试");
+    }
+  }
+  /** Edits a user message in place, as Claude's page does; saving happens on that page. */
+  function openMessageEditor(article, bubble, original, position) {
+    if (article.querySelector(".message-editor")) return;
+    const editor = document.createElement("form");
+    editor.className = "message-editor";
+    const field = document.createElement("textarea");
+    field.rows = 1;
+    field.value = original;
+    field.setAttribute("aria-label", "编辑消息");
+    field.style.width = `${Math.max(bubble.getBoundingClientRect().width, MIN_EDITOR_PX)}px`;
+    const size = () => {
+      field.style.height = "auto";
+      field.style.height = `${field.scrollHeight + 2}px`;
+    };
+    const buttons = document.createElement("div");
+    buttons.className = "message-editor-buttons";
+    const cancel = Object.assign(document.createElement("button"), {
+      type: "button",
+      textContent: "Cancel",
+    });
+    const save = Object.assign(document.createElement("button"), {
+      type: "submit",
+      className: "message-editor-save",
+      textContent: "Save",
+      disabled: true,
+    });
+    buttons.append(cancel, save);
+    editor.append(field, buttons);
+    article.classList.add("message-editing");
+    article.insertBefore(editor, bubble);
+    const close = () => {
+      editor.remove();
+      article.classList.remove("message-editing");
+    };
+    const canSave = () => {
+      const text = field.value.trim();
+      save.disabled = !text || text === original.trim() || !!state?.generating;
+    };
+    field.oninput = () => {
+      size();
+      canSave();
+    };
+    field.onkeydown = (event) => {
+      if (event.key === "Escape") close();
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) editor.requestSubmit();
+    };
+    cancel.onclick = close;
+    editor.onsubmit = async (event) => {
+      event.preventDefault();
+      canSave();
+      if (save.disabled) return;
+      save.disabled = true;
+      try {
+        await postMessageAction("edit", {
+          message: position(),
+          text: field.value,
+          expected: original,
+        });
+        close();
+      } catch (error) {
+        transientStatus(error.message || "没能提交编辑");
+        canSave();
+      }
+    };
+    size();
+    field.focus();
+    field.setSelectionRange(field.value.length, field.value.length);
+  }
+  /** Claude's own menus, read from the page and acted on there. */
+  const menuRows = { model: null, mode: null };
+  let menuKind = "model";
   function closeModelMenu() {
     $("model-menu").hidden = true;
     $("compose-model").setAttribute("aria-expanded", "false");
@@ -608,7 +700,7 @@ export function mountChatView(root, options) {
               type: "button",
               className: "model-back",
               textContent: `‹ ${submenu}`,
-              onclick: () => drawModelMenu(modelRows, null),
+              onclick: () => drawModelMenu(menuRows[menuKind], null),
             }),
           ]
         : []),
@@ -648,7 +740,7 @@ export function mountChatView(root, options) {
   }
   async function pickModel(submenu, name) {
     closeModelMenu();
-    modelRows = null;
+    menuRows[menuKind] = null;
     try {
       const response = await fetch(`${apiBase}/model`, {
         method: "POST",
@@ -656,6 +748,7 @@ export function mountChatView(root, options) {
         body: JSON.stringify({
           controller,
           epoch: state?.epoch,
+          menu: menuKind,
           pick: submenu ? { submenu, name } : { name },
         }),
       });
@@ -664,16 +757,19 @@ export function mountChatView(root, options) {
       transientStatus(error.message || "没能切换模型");
     }
   }
-  async function openModelMenu() {
+  async function openModelMenu(kind) {
     const menu = $("model-menu");
-    if (!menu.hidden) {
+    const same = menuKind === kind;
+    if (!menu.hidden && same) {
       closeModelMenu();
       return;
     }
+    menuKind = kind;
+    menu.dataset.kind = kind;
     menu.hidden = false;
-    $("compose-model").setAttribute("aria-expanded", "true");
-    if (modelRows) {
-      drawModelMenu(modelRows, null);
+    $("compose-model").setAttribute("aria-expanded", String(kind === "model"));
+    if (menuRows[kind]) {
+      drawModelMenu(menuRows[kind], null);
       return;
     }
     menu.replaceChildren(
@@ -686,11 +782,11 @@ export function mountChatView(root, options) {
       const response = await fetch(`${apiBase}/model`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ controller, epoch: state?.epoch }),
+        body: JSON.stringify({ controller, epoch: state?.epoch, menu: kind }),
       });
       if (!response.ok) throw new Error((await response.json()).error);
-      modelRows = (await response.json()).rows;
-      if (!menu.hidden) drawModelMenu(modelRows, null);
+      menuRows[kind] = (await response.json()).rows;
+      if (!menu.hidden && menuKind === kind) drawModelMenu(menuRows[kind], null);
     } catch (error) {
       closeModelMenu();
       transientStatus(error.message || "暂时无法读取模型列表");
@@ -765,17 +861,32 @@ export function mountChatView(root, options) {
         const actions = document.createElement("div");
         actions.className = "message-actions";
         actions.append(copy);
-        // Reading aloud, rating and retrying happen on Claude's page.
+        const control = (glyph, label, onclick) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = glyph ? "glyph message-copy" : "message-copy";
+          button.setAttribute("aria-label", label);
+          button.textContent = glyph || label;
+          button.onclick = onclick;
+          return button;
+        };
+        const position = () => [...$("messages").children].indexOf(article);
         if (message.role === "assistant") {
-          for (const glyph of look?.replyGlyphs ?? []) {
-            const more = document.createElement("button");
-            more.type = "button";
-            more.className = "glyph message-copy";
-            more.setAttribute("aria-label", "在页面模式中使用");
-            more.textContent = glyph;
-            more.onclick = () => options.onOpenRemote?.();
-            actions.append(more);
+          // Reading aloud and rating happen on Claude's page.
+          for (const { glyph, retry } of look?.replyControls ?? [{ glyph: "", retry: true }]) {
+            actions.append(
+              retry
+                ? control(glyph, "重试", () => retryMessage(position()))
+                : control(glyph, "在页面模式中使用", () => options.onOpenRemote?.()),
+            );
           }
+        } else {
+          actions.prepend(
+            control(look?.userGlyphs?.retry, "重试", () => retryMessage(position())),
+            control(look?.userGlyphs?.edit, "编辑", () =>
+              openMessageEditor(article, text, entry?.messageText ?? "", position),
+            ),
+          );
         }
         article.append(role, steps, text, cards, files, actions);
         entry = {

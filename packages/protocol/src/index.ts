@@ -12,3 +12,4 @@ export * from "./chunk";
 export * from "./wire";
 export * from "./editable";
 export * from "./sheets";
+export * from "./voice";

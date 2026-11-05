@@ -13,6 +13,11 @@ import {
   EDITOR_FOCUS_EXPRESSION,
   MODEL_MENU_COUNT,
   MODEL_TRIGGER_POINT,
+  MODE_TRIGGER_POINT,
+  editFillExpression,
+  editOpenExpression,
+  editSaveExpression,
+  retryExpression,
   buttonExpression,
   modelMenuExpression,
   modelRowPoint,
@@ -73,6 +78,7 @@ interface Lease {
   historyStalledEpoch?: string;
 }
 const MODEL_MENU_WAIT_MS = 1_500;
+const EDIT_STEP_WAIT_MS = 2_000;
 const MODEL_MENU_POLL_MS = 50;
 const MODEL_MENU_ESCAPE_MS = 400;
 
@@ -86,9 +92,18 @@ interface ClickBody {
   name?: string;
   open?: boolean;
 }
+interface EditBody {
+  controller?: string;
+  epoch?: string;
+  message?: unknown;
+  text?: unknown;
+  expected?: unknown;
+}
 interface ModelBody {
   controller?: string;
   epoch?: string;
+  /** Which of the composer's menus. */
+  menu?: "model" | "mode";
   /** Without one, this lists the menu. A submenu row's name leads to its own rows. */
   pick?: { submenu?: unknown; name?: unknown };
 }
@@ -778,6 +793,12 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
     "这张卡片暂时无法打开",
   );
   remoteClickRoute(
+    "/retry",
+    ({ message }) =>
+      isIndex(message) ? { row: message, expression: retryExpression(message) } : undefined,
+    "暂时无法重试，请到“页面”模式操作",
+  );
+  remoteClickRoute(
     "/sidebar",
     ({ open }) => (typeof open === "boolean" ? { expression: sidebarExpression(open) } : undefined),
     "暂时无法折叠对话列表",
@@ -789,6 +810,57 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
         ? { expression: attachmentRemoveExpression(attachment, name) }
         : undefined,
     "附件列表已改变，请重试",
+  );
+
+  app.post<{ Body: EditBody }>(
+    apiPath("/edit"),
+    { preHandler: options.preHandler, bodyLimit: 256 * 1024 },
+    async (request, reply) => {
+      reply.header("cache-control", "no-store");
+      const origin = process.env.MIRROR_PUBLIC_ORIGIN;
+      if (!options.isOwner(request.raw) || (origin && request.headers.origin !== origin))
+        return reply.code(403).send({ error: "权限无效" });
+      const body = request.body ?? {};
+      const current = lease;
+      if (!current?.state || body.controller !== current.id || options.mirrorHasController())
+        return reply.code(409).send({ error: "请等待文字聊天重新连接" });
+      const target = targetFor(current.state.tab);
+      const { message, text, expected } = body;
+      if (
+        !target ||
+        !isIndex(message) ||
+        typeof text !== "string" ||
+        !text.trim() ||
+        text.length > 100_000 ||
+        typeof expected !== "string"
+      )
+        return reply.code(400).send({ error: "参数无效" });
+      if (body.epoch !== current.state.epoch)
+        return reply.code(409).send({ error: "页面已切换，请重试" });
+      if (current.state.generating)
+        return reply.code(409).send({ error: "请等待 Claude 回复完成后再编辑" });
+      const until = async (expression: string): Promise<boolean> => {
+        const deadline = Date.now() + EDIT_STEP_WAIT_MS;
+        while (Date.now() < deadline) {
+          if (await evaluate<boolean>(target, expression, true)) return true;
+          await new Promise((resolve) => setTimeout(resolve, MODEL_MENU_POLL_MS));
+        }
+        return false;
+      };
+      const unavailable = "没能提交编辑，请到“页面”模式操作";
+      try {
+        await mountRow(target, message);
+        const done =
+          (await until(editOpenExpression(message, expected))) &&
+          (await until(editFillExpression(message, text))) &&
+          (await until(editSaveExpression(message)));
+        if (!done) return reply.code(409).send({ error: unavailable });
+        current.wake?.();
+        return reply.code(204).send();
+      } catch {
+        return reply.code(409).send({ error: unavailable });
+      }
+    },
   );
 
   /** Claude's menu only opens to a real press, and closes with Escape. */
@@ -853,6 +925,7 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
       if (body.epoch !== current.state.epoch)
         return reply.code(409).send({ error: "页面已切换，请重试" });
       const { pick } = body;
+      const trigger = body.menu === "mode" ? MODE_TRIGGER_POINT : MODEL_TRIGGER_POINT;
       if (
         pick !== undefined &&
         (typeof pick.name !== "string" ||
@@ -867,7 +940,7 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
           enabled: true,
         });
         await closeMenus(target);
-        if (!(await pressAt(target, MODEL_TRIGGER_POINT)) || !(await untilMenus(target, 1)))
+        if (!(await pressAt(target, trigger)) || !(await untilMenus(target, 1)))
           return reply.code(409).send({ error: unavailable });
         if (pick) {
           const depth = pick.submenu === undefined ? 0 : 1;
@@ -889,8 +962,7 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
             (await pressAt(target, modelRowPoint(0, row.name))) && (await untilMenus(target, 2));
           if (opened) row.rows = (await evaluate<ModelRow[]>(target, modelMenuExpression(1))) ?? [];
           await closeMenus(target);
-          if (!(await pressAt(target, MODEL_TRIGGER_POINT)) || !(await untilMenus(target, 1)))
-            break;
+          if (!(await pressAt(target, trigger)) || !(await untilMenus(target, 1))) break;
         }
         return reply.send({ rows });
       } catch {

@@ -24,6 +24,7 @@ import { videoOption } from "./px-video";
 import { pollServerStatus, receiveServerStatus, type ReceivedServerStatus } from "./server-status";
 import { ShellBar, resourceWarning, type ThemePreference } from "./shell-bar";
 import { ChatHost } from "./chat-host";
+import { createVoiceLink, type VoiceLink } from "./media/voice";
 import {
   applyPageFonts,
   loadPageLook,
@@ -156,6 +157,20 @@ export function App() {
     return look;
   });
   const pageViewRef = useRef<PageView | null>(null);
+  const voiceRef = useRef<VoiceLink | null>(null);
+  useEffect(() => {
+    const voice = createVoiceLink();
+    voiceRef.current = voice;
+    const unlock = () => voice.unlock();
+    window.addEventListener("pointerdown", unlock, true);
+    window.addEventListener("keydown", unlock, true);
+    return () => {
+      window.removeEventListener("pointerdown", unlock, true);
+      window.removeEventListener("keydown", unlock, true);
+      voiceRef.current = null;
+      voice.dispose();
+    };
+  }, []);
   const [tabs, setTabs] = useState<Extract<Down, { t: "tabs" }>["tabs"]>([]);
   const [modeByTab, setModeByTab] = useState<Record<TabId, "dom" | "px" | undefined>>({});
   const [pixelAvailable, setPixelAvailable] = useState(true);
@@ -587,6 +602,11 @@ export function App() {
         resync.request(tab, reason);
       },
       attachInteraction(tab, replayer) {
+        // A press inside the mirror happens in its frame, out of the page's listeners' sight.
+        const frame = replayer.iframe.contentWindow;
+        const unlock = () => voiceRef.current?.unlock();
+        frame?.addEventListener("pointerdown", unlock, true);
+        frame?.addEventListener("keydown", unlock, true);
         return attachMirrorInput({
           replayer,
           tab,
@@ -657,6 +677,7 @@ export function App() {
       window.removeEventListener("resize", onWindowResize);
       if (resizeTimer !== null) clearTimeout(resizeTimer);
       socketRef.current = null;
+      voiceRef.current?.setSender(null);
       mirrorRef.current = null;
       pxViewRef.current = null;
       pxView?.destroy();
@@ -688,6 +709,14 @@ export function App() {
       clientGatewayUrl(window.location.href, clientSession?.sid),
       (message: Down) => {
         if (disposed) return;
+        if (message.t === "audio") {
+          voiceRef.current?.play(message.pcm);
+          return;
+        }
+        if (message.t === "mic") {
+          voiceRef.current?.setMic(message.tab, message.on);
+          return;
+        }
         if (message.t === "input-status") {
           setInputFailures((previous) => ({ ...previous, [message.tab]: message.failed }));
           return;
@@ -934,6 +963,7 @@ export function App() {
       },
     );
     socketRef.current = socket;
+    voiceRef.current?.setSender((message) => socket?.send(message));
 
     return cleanup;
   }, [clientPhase, clientSession?.sid, fixturePath, viewMode === "chat"]);

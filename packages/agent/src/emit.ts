@@ -11,6 +11,8 @@ export interface Emitter {
   emit(msg: AgentMsg): void;
   /** Private agent-binding lane; converted to the frozen `clip` Down shape inside AgentLink. */
   emitClipboard(text: string): void;
+  /** Private agent-binding lane for voice, carried like the clipboard. */
+  emitVoice(message: object): void;
 }
 
 export type BindingFn = (payload: string) => void;
@@ -77,6 +79,9 @@ export function createEmitter(
       // AgentMsg is frozen, so this private binding message deliberately remains local to the
       // agent/browser bridge instead of widening the shared protocol package.
       send({ kind: "clip", docId, text });
+    },
+    emitVoice(message) {
+      send({ kind: "voice", docId, ...message });
     },
   };
 }

@@ -342,6 +342,13 @@ export const MODEL_TRIGGER_POINT = centre(
   `document.querySelector(${JSON.stringify(MODEL_TRIGGER)})`,
 );
 
+/** The permission control follows the model control, among hidden copies of its other states. */
+export const MODE_TRIGGER_POINT = centre(`(() => {
+  const model = document.querySelector(${JSON.stringify(MODEL_TRIGGER)});
+  const buttons = [...document.querySelectorAll('button')];
+  return model && buttons.slice(buttons.indexOf(model) + 1, buttons.indexOf(model) + 4).find(b => b.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && (b.textContent || '').replace(/[\\uE000-\\uF8FF]/g, '').trim());
+})()`);
+
 const MODEL_MENUS = `[...document.querySelectorAll('[role="menu"]')]`;
 const menuRow = (menu: string, label: string) =>
   `[...(${MODEL_MENUS}[${menu}]?.querySelectorAll('[role^="menuitem"]') || [])].find(item => (item.querySelector('span span span span')?.textContent || item.firstElementChild?.firstElementChild?.textContent || item.textContent || '').trim() === ${JSON.stringify(label)} || (item.textContent || '').trim().startsWith(${JSON.stringify(label)}))`;
@@ -370,6 +377,60 @@ export function sidebarExpression(open: boolean): string {
     if (!toggle) return false;
     const closed = /show|显示|展开/i.test(toggle.getAttribute('aria-label') || '');
     if (closed === ${open}) toggle.click();
+    return true;
+  })()`;
+}
+
+const rowOfMessage = (index: number) => `(() => {
+  const message = ${findMessage(index)};
+  return message && (message.closest(${JSON.stringify(ROW_SELECTOR)}) || message.parentElement);
+})()`;
+
+/** Asks Claude for another reply, from a reply or from the user's message above one. */
+export function retryExpression(index: number): string {
+  return `(() => {
+    const row = ${rowOfMessage(index)};
+    const retry = row && row.querySelector('[data-testid="action-bar-retry"], [data-testid="user-message-retry"]');
+    if (!retry) return false;
+    retry.click();
+    return true;
+  })()`;
+}
+
+const editField = (index: number) =>
+  `${rowOfMessage(index)}?.querySelector('textarea[data-cds="TextArea"]')`;
+
+/** Opens the editor of a user message, unless that message is no longer the one on show. */
+export function editOpenExpression(index: number, expected: string): string {
+  return `(() => {
+    const row = ${rowOfMessage(index)};
+    const message = row && row.querySelector('[data-testid="user-message"]');
+    const edit = row && row.querySelector('[data-testid="user-message-edit"]');
+    if (!edit || message.textContent.replace(/\\s+/g, '') !== ${JSON.stringify(expected.replace(/\s+/g, ""))}) return false;
+    edit.click();
+    return true;
+  })()`;
+}
+
+/** Fills the editor the way typing does, so that the page's own state follows. */
+export function editFillExpression(index: number, text: string): string {
+  return `(() => {
+    const field = ${editField(index)};
+    if (!field) return false;
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(field, ${JSON.stringify(text)});
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`;
+}
+
+/** Presses Save, which is the last control beside the editor and enabled once the text differs. */
+export function editSaveExpression(index: number): string {
+  return `(() => {
+    let box = ${editField(index)};
+    while (box && box.querySelectorAll('button').length < 2) box = box.parentElement;
+    const save = box && [...box.querySelectorAll('button')].pop();
+    if (!save || save.disabled) return false;
+    save.click();
     return true;
   })()`;
 }

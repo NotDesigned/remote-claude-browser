@@ -18,7 +18,7 @@ export const SECURITY_HEADERS = {
   "cross-origin-opener-policy": "same-origin",
   "cross-origin-resource-policy": "same-origin",
   "permissions-policy":
-    "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=()",
+    "camera=(), microphone=(self), geolocation=(), payment=(), usb=(), serial=(), bluetooth=()",
   "referrer-policy": "no-referrer",
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",

@@ -24,6 +24,7 @@ import {
   type AgentBridgeConfig,
 } from "./config";
 import { captureRtcConstructors, installCanvasRtcRecord } from "./canvas-rtc";
+import { installVoiceBridge } from "./voice";
 import { captureMediaKeySystemAccess, installVideoDrmMonitor } from "./video";
 import { captureClipboardWrite, installClipboardHooks } from "./clipboard";
 import { canStartCanvasSnapshotWorker } from "./canvas-snapshot";
@@ -40,6 +41,7 @@ import {
 } from "./stitch";
 
 const LEGACY_GUARD = Symbol.for("@mirror/agent/installed");
+const VOICE_HOSTNAME = "claude.ai";
 
 interface MainWorldBridge {
   emitBinding: RuntimeBindingHandle;
@@ -48,6 +50,7 @@ interface MainWorldBridge {
     command(value: unknown): void;
     node(nodeId: number): Node | null;
     rtc(value: unknown): boolean;
+    voice(value: unknown): void;
   }): void;
 }
 
@@ -104,6 +107,10 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
           handlers.rtc(args[0]);
           return;
         }
+        if (method === "voice") {
+          handlers.voice(args[0]);
+          return;
+        }
         if (method !== "node" || typeof args[0] !== "number") return;
         const node = handlers.node(args[0]);
         if (node === null) return;
@@ -150,6 +157,11 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   const isTop = window === window.top;
   const emitter = createEmitter(docId, emitBinding, config.bridge.bindingName);
   installClipboardHooks({ capturedWrite: clipboardWrite, emitter });
+  // Only Claude's own page: its voice features are the purpose, and other sites keep their browser.
+  const voice =
+    isTop && location.hostname === VOICE_HOSTNAME
+      ? installVoiceBridge(window, (message) => emitter.emitVoice(message))
+      : null;
   let crossOriginIframeMirror: CrossOriginIframeMirror | null = null;
   const recordReadiness = createRecordReadiness();
   const canvasRtc = installCanvasRtcRecord({
@@ -204,6 +216,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
       },
       node: mirrorNode,
       rtc: canvasRtc.receiveSignal,
+      voice: (value) => voice?.receive(value),
     });
   }
 

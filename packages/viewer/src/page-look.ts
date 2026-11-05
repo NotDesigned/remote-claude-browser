@@ -67,8 +67,10 @@ export interface PageLook {
   moreGlyph: string;
   recents: { label: string; caretGlyph: string; filterGlyph: string } | null;
   accountGlyphs: string[];
-  /** The controls after Copy under a reply, such as Retry. */
-  replyGlyphs: string[];
+  /** The controls after Copy under a reply; Retry works from chat, the rest on the page. */
+  replyControls: { glyph: string; retry: boolean }[];
+  /** A user message's own controls. */
+  userGlyphs: { retry: string; edit: string };
   projectGlyph: string;
   /** Claude's spark, as its path only. */
   spark: { viewBox: string; path: string; color: string } | null;
@@ -387,8 +389,8 @@ export function readPageLook(
           }))
           .filter(({ width }) => width > 1);
   const recents = document.querySelector('[data-row-key="label:recents"]');
-  const copy = Array.from(document.querySelectorAll('button[aria-label="Copy"]')).pop();
-  let replyRow = copy?.parentElement ?? null;
+  const replyCopy = Array.from(document.querySelectorAll('[data-testid="action-bar-retry"]')).pop();
+  let replyRow = replyCopy?.parentElement ?? null;
   while (replyRow && replyRow.querySelectorAll("button").length < 3) {
     replyRow = replyRow.parentElement;
   }
@@ -416,9 +418,23 @@ export function readPageLook(
     )
       .map(text)
       .filter(Boolean),
-    replyGlyphs: replyRow
-      ? Array.from(replyRow.querySelectorAll("button")).slice(1).map(glyphOf).filter(Boolean)
-      : (previous?.replyGlyphs ?? []),
+    replyControls: replyRow
+      ? Array.from(replyRow.querySelectorAll("button"))
+          .slice(1)
+          .map((button) => ({
+            glyph: glyphOf(button),
+            retry: button.getAttribute("data-testid") === "action-bar-retry",
+          }))
+          .filter(({ glyph }) => glyph)
+      : (previous?.replyControls ?? []),
+    userGlyphs: {
+      retry:
+        glyphOf(document.querySelector('[data-testid="user-message-retry"]')) ||
+        (previous?.userGlyphs?.retry ?? ""),
+      edit:
+        glyphOf(document.querySelector('[data-testid="user-message-edit"]')) ||
+        (previous?.userGlyphs?.edit ?? ""),
+    },
     projectGlyph:
       glyphOf(document.querySelector("[data-picker-label]")?.closest("button")) ||
       (previous?.projectGlyph ?? ""),

@@ -31,7 +31,11 @@ interface ClipboardAgentMsg {
   text: string;
 }
 
+/** Voice from the agent: a frame of what the page plays, or its microphone going on or off. */
+export type VoiceAgentMsg = { audio: string } | { mic: boolean };
+
 export interface AgentLinkOptions {
+  publishVoice?: (message: VoiceAgentMsg, targetId: string) => void;
   /** Relays private agent clipboard messages onto the frozen viewer Down lane. */
   publishClipboard?: (message: ClipboardDown, targetId: string) => void;
 }
@@ -128,6 +132,13 @@ function asClipboardAgentMsg(msg: AgentMsg): ClipboardAgentMsg | null {
     : null;
 }
 
+function asVoiceAgentMsg(msg: AgentMsg): VoiceAgentMsg | null {
+  const value = msg as unknown as { kind?: unknown; audio?: unknown; mic?: unknown };
+  if (value.kind !== "voice") return null;
+  if (typeof value.audio === "string") return { audio: value.audio };
+  return typeof value.mic === "boolean" ? { mic: value.mic } : null;
+}
+
 export function createAgentLink(browser: BrowserHandle, options: AgentLinkOptions = {}): AgentLink {
   const statesByTarget = new Map<string, TargetState>();
   const statesBySession = new Map<string, TargetState>();
@@ -157,6 +168,12 @@ export function createAgentLink(browser: BrowserHandle, options: AgentLinkOption
       )
         return;
       options.publishClipboard?.({ t: "clip", text: clipboard.text }, state.target.targetId);
+      return;
+    }
+
+    const voice = asVoiceAgentMsg(msg);
+    if (voice !== null) {
+      if (chunk.docId === state.docId) options.publishVoice?.(voice, state.target.targetId);
       return;
     }
 

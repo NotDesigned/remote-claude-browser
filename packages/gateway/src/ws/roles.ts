@@ -71,6 +71,8 @@ interface RoleSession {
 }
 
 const DRIVER_ONLY_TAGS: ReadonlySet<Up["t"]> = new Set([
+  "mic-pcm",
+  "mic-state",
   "view",
   "view-ack",
   "ptr",

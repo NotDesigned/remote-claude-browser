@@ -145,6 +145,10 @@ export type Down =
    * the gateway delivers it only to the authenticated viewer that opened that lane.
    */
   | { t: "rtc-sig"; tab: TabId; lane: string; from: "agent"; payload: unknown }
+  /** What the remote page is playing; see encodeVoiceSamples. */
+  | { t: "audio"; tab: TabId; pcm: string }
+  /** The remote page has started or stopped using its microphone. */
+  | { t: "mic"; tab: TabId; on: boolean }
   | {
       t: "download";
       id: string;
@@ -242,6 +246,10 @@ export type Up =
    * clients must never put a viewer id on this envelope.
    */
   | { t: "rtc-sig"; tab: TabId; lane: string; payload: unknown }
+  /** This device's microphone, for the remote page; see encodeVoiceSamples. */
+  | { t: "mic-pcm"; tab: TabId; pcm: string }
+  /** Whether this device could open its microphone when the remote page asked. */
+  | { t: "mic-state"; tab: TabId; ok: boolean }
   | { t: "clip"; text: string };
 
 const DOWN_TAGS: ReadonlySet<string> = new Set([
@@ -263,6 +271,8 @@ const DOWN_TAGS: ReadonlySet<string> = new Set([
   "px-stats",
   "px",
   "rtc-sig",
+  "audio",
+  "mic",
   "download",
   "filepick",
   "driver",
@@ -287,6 +297,8 @@ const UP_TAGS: ReadonlySet<string> = new Set([
   "resync-req",
   "driver-transfer",
   "rtc-sig",
+  "mic-pcm",
+  "mic-state",
   "clip",
 ]);
 

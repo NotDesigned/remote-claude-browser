@@ -83,7 +83,13 @@ export async function startClientGateway(): Promise<void> {
         executablePath: process.env.CHROME_PATH,
         headful: process.env.CHROME_HEADFUL === "1",
         // Sets the first window. On this display's wide screen it would otherwise be huge.
-        args: ["--disable-dev-shm-usage", "--window-size=1050,980"],
+        // Nobody is at this browser to click: Claude's sound starts without a gesture here, and the
+        // viewer's own browser applies its own rule.
+        args: [
+          "--disable-dev-shm-usage",
+          "--window-size=1050,980",
+          "--autoplay-policy=no-user-gesture-required",
+        ],
       });
   const pool = createClientBrowserPool(browser, {
     isolatedStorage: true,
@@ -178,12 +184,36 @@ export async function startClientGateway(): Promise<void> {
       owner = target ? pool.ownerOf(target) : undefined;
     if (owner) frameOwners.set(event.frame.id, owner);
   });
+  /** Tabs whose page is using its microphone, for a viewer that connects while it does. */
+  const micTabs = new Set<string>();
+  const hasViewer = (sid: string) =>
+    [...viewers.values()].some((connection) => connection.sid === sid);
   const agent = createAgentLink(browser, {
     publishClipboard(message, target) {
       const sid = pool.ownerOf(target);
       if (sid) publish(sid, message);
     },
+    publishVoice(message, target) {
+      const sid = pool.ownerOf(target);
+      if (!sid) return;
+      if ("audio" in message) {
+        publish(sid, { t: "audio", tab: target, pcm: message.audio });
+        return;
+      }
+      if (message.mic) micTabs.add(target);
+      else micTabs.delete(target);
+      publish(sid, { t: "mic", tab: target, on: message.mic });
+      // With nobody connected there is no device to ask, so the page should not wait for one.
+      if (message.mic && !hasViewer(sid)) sendVoice(target, { state: false });
+    },
   });
+  const sendVoice = (tab: string, value: { state: boolean } | { pcm: string }) => {
+    const session = [...sessionTargets].find(([, target]) => target === tab)?.[0];
+    if (session)
+      void callAgentBridge(browser, session, "voice", [value]).catch(() => {
+        // The page navigated away, which ends its use of the microphone as well.
+      });
+  };
   let stopping = false,
     nextViewer = 1;
   const report = (message: string, error: unknown) => {
@@ -735,6 +765,18 @@ export async function startClientGateway(): Promise<void> {
       return;
     if (message.t === "view" || message.t === "view-ack") {
       runtime.viewport.handle(id, message);
+      // A viewer that has just come back needs to know the page is still listening.
+      if (message.t === "view" && micTabs.has(message.tab))
+        publish(runtime.sid, { t: "mic", tab: message.tab, on: true });
+      return;
+    }
+    if (message.t === "mic-pcm") {
+      sendVoice(message.tab, { pcm: message.pcm });
+      return;
+    }
+    if (message.t === "mic-state") {
+      if (!message.ok) micTabs.delete(message.tab);
+      sendVoice(message.tab, { state: message.ok });
       return;
     }
     if (message.t === "resync-req") {

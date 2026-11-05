@@ -4,7 +4,7 @@ import type { Protocol } from "puppeteer-core";
 
 import type { BrowserHandle } from "./launch";
 
-export type AgentBridgeMethod = "command" | "node" | "rtc";
+export type AgentBridgeMethod = "command" | "node" | "rtc" | "voice";
 
 export interface AgentBridgeChannel {
   readonly bindingName: string;
@@ -131,6 +131,11 @@ export function isolatedAgentBridgeSource(channel: AgentBridgeChannel): string {
         rtc(value) {
           nativeDispatchEvent.call(document, new NativeCustomEvent(inboundEventName, {
             detail: stringify({ method: "rtc", args: [value] }),
+          }));
+        },
+        voice(value) {
+          nativeDispatchEvent.call(document, new NativeCustomEvent(inboundEventName, {
+            detail: stringify({ method: "voice", args: [value] }),
           }));
         },
       }),
