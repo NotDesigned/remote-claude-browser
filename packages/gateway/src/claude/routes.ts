@@ -11,7 +11,12 @@ import { observeChat } from "./observe";
 import {
   CHAT_EXPRESSION,
   EDITOR_FOCUS_EXPRESSION,
+  MODEL_MENU_COUNT,
+  MODEL_TRIGGER_POINT,
   buttonExpression,
+  modelMenuExpression,
+  modelRowPoint,
+  sidebarExpression,
   fileDownloadExpression,
   cardOpenExpression,
   stepExpandExpression,
@@ -67,6 +72,10 @@ interface Lease {
   /** The document whose older rows could not all be read. */
   historyStalledEpoch?: string;
 }
+const MODEL_MENU_WAIT_MS = 1_500;
+const MODEL_MENU_POLL_MS = 50;
+const MODEL_MENU_ESCAPE_MS = 400;
+
 interface ClickBody {
   controller?: string;
   epoch?: string;
@@ -75,6 +84,13 @@ interface ClickBody {
   card?: number;
   attachment?: number;
   name?: string;
+  open?: boolean;
+}
+interface ModelBody {
+  controller?: string;
+  epoch?: string;
+  /** Without one, this lists the menu. A submenu row's name leads to its own rows. */
+  pick?: { submenu?: unknown; name?: unknown };
 }
 interface ActionBody {
   id?: unknown;
@@ -762,12 +778,127 @@ export async function registerClaudeChat(app: FastifyInstance, options: Options)
     "这张卡片暂时无法打开",
   );
   remoteClickRoute(
+    "/sidebar",
+    ({ open }) => (typeof open === "boolean" ? { expression: sidebarExpression(open) } : undefined),
+    "暂时无法折叠对话列表",
+  );
+  remoteClickRoute(
     "/attachment",
     ({ attachment, name }) =>
       isIndex(attachment) && typeof name === "string" && name.length <= 200
         ? { expression: attachmentRemoveExpression(attachment, name) }
         : undefined,
     "附件列表已改变，请重试",
+  );
+
+  /** Claude's menu only opens to a real press, and closes with Escape. */
+  const pressAt = async (target: TargetRef, point: string): Promise<boolean> => {
+    const at = await evaluate<{ x: number; y: number } | null>(target, point, true);
+    if (!at) return false;
+    const press = { ...at, button: "left", clickCount: 1 };
+    await boundedSend(target, "Input.dispatchMouseEvent", { ...at, type: "mouseMoved" });
+    await boundedSend(target, "Input.dispatchMouseEvent", {
+      ...press,
+      type: "mousePressed",
+      buttons: 1,
+    });
+    await boundedSend(target, "Input.dispatchMouseEvent", { ...press, type: "mouseReleased" });
+    return true;
+  };
+  const untilMenus = async (target: TargetRef, count: number): Promise<boolean> => {
+    const deadline = Date.now() + MODEL_MENU_WAIT_MS;
+    while (Date.now() < deadline) {
+      if ((await evaluate<number>(target, MODEL_MENU_COUNT)) >= count) return true;
+      await new Promise((resolve) => setTimeout(resolve, MODEL_MENU_POLL_MS));
+    }
+    return false;
+  };
+  /** A closing menu stays in the DOM for its animation, where a press would miss it. */
+  const closeMenus = async (target: TargetRef): Promise<void> => {
+    const deadline = Date.now() + MODEL_MENU_WAIT_MS;
+    let lastEscape = 0;
+    while (Date.now() < deadline) {
+      if ((await evaluate<number>(target, MODEL_MENU_COUNT)) === 0) return;
+      if (Date.now() - lastEscape > MODEL_MENU_ESCAPE_MS) {
+        lastEscape = Date.now();
+        const key = { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 };
+        await boundedSend(target, "Input.dispatchKeyEvent", { ...key, type: "rawKeyDown" });
+        await boundedSend(target, "Input.dispatchKeyEvent", { ...key, type: "keyUp" });
+      }
+      await new Promise((resolve) => setTimeout(resolve, MODEL_MENU_POLL_MS));
+    }
+    throw new Error("模型菜单没有关闭");
+  };
+  interface ModelRow {
+    name: string;
+    detail: string;
+    checked: boolean;
+    submenu: boolean;
+    rows?: ModelRow[];
+  }
+  app.post<{ Body: ModelBody }>(
+    apiPath("/model"),
+    { preHandler: options.preHandler, bodyLimit: 4096 },
+    async (request, reply) => {
+      reply.header("cache-control", "no-store");
+      const origin = process.env.MIRROR_PUBLIC_ORIGIN;
+      if (!options.isOwner(request.raw) || (origin && request.headers.origin !== origin))
+        return reply.code(403).send({ error: "权限无效" });
+      const body = request.body ?? {};
+      const current = lease;
+      if (!current?.state || body.controller !== current.id || options.mirrorHasController())
+        return reply.code(409).send({ error: "请等待文字聊天重新连接" });
+      const target = targetFor(current.state.tab);
+      if (!target) return reply.code(400).send({ error: "参数无效" });
+      if (body.epoch !== current.state.epoch)
+        return reply.code(409).send({ error: "页面已切换，请重试" });
+      const { pick } = body;
+      if (
+        pick !== undefined &&
+        (typeof pick.name !== "string" ||
+          pick.name.length > 200 ||
+          (pick.submenu !== undefined &&
+            (typeof pick.submenu !== "string" || pick.submenu.length > 200)))
+      )
+        return reply.code(400).send({ error: "参数无效" });
+      const unavailable = pick ? "没能切换，请到“页面”模式选择" : "暂时无法读取模型列表";
+      try {
+        await options.browser.send(target.sessionId, "Emulation.setFocusEmulationEnabled", {
+          enabled: true,
+        });
+        await closeMenus(target);
+        if (!(await pressAt(target, MODEL_TRIGGER_POINT)) || !(await untilMenus(target, 1)))
+          return reply.code(409).send({ error: unavailable });
+        if (pick) {
+          const depth = pick.submenu === undefined ? 0 : 1;
+          if (typeof pick.submenu === "string") {
+            const opened =
+              (await pressAt(target, modelRowPoint(0, pick.submenu))) &&
+              (await untilMenus(target, 2));
+            if (!opened) return reply.code(409).send({ error: unavailable });
+          }
+          if (!(await pressAt(target, modelRowPoint(depth, pick.name as string))))
+            return reply.code(409).send({ error: unavailable });
+          current.wake?.();
+          return reply.code(204).send();
+        }
+        const rows = (await evaluate<ModelRow[] | null>(target, modelMenuExpression(0))) ?? [];
+        for (const row of rows) {
+          if (!row.submenu) continue;
+          const opened =
+            (await pressAt(target, modelRowPoint(0, row.name))) && (await untilMenus(target, 2));
+          if (opened) row.rows = (await evaluate<ModelRow[]>(target, modelMenuExpression(1))) ?? [];
+          await closeMenus(target);
+          if (!(await pressAt(target, MODEL_TRIGGER_POINT)) || !(await untilMenus(target, 1)))
+            break;
+        }
+        return reply.send({ rows });
+      } catch {
+        return reply.code(409).send({ error: unavailable });
+      } finally {
+        await closeMenus(target).catch(() => undefined);
+      }
+    },
   );
 
   app.get(apiPath("/metrics"), { preHandler: options.preHandler }, async (_request, reply) =>

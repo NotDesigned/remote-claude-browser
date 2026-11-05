@@ -13,18 +13,21 @@ function escaped(text: string, index: number): boolean {
   return slashes % 2 === 1;
 }
 
-/** Keep incomplete streamed expressions as text until their closing delimiter arrives. */
+/**
+ * Keep incomplete streamed expressions as text until their closing delimiter arrives. The gateway
+ * writes formulas with dollars only and escapes brackets in text, so "\\[7\\]" is a citation.
+ */
 export function tokenizeChatText(text: string): ChatToken[] {
   const tokens: ChatToken[] = [];
-  const opening = /```|`|\$\$|\\\[|\\\(|\$/g;
+  const opening = /```|`|\$\$|\$/g;
   let cursor = 0;
   for (let match = opening.exec(text); match; match = opening.exec(text)) {
     const start = match.index;
     const delimiter = match[0];
     if (escaped(text, start)) continue;
     const code = delimiter.startsWith("`");
-    const block = delimiter === "$$" || delimiter === "\\[";
-    const closing = delimiter === "\\[" ? "\\]" : delimiter === "\\(" ? "\\)" : delimiter;
+    const block = delimiter === "$$";
+    const closing = delimiter;
     const contentStart = start + delimiter.length;
     if (delimiter === "$" && /\s|\$/.test(text[contentStart] ?? " ")) continue;
     let end = text.indexOf(closing, contentStart);
@@ -54,7 +57,7 @@ let formulaBytes = 0;
 let formulaSerial = 0;
 markdown.inline.ruler.before("escape", "chat_math", (state, silent) => {
   const start = state.pos;
-  const opening = state.src.slice(start).match(/^(\$\$|\$|\\\[|\\\()/)?.[0];
+  const opening = state.src.slice(start).match(/^(\$\$|\$)/)?.[0];
   if (!opening) return false;
   const token = tokenizeChatText(state.src.slice(start))[0];
   if (!token || (token.kind !== "inline" && token.kind !== "block")) return false;

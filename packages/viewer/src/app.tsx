@@ -24,6 +24,15 @@ import { videoOption } from "./px-video";
 import { pollServerStatus, receiveServerStatus, type ReceivedServerStatus } from "./server-status";
 import { ShellBar, resourceWarning, type ThemePreference } from "./shell-bar";
 import { ChatHost } from "./chat-host";
+import {
+  applyPageFonts,
+  loadPageLook,
+  readPageLook,
+  readPageView,
+  savePageLook,
+  type PageLook,
+  type PageView,
+} from "./page-look";
 import { createServerClock, DEFAULT_LIVE_BUFFER_MS } from "./clock";
 import { createResyncController, type ResyncTabState, RESYNC_WINDOW_MS } from "./resync";
 import { connectGateway, type GatewayConnectionState, type GatewaySocket } from "./ws";
@@ -102,6 +111,7 @@ function viewStorage(): Pick<Storage, "getItem" | "setItem"> {
 
 const PICTURE_HOLD_TIMEOUT_MS = 8_000;
 const CHAT_TAB = "chat";
+const PAGE_LOOK_DELAY_MS = 3_000;
 const THEME_CHECK_MS = 3_000;
 
 export function App() {
@@ -140,6 +150,12 @@ export function App() {
     {},
   );
   const [activeTab, setActiveTab] = useState<TabId | null>(null);
+  const [pageLook, setPageLook] = useState<PageLook | null>(() => {
+    const look = loadPageLook(viewStorage());
+    if (look !== null) applyPageFonts(document, look.fonts);
+    return look;
+  });
+  const pageViewRef = useRef<PageView | null>(null);
   const [tabs, setTabs] = useState<Extract<Down, { t: "tabs" }>["tabs"]>([]);
   const [modeByTab, setModeByTab] = useState<Record<TabId, "dom" | "px" | undefined>>({});
   const [pixelAvailable, setPixelAvailable] = useState(true);
@@ -988,10 +1004,37 @@ export function App() {
               ? { text: "已连接", tone: "ok" }
               : { text: "同步中", tone: "busy" };
   const warning = resourceWarning(serverStatus);
+  const chatFavicon = tabs.find((tab) => tab.id === activeTab)?.favicon;
+  const mirrorDocument = (): Document | null =>
+    hostRef.current?.querySelector("iframe")?.contentDocument ?? null;
+  const refreshPageLook = () => {
+    const page = mirrorDocument();
+    const look =
+      page === null
+        ? null
+        : readPageLook(page, document.documentElement.dataset.theme ?? "", pageLook);
+    if (look === null) return;
+    savePageLook(viewStorage(), look);
+    applyPageFonts(document, look.fonts);
+    setPageLook(look);
+  };
+  // Read once the page is up, so the fonts are loaded before anyone switches to chat.
+  useEffect(() => {
+    if (viewMode !== "dom" || !inputReady) return;
+    const timer = setTimeout(refreshPageLook, PAGE_LOOK_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [viewMode, inputReady]);
   const changeView = (mode: ViewMode, remember = true) => {
     if (remember) rememberViewMode(viewStorage(), mode);
     if (mode === viewMode) return;
     if (mode === "chat") {
+      refreshPageLook();
+      const page = mirrorDocument();
+      const url = activeChrome?.url ?? tabs.find((tab) => tab.id === activeTab)?.url;
+      pageViewRef.current =
+        viewMode === "dom" && page !== null && url
+          ? readPageView(page, new URL(url).pathname, document.documentElement.dataset.theme ?? "")
+          : null;
       setViewMode("chat");
       return;
     }
@@ -1058,6 +1101,8 @@ export function App() {
                 title: chatLocation.title || "Claude",
                 url: chatLocation.url,
                 active: true,
+                // The page view's icon, while the tab still shows the same site.
+                ...(chatFavicon === undefined ? {} : { favicon: chatFavicon }),
               },
             ]}
             send={() => {}}
@@ -1122,6 +1167,8 @@ export function App() {
           connectionKey={pageKey}
           onStatus={setChatStatus}
           onLocation={setChatLocation}
+          pageLook={pageLook}
+          pageView={pageViewRef.current}
           onOpenRemote={(url) => {
             // A visit from chat, so the remembered everyday view stays as it is.
             pendingUrlRef.current = url ?? null;

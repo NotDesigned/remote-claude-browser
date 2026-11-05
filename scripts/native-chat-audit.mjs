@@ -199,14 +199,14 @@ try {
 
   await page.setViewportSize({ width: 375, height: 812 });
   report.observations.mobile = {
-    newChatVisible: await page.locator("#mobile-new-chat").isVisible(),
+    newChatVisible: await page.locator("#sidebar-show").isVisible(),
     historyVisible: await page.locator("#conversations").isVisible(),
     draftVisible: await page.locator("#draft").isVisible(),
     horizontalOverflow: await page.evaluate(
       () => document.documentElement.scrollWidth > innerWidth,
     ),
   };
-  await page.locator("#history-toggle").click();
+  await page.locator("#sidebar-show").click();
   report.observations.mobile.historyVisible = await page.locator("#conversations").isVisible();
   await page.locator("#history-close").click();
   if (!report.observations.mobile.newChatVisible || !report.observations.mobile.historyVisible)
@@ -239,7 +239,9 @@ try {
   report.observations.optimisticSendFeedback = await page.locator(".pending-message").isVisible();
   await page.locator("#draft").fill("发送期间输入的下一条消息");
   await page.waitForFunction(
-    () => document.querySelector("#action-status").textContent === "远端已确认",
+    () =>
+      document.querySelector("#resolve-pending")?.hidden === true &&
+      document.querySelector("#generation-status")?.textContent === "",
   );
   report.observations.newerDraftPreserved =
     (await page.locator("#draft").inputValue()) === "发送期间输入的下一条消息";
@@ -279,7 +281,9 @@ try {
   await page.evaluate(() => sessionStorage.setItem("audit-preserve-storage", "1"));
   await page.reload();
   await page.waitForFunction(
-    () => document.querySelector("#action-status").textContent === "远端已确认",
+    () =>
+      document.querySelector("#resolve-pending")?.hidden === true &&
+      document.querySelector("#generation-status")?.textContent === "",
   );
   report.observations.confirmedReceiptRecovered = {
     draft: await page.locator("#draft").inputValue(),
@@ -388,7 +392,7 @@ try {
   report.observations.actualHistoryRestore = {
     lifecycle: await page.evaluate(() => window.__audit.lifecycle),
     liveStreams: streams.size,
-    connectionText: await page.locator("#connection").innerText(),
+    connectionText: await page.locator("#connection").textContent(),
   };
   await reset();
   await page.evaluate(() => {
@@ -399,7 +403,7 @@ try {
   report.observations.cachedLifecycleProbe = {
     simulatedLifecycle: true,
     liveStreams: streams.size,
-    connectionText: await page.locator("#connection").innerText(),
+    connectionText: await page.locator("#connection").textContent(),
     sendEnabled: await page.locator("#send").isEnabled(),
   };
   if (!streams.size) report.issues.push("cached-page-lifecycle-has-no-reconnect-handler");

@@ -9,7 +9,8 @@ import fastifyStatic from "../packages/gateway/node_modules/@fastify/static/inde
 import { registerClaudeChat } from "../packages/gateway/src/claude/routes";
 import type { BrowserHandle } from "../packages/gateway/src/browser/launch";
 
-if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Run through pnpm test:semantic to enforce A's resource budget");
+if (process.env.CLAUDE_LIMITED_TASK !== "1")
+  throw new Error("Run through pnpm test:semantic to enforce A's resource budget");
 const dir = await mkdtemp(join(tmpdir(), "claude-semantic-smoke-"));
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH || "/opt/claude-test-chrome/chrome",
@@ -68,7 +69,9 @@ try {
   await page.locator("#draft").fill("你好，这是受控测试 🙂");
   await page.locator("#send").click();
   await page.waitForFunction(
-    () => document.querySelector("#action-status")?.textContent === "远端已确认",
+    () =>
+      document.querySelector("#resolve-pending")?.hidden === true &&
+      document.querySelector("#generation-status")?.textContent === "",
   );
   assert.equal(await page.locator("#draft").inputValue(), "");
   assert.equal(
@@ -95,7 +98,9 @@ try {
   await remote.waitForURL("https://claude.ai/chat/fixture-history");
   checks.historyUsesSameBrowser = true;
   await page.waitForFunction(
-    () => document.querySelector("#action-status")?.textContent === "远端已确认",
+    () =>
+      document.querySelector("#resolve-pending")?.hidden === true &&
+      document.querySelector("#generation-status")?.textContent === "",
   );
   await mkdir("artifacts", { recursive: true });
   await page.screenshot({ path: "artifacts/semantic-smoke.png" });

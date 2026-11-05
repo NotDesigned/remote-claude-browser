@@ -18,7 +18,8 @@ const MESSAGE_TEXT = String.raw`(element, rich = true) => {
   const skip = 'button, script, style, svg, .sr-only, [aria-hidden="true"], [data-testid="message-actions"], [data-testid="user-message-actions"], [class~="group/status"], [data-file-row-card]';
   const read = node => {
     if (node.nodeType === 3) {
-      const text = node.textContent || '';
+      // The source's own line break after a <br> is only whitespace.
+      const text = (node.textContent || '').replace(node.previousSibling?.nodeName === 'BR' ? /^\s+/ : /^/, '');
       return rich ? text.replace(/([\\\x60*_\[\]~$#>])/g, '\\$1') : text;
     }
     if (node.nodeType !== 1) return '';
@@ -46,7 +47,7 @@ const MESSAGE_TEXT = String.raw`(element, rich = true) => {
     if (node.matches(skip)) return '';
     if (node.tagName === 'PRE') return fenced(node, '');
     if (node.tagName === 'CODE' && node.parentElement?.tagName !== 'PRE') return tick + (node.textContent || '') + tick;
-    if (node.tagName === 'BR') return '\n';
+    if (node.tagName === 'BR') return rich ? '  \n' : '\n';
     const text = [...node.childNodes].map(read).join('');
     // A process row shows its label and detail side by side, as two adjacent elements.
     if (/-meta$/.test(node.id || '') && node.previousElementSibling) return ' ' + text;
@@ -196,10 +197,25 @@ export const CHAT_EXPRESSION = String.raw`(() => {
     return { name, removable: !!remove };
   });
   const conversations = [...document.querySelectorAll('a[href^="/chat/"]')].map(e => ({path: new URL(e.href).pathname, title: plainText(e).trim().slice(0, 150)})).filter(e => e.title && /^\/chat\/[a-zA-Z0-9-]+$/.test(e.path));
+  const first = selector => document.querySelectorAll(selector)[0];
+  const words = element => [...(element?.querySelectorAll('span') || [])].filter(span => !span.children.length).map(span => (span.textContent || '').trim()).filter(Boolean);
+  const modelButton = first('[data-testid="model-selector-dropdown"]');
+  const allButtons = modelButton ? [...document.querySelectorAll('button')] : [];
+  const sidebarToggle = first('button[aria-keyshortcuts="Control+b"]');
+  const surface = {
+    model: words(modelButton)[0] || '',
+    effort: words(modelButton)[1] || '',
+    // Claude keeps its other modes laid over the current one, hidden.
+    mode: modelButton ? (allButtons.slice(allButtons.indexOf(modelButton) + 1, allButtons.indexOf(modelButton) + 4).filter(b => b.checkVisibility?.({ opacityProperty: true, visibilityProperty: true }) !== false).map(b => (b.textContent || '').replace(/[-]/g, '').trim()).find(Boolean) || '').slice(0, 40) : '',
+    project: (first('[data-picker-label]')?.textContent || '').trim().slice(0, 80),
+    placeholder: (first('[data-testid="chat-input"]')?.getAttribute('aria-placeholder') || '').slice(0, 200),
+    greeting: (first('[data-new-page-greeting-text]')?.textContent || '').trim().slice(0, 300),
+    sidebarClosed: !!sidebarToggle && /show|显示|展开/i.test(sidebarToggle.getAttribute('aria-label') || '')
+  };
   const stop = [...document.querySelectorAll('button[aria-label], button[data-testid]')].find(e => /stop|停止/i.test((e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-testid') || '')) && visible(e));
   const editorText = ${editableText.toString()};
   const draft = editor ? ('value' in editor ? editor.value : editorText(editor)) : '';
-  return {url: location.href, title: document.title, signedOut, ready: !signedOut && !!editor, draft: draft.trim() ? draft.slice(0, 100000) : '', generating: !!stop, messages, attachments, conversations: [...new Map(conversations.map(e => [e.path,e])).values()].slice(0,100)};
+  return {url: location.href, title: document.title, signedOut, ready: !signedOut && !!editor, draft: draft.trim() ? draft.slice(0, 100000) : '', generating: !!stop, messages, attachments, surface, conversations: [...new Map(conversations.map(e => [e.path,e])).values()].slice(0,100)};
 })()`;
 
 export const EDITOR_FOCUS_EXPRESSION = `(() => {
@@ -314,6 +330,46 @@ export function attachmentRemoveExpression(index: number, expectedName: string):
     const name = ((remove.getAttribute('aria-label') || '').replace(/^(remove|删除|移除)\s*/i, '') || tile.textContent || '附件').trim().slice(0, 200);
     if (name !== ${JSON.stringify(expectedName)}) return false;
     remove.click();
+    return true;
+  })()`;
+}
+
+const MODEL_TRIGGER = '[data-testid="model-selector-dropdown"]';
+const centre = (element: string): string =>
+  `(() => { const e = ${element}; if (!e) return null; e.scrollIntoView({ block: 'nearest', inline: 'nearest' }); const r = e.getBoundingClientRect(); return r.width ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null; })()`;
+
+export const MODEL_TRIGGER_POINT = centre(
+  `document.querySelector(${JSON.stringify(MODEL_TRIGGER)})`,
+);
+
+const MODEL_MENUS = `[...document.querySelectorAll('[role="menu"]')]`;
+const menuRow = (menu: string, label: string) =>
+  `[...(${MODEL_MENUS}[${menu}]?.querySelectorAll('[role^="menuitem"]') || [])].find(item => (item.querySelector('span span span span')?.textContent || item.firstElementChild?.firstElementChild?.textContent || item.textContent || '').trim() === ${JSON.stringify(label)} || (item.textContent || '').trim().startsWith(${JSON.stringify(label)}))`;
+
+/** Where a row of an open menu is: the model menu is the first, its submenu the second. */
+export const modelRowPoint = (depth: 0 | 1, label: string): string =>
+  centre(menuRow(String(depth), label));
+
+export const MODEL_MENU_COUNT = `${MODEL_MENUS}.length`;
+
+/** The rows of an open menu, without anything from the page beyond their words. */
+export const modelMenuExpression = (depth: 0 | 1): string => `(() => {
+  const menu = ${MODEL_MENUS}[${depth}];
+  if (!menu) return null;
+  const clean = value => (value || '').replace(/[\\uE000-\\uF8FF]/g, '').replace(/\\s+/g, ' ').trim();
+  return [...menu.querySelectorAll('[role^="menuitem"]')].slice(0, 40).map(item => {
+    const parts = [...item.querySelectorAll('span')].filter(span => !span.children.length).map(span => clean(span.textContent)).filter(Boolean);
+    return { name: parts[0] || clean(item.textContent), detail: parts[1] || '', checked: item.getAttribute('aria-checked') === 'true', submenu: item.getAttribute('aria-haspopup') === 'menu' };
+  }).filter(row => row.name);
+})()`;
+
+/** Brings Claude's sidebar to this state; it stays in the page's DOM either way. */
+export function sidebarExpression(open: boolean): string {
+  return `(() => {
+    const toggle = document.querySelector('button[aria-keyshortcuts="Control+b"]');
+    if (!toggle) return false;
+    const closed = /show|显示|展开/i.test(toggle.getAttribute('aria-label') || '');
+    if (closed === ${open}) toggle.click();
     return true;
   })()`;
 }

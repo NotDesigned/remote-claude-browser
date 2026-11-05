@@ -5,7 +5,7 @@ import { tokenizeChatText } from "./chat-render";
 describe("native chat formulas", () => {
   it("recognizes inline and display delimiters in Chinese text", () => {
     expect(
-      tokenizeChatText(String.raw`分析 $E=mc^2$ 和 \(\alpha+\beta\)，公式 $$\frac{1}{2}$$。`),
+      tokenizeChatText(String.raw`分析 $E=mc^2$ 和 $\alpha+\beta$，公式 $$\frac{1}{2}$$。`),
     ).toEqual([
       { kind: "text", value: "分析 " },
       { kind: "inline", value: "E=mc^2" },
@@ -15,7 +15,11 @@ describe("native chat formulas", () => {
       { kind: "block", value: String.raw`\frac{1}{2}` },
       { kind: "text", value: "。" },
     ]);
-    expect(tokenizeChatText(String.raw`\[x^2+y^2=1\]`)).toEqual([
+    // The gateway escapes brackets in text, so this is a citation and no formula.
+    expect(tokenizeChatText(String.raw`见 \[7\]\[8\]。`)).toEqual([
+      { kind: "text", value: String.raw`见 \[7\]\[8\]。` },
+    ]);
+    expect(tokenizeChatText(String.raw`$$x^2+y^2=1$$`)).toEqual([
       { kind: "block", value: "x^2+y^2=1" },
     ]);
   });

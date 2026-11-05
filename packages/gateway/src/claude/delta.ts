@@ -24,6 +24,16 @@ export interface ChatState {
   messages: ChatMessage[];
   /** Files waiting in the remote composer. */
   attachments?: { name: string; removable: boolean }[];
+  /** What Claude's page shows around the transcript, for the chat view to show the same. */
+  surface?: {
+    model: string;
+    effort: string;
+    mode: string;
+    project: string;
+    placeholder: string;
+    greeting: string;
+    sidebarClosed: boolean;
+  };
   /** Present while some older transcript rows are unread; `stalled` means reading gave up. */
   history?: { loaded: number; total: number; stalled?: boolean };
   conversations: { path: string; title: string }[];
@@ -86,6 +96,7 @@ export function chatDelta(
     draft: after.draft,
     generating: after.generating,
     attachments: after.attachments,
+    surface: after.surface,
     history: after.history,
     conversations: after.conversations,
   };
@@ -97,6 +108,7 @@ export function chatDelta(
     draft: before.draft,
     generating: before.generating,
     attachments: before.attachments,
+    surface: before.surface,
     history: before.history,
     conversations: before.conversations,
   };

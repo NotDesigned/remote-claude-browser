@@ -1,9 +1,15 @@
 import "./chat-view.css";
 import { renderChatText } from "./chat-render";
 import { CHAT_VIEW_MARKUP } from "./chat-markup";
+import { ANCHOR_BLOCKS, blockStart } from "./page-look";
 import { DOWNLOAD_NOTICE_MS, startClientDownload } from "./auto-download";
 
 const RENDER_MAX_INTERVAL_MS = 1000;
+const MORE_AREA_PX = 30;
+const NOTICE_DELAY_MS = 4_000;
+const TITLE_BAR_PX = 48;
+const VOICE_ICON =
+  '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.6 9.6v.8M6.8 7.6v4.8M10 3.6v12.8M13.2 7.6v4.8M16.4 9.6v.8"/></svg>';
 
 /**
  * Text chat, mounted inside the unified page. Returns a dispose function that closes the chat
@@ -14,7 +20,9 @@ const RENDER_MAX_INTERVAL_MS = 1000;
  * @param {{ sid: string | null, tab?: string | null, connectionKey: string,
  *   onStatus?: (status: { text: string, connected: boolean }) => void,
  *   onLocation?: (location: { url: string, title: string }) => void,
- *   onOpenBrowser?: () => void }} options
+ *   onOpenBrowser?: () => void,
+ *   pageLook?: import("./page-look").PageLook | null,
+ *   pageView?: import("./page-look").PageView | null }} options
  * @returns {() => void}
  */
 export function mountChatView(root, options) {
@@ -64,6 +72,15 @@ export function mountChatView(root, options) {
   let retryAttempt = 0;
   const maxRetryAttempts = 5;
   const tab = options.tab ?? null;
+  const phone = matchMedia("(max-width:760px)");
+  const look = options.pageLook ?? null;
+  const pageView = options.pageView ?? null;
+  let anchorDone = false;
+  cleanups.push(() => clearTimeout(noticeTimer));
+  let pageFrameDrawn = false;
+  let newPageDrawn = false;
+  let noticeTimer;
+  let sidebarWish = null;
   const messageElements = new Map();
   const conversationElements = new Map();
   let draftPath = null;
@@ -134,6 +151,8 @@ export function mountChatView(root, options) {
     },
     { passive: true },
   );
+  for (const type of ["wheel", "touchstart", "keydown"])
+    messages.addEventListener(type, () => (anchorDone = true), { passive: true });
   messages.addEventListener("click", async (event) => {
     // Claude's own links need the remote browser's login; this browser never visits the site.
     const link = event.target.closest?.("a[href]");
@@ -152,6 +171,23 @@ export function mountChatView(root, options) {
       button.textContent = "请选中复制";
     }
     setTimeout(() => (button.textContent = "复制"), 1500);
+  });
+  $("sidebar-show").onclick = () => (phone.matches ? setHistoryOpen(true) : setSidebar(true));
+  $("recents-toggle").onclick = () => {
+    const open = $("recents-toggle").getAttribute("aria-expanded") !== "true";
+    $("recents-toggle").setAttribute("aria-expanded", String(open));
+    $("conversations").hidden = !open;
+  };
+  $("compose-project").onclick = $("compose-mode").onclick = () => options.onOpenRemote?.();
+  $("compose-model").onclick = (event) => {
+    event.stopPropagation();
+    openModelMenu();
+  };
+  listen(document, "click", (event) => {
+    if (!$("model-menu").hidden && !event.target.closest?.("#model-menu")) closeModelMenu();
+  });
+  listen(document, "keydown", (event) => {
+    if (event.key === "Escape") closeModelMenu();
   });
   $("jump-latest").onclick = () => {
     following = true;
@@ -179,7 +215,7 @@ export function mountChatView(root, options) {
     $("mobile-new-chat").disabled = $("new-chat").disabled;
     $("stop").hidden = !state?.generating;
     $("stop").disabled = leaving || !controller || !connected || busy || !!pending;
-    $("resolve-pending").hidden = !pending;
+    $("resolve-pending").hidden = !pending || busy;
     $("resolve-pending").disabled = leaving;
     draft.readOnly = leaving;
     $("attach").disabled =
@@ -191,16 +227,9 @@ export function mountChatView(root, options) {
       preparingUpload;
     if (leaving) cancelUpload();
     if (draft.value !== sizedDraft) sizeDraft();
-    $("generation-status").textContent = busy
-      ? "正在提交…"
-      : pending
-        ? "等待操作确认"
-        : state?.generating
-          ? "正在生成…"
-          : connected && state?.ready
-            ? "就绪"
-            : "等待同步";
-    $("generation-status").hidden = $("generation-status").textContent === "就绪";
+    // Claude's page says nothing while things go as they should, so neither does this. What stays
+    // is an action whose outcome is still open after its request has ended.
+    $("generation-status").textContent = pending && !busy ? "等待操作确认" : "";
   }
   /** Short confirmations clear themselves instead of lingering above the composer. */
   function transientStatus(text) {
@@ -285,6 +314,401 @@ export function mountChatView(root, options) {
     reportedLocation = location;
     options.onLocation?.({ url: state.url, title: state.title ?? "" });
   }
+  /** Fonts that never arrived leave Claude's icons as empty boxes, so those are hidden instead. */
+  function glyphSpan(glyph, className = "glyph") {
+    const span = document.createElement("span");
+    span.className = className;
+    span.setAttribute("aria-hidden", "true");
+    span.textContent = glyph;
+    return span;
+  }
+  function applyLook() {
+    if (!look) return;
+    const head = $("side-head");
+    head.replaceChildren();
+    if (look.sidebarGlyph) {
+      const hide = document.createElement("button");
+      hide.type = "button";
+      hide.className = "side-toggle";
+      hide.setAttribute("aria-label", "折叠对话列表");
+      hide.append(glyphSpan(look.sidebarGlyph));
+      hide.onclick = () => (phone.matches ? setHistoryOpen(false) : setSidebar(false));
+      head.append(hide);
+      $("sidebar-show").querySelector(".glyph").textContent = look.sidebarGlyph;
+    }
+    const wordmark = document.createElement("span");
+    wordmark.className = "wordmark";
+    wordmark.textContent = look.wordmark || "Claude";
+    head.append(wordmark);
+    if (look.modeGlyphs?.length) {
+      const modes = document.createElement("span");
+      modes.className = "side-modes";
+      modes.setAttribute("aria-hidden", "true");
+      look.modeGlyphs.forEach((glyph) => modes.append(glyphSpan(glyph)));
+      head.append(modes);
+    }
+    const rows = $("side-rows");
+    const newChat = $("new-chat");
+    look.rows.forEach((row, index) => {
+      if (index === 0) {
+        newChat.replaceChildren(
+          glyphSpan(row.glyph),
+          Object.assign(document.createElement("span"), { textContent: row.label }),
+        );
+        return;
+      }
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "side-row";
+      button.append(
+        glyphSpan(row.glyph),
+        Object.assign(document.createElement("span"), { textContent: row.label }),
+      );
+      button.onclick = () => options.onOpenRemote?.(row.href ?? undefined);
+      rows.append(button);
+    });
+    if (look.account) {
+      const account = $("side-account");
+      account.hidden = false;
+      const button = document.createElement("button");
+      button.type = "button";
+      const avatar = document.createElement("span");
+      avatar.className = "side-avatar";
+      avatar.textContent = look.account.initial;
+      const name = document.createElement("span");
+      name.textContent = look.account.name;
+      button.append(avatar, name);
+      if (look.account.plan) {
+        const plan = document.createElement("span");
+        plan.className = "side-plan";
+        plan.textContent = ` · ${look.account.plan}`;
+        button.append(plan);
+      }
+      button.onclick = () => options.onOpenRemote?.();
+      account.append(button);
+    }
+    if (look.placeholder) draft.placeholder = look.placeholder;
+    if (look.sendGlyph) $("send").querySelector(".glyph").textContent = look.sendGlyph;
+    if (look.attachGlyph) $("attach").querySelector(".glyph").textContent = look.attachGlyph;
+    for (const { glyph, width } of look.composerControls ?? []) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "compose-extra";
+      button.style.width = `${width}px`;
+      // Their order differs between Claude's two screens, which the stylesheet follows.
+      button.dataset.kind = !glyph ? "voice" : width < 20 ? "voice-menu" : "dictate";
+      button.setAttribute("aria-label", "在页面模式中使用");
+      if (glyph) button.append(glyphSpan(glyph));
+      else button.innerHTML = VOICE_ICON;
+      button.onclick = () => options.onOpenRemote?.();
+      $("compose-extras").append(button);
+    }
+    $("compose-note").textContent = look.disclaimer || "";
+    if (look.recents) {
+      $("recents-label").textContent = look.recents.label;
+      if (look.recents.caretGlyph)
+        $("recents-toggle").append(glyphSpan(look.recents.caretGlyph, "glyph recents-caret"));
+      if (look.recents.filterGlyph) {
+        const filter = document.createElement("button");
+        filter.type = "button";
+        filter.className = "recents-filter";
+        filter.setAttribute("aria-label", "在页面模式中筛选");
+        filter.append(glyphSpan(look.recents.filterGlyph));
+        filter.onclick = () => options.onOpenRemote?.();
+        $("recents-head").append(filter);
+      }
+    }
+    if (look.account) {
+      const account = $("side-account");
+      const [menuGlyph, deviceGlyph] = look.accountGlyphs ?? [];
+      if (menuGlyph) account.firstElementChild.append(glyphSpan(menuGlyph, "glyph side-menu"));
+      if (deviceGlyph) {
+        const device = document.createElement("button");
+        device.type = "button";
+        device.className = "side-device";
+        device.setAttribute("aria-label", "在页面模式中打开");
+        device.append(glyphSpan(deviceGlyph));
+        device.onclick = () => options.onOpenRemote?.();
+        account.append(device);
+      }
+    }
+    if (look.projectGlyph) $("compose-project").dataset.glyph = look.projectGlyph;
+    if (look.spark) {
+      // Only the shape's own numbers go into the new element.
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", look.spark.viewBox);
+      svg.setAttribute("aria-hidden", "true");
+      svg.style.fill = look.spark.color.startsWith("var(") ? "#d97757" : look.spark.color;
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", look.spark.path);
+      svg.append(path);
+      $("chat-greeting").prepend(svg);
+    }
+    // Icons need the font; words stay readable without it.
+    document.fonts.load("20px Anthropicons-Variable").then(
+      (faces) => root.toggleAttribute("data-no-glyphs", faces.length === 0),
+      () => root.setAttribute("data-no-glyphs", ""),
+    );
+  }
+  /**
+   * Puts the block the page had at its top at the same height here. Older messages keep arriving
+   * above it for a while, so this holds until they have all come or the reader scrolls.
+   */
+  function applyAnchor(list) {
+    const anchor = pageView?.anchor;
+    if (!anchor || anchorDone) return;
+    if (new URL(state.url).pathname !== pageView.path) {
+      anchorDone = true;
+      return;
+    }
+    const article = list.children[anchor.message];
+    if (!article || article.hidden) return;
+    const target =
+      (anchor.text &&
+        [...article.querySelectorAll(`.text ${ANCHOR_BLOCKS}`)].find(
+          (block) => blockStart(block) === anchor.text,
+        )) ||
+      article;
+    // The page's offset is from the top of the page, where this list starts below the title bar.
+    const here = target.getBoundingClientRect().top - root.getBoundingClientRect().top;
+    list.scrollTop += here - anchor.top;
+    following = false;
+    if (!state.history) anchorDone = true;
+  }
+  /** A still copy of part of the page; using it takes the reader to the real thing. */
+  function drawReplica(host, replica) {
+    host.style.width = `${replica.width}px`;
+    host.style.height = `${replica.height}px`;
+    host.dataset.takenIn = replica.theme;
+    const item = (tag, className, x, y) => {
+      const element = document.createElement(tag);
+      element.className = className;
+      element.style.left = `${x}px`;
+      element.style.top = `${y}px`;
+      host.append(element);
+      return element;
+    };
+    for (const { x, y, w, h, radius, fill, line, shadow, clip } of replica.boxes) {
+      const box = item("span", "replica-box", x, y);
+      box.style.width = `${w}px`;
+      box.style.height = `${h}px`;
+      box.style.borderRadius = radius;
+      if (fill) box.style.background = fill;
+      if (line) box.style.border = `1px solid ${line}`;
+      if (shadow) box.style.boxShadow = shadow;
+      box.style.clipPath = clip;
+    }
+    for (const { x, y, w, h, src, clip } of replica.images) {
+      // Only the page's own proxied images; a copy never reaches out to anywhere else.
+      if (!src.startsWith("/s/")) continue;
+      const image = item("img", "replica-box", x, y);
+      image.alt = "";
+      image.width = w;
+      image.height = h;
+      image.style.clipPath = clip;
+      image.src = src;
+    }
+    for (const { x, y, width, text, size, weight, color, icon, transform } of replica.texts) {
+      const span = item("span", icon ? "replica-text replica-icon" : "replica-text", x, y);
+      span.style.fontSize = size;
+      span.style.fontWeight = weight;
+      span.style.color = color;
+      if (width) span.style.maxWidth = `${width}px`;
+      if (transform) span.style.transform = transform;
+      span.textContent = text;
+    }
+    host.onclick = () => options.onOpenRemote?.();
+  }
+  /** The sidebar follows Claude's own, which the reader changes from here as well. */
+  function setSidebar(open) {
+    sidebarWish = open;
+    applySidebar();
+    fetch(`${apiBase}/sidebar`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ controller, epoch: state?.epoch, open }),
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error();
+      })
+      .catch(() => transientStatus("这次折叠只在这里生效，页面模式里没有改变"));
+  }
+  function applySidebar() {
+    const remoteClosed = !!state?.surface?.sidebarClosed;
+    // The page reports the change a moment later; until then the reader's wish stands.
+    if (sidebarWish !== null && sidebarWish === !remoteClosed) sidebarWish = null;
+    const closed = sidebarWish === null ? remoteClosed : !sidebarWish;
+    root.toggleAttribute("data-sidebar-closed", closed);
+    // On a phone the list is a drawer, opened from this same control.
+    $("sidebar-show").hidden = !closed && !phone.matches;
+  }
+  function renderSurface(listIsEmpty) {
+    const surface = state.surface;
+    applySidebar();
+    const isNew = new URL(state.url).pathname === "/new" && listIsEmpty;
+    root.toggleAttribute("data-new", isNew);
+    const newRow = $("new-chat");
+    if (isNew) newRow.setAttribute("aria-current", "page");
+    else newRow.removeAttribute("aria-current");
+    const greeting = $("chat-greeting");
+    greeting.hidden = !isNew || !surface?.greeting;
+    $("chat-greeting-text").textContent = surface?.greeting ?? "";
+    if (surface?.placeholder && draft.placeholder !== surface.placeholder)
+      draft.placeholder = surface.placeholder;
+    const project = $("compose-project");
+    project.hidden = !isNew || !surface?.project;
+    project.textContent = surface?.project ?? "";
+    if (project.dataset.glyph)
+      project.append(glyphSpan(project.dataset.glyph, "glyph compose-caret"));
+    const name = surface?.model || look?.model?.name;
+    const effort = surface?.model ? surface.effort : look?.model?.effort;
+    const model = $("compose-model");
+    model.hidden = !name;
+    const label = JSON.stringify([name, effort]);
+    if (model.dataset.label !== label) {
+      model.dataset.label = label;
+      model.textContent = name ?? "";
+      if (effort) {
+        const part = document.createElement("span");
+        part.className = "compose-effort";
+        part.textContent = effort;
+        model.append(part);
+      }
+    }
+    const mode = $("compose-mode");
+    mode.textContent = surface?.mode || look?.mode || "";
+    mode.hidden = !mode.textContent;
+    const newPage = look?.newPage;
+    const below = $("new-below");
+    below.hidden = !isNew || !newPage;
+    $("new-header").hidden = !isNew || !newPage;
+    if (isNew && newPage && !newPageDrawn) {
+      newPageDrawn = true;
+      drawReplica(below, newPage.below);
+      if (newPage.aboveFieldAt !== null) {
+        below.style.position = "absolute";
+        below.style.top = `${newPage.aboveFieldAt - TITLE_BAR_PX}px`;
+        below.style.left = "0";
+      }
+      drawReplica($("new-header"), newPage.header);
+    }
+  }
+  /** Claude's own model menu, read from the page and acted on there. */
+  let modelRows = null;
+  function closeModelMenu() {
+    $("model-menu").hidden = true;
+    $("compose-model").setAttribute("aria-expanded", "false");
+  }
+  function drawModelMenu(rows, submenu) {
+    const menu = $("model-menu");
+    menu.replaceChildren(
+      ...(submenu
+        ? [
+            Object.assign(document.createElement("button"), {
+              type: "button",
+              className: "model-back",
+              textContent: `‹ ${submenu}`,
+              onclick: () => drawModelMenu(modelRows, null),
+            }),
+          ]
+        : []),
+      ...rows.map((row) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "model-row";
+        button.setAttribute("role", row.submenu ? "menuitem" : "menuitemradio");
+        if (!row.submenu) button.setAttribute("aria-checked", String(row.checked));
+        const words = document.createElement("span");
+        words.className = "model-words";
+        const name = document.createElement("span");
+        name.textContent = row.name;
+        words.append(name);
+        if (row.detail && !row.submenu) {
+          const detail = document.createElement("span");
+          detail.className = "model-detail";
+          detail.textContent = row.detail;
+          words.append(detail);
+        }
+        button.append(words);
+        const end = document.createElement("span");
+        end.className = "model-end";
+        end.textContent = row.submenu ? `${row.detail} ›` : row.checked ? "✓" : "";
+        button.append(end);
+        button.onclick = () => {
+          if (row.submenu) {
+            if (row.rows?.length) drawModelMenu(row.rows, row.name);
+            else options.onOpenRemote?.();
+            return;
+          }
+          pickModel(submenu, row.name);
+        };
+        return button;
+      }),
+    );
+  }
+  async function pickModel(submenu, name) {
+    closeModelMenu();
+    modelRows = null;
+    try {
+      const response = await fetch(`${apiBase}/model`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          controller,
+          epoch: state?.epoch,
+          pick: submenu ? { submenu, name } : { name },
+        }),
+      });
+      if (!response.ok) throw new Error((await response.json()).error);
+    } catch (error) {
+      transientStatus(error.message || "没能切换模型");
+    }
+  }
+  async function openModelMenu() {
+    const menu = $("model-menu");
+    if (!menu.hidden) {
+      closeModelMenu();
+      return;
+    }
+    menu.hidden = false;
+    $("compose-model").setAttribute("aria-expanded", "true");
+    if (modelRows) {
+      drawModelMenu(modelRows, null);
+      return;
+    }
+    menu.replaceChildren(
+      Object.assign(document.createElement("div"), {
+        className: "model-loading",
+        textContent: "正在读取…",
+      }),
+    );
+    try {
+      const response = await fetch(`${apiBase}/model`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ controller, epoch: state?.epoch }),
+      });
+      if (!response.ok) throw new Error((await response.json()).error);
+      modelRows = (await response.json()).rows;
+      if (!menu.hidden) drawModelMenu(modelRows, null);
+    } catch (error) {
+      closeModelMenu();
+      transientStatus(error.message || "暂时无法读取模型列表");
+    }
+  }
+  /** What surrounded this conversation on the page stays while the reader stays on it. */
+  function renderPageFrame() {
+    const same = !!pageView && new URL(state.url).pathname === pageView.path;
+    const panel = $("chat-panel");
+    const header = $("chat-header");
+    panel.hidden = !(same && pageView.panel);
+    header.hidden = !(same && pageView.header);
+    $("chat-title-glyph").textContent = same ? pageView.titleGlyph : "";
+    if (!same || pageFrameDrawn) return;
+    pageFrameDrawn = true;
+    if (pageView.panel) drawReplica(panel, pageView.panel);
+    if (pageView.header) drawReplica(header, pageView.header);
+  }
   function render() {
     clearTimeout(renderTimer);
     renderTimer = undefined;
@@ -314,15 +738,23 @@ export function mountChatView(root, options) {
         const text = document.createElement("div");
         text.className = "text";
         const copy = document.createElement("button");
-        copy.textContent = "复制文字";
+        const copyLabel = look?.copyGlyph || "复制文字";
+        copy.textContent = copyLabel;
+        copy.className = look?.copyGlyph ? "glyph message-copy" : "message-copy";
+        copy.setAttribute("aria-label", "复制文字");
         copy.type = "button";
         copy.onclick = async () => {
+          copy.className = "message-copy";
           try {
             await navigator.clipboard.writeText(entry?.messageText ?? "");
             copy.textContent = "已复制";
           } catch {
             copy.textContent = "请选中文字复制";
           }
+          setTimeout(() => {
+            copy.textContent = copyLabel;
+            copy.className = look?.copyGlyph ? "glyph message-copy" : "message-copy";
+          }, 1500);
         };
         const files = document.createElement("div");
         files.className = "message-files";
@@ -330,7 +762,22 @@ export function mountChatView(root, options) {
         steps.className = "message-steps";
         const cards = document.createElement("div");
         cards.className = "message-cards";
-        article.append(role, steps, text, cards, files, copy);
+        const actions = document.createElement("div");
+        actions.className = "message-actions";
+        actions.append(copy);
+        // Reading aloud, rating and retrying happen on Claude's page.
+        if (message.role === "assistant") {
+          for (const glyph of look?.replyGlyphs ?? []) {
+            const more = document.createElement("button");
+            more.type = "button";
+            more.className = "glyph message-copy";
+            more.setAttribute("aria-label", "在页面模式中使用");
+            more.textContent = glyph;
+            more.onclick = () => options.onOpenRemote?.();
+            actions.append(more);
+          }
+        }
+        article.append(role, steps, text, cards, files, actions);
         entry = {
           article,
           text,
@@ -386,7 +833,6 @@ export function mountChatView(root, options) {
                   }),
                 });
                 if (!response.ok) throw new Error((await response.json()).error || "下载失败");
-                transientStatus("已请求下载，完成后会自动开始");
                 watchDownloads();
               } catch (error) {
                 $("action-status").textContent = error.message || "下载失败";
@@ -417,20 +863,35 @@ export function mountChatView(root, options) {
     } else pendingArticle.remove();
     renderAttachments();
     const history = state.history;
-    $("history-status").textContent = !history
-      ? ""
-      : history.stalled
-        ? `有 ${history.total - history.loaded} 条较早的消息没有读到，可切换到“页面”模式查看`
-        : `正在读取较早的消息（${history.loaded}/${history.total}）`;
+    $("history-status").textContent = history?.stalled
+      ? `有 ${history.total - history.loaded} 条较早的消息没有读到，可切换到“页面”模式查看`
+      : "";
+    applyAnchor(list);
     if (following) list.scrollTop = list.scrollHeight;
     $("jump-latest").hidden = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
     const notice = $("notice");
-    notice.hidden = state.ready;
-    notice.textContent = state.signedOut
-      ? "远程浏览器里的 Claude 已登出。请切换到上方的“页面”模式登录（需要人机验证时用“画面”），登录后回到聊天即可。"
-      : "还没有找到 Claude 的输入框。如果需要登录或验证，请切换到上方的“页面”或“画面”完成，然后回到聊天。";
+    // A page that is still coming up is not ready for a moment, which is nothing to report.
+    if (state.ready) {
+      clearTimeout(noticeTimer);
+      noticeTimer = undefined;
+      notice.hidden = true;
+    } else if (state.signedOut) {
+      clearTimeout(noticeTimer);
+      noticeTimer = undefined;
+      notice.hidden = false;
+      notice.textContent =
+        "远程浏览器里的 Claude 已登出。请切换到上方的“页面”模式登录（需要人机验证时用“画面”），登录后回到聊天即可。";
+    } else if (notice.hidden && noticeTimer === undefined) {
+      noticeTimer = setTimeout(() => {
+        noticeTimer = undefined;
+        notice.textContent =
+          "还没有找到 Claude 的输入框。如果需要登录或验证，请切换到上方的“页面”或“画面”完成，然后回到聊天。";
+        notice.hidden = false;
+      }, NOTICE_DELAY_MS);
+    }
     const conversationList = $("conversations");
     const activePaths = new Set();
+    let activeTitle = "";
     state.conversations.forEach((conversation, index) => {
       activePaths.add(conversation.path);
       let button = conversationElements.get(conversation.path);
@@ -438,16 +899,28 @@ export function mountChatView(root, options) {
         button = document.createElement("button");
         button.type = "button";
         button.dataset.path = conversation.path;
-        button.onclick = () => {
+        button.onclick = (event) => {
+          // The row's own menu, drawn at its end, is on Claude's page.
+          if (
+            button.hasAttribute("aria-current") &&
+            event.offsetX > button.clientWidth - MORE_AREA_PX
+          ) {
+            options.onOpenRemote?.();
+            return;
+          }
           setHistoryOpen(false);
           action("switch", { path: conversation.path });
         };
+        if (look?.moreGlyph) button.dataset.more = look.moreGlyph;
         conversationElements.set(conversation.path, button);
       }
       if (button.textContent !== conversation.title) button.textContent = conversation.title;
-      if (new URL(state.url).pathname === conversation.path)
+      const conversationGlyph = look?.conversationGlyphs?.[conversation.path];
+      if (conversationGlyph) button.dataset.glyph = conversationGlyph;
+      if (new URL(state.url).pathname === conversation.path) {
         button.setAttribute("aria-current", "page");
-      else button.removeAttribute("aria-current");
+        activeTitle = conversation.title;
+      } else button.removeAttribute("aria-current");
       if (conversationList.children[index] !== button)
         conversationList.insertBefore(button, conversationList.children[index] || null);
     });
@@ -457,6 +930,9 @@ export function mountChatView(root, options) {
         conversationElements.delete(path);
       }
     }
+    $("chat-title").textContent = activeTitle || (state.title || "").replace(/ [-–—] Claude$/, "");
+    renderPageFrame();
+    renderSurface(!state.messages.length && !pendingArticle.parentElement);
     controls();
   }
   /**
@@ -655,7 +1131,6 @@ export function mountChatView(root, options) {
       saveDraft();
     }
     clearPending();
-    transientStatus("远端已确认");
   }
   function connect() {
     if (leaving || !sid) {
@@ -753,6 +1228,7 @@ export function mountChatView(root, options) {
           draft: data.draft,
           generating: data.generating,
           attachments: data.attachments,
+          surface: data.surface,
           history: data.history,
           conversations: data.conversations ?? state.conversations,
         });
@@ -803,7 +1279,7 @@ export function mountChatView(root, options) {
     };
     sessionStorage.setItem(pendingKey, id);
     persistPendingDetails();
-    $("action-status").textContent = "等待远端确认…";
+    $("action-status").textContent = "";
     if (type === "send") {
       following = true;
       render();
@@ -824,7 +1300,6 @@ export function mountChatView(root, options) {
       if (response.ok && result.status === "confirmed") {
         confirmPending();
         cancelUpload();
-        transientStatus("远端已确认");
       } else if (!response.ok) {
         // Precondition failures occur before execution. Preserve the draft either way.
         if (result.started === false || response.status === 400 || response.status === 403) {
@@ -924,7 +1399,10 @@ export function mountChatView(root, options) {
       }
     }
   });
-  listen(matchMedia("(max-width:760px)"), "change", () => setHistoryOpen(false));
+  listen(phone, "change", () => {
+    setHistoryOpen(false);
+    applySidebar();
+  });
   const resizeChat = () => {
     if (window.visualViewport?.scale === 1)
       root.style.setProperty("--chat-height", `${window.visualViewport.height}px`);
@@ -933,6 +1411,7 @@ export function mountChatView(root, options) {
   };
   listen(window.visualViewport, "resize", resizeChat);
   resizeChat();
+  applyLook();
   connect();
   controls();
 

@@ -96,6 +96,18 @@ describe("native chat reads", () => {
       ...extra,
     });
 
+    it("keeps a line break inside its paragraph, ignoring the source's newline after it", () => {
+      const answer = message(0, "assistant-message", "");
+      const lineBreak = { nodeType: 1, nodeName: "BR", tagName: "BR", matches: () => false };
+      answer.childNodes = [
+        { nodeType: 3, nodeName: "#text", textContent: "标题" },
+        lineBreak,
+        { nodeType: 3, nodeName: "#text", textContent: "\n正文", previousSibling: lineBreak },
+      ];
+      const state = new Script(CHAT_EXPRESSION).runInNewContext(page([answer]));
+      expect(state.messages[0].text).toBe("标题  \n正文");
+    });
+
     it("gives every row its absolute position and marks unmounted rows as pending", () => {
       const state = new Script(CHAT_EXPRESSION).runInNewContext(
         page([message(4, "user-message", "问题"), message(5, "assistant-message", "回答")]),

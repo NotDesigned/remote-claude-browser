@@ -373,9 +373,6 @@ body {
   .shell-menu-choices button {
     height: 44px;
   }
-  #chat-view .chat-subbar {
-    display: flex;
-  }
 }
 
 /* Let the shared tokens win over the browser chrome's older per-theme values. */

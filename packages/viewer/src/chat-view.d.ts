@@ -1,3 +1,5 @@
+import type { PageLook, PageView } from "./page-look";
+
 export interface ChatViewStatus {
   text: string;
   connected: boolean;
@@ -13,6 +15,10 @@ export interface ChatViewOptions {
   onLocation?(location: { url: string; title: string }): void;
   /** Show the remote page, optionally opening a URL there first. */
   onOpenRemote?(url?: string): void;
+  /** How the mirrored page looks, so chat can match it. */
+  pageLook?: PageLook | null;
+  /** Where the page was when the switch to chat happened. */
+  pageView?: PageView | null;
 }
 
 /** Mounts the text chat into `root`; the returned function disposes it completely. */
