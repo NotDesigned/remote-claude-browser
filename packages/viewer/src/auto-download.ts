@@ -3,6 +3,8 @@
  * "save" click; the gateway then keeps the file only for a short retry window.
  */
 export const DOWNLOAD_NOTICE_MS = 15_000;
+/** A download that finishes sooner than this needs no panel: the browser shows its own. */
+export const DOWNLOAD_REVEAL_MS = 1_000;
 
 export function startClientDownload(href: string, name: string): void {
   const link = document.createElement("a");

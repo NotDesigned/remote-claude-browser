@@ -47,7 +47,7 @@ import {
 import "@rrweb/replay/dist/style.css";
 import "./app.css";
 import "./shell.css";
-import { DOWNLOAD_NOTICE_MS, startClientDownload } from "./auto-download";
+import { DOWNLOAD_NOTICE_MS, DOWNLOAD_REVEAL_MS, startClientDownload } from "./auto-download";
 
 /** A viewer that never gets input (for example a follower) must still see the page. */
 const SESSION_CHECK_INTERVAL_MS = 5_000;
@@ -110,6 +110,7 @@ export function App() {
   const uploadRef = useRef<FileUploadRelay | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadRequestRef = useRef<AbortController | null>(null);
+  const [shownDownloadIds, setShownDownloadIds] = useState<ReadonlySet<string>>(new Set());
   const [uploadState, setUploadState] = useState<UploadState | null>(null);
   const hostRef = useRef<HTMLElement>(null);
   const socketRef = useRef<GatewaySocket | null>(null);
@@ -415,6 +416,12 @@ export function App() {
     const presentation = createPresentationState();
     const knownModes = new Map<TabId, "dom" | "px">();
     const autoStarted = new Set<string>();
+    const shownDownloads = new Set<string>();
+    const showDownload = (id: string) => {
+      if (disposed || shownDownloads.has(id)) return;
+      shownDownloads.add(id);
+      setShownDownloadIds(new Set(shownDownloads));
+    };
     const dismissDownloadSoon = (id: string) => {
       const timer = setTimeout(() => {
         if (disposed) return;
@@ -424,6 +431,7 @@ export function App() {
       downloadTimers.add(timer);
     };
     const downloadTimers = new Set<ReturnType<typeof setTimeout>>();
+    const revealTimers = new Map<string, ReturnType<typeof setTimeout>>();
     let reconnectPending = false;
     let viewportBeforeDisconnect: ReturnType<typeof presentation.currentViewport>;
     let pxView: PxView | null = null;
@@ -801,8 +809,9 @@ export function App() {
               for (const entry of listed)
                 if (entry.state !== "active") {
                   autoStarted.add(entry.id);
+                  showDownload(entry.id);
                   dismissDownloadSoon(entry.id);
-                }
+                } else showDownload(entry.id);
             })
             .catch(() => undefined);
           driver = message.role === "driver";
@@ -891,10 +900,22 @@ export function App() {
         }
         if (message.t === "download" && !dismissedDownloadIdsRef.current.has(message.id)) {
           setDownloads((current) => updateDownloads(current, message));
+          if (message.state === "active" && !shownDownloads.has(message.id)) {
+            const timer = setTimeout(() => showDownload(message.id), DOWNLOAD_REVEAL_MS);
+            downloadTimers.add(timer);
+            revealTimers.set(message.id, timer);
+          } else if (message.state !== "active") {
+            clearTimeout(revealTimers.get(message.id));
+            revealTimers.delete(message.id);
+          }
+          if (message.state === "canceled") showDownload(message.id);
           if (message.state === "done" && message.href && !autoStarted.has(message.id)) {
             autoStarted.add(message.id);
             startClientDownload(message.href, message.name);
-            dismissDownloadSoon(message.id);
+            // A phone's browser may refuse a save nobody tapped for, so it keeps the button.
+            if (/\bMobi/.test(navigator.userAgent)) showDownload(message.id);
+            if (shownDownloads.has(message.id)) dismissDownloadSoon(message.id);
+            else setDownloads((current) => dismissDownload(current, message.id));
           }
         }
         if (message.t === "filepick" && driver && sessionId !== null) {
@@ -1252,7 +1273,7 @@ export function App() {
           </section>
         )}
         <DownloadTray
-          downloads={downloads}
+          downloads={downloads.filter((download) => shownDownloadIds.has(download.id))}
           error={downloadError}
           onCancel={async (id) => {
             if (!clientSession) return;

@@ -91,9 +91,9 @@ body,
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 26px;
-  flex: 0 1 260px;
+  flex: 0 1 220px;
+  width: 220px;
   min-width: 104px;
-  max-width: 300px;
   height: 29px;
   color: var(--chrome-muted);
   background: transparent;
