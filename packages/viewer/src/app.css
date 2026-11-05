@@ -542,6 +542,12 @@ body,
   overflow: clip;
 }
 
+/* Only a switch that takes a while shows that the page in view is on its way out. */
+#mirror-host[data-switching] .mirror-stage {
+  opacity: 0.55;
+  transition: opacity 150ms ease 250ms;
+}
+
 .mirror-replayer,
 .mirror-replayer > .replayer-wrapper {
   min-width: 100%;

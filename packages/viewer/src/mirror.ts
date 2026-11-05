@@ -32,6 +32,9 @@ import {
 } from "./media/canvas-rtc";
 import { REPLAY_THUMBNAIL_RULES } from "./replay-thumbnails";
 
+/** How long the page in view waits for the snapshot of the tab that is replacing it. */
+const TAB_SWITCH_WAIT_MS = 1_500;
+
 type Snapshot = Extract<Down, { t: "snapshot" }>;
 type Delta = Extract<Down, { t: "delta" }>;
 
@@ -198,6 +201,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
   let activeTab: TabId | null = null;
   let state: LiveState | null = null;
   let resyncRequested = false;
+  let switchTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingRestore: RebuildRestorePoint | null = null;
   let viewerId: string | null = null;
   let isDriver = true;
@@ -270,6 +274,13 @@ export function createMirror(opts: MirrorOpts): Mirror {
     renderStatus(message);
   };
 
+  const endTabSwitch = () => {
+    if (switchTimer !== null) clearTimeout(switchTimer);
+    switchTimer = null;
+    delete opts.container.dataset.switching;
+    if (state !== null) state.stage.inert = false;
+  };
+
   const requestFreshSnapshot = (tab: TabId, reason: string) => {
     if (resyncRequested) return;
     resyncRequested = true;
@@ -323,8 +334,10 @@ export function createMirror(opts: MirrorOpts): Mirror {
   };
 
   const rebuild = (message: Snapshot) => {
-    if (message.reason === "nav") pendingRestore = null;
-    else captureInteraction();
+    endTabSwitch();
+    if (message.reason === "nav" || (state !== null && state.tab !== message.tab)) {
+      pendingRestore = null;
+    } else captureInteraction();
     const restorePoint = pendingRestore;
     pendingRestore = null;
     // The teardown and replacement happen in one synchronous websocket task. Browsers cannot
@@ -507,7 +520,12 @@ export function createMirror(opts: MirrorOpts): Mirror {
           break;
         case "snapshot":
           if (activeTab === null || msg.tab === activeTab) {
-            if (state === null || msg.epoch > state.epoch || resyncRequested) {
+            if (
+              state === null ||
+              state.tab !== msg.tab ||
+              msg.epoch > state.epoch ||
+              resyncRequested
+            ) {
               rebuild(msg);
             }
           }
@@ -559,9 +577,27 @@ export function createMirror(opts: MirrorOpts): Mirror {
       if (tab === activeTab) return;
       activeTab = tab;
       pendingRestore = null;
-      discard("Switching tabs…");
       resyncRequested = false;
-      requestFreshSnapshot(tab, "tab selected");
+      endTabSwitch();
+      if (state?.tab === tab) return;
+      // The gateway answers an activated tab with its snapshot, and the page in view stays until
+      // that replaces it. It can no longer be used, as input would reach the tab being left.
+      if (state === null) renderStatus("Switching tabs…");
+      else {
+        const rtc = state.rtc;
+        state.rtc = null;
+        disposeRtc(state.tab, rtc);
+        state.stage.inert = true;
+        opts.container.dataset.switching = "true";
+      }
+      switchTimer = setTimeout(() => {
+        switchTimer = null;
+        delete opts.container.dataset.switching;
+        if (activeTab !== tab || state?.tab === tab) return;
+        discard("Switching tabs…");
+        // Already set when the gateway has answered and its snapshot is on the way.
+        requestFreshSnapshot(tab, "tab selected");
+      }, TAB_SWITCH_WAIT_MS);
     },
     getActiveTab: () => activeTab,
     getIframe: () => state?.replayer.iframe ?? null,
@@ -569,6 +605,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
     observeRtt: (rttMs) => clock.observeRtt(rttMs),
     refreshViewportLayout: applyViewportLayout,
     teardown() {
+      endTabSwitch();
       pendingRestore = null;
       discard("Mirror stopped.");
       delete opts.container.dataset.resyncPending;

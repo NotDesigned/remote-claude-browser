@@ -103,6 +103,8 @@ const PICTURE_HOLD_TIMEOUT_MS = 8_000;
 const THEME_CHECK_MS = 3_000;
 /** How long after a click on a mirror file input the page's file request belongs to that click. */
 const MIRROR_PICKER_WINDOW_MS = 5_000;
+/** How long a tab list naming another tab is taken as older than this viewer's own click. */
+const ACTIVATION_WAIT_MS = 2_000;
 
 export function App() {
   const uploadRef = useRef<FileUploadRelay | null>(null);
@@ -113,6 +115,7 @@ export function App() {
   const socketRef = useRef<GatewaySocket | null>(null);
   const mirrorRef = useRef<Mirror | null>(null);
   const pxViewRef = useRef<PxView | null>(null);
+  const activateTabRef = useRef<((tab: TabId) => void) | null>(null);
   const dismissedDownloadIdsRef = useRef(new Set<string>());
   const runtimeCleanupRef = useRef<(() => void) | null>(null);
   const endControllerRef = useRef<AbortController | null>(null);
@@ -604,6 +607,23 @@ export function App() {
       },
     });
     mirrorRef.current = mirror;
+    let activating: { tab: TabId; at: number } | null = null;
+    const followTab = (tab: TabId) => {
+      const tabChanged = currentTab !== tab;
+      currentTab = tab;
+      setActiveTab(tab);
+      // The gateway stops a tab's picture when another becomes active, without a message
+      // about the new one, so the view must follow what this tab is really showing.
+      if (tabChanged) setViewMode(knownModes.get(tab) ?? entryMode ?? "dom");
+      pxView?.selectTab(tab);
+      if (mirror.getActiveTab() !== null && mirror.getActiveTab() !== tab) mirror.selectTab(tab);
+      if (tabChanged) scheduleViewport(0);
+    };
+    // Before the click goes out, as the tab's snapshot can arrive ahead of the new tab list.
+    activateTabRef.current = (tab) => {
+      activating = { tab, at: Date.now() };
+      followTab(tab);
+    };
     let paintedFrames = 0;
     let gatewayFrames = { capture: 0, encode: 0, drop: 0 };
     const frameRateTimer = setInterval(() => {
@@ -655,6 +675,7 @@ export function App() {
       socketRef.current = null;
       voiceRef.current?.setSender(null);
       mirrorRef.current = null;
+      activateTabRef.current = null;
       pxViewRef.current = null;
       pxView?.destroy();
       pxView = null;
@@ -837,21 +858,15 @@ export function App() {
         if (message.t === "tabs") {
           setTabs(message.tabs);
           const active = message.tabs.find((tab) => tab.active);
-          if (active !== undefined) {
-            const tabChanged = currentTab !== active.id;
-            currentTab = active.id;
-            setActiveTab(active.id);
-            // The gateway stops a tab's picture when another becomes active, without a message
-            // about the new one, so the view must follow what this tab is really showing.
-            if (tabChanged) {
-              const shown = knownModes.get(active.id) ?? entryMode ?? "dom";
-              setViewMode(shown);
-            }
-            pxView?.selectTab(active.id);
-            if (mirror.getActiveTab() !== null && mirror.getActiveTab() !== active.id) {
-              mirror.selectTab(active.id);
-            }
-            if (tabChanged) scheduleViewport(0);
+          // A list sent before the gateway saw this viewer's click still names the old tab.
+          const outdated =
+            active !== undefined &&
+            activating !== null &&
+            activating.tab !== active.id &&
+            Date.now() - activating.at < ACTIVATION_WAIT_MS;
+          if (active !== undefined && !outdated) {
+            activating = null;
+            followTab(active.id);
             if (entryMode === "px" || entryMode === "dom") {
               const requestedMode = entryMode;
               entryMode = null;
@@ -1050,9 +1065,7 @@ export function App() {
           tabs={tabs}
           chromeByTab={chromeByTab}
           onActivate={(tab) => {
-            pxViewRef.current?.selectTab(tab);
-            if (modeByTab[tab] !== "px") mirrorRef.current?.selectTab(tab);
-            setActiveTab(tab);
+            activateTabRef.current?.(tab);
           }}
           send={(message) => socketRef.current?.send(message)}
         />

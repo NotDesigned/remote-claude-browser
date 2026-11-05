@@ -1,7 +1,7 @@
 import { REPLAY_THUMBNAIL_RULES } from "./replay-thumbnails";
 import type { eventWithTime } from "@mirror/protocol";
 import { EventType, IncrementalSource } from "@mirror/protocol";
-import { vi, describe, expect, it } from "vitest";
+import { afterEach, vi, describe, expect, it } from "vitest";
 
 const fakeRrweb = vi.hoisted(() => {
   class FakeMediaElement {
@@ -242,6 +242,111 @@ describe("D10 recovery triggers", () => {
     expect(replayer.added).toHaveLength(1);
     mirror.teardown();
     fakeRrweb.FakeReplayer.instances.length = 0;
+  });
+
+  describe("switching tabs", () => {
+    function switching() {
+      vi.useFakeTimers();
+      fakeRrweb.FakeReplayer.instances.length = 0;
+      const document = new FakeDocument();
+      const container = new FakeElement(document);
+      const requestResync = vi.fn();
+      const mirror = createMirror({
+        container: container as unknown as HTMLElement,
+        pipeline: new EventPipeline(),
+        requestResync,
+      });
+      mirror.handle({ t: "snapshot", tab: "T1", epoch: 5, seq: 1, data: [full(1000)] });
+      return { container, mirror, requestResync };
+    }
+    afterEach(() => {
+      vi.useRealTimers();
+      fakeRrweb.FakeReplayer.instances.length = 0;
+    });
+
+    it("keeps the page in view, unusable, until the new tab's snapshot replaces it", () => {
+      const { container, mirror, requestResync } = switching();
+      const leaving = container.children[0] as unknown as { inert?: boolean };
+
+      mirror.selectTab("T2");
+
+      expect(mirror.getReplayer()).toBe(fakeRrweb.FakeReplayer.instances[0]);
+      expect(leaving.inert).toBe(true);
+      expect(container.dataset.switching).toBe("true");
+      expect(requestResync).not.toHaveBeenCalled();
+
+      // A lower epoch than the tab being left: epochs belong to their own tab.
+      mirror.handle({ t: "resync", tab: "T2" });
+      mirror.handle({ t: "snapshot", tab: "T2", epoch: 1, seq: 1, data: [full(1100)] });
+
+      expect(fakeRrweb.FakeReplayer.instances).toHaveLength(2);
+      expect(mirror.getReplayer()).toBe(fakeRrweb.FakeReplayer.instances[1]);
+      expect(container.dataset.switching).toBeUndefined();
+      vi.advanceTimersByTime(5_000);
+      expect(requestResync).not.toHaveBeenCalled();
+      mirror.teardown();
+    });
+
+    it("asks for a snapshot only when the gateway has not answered the switch", () => {
+      const { container, mirror, requestResync } = switching();
+
+      mirror.selectTab("T2");
+      vi.advanceTimersByTime(1_499);
+      expect(requestResync).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+
+      expect(requestResync).toHaveBeenCalledExactlyOnceWith("T2", "tab selected");
+      expect(mirror.getReplayer()).toBeNull();
+      expect(container.dataset.switching).toBeUndefined();
+      mirror.teardown();
+    });
+
+    it("waits without asking again when the snapshot is on its way", () => {
+      const { container, mirror, requestResync } = switching();
+
+      mirror.selectTab("T2");
+      mirror.handle({ t: "resync", tab: "T2" });
+      vi.advanceTimersByTime(1_500);
+
+      expect(requestResync).not.toHaveBeenCalled();
+      expect(container.dataset.mirrorState).toBe("waiting");
+      mirror.teardown();
+    });
+
+    it("hands the page back when the person returns before anything arrived", () => {
+      const { container, mirror, requestResync } = switching();
+      const stage = container.children[0] as unknown as { inert?: boolean };
+
+      mirror.selectTab("T2");
+      mirror.selectTab("T1");
+
+      expect(stage.inert).toBe(false);
+      expect(container.dataset.switching).toBeUndefined();
+      vi.advanceTimersByTime(5_000);
+      expect(requestResync).not.toHaveBeenCalled();
+      expect(mirror.getReplayer()).toBe(fakeRrweb.FakeReplayer.instances[0]);
+      mirror.teardown();
+    });
+
+    it("does not carry the old tab's scroll position into the new one", () => {
+      vi.useFakeTimers();
+      const capture = vi.fn(() => ({}));
+      const mirror = createMirror({
+        container: new FakeElement(new FakeDocument()) as unknown as HTMLElement,
+        pipeline: new EventPipeline(),
+        requestResync: () => {},
+        restoreHooks: { capture, restore: vi.fn() } as never,
+      });
+      mirror.handle({ t: "snapshot", tab: "T1", epoch: 1, seq: 1, data: [full(1000)] });
+
+      mirror.handle({ t: "snapshot", tab: "T1", epoch: 2, seq: 2, data: [full(1050)] });
+      expect(capture).toHaveBeenCalledOnce();
+
+      mirror.selectTab("T2");
+      mirror.handle({ t: "snapshot", tab: "T2", epoch: 1, seq: 1, data: [full(1100)] });
+      expect(capture).toHaveBeenCalledOnce();
+      mirror.teardown();
+    });
   });
 
   it("needs no new snapshot when the round trip is measured", () => {
