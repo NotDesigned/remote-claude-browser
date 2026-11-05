@@ -131,7 +131,7 @@ describe("createScreencast", () => {
   afterEach(() => vi.useRealTimers());
 
   describe("browser zoom", () => {
-    const setup = async (dpr: number, density = () => dpr) => {
+    const setup = async (dpr: number, density = () => dpr, mobile = false) => {
       vi.useFakeTimers();
       const browser = new MockBrowser();
       browser.respond = async (_session, method) =>
@@ -150,6 +150,7 @@ describe("createScreencast", () => {
         browserZoom: {
           set: async (_target, level) => void pressed.push(level),
         },
+        mobile,
       });
       browser.attach({ targetId: "tab-1", sessionId: "cdp-1", type: "page" });
       const metrics = () =>
@@ -195,6 +196,15 @@ describe("createScreencast", () => {
       await smooth.controller.handle({ ...px, quality: "smooth" });
       expect(smooth.pressed).toEqual([]);
       smooth.controller.dispose();
+    });
+
+    it("leaves a phone's mobile viewport only while zoomed", async () => {
+      const { metrics, controller } = await setup(2, () => 2, true);
+      await controller.handle(px);
+      expect(metrics().at(-1)).toMatchObject({ width: 2880, mobile: false });
+      await controller.handle({ t: "mode", tab: "tab-1", mode: "dom" });
+      expect(metrics().at(-1)).toMatchObject({ width: 1440, mobile: true });
+      controller.dispose();
     });
 
     it("stops at the zoom the chosen preset allows", async () => {

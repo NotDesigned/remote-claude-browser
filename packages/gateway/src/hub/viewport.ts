@@ -293,7 +293,7 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
         width: Math.round(desired.w * zoom),
         height: Math.round(desired.h * zoom),
         deviceScaleFactor: zoom > 1 || hub.pixelGrabbing ? 1 : desired.dpr,
-        mobile: deps.mobile === true,
+        mobile: deps.mobile === true && zoom <= 1,
       });
       if (!current(tabId, state)) return;
       hub.viewport = { w: desired.w, h: desired.h, dpr: desired.dpr };
