@@ -14,7 +14,7 @@ import { createAssetFetcher } from "./assets/fetch";
 import { registerAssetRoutes } from "./assets/route";
 import { createAgentLink } from "./browser/agentlink";
 import { createPhoneTargetPreparer, isPhoneRequest, waitForOwner } from "./browser/phone-identity";
-import { agentBridgeChannel, callAgentBridge } from "./browser/bridge";
+import { agentBridgeChannel, callAgentBridge, callFrameAgent } from "./browser/bridge";
 import {
   afterSignInUrl,
   createClientBrowserPool,
@@ -541,9 +541,9 @@ export async function startClientGateway(): Promise<void> {
           yield message;
         }
       },
-      sendCmd: (target, command) => {
+      sendCmd: (target, command, frameId) => {
         if (!scoped.ownsTarget(target)) return Promise.reject(new Error("Foreign recorder target"));
-        return agent.sendCmd(target, command);
+        return agent.sendCmd(target, command, frameId);
       },
     };
     let recovery: ReturnType<typeof createRendererRecovery> | undefined;
@@ -569,6 +569,8 @@ export async function startClientGateway(): Promise<void> {
       agentLink: ownAgent,
       send: scoped.send,
       callBridge: (session, method, args) => callAgentBridge(browser, session, method, args),
+      callFrame: (session, frame, method, args) =>
+        callFrameAgent(browser, session, frame, method, args),
       sessionFor: (tab) => targets.get(tab)?.sessionId,
       isDriver: (id) => roles.isDriver(id) && viewers.get(id)?.sid === sid,
       allowsInput: (id, tab) => viewport.gate.allowsInput(id, tab),

@@ -17,6 +17,8 @@ export interface AgentBridgeChannel {
   readonly readyEventName: string;
   objectId?: string;
   executionContextId?: number;
+  /** One private world per frame reached by id, from which to talk to that frame's agent. */
+  frameWorlds?: Map<string, number>;
 }
 
 const channels = new WeakMap<BrowserHandle, Map<string, AgentBridgeChannel>>();
@@ -227,4 +229,66 @@ export async function callAgentBridge(
     returnByValue: options.returnByValue ?? false,
     silent: true,
   });
+}
+
+function frameCallExpression(
+  channel: AgentBridgeChannel,
+  method: "command" | "node",
+  args: readonly unknown[],
+): string {
+  const event = `new CustomEvent(${JSON.stringify(channel.inboundEventName)}, {
+      detail: ${JSON.stringify(JSON.stringify({ method, args }))},
+    })`;
+  if (method === "command") return `void document.dispatchEvent(${event})`;
+  return `(() => {
+    let found;
+    const listener = (event) => { found = event.target; };
+    document.addEventListener(${JSON.stringify(channel.nodeResponseEventName)}, listener, true);
+    document.dispatchEvent(${event});
+    document.removeEventListener(${JSON.stringify(channel.nodeResponseEventName)}, listener, true);
+    return found;
+  })()`;
+}
+
+/**
+ * Talk to the agent of one particular frame. A session can hold several: a cross-origin frame in the
+ * same process as its parent has no target of its own, and the bridge kept for a session belongs to
+ * whichever frame announced itself last. Finding a frame's own context would take Runtime.enable,
+ * which sites can detect. A private world can be asked for by frame id instead, and every world of
+ * a document shares its events, which is how the agent is reached anyway.
+ */
+export async function callFrameAgent(
+  browser: BrowserHandle,
+  sessionId: string,
+  frameId: string,
+  method: "command" | "node",
+  args: readonly unknown[],
+): Promise<RuntimeRemoteResult> {
+  const channel = ensureAgentBridgeChannel(browser, sessionId);
+  const worlds = (channel.frameWorlds ??= new Map());
+  const evaluate = async (contextId: number) =>
+    (await browser.send(sessionId, "Runtime.evaluate", {
+      expression: frameCallExpression(channel, method, args),
+      contextId,
+      returnByValue: false,
+      silent: true,
+    })) as RuntimeRemoteResult;
+  const openWorld = async () => {
+    const created = (await browser.send(sessionId, "Page.createIsolatedWorld", {
+      frameId,
+      worldName: channel.worldName,
+    })) as { executionContextId: number };
+    worlds.set(frameId, created.executionContextId);
+    return created.executionContextId;
+  };
+
+  const known = worlds.get(frameId);
+  if (known === undefined) return evaluate(await openWorld());
+  try {
+    return await evaluate(known);
+  } catch {
+    // The frame navigated, which took its worlds with it.
+    worlds.delete(frameId);
+    return evaluate(await openWorld());
+  }
 }

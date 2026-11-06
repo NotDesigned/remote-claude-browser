@@ -34,6 +34,67 @@ describe("resolveNode", () => {
     expect(sendCalls).toEqual([]);
   });
 
+  it("reaches a frame in its parent's process through the parent's session, by frame id", async () => {
+    const commands: { targetId: string; frameId: string | undefined }[] = [];
+    const remote = (iframeNodeId: number, remoteId: number) => ({
+      reqId: 1,
+      ok: true,
+      data: { kind: "remote", iframeNodeId, remoteId },
+    });
+    const agentLink: AgentLink = {
+      async *msgs(): AsyncIterable<AgentMsg> {},
+      async sendCmd(targetId, command, frameId) {
+        commands.push({ targetId, frameId });
+        const nodeId = (command as { nodeId: number }).nodeId;
+        if (nodeId === 100) return remote(5, 60);
+        if (nodeId === 60) return remote(6, 7);
+        return { reqId: 1, ok: true, data: { kind: "local" } };
+      },
+    };
+    const frameCalls: unknown[] = [];
+    const frames: Record<number, string> = { 5: "outer-frame", 6: "inner-frame" };
+    const objectFrames = new Map<string, string>();
+    const node = (iframeNodeId: number) => {
+      const objectId = `object-${objectFrames.size}`;
+      objectFrames.set(objectId, frames[iframeNodeId]!);
+      return { result: { objectId } };
+    };
+    const sessions: Record<string, string> = { tab: "tab-session", "outer-frame": "outer-session" };
+
+    const resolved = await resolveNode(
+      {
+        agentLink,
+        send: (async (_session: string, method: string, params: { objectId: string }) =>
+          method === "DOM.describeNode"
+            ? { node: { frameId: objectFrames.get(params.objectId) } }
+            : {}) as unknown as CdpSend,
+        callBridge: async (_session, _method, args) => node(args[0] as number),
+        callFrame: async (session, frame, _method, args) => {
+          frameCalls.push([session, frame, args[0]]);
+          return node(args[0] as number);
+        },
+        // Only the tab and the outer frame have targets of their own.
+        sessionFor: (id) => sessions[id],
+      },
+      "tab",
+      100,
+    );
+
+    expect(resolved.targetId).toBe("outer-frame");
+    expect(resolved.frameId).toBe("inner-frame");
+    expect(resolved.localId).toBe(7);
+    expect(resolved.frameHops.map((hop) => hop.childTargetId)).toEqual([
+      "outer-frame",
+      "inner-frame",
+    ]);
+    expect(frameCalls).toEqual([["outer-session", "outer-frame", 6]]);
+    expect(commands).toEqual([
+      { targetId: "tab", frameId: undefined },
+      { targetId: "outer-frame", frameId: "outer-frame" },
+      { targetId: "outer-frame", frameId: "inner-frame" },
+    ]);
+  });
+
   it("recurses across nested OOPIFs and looks up replacement sessions live", async () => {
     const sessions = new Map([
       ["tab-1", "top-session"],

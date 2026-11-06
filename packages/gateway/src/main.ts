@@ -20,7 +20,7 @@ import { registerAssetRoutes } from "./assets/route";
 import { mintInvite } from "./auth/invite";
 import { SESSION_COOKIE, createSessionGuard } from "./auth/middleware";
 import { createAgentLink } from "./browser/agentlink";
-import { agentBridgeChannel, callAgentBridge } from "./browser/bridge";
+import { agentBridgeChannel, callAgentBridge, callFrameAgent } from "./browser/bridge";
 import { launchBrowser, type BrowserHandle, type BrowserTargetInfo } from "./browser/launch";
 import { createNavigationController } from "./browser/nav";
 import { connectRemoteBrowser } from "./browser/remote";
@@ -205,6 +205,8 @@ async function main(): Promise<void> {
     agentLink: agent,
     send: browser.send,
     callBridge: (sessionId, method, args) => callAgentBridge(browser, sessionId, method, args),
+    callFrame: (sessionId, frameId, method, args) =>
+      callFrameAgent(browser, sessionId, frameId, method, args),
     sessionFor: (tabId) => targets.get(tabId)?.sessionId,
     isDriver,
     allowsInput: (viewerId, tabId) => viewport.gate.allowsInput(viewerId, tabId),

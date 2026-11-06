@@ -145,6 +145,80 @@ async function checkMovedFrame(page, address) {
   console.log("Frames moved without reloading stay in the mirror, live and usable.");
 }
 
+/** A long document in frames which may share a process with their parent, as Claude's documents do. */
+const longDocument = (tag) => {
+  let rows = "";
+  for (let i = 0; i < 60; i++)
+    rows += `<p id="${tag}-row${i}" style="height:40px;margin:0">row ${i}</p>`;
+  return `<!doctype html><meta charset="utf-8"><style>html,body{margin:0}</style><div id="${tag}-state" style="position:fixed;top:0;right:0">0/none</div>${rows}<script>
+const state = document.getElementById("${tag}-state");
+let pressed = "none";
+const show = () => { state.textContent = Math.round(scrollY) + "/" + pressed; };
+addEventListener("scroll", show);
+addEventListener("mousedown", (event) => { pressed = event.target.id || event.target.tagName; show(); });
+</script>`;
+};
+const quoted = (html) => html.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+const sandboxed = (html, style) =>
+  `<iframe sandbox="allow-scripts" style="${style}" srcdoc="${quoted(html)}"></iframe>`;
+const NESTED_PAGE = `<!doctype html><meta charset="utf-8"><title>Nested</title><body style="margin:6px;display:flex;gap:6px">
+${sandboxed(longDocument("single"), "width:330px;height:340px")}
+<iframe style="width:330px;height:340px" src="data:text/html;charset=utf-8,${encodeURIComponent(
+  `<!doctype html><meta charset="utf-8"><body style="margin:0">${sandboxed(longDocument("indata"), "width:300px;height:300px;display:block")}`,
+)}"></iframe>
+${sandboxed(
+  `<!doctype html><meta charset="utf-8"><body style="margin:0">${sandboxed(longDocument("insandbox"), "width:300px;height:300px;display:block")}`,
+  "width:330px;height:340px",
+)}`;
+
+async function checkNestedFrames(page, address) {
+  await address.fill(`data:text/html;charset=utf-8,${encodeURIComponent(NESTED_PAGE)}`);
+  await address.press("Enter");
+  const find = (id) =>
+    page.evaluate((id) => {
+      const visit = (doc, x, y) => {
+        const found = doc.getElementById(id);
+        if (found) {
+          const r = found.getBoundingClientRect();
+          return { text: found.textContent, x: x + r.left + 20, y: y + r.top + r.height / 2 };
+        }
+        for (const frame of doc.querySelectorAll("iframe")) {
+          if (!frame.contentDocument) continue;
+          const r = frame.getBoundingClientRect();
+          const got = visit(frame.contentDocument, x + r.left, y + r.top);
+          if (got) return got;
+        }
+        return null;
+      };
+      const top = document.querySelector("#mirror-host .mirror-stage:not([data-parked]) iframe");
+      const o = top.getBoundingClientRect();
+      return top.contentDocument ? visit(top.contentDocument, o.left, o.top) : null;
+    }, id);
+  await page.waitForTimeout(6_000);
+  for (const tag of ["single", "indata", "insandbox"]) {
+    const near = await find(`${tag}-row2`);
+    assert.ok(near, `The ${tag} document is missing from the mirror`);
+    await page.mouse.move(near.x, near.y);
+    await page.mouse.wheel(0, 800);
+    await page.waitForTimeout(2_500);
+    const state = await find(`${tag}-state`);
+    assert.equal(
+      state?.text.split("/")[0],
+      "800",
+      `The ${tag} document did not scroll on the remote page`,
+    );
+    const row = await find(`${tag}-row24`);
+    await page.mouse.click(row.x, row.y);
+    await page.waitForTimeout(1_500);
+    assert.equal(
+      (await find(`${tag}-state`))?.text,
+      `800/${tag}-row24`,
+      `A press in the ${tag} document went astray`,
+    );
+  }
+  console.log("Scrolling and pressing reach the right place in nested frames.");
+}
+
 async function checkForm(page, address, mirrored) {
   await address.fill(`data:text/html,${encodeURIComponent(FORM_PAGE)}`);
   await address.press("Enter");
@@ -318,6 +392,7 @@ try {
 
   await checkForm(page, address, mirrored);
   await checkMovedFrame(page, address);
+  await checkNestedFrames(page, address);
 
   if (process.env.SMOKE_VIDEO === "1") await checkVideo(page, address);
 

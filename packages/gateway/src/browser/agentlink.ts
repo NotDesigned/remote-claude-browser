@@ -17,7 +17,7 @@ import {
 } from "@mirror/protocol";
 
 import type { AgentLink, TargetRef } from "../types";
-import { acquireAgentBridge, agentBridgeChannel, callAgentBridge } from "./bridge";
+import { acquireAgentBridge, agentBridgeChannel, callAgentBridge, callFrameAgent } from "./bridge";
 import { injectAgent } from "./inject";
 import type { BrowserHandle } from "./launch";
 
@@ -90,7 +90,8 @@ class AsyncMessageQueue<T> implements AsyncIterable<T>, AsyncIterator<T> {
 }
 
 interface PendingCommand {
-  docId: number;
+  /** The document it was sent to. A command sent to a frame by id is answered by that frame. */
+  docId: number | undefined;
   timer: ReturnType<typeof setTimeout>;
   resolve(value: CmdRes): void;
   reject(error: Error): void;
@@ -233,10 +234,13 @@ export function createAgentLink(browser: BrowserHandle, options: AgentLinkOption
       return;
     }
 
-    if (chunk.docId !== state.docId) return;
     const pending = state.pending.get(msg.reqId);
     if (pending === undefined) return;
-    if (pending.docId !== state.docId) return;
+    if (
+      pending.docId !== undefined &&
+      (chunk.docId !== state.docId || pending.docId !== state.docId)
+    )
+      return;
     state.pending.delete(msg.reqId);
     clearTimeout(pending.timer);
     pending.resolve({
@@ -299,14 +303,16 @@ export function createAgentLink(browser: BrowserHandle, options: AgentLinkOption
       ended.close();
       return ended;
     },
-    async sendCmd(targetId: string, input: AgentCmdInput): Promise<CmdRes> {
+    async sendCmd(targetId: string, input: AgentCmdInput, frameId?: string): Promise<CmdRes> {
       const state = statesByTarget.get(targetId);
       if (state === undefined) return Promise.reject(detachedError(targetId));
-      if (state.docId === undefined) {
-        return Promise.reject(new Error(`Agent target ${targetId} has not announced a document`));
+      if (frameId === undefined) {
+        if (state.docId === undefined) {
+          return Promise.reject(new Error(`Agent target ${targetId} has not announced a document`));
+        }
+        await state.bridgeReady;
+        if (statesByTarget.get(targetId) !== state) throw detachedError(targetId);
       }
-      await state.bridgeReady;
-      if (statesByTarget.get(targetId) !== state) throw detachedError(targetId);
 
       const reqId = state.nextReqId++;
       const cmd = { ...input, reqId } as AgentCmd;
@@ -315,17 +321,24 @@ export function createAgentLink(browser: BrowserHandle, options: AgentLinkOption
           if (!state.pending.delete(reqId)) return;
           reject(new Error(`Agent command ${reqId} timed out after ${COMMAND_TIMEOUT_MS}ms`));
         }, COMMAND_TIMEOUT_MS);
-        state.pending.set(reqId, { docId: state.docId!, timer, resolve, reject });
+        state.pending.set(reqId, {
+          docId: frameId === undefined ? state.docId! : undefined,
+          timer,
+          resolve,
+          reject,
+        });
 
-        void callAgentBridge(browser, state.target.sessionId, "command", [cmd]).catch(
-          (cause: unknown) => {
-            const pending = state.pending.get(reqId);
-            if (pending === undefined) return;
-            state.pending.delete(reqId);
-            clearTimeout(pending.timer);
-            pending.reject(new Error(`Agent command ${reqId} could not be evaluated`, { cause }));
-          },
-        );
+        void (
+          frameId === undefined
+            ? callAgentBridge(browser, state.target.sessionId, "command", [cmd])
+            : callFrameAgent(browser, state.target.sessionId, frameId, "command", [cmd])
+        ).catch((cause: unknown) => {
+          const pending = state.pending.get(reqId);
+          if (pending === undefined) return;
+          state.pending.delete(reqId);
+          clearTimeout(pending.timer);
+          pending.reject(new Error(`Agent command ${reqId} could not be evaluated`, { cause }));
+        });
       });
     },
   };

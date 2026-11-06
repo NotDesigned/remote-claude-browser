@@ -19,6 +19,7 @@ export interface InputRelayDeps {
   send: CdpSend;
   /** Private recorder bridge used for DOM RemoteObjects without a page-global helper. */
   callBridge?: ResolveNodeDeps["callBridge"];
+  callFrame?: ResolveNodeDeps["callFrame"];
   /** Live targetId -> CDP sessionId resolution comes from the browser TargetRegistry. */
   sessionFor(targetId: string): string | undefined;
   /** Role state is injected by the WS/roles composition; non-drivers are always rejected. */
@@ -79,6 +80,7 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     agentLink: deps.agentLink,
     send: deps.send,
     ...(deps.callBridge === undefined ? {} : { callBridge: deps.callBridge }),
+    ...(deps.callFrame === undefined ? {} : { callFrame: deps.callFrame }),
     sessionFor: deps.sessionFor,
   };
 
@@ -175,16 +177,20 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
         case "value": {
           const resolved = await resolveNode(resolverDeps, msg.tab, msg.nodeId);
           if (!valid()) return false;
-          const response = await deps.agentLink.sendCmd(resolved.targetId, {
-            cmd: "value",
-            nodeId: resolved.localId,
-            value: msg.value,
-            ...(msg.commit === undefined ? {} : { commit: msg.commit }),
-            ...(msg.checked === undefined ? {} : { checked: msg.checked }),
-            ...(msg.values === undefined ? {} : { values: msg.values }),
-            ...(msg.selectionStart === undefined ? {} : { selectionStart: msg.selectionStart }),
-            ...(msg.selectionEnd === undefined ? {} : { selectionEnd: msg.selectionEnd }),
-          });
+          const response = await deps.agentLink.sendCmd(
+            resolved.targetId,
+            {
+              cmd: "value",
+              nodeId: resolved.localId,
+              value: msg.value,
+              ...(msg.commit === undefined ? {} : { commit: msg.commit }),
+              ...(msg.checked === undefined ? {} : { checked: msg.checked }),
+              ...(msg.values === undefined ? {} : { values: msg.values }),
+              ...(msg.selectionStart === undefined ? {} : { selectionStart: msg.selectionStart }),
+              ...(msg.selectionEnd === undefined ? {} : { selectionEnd: msg.selectionEnd }),
+            },
+            resolved.frameId,
+          );
           if (!valid()) return false;
           valueStatus(msg.tab, !response.ok);
           return response.ok;
@@ -196,12 +202,16 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
               ? { targetId: msg.tab, localId: 0 }
               : await resolveNode(resolverDeps, msg.tab, msg.nodeId);
           if (!valid()) return false;
-          const response = await deps.agentLink.sendCmd(resolved.targetId, {
-            cmd: "scroll",
-            nodeId: resolved.localId,
-            x: msg.x,
-            y: msg.y,
-          });
+          const response = await deps.agentLink.sendCmd(
+            resolved.targetId,
+            {
+              cmd: "scroll",
+              nodeId: resolved.localId,
+              x: msg.x,
+              y: msg.y,
+            },
+            "frameId" in resolved ? resolved.frameId : undefined,
+          );
           return response.ok;
         }
       }
@@ -292,10 +302,14 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     if (cacheable && cached !== undefined && Date.now() - cached.at < 120) return cached.value;
     const resolved = await resolveNode(resolverDeps, tabId, nodeId);
     const response = await withTimeout(
-      deps.agentLink.sendCmd(resolved.targetId, {
-        cmd: "rect",
-        nodeId: resolved.localId,
-      }),
+      deps.agentLink.sendCmd(
+        resolved.targetId,
+        {
+          cmd: "rect",
+          nodeId: resolved.localId,
+        },
+        resolved.frameId,
+      ),
       rectTimeoutMs,
     );
     if (!response.ok || !isRectResult(response.data)) {
@@ -310,10 +324,14 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     const iframeRects: RectResult[] = [];
     for (const hop of resolved.frameHops) {
       const iframeResponse = await withTimeout(
-        deps.agentLink.sendCmd(hop.targetId, {
-          cmd: "rect",
-          nodeId: hop.iframeNodeId,
-        }),
+        deps.agentLink.sendCmd(
+          hop.targetId,
+          {
+            cmd: "rect",
+            nodeId: hop.iframeNodeId,
+          },
+          hop.frameId,
+        ),
         rectTimeoutMs,
       );
       if (!iframeResponse.ok || !isRectResult(iframeResponse.data)) {

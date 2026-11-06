@@ -14,6 +14,13 @@ export interface ResolveNodeDeps {
   send: CdpSend;
   /** Production's page-invisible RemoteObject bridge; omitted only by legacy/unit harnesses. */
   callBridge?: (sessionId: string, method: "node", args: readonly unknown[]) => Promise<unknown>;
+  /** The same, in one particular frame. Without it, only frames with their own target resolve. */
+  callFrame?: (
+    sessionId: string,
+    frameId: string,
+    method: "node",
+    args: readonly unknown[],
+  ) => Promise<unknown>;
   /** Live targetId -> flat CDP sessionId lookup. */
   sessionFor(targetId: string): string | undefined;
 }
@@ -21,6 +28,8 @@ export interface ResolveNodeDeps {
 export interface FrameHop {
   /** Target containing the iframe element. */
   targetId: string;
+  /** The frame containing it, when that is not the one the target's bridge belongs to. */
+  frameId?: string;
   iframeNodeId: number;
   /** OOPIF frameId, which Chromium also uses as the child targetId. */
   childTargetId: string;
@@ -28,6 +37,8 @@ export interface FrameHop {
 
 export interface ResolvedNode {
   targetId: string;
+  /** The frame within that target to send commands to, once a frame boundary has been crossed. */
+  frameId?: string;
   localId: number;
   /** Outer-to-inner OOPIF boundaries, used only for rect composition. */
   frameHops: FrameHop[];
@@ -76,18 +87,21 @@ async function iframeTargetId(
   deps: ResolveNodeDeps,
   parentTargetId: string,
   iframeNodeId: number,
+  parentFrameId: string | undefined,
 ): Promise<string> {
   const sessionId = deps.sessionFor(parentTargetId);
   if (sessionId === undefined) {
     throw new Error(`OOPIF parent target ${parentTargetId} is detached`);
   }
 
-  const evaluated = (await (deps.callBridge === undefined
-    ? deps.send(sessionId, "Runtime.evaluate", {
-        expression: mirrorNodeExpression(iframeNodeId),
-        returnByValue: false,
-      })
-    : deps.callBridge(sessionId, "node", [iframeNodeId]))) as RuntimeEvaluateResult;
+  const evaluated = (await (parentFrameId !== undefined && deps.callFrame !== undefined
+    ? deps.callFrame(sessionId, parentFrameId, "node", [iframeNodeId])
+    : deps.callBridge === undefined
+      ? deps.send(sessionId, "Runtime.evaluate", {
+          expression: mirrorNodeExpression(iframeNodeId),
+          returnByValue: false,
+        })
+      : deps.callBridge(sessionId, "node", [iframeNodeId]))) as RuntimeEvaluateResult;
   const objectId = evaluated.result?.objectId;
   if (evaluated.exceptionDetails !== undefined || objectId === undefined) {
     throw new Error(`Could not obtain iframe node ${iframeNodeId} on target ${parentTargetId}`);
@@ -108,8 +122,9 @@ async function iframeTargetId(
   }
 
   // This lookup is intentionally live and its result is not retained. AgentLink and the next
-  // raw CDP operation independently consult their current target/session state.
-  if (deps.sessionFor(frameId) === undefined) {
+  // raw CDP operation independently consult their current target/session state. A frame in its
+  // parent's process has no target, and is reached through its parent's session by frame id.
+  if (deps.sessionFor(frameId) === undefined && deps.callFrame === undefined) {
     throw new Error(`OOPIF child target ${frameId} is not attached`);
   }
   return frameId;
@@ -122,19 +137,21 @@ export async function resolveNode(
   nodeId: number,
 ): Promise<ResolvedNode> {
   let targetId = tabId;
+  let frameId: string | undefined;
   let localId = nodeId;
   const frameHops: FrameHop[] = [];
   const visited = new Set<string>();
 
   while (true) {
-    const visitKey = `${targetId}\0${localId}`;
+    const visitKey = `${targetId}\0${frameId ?? ""}\0${localId}`;
     if (visited.has(visitKey)) throw new Error("OOPIF node resolution cycle detected");
     visited.add(visitKey);
 
-    const response = await deps.agentLink.sendCmd(targetId, {
-      cmd: "resolve",
-      nodeId: localId,
-    });
+    const response = await deps.agentLink.sendCmd(
+      targetId,
+      { cmd: "resolve", nodeId: localId },
+      frameId,
+    );
     if (!response.ok) {
       throw new Error(response.err ?? `Agent could not resolve node ${localId}`);
     }
@@ -142,15 +159,19 @@ export async function resolveNode(
     if (resolution === undefined) {
       throw new Error(`Agent returned an invalid resolve result for node ${localId}`);
     }
-    if (resolution.kind === "local") return { targetId, localId, frameHops };
+    if (resolution.kind === "local") {
+      return { targetId, ...(frameId === undefined ? {} : { frameId }), localId, frameHops };
+    }
 
-    const childTargetId = await iframeTargetId(deps, targetId, resolution.iframeNodeId);
+    const childFrameId = await iframeTargetId(deps, targetId, resolution.iframeNodeId, frameId);
     frameHops.push({
       targetId,
+      ...(frameId === undefined ? {} : { frameId }),
       iframeNodeId: resolution.iframeNodeId,
-      childTargetId,
+      childTargetId: childFrameId,
     });
-    targetId = childTargetId;
+    if (deps.sessionFor(childFrameId) !== undefined) targetId = childFrameId;
+    frameId = deps.callFrame === undefined ? undefined : childFrameId;
     localId = resolution.remoteId;
   }
 }

@@ -40,8 +40,9 @@ export interface AgentLink {
   /**
    * Send an AgentCmd (reqId assigned internally). Resolves with the matching cmdres; rejects
    * after a 3s timeout or when the document navigates away (docId change) — never hangs.
+   * With a frame id, it goes to that frame's agent rather than the one the target's bridge has.
    */
-  sendCmd(targetId: string, cmd: AgentCmdInput): Promise<CmdRes>;
+  sendCmd(targetId: string, cmd: AgentCmdInput, frameId?: string): Promise<CmdRes>;
 }
 
 /** Target lifecycle notifications. Owner: browser domain; consumer: gateway-core (tab hubs). */
