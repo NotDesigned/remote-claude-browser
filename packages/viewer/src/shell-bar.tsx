@@ -212,11 +212,19 @@ export function ShellBar(props: ShellBarProps) {
                 </dd>
               </div>
               <div>
-                <dt>内存</dt>
+                <dt>整机内存</dt>
                 <dd>
                   {sample
                     ? `${gib(sample.memoryUsedBytes)} / ${gib(sample.memoryTotalBytes)} GiB`
                     : "—"}
+                </dd>
+              </div>
+              <div>
+                <dt>服务内存</dt>
+                <dd>
+                  {sample?.browserMemoryBytes === null || sample?.browserMemoryBytes === undefined
+                    ? "—"
+                    : `${gib(sample.browserMemoryBytes)} GiB`}
                 </dd>
               </div>
               <div>
