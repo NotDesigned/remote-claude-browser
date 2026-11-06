@@ -38,7 +38,9 @@ RUN apt-get update \
         iproute2 \
         iptables \
         procps \
+        x11-utils \
         xauth \
+        xdotool \
         xvfb \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 browser \

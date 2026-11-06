@@ -120,6 +120,14 @@ echo "The firewall blocks private addresses, and names still resolve for public 
 if [[ -n ${CHROME_PATH:-} ]]; then
   SMOKE_ORIGIN=$MIRROR_PUBLIC_ORIGIN SMOKE_PASSWORD=$MIRROR_ACCESS_PASSWORD \
     node scripts/compose-e2e.mjs
+  # A missing program or a failed capture only shows in the gateway's log.
+  problems=$("${compose[@]}" --project-name "$project" logs --no-color server 2>&1 |
+    grep -E 'ENOENT|client picture failed' || true)
+  if [[ -n $problems ]]; then
+    echo "The gateway reported problems:" >&2
+    echo "$problems" >&2
+    false
+  fi
 fi
 
 # The profile outlives the container, which also checks that its lock does not stop a new one.
