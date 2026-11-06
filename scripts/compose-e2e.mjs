@@ -124,8 +124,7 @@ try {
   const html =
     '<!doctype html><meta charset="utf-8"><title>Mirror check</title><p id="ran">not run</p>' +
     "<script>document.getElementById('ran').textContent = navigator.userAgent.includes('Chrome') ? 'ran' : 'odd';</script>";
-  // The address bar drops a navigation until a tab exists, and takes the first page's address over
-  // anything typed before that arrives.
+  // The address bar is disabled until a tab exists.
   await page
     .locator('#urlbar button[aria-label="Reload"]:not([disabled])')
     .waitFor({ timeout: 60_000 });
@@ -147,6 +146,35 @@ try {
   // The mirror holds what the script wrote, and none of the script's code could have run in it.
   const scripts = await mirrored.locator("script:not([type='text/plain'])").count();
   console.log(`Mirrored a page from ${origin}; live scripts in the mirror: ${scripts}.`);
+
+  // A page's address changing must not replace what is being typed, and must show again afterwards.
+  const moving =
+    "<!doctype html><script>let n = 0; setInterval(() => (location.hash = ++n), 500);</script>";
+  await address.fill(`data:text/html,${encodeURIComponent(moving)}`);
+  await address.press("Enter");
+  await page.waitForFunction(
+    () => /#\d+$/.test(document.querySelector("#urlbar input")?.value ?? ""),
+    undefined,
+    {
+      timeout: 30_000,
+    },
+  );
+  await address.fill("still typing");
+  await page.waitForTimeout(2_500);
+  assert.equal(
+    await address.inputValue(),
+    "still typing",
+    "The page's address replaced the typing",
+  );
+  await address.blur();
+  await page.waitForFunction(
+    () => /#\d+$/.test(document.querySelector("#urlbar input")?.value ?? ""),
+    undefined,
+    {
+      timeout: 10_000,
+    },
+  );
+  console.log("The address bar keeps what is typed, then follows the page again.");
 
   if (process.env.SMOKE_VIDEO === "1") await checkVideo(page, address);
 

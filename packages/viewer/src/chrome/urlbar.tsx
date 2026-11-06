@@ -3,7 +3,7 @@
  * (Gateway half P1-NAV-G = gateway/src/browser/nav.ts, browser domain. Split at the wire:
  * this component only sends `nav` Up msgs and renders `chrome` Down msgs.)
  */
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { Down, TabId, Up } from "@mirror/protocol";
 
 type ChromeState = Extract<Down, { t: "chrome" }>;
@@ -17,8 +17,18 @@ export interface UrlBarProps {
 }
 
 export function UrlBar({ tab, chrome, fallbackUrl = "", send }: UrlBarProps) {
-  const [value, setValue] = useState(chrome?.url ?? fallbackUrl);
-  useEffect(() => setValue(chrome?.url ?? fallbackUrl), [chrome?.url, fallbackUrl, tab]);
+  const pageUrl = chrome?.url ?? fallbackUrl;
+  const [value, setValue] = useState(pageUrl);
+  // The page's address must not replace what someone is typing, as when it redirects or finishes
+  // loading meanwhile. Another tab has an address of its own, so switching takes that one.
+  const typing = useRef(false);
+  useEffect(() => {
+    if (!typing.current) setValue(pageUrl);
+  }, [pageUrl]);
+  useEffect(() => {
+    typing.current = false;
+    setValue(pageUrl);
+  }, [tab]);
   const navigate = (action: NavAction, url?: string) => {
     if (tab === null) return;
     send(url === undefined ? { t: "nav", tab, action } : { t: "nav", tab, action, url });
@@ -63,7 +73,9 @@ export function UrlBar({ tab, chrome, fallbackUrl = "", send }: UrlBarProps) {
         onSubmit={(event) => {
           event.preventDefault();
           const url = normalizeNavigationUrl(value);
-          if (url !== null) navigate("go", url);
+          if (url === null) return;
+          typing.current = false;
+          navigate("go", url);
         }}
       >
         <span className="address-icon" aria-hidden="true">
@@ -86,7 +98,13 @@ export function UrlBar({ tab, chrome, fallbackUrl = "", send }: UrlBarProps) {
           autoCapitalize="off"
           autoCorrect="off"
           spellcheck={false}
-          onInput={(event) => setValue(event.currentTarget.value)}
+          onInput={(event) => {
+            typing.current = true;
+            setValue(event.currentTarget.value);
+          }}
+          onBlur={() => {
+            typing.current = false;
+          }}
         />
       </form>
     </nav>
