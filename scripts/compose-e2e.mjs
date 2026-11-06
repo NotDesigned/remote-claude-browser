@@ -129,8 +129,10 @@ async function checkMovedFrame(page, address) {
     const after = await find(`${tag}-ticks`);
     assert.ok(Number(after?.text) > Number(before.text), `Moved frame ${tag} stopped updating`);
     const box = await find(`${tag}-box`);
+    console.log("DBG box", tag, JSON.stringify(box));
     await page.mouse.click(box.x, box.y);
     await page.waitForTimeout(2_000);
+    console.log("DBG after", tag, JSON.stringify(await find(`${tag}-log`)), JSON.stringify(await find(`${tag}-box`)));
     assert.equal(
       (await find(`${tag}-log`))?.text,
       "true",

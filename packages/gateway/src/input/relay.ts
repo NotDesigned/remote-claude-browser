@@ -275,8 +275,9 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     let resolvedRect: ResolvedRect;
     try {
       resolvedRect = await resolveRect(msg.tab, msg.nodeId, msg.kind === "move");
-    } catch {
+    } catch (_error) {
       rectFallbacks.set(msg.tab, (rectFallbacks.get(msg.tab) ?? 0) + 1);
+      if (msg.kind === "down") console.error("DBG fallback", msg.nodeId, String(_error), JSON.stringify(fallback));
       return fallback;
     }
 
@@ -289,6 +290,7 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
       x = clampInto(x, resolvedRect.iframeClip.left, resolvedRect.iframeClip.right);
       y = clampInto(y, resolvedRect.iframeClip.top, resolvedRect.iframeClip.bottom);
     }
+    if (msg.kind === "down") console.error("DBG down", msg.nodeId, JSON.stringify({ rx, ry, vx: msg.vx, vy: msg.vy, resolvedRect, x, y }));
     return clampToViewport(msg.tab, x, y);
   }
 
