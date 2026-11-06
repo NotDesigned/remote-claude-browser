@@ -425,10 +425,12 @@ function composeRemoteRect(
   // node and the accumulated clipping region through every iframe element.
   for (let index = iframeRects.length - 1; index >= 0; index -= 1) {
     const iframeRect = iframeRects[index]!;
-    x += iframeRect.x;
-    y += iframeRect.y;
+    const contentX = iframeRect.x + (iframeRect.borderLeft ?? 0);
+    const contentY = iframeRect.y + (iframeRect.borderTop ?? 0);
+    x += contentX;
+    y += contentY;
     if (iframeClip !== undefined) {
-      iframeClip = translateBounds(iframeClip, iframeRect.x, iframeRect.y);
+      iframeClip = translateBounds(iframeClip, contentX, contentY);
     }
 
     const iframeBounds = boundsForRect(iframeRect);

@@ -111,7 +111,7 @@ async function checkMovedFrame(page, address) {
           const inner = frame.contentDocument;
           if (!inner) continue;
           const r = frame.getBoundingClientRect();
-          const got = visit(inner, x + r.left, y + r.top);
+          const got = visit(inner, x + r.left + frame.clientLeft, y + r.top + frame.clientTop);
           if (got) return got;
         }
         return null;
@@ -185,7 +185,11 @@ async function checkNestedFrames(page, address) {
         for (const frame of doc.querySelectorAll("iframe")) {
           if (!frame.contentDocument) continue;
           const r = frame.getBoundingClientRect();
-          const got = visit(frame.contentDocument, x + r.left, y + r.top);
+          const got = visit(
+            frame.contentDocument,
+            x + r.left + frame.clientLeft,
+            y + r.top + frame.clientTop,
+          );
           if (got) return got;
         }
         return null;

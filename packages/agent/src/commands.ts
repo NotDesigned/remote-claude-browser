@@ -286,6 +286,10 @@ export function createCommandHandler(
               w: rect.width,
               h: rect.height,
               visible,
+              // A frame's content starts inside its border.
+              ...(isIframeElement(node)
+                ? { borderLeft: node.clientLeft, borderTop: node.clientTop }
+                : {}),
             },
           });
           return;

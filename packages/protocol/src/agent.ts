@@ -77,6 +77,9 @@ export interface RectResult {
   w: number;
   h: number;
   visible: boolean;
+  /** For a frame, how far inside its box its content starts. */
+  borderLeft?: number;
+  borderTop?: number;
 }
 
 /** `resolve` result for this document or one of its direct cross-origin child frames. */

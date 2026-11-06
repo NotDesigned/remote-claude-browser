@@ -421,6 +421,64 @@ describe("InputRelay", () => {
     ]);
   });
 
+  it("places a pointer inside a frame's border, and scrolls the frame a node is in by frame id", async () => {
+    const commands: { targetId: string; command: AgentCmdInput; frameId: string | undefined }[] =
+      [];
+    const cdp: { method: string; params?: Record<string, unknown> }[] = [];
+    const agentLink: AgentLink = {
+      async *msgs(): AsyncIterable<AgentMsg> {},
+      async sendCmd(targetId, command, frameId) {
+        commands.push({ targetId, command, frameId });
+        if (command.cmd === "resolve") {
+          return frameId === undefined
+            ? { reqId: 1, ok: true, data: { kind: "remote", iframeNodeId: 5, remoteId: 8 } }
+            : { reqId: 1, ok: true, data: { kind: "local" } };
+        }
+        if (command.cmd === "rect") {
+          return {
+            reqId: 1,
+            ok: true,
+            data:
+              frameId === undefined
+                ? { x: 100, y: 50, w: 300, h: 300, visible: true, borderLeft: 2, borderTop: 3 }
+                : { x: 10, y: 20, w: 40, h: 40, visible: true },
+          };
+        }
+        return { reqId: 1, ok: true };
+      },
+    };
+    const send: CdpSend = async (_sessionId, method, params) => {
+      cdp.push({ method, ...(params === undefined ? {} : { params }) });
+      if (method === "DOM.describeNode") return { node: { frameId: "same-process-frame" } };
+      return {};
+    };
+    const relay = createInputRelay({
+      agentLink,
+      send,
+      callBridge: async () => ({ result: { objectId: "iframe-object" } }),
+      callFrame: async () => ({ result: { objectId: "iframe-object" } }),
+      // The frame has no target of its own.
+      sessionFor: (targetId) => (targetId === "tab-1" ? "top-session" : undefined),
+      isDriver: () => true,
+      allowsInput: () => true,
+      noteInput: () => {},
+      viewportFor: () => ({ w: 640, h: 480 }),
+    });
+
+    await relay("driver", { ...pointer("down"), rx: 0, ry: 0 });
+    await relay("driver", { t: "scroll", tab: "tab-1", nodeId: 44, x: 0, y: 90 });
+
+    expect(cdp.find(({ method }) => method === "Input.dispatchMouseEvent")).toMatchObject({
+      params: { x: 112, y: 73, type: "mousePressed" },
+    });
+    expect(relay.rectFallbacksFor("tab-1")).toBe(0);
+    expect(commands).toContainEqual({
+      targetId: "tab-1",
+      command: { cmd: "scroll", nodeId: 8, x: 0, y: 90 },
+      frameId: "same-process-frame",
+    });
+  });
+
   it("composes and clamps OOPIF rects while routing rect, value, and scroll to the child", async () => {
     const commands: { targetId: string; command: AgentCmdInput }[] = [];
     const cdp: { sessionId: string; method: string; params?: Record<string, unknown> }[] = [];
