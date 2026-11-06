@@ -27,6 +27,11 @@ export function attachDefaultActionContainment(
     const url = options.linkToOpen?.(event.target);
     if (url) options.openLink?.(url);
   };
+  // The press reaches the remote page, whose answer comes back through the mirror. Toggling here too
+  // would send the state as a second change, and a page that toggles on click would flip back.
+  const onControlActivation = (event: MouseEvent) => {
+    if (togglesLocally(event.target)) event.preventDefault();
+  };
   const onSubmit = (event: SubmitEvent) => event.preventDefault();
   const onDrop = (event: DragEvent) => {
     const types = event.dataTransfer?.types;
@@ -36,15 +41,28 @@ export function attachDefaultActionContainment(
   };
 
   options.doc.addEventListener("click", onLinkActivation, true);
+  options.doc.addEventListener("click", onControlActivation, true);
   options.doc.addEventListener("auxclick", onLinkActivation, true);
   options.doc.addEventListener("submit", onSubmit, true);
   options.doc.addEventListener("drop", onDrop, true);
   return () => {
     options.doc.removeEventListener("click", onLinkActivation, true);
+    options.doc.removeEventListener("click", onControlActivation, true);
     options.doc.removeEventListener("auxclick", onLinkActivation, true);
     options.doc.removeEventListener("submit", onSubmit, true);
     options.doc.removeEventListener("drop", onDrop, true);
   };
+}
+
+/** A checkbox or radio button, or a label that would activate one. */
+export function togglesLocally(target: EventTarget | null): boolean {
+  if (!isElement(target)) return false;
+  const control =
+    target.tagName.toLowerCase() === "input"
+      ? (target as HTMLInputElement)
+      : ((target.closest("label") as HTMLLabelElement | null)?.control ?? null);
+  const type = (control as HTMLInputElement | null)?.type?.toLowerCase();
+  return type === "checkbox" || type === "radio";
 }
 
 /**

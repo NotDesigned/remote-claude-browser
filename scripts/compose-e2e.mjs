@@ -3,6 +3,7 @@
  * server, not here. Needs SMOKE_ORIGIN, SMOKE_PASSWORD and CHROME_PATH.
  */
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { chromium } from "playwright";
 
 const origin = process.env.SMOKE_ORIGIN;
@@ -46,6 +47,71 @@ const VIDEO_PAGE = `<!doctype html><meta charset="utf-8"><title>Video check</tit
   setTimeout(() => recorder.stop(), 4000);
 })();
 </script>`;
+
+const FORM_PAGE = `<!doctype html><meta charset="utf-8"><title>表单检查</title>
+<label><input id="box" type="checkbox" style="width:24px;height:24px"> 待办</label>
+<button id="save" style="font-size:20px">保存</button><pre id="log"></pre>
+<script>
+const box = document.getElementById("box");
+const seen = { click: 0, change: 0 };
+const show = () => (document.getElementById("log").textContent = JSON.stringify({ ...seen, checked: box.checked }));
+box.addEventListener("click", () => { seen.click++; show(); });
+box.addEventListener("change", () => { seen.change++; show(); });
+document.getElementById("save").addEventListener("click", () => {
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob(["# 标题\\n- [x] 完成\\n"], { type: "text/markdown;charset=utf-8" }));
+  link.download = "中文笔记.md";
+  document.body.append(link);
+  link.click();
+});
+show();
+</script>`;
+
+async function checkForm(page, address, mirrored) {
+  await address.fill(`data:text/html,${encodeURIComponent(FORM_PAGE)}`);
+  await address.press("Enter");
+  await mirrored.locator("#box").waitFor({ timeout: 30_000 });
+  await page.waitForFunction(
+    () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
+  );
+  const log = async () => JSON.parse(await mirrored.locator("#log").innerText());
+
+  // One press is one click and one change on the remote page, and the mirror shows the outcome.
+  await mirrored.locator("#box").click({ force: true });
+  await page.waitForTimeout(2_000);
+  assert.deepEqual(
+    await log(),
+    { click: 1, change: 1, checked: true },
+    "A press toggled more than once",
+  );
+  assert.equal(
+    await mirrored.locator("#box").isChecked(),
+    true,
+    "The mirror did not show the check",
+  );
+  await mirrored.getByText("待办").click({ force: true });
+  await page.waitForTimeout(2_000);
+  assert.deepEqual(
+    await log(),
+    { click: 2, change: 2, checked: false },
+    "A press on the label went wrong",
+  );
+  assert.equal(
+    await mirrored.locator("#box").isChecked(),
+    false,
+    "The mirror did not show the uncheck",
+  );
+  console.log("A checkbox toggles once per press, and the mirror follows it.");
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download", { timeout: 30_000 }),
+    mirrored.locator("#save").click(),
+  ]);
+  assert.equal(download.suggestedFilename(), "中文笔记.md", "The download lost its name");
+  const content = await readFile(await download.path(), "utf8");
+  assert.equal(content, "# 标题\n- [x] 完成\n", "The download's content changed");
+  console.log("A Markdown download keeps its Chinese name and its content.");
+}
 
 async function checkVideo(page, address) {
   await page.evaluate(() => {
@@ -172,6 +238,8 @@ try {
   );
   console.log("The address bar follows the page, and keeps what is being typed.");
 
+  await checkForm(page, address, mirrored);
+
   if (process.env.SMOKE_VIDEO === "1") await checkVideo(page, address);
 
   // Picture mode, in a session of its own. Its canvas only appears once a frame has arrived.
@@ -181,8 +249,21 @@ try {
   await picture.locator('input[name="password"]').fill(password);
   await picture.locator('button[type="submit"]').click();
   await picture.waitForSelector("#shell-bar", { timeout: 60_000 });
+  // A title in Chinese, which picture mode has to read to find the window. The check on the gateway's
+  // log in compose-smoke.sh sees it fail.
+  await picture.waitForFunction(() => new URL(location.href).searchParams.has("sid"));
+  const pictureAddress = picture.locator("#urlbar input");
+  await picture
+    .locator('#urlbar button[aria-label="Reload"]:not([disabled])')
+    .waitFor({ timeout: 60_000 });
+  await pictureAddress.fill(
+    `data:text/html,${encodeURIComponent('<!doctype html><meta charset="utf-8"><title>中文标题</title><p>画面</p>')}`,
+  );
+  await pictureAddress.press("Enter");
+  await picture.waitForTimeout(2_000);
   // After the login, whose redirect does not keep the address's query.
-  await picture.goto(`${origin}/?mode=px`);
+  const session = new URL(picture.url()).searchParams.get("sid");
+  await picture.goto(`${origin}/?mode=px&sid=${session}`);
   await picture.waitForFunction(() => document.querySelector(".px-canvas")?.width > 0, undefined, {
     timeout: 60_000,
   });

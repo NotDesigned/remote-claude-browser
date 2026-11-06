@@ -54,6 +54,9 @@ COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md UPSTREAM_COMMIT /app/
 COPY deploy/server-entrypoint.sh deploy/server-egress.sh /opt/remote-browser/
 RUN chmod 0755 /opt/remote-browser/server-entrypoint.sh /opt/remote-browser/server-egress.sh
 
+# Without a UTF-8 locale Chromium can't name a download in Chinese, which comes out as "download", and
+# xwininfo can't print such a window's title, which picture mode finds the window by.
+ENV LANG=C.UTF-8
 ENV NODE_ENV=production
 ENV VIEWER_DIST_ROOT=/app/viewer
 ENV CHROME_PATH=/usr/bin/chromium
