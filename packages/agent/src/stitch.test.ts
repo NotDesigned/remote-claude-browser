@@ -247,6 +247,54 @@ describe("createReturnedDocumentCheck", () => {
     data: { node: { type: 0, id: 1, childNodes: [] }, initialOffset: { top: 0, left: 0 } },
   } as unknown as eventWithTime;
 
+  const added = (node: unknown): eventWithTime =>
+    ({
+      type: EventType.IncrementalSnapshot,
+      timestamp: 1,
+      data: {
+        source: IncrementalSource.Mutation,
+        texts: [],
+        attributes: [],
+        removes: [],
+        adds: [{ parentId: 5, nextId: null, node }],
+      },
+    }) as unknown as eventWithTime;
+  const frame = (id: number) => ({ type: 2, id, tagName: "iframe", childNodes: [] });
+  const wrapper = (id: number, ...childNodes: unknown[]) => ({
+    type: 2,
+    id,
+    tagName: "div",
+    childNodes,
+  });
+
+  it("recognises a frame added again, even inside a new wrapper", () => {
+    const isReturned = createReturnedDocumentCheck();
+    expect(isReturned(added(frame(20)))).toBe(false);
+    expect(isReturned(added(wrapper(30, frame(21))))).toBe(false);
+    expect(isReturned(added(wrapper(31, frame(20))))).toBe(true);
+    expect(isReturned(added(frame(21)))).toBe(true);
+  });
+
+  it("recognises a frame from a snapshot added again, and forgets it after the next", () => {
+    const withFrame = {
+      type: EventType.FullSnapshot,
+      timestamp: 1,
+      data: { node: wrapper(1, frame(40)), initialOffset: { top: 0, left: 0 } },
+    } as unknown as eventWithTime;
+    const isReturned = createReturnedDocumentCheck();
+    expect(isReturned(withFrame)).toBe(false);
+    expect(isReturned(added(frame(40)))).toBe(true);
+    expect(isReturned(snapshot)).toBe(false);
+    expect(isReturned(added(frame(40)))).toBe(false);
+  });
+
+  it("does not ask again when a report brings back a document's frames", () => {
+    const report = (id: number) => ({ type: 0, id, childNodes: [frame(50)] });
+    const isReturned = createReturnedDocumentCheck();
+    expect(isReturned(added(report(60)))).toBe(false);
+    expect(isReturned(added(report(61)))).toBe(false);
+  });
+
   it("recognises a document attached a second time", () => {
     const isReturned = createReturnedDocumentCheck();
     expect(isReturned(attach(7))).toBe(false);

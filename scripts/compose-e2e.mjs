@@ -67,6 +67,67 @@ document.getElementById("save").addEventListener("click", () => {
 show();
 </script>`;
 
+/** A frame with its own recorder, which moveBefore moves without reloading, as Claude's documents do. */
+const MOVED_CHILD = `<!doctype html><meta charset="utf-8"><input type="checkbox" id="moved-box"><p id="moved-log">0</p><p id="moved-ticks">0</p><script>
+let n = 0; const box = document.getElementById("moved-box");
+box.addEventListener("change", () => { document.getElementById("moved-log").textContent = String(box.checked); });
+setInterval(() => { document.getElementById("moved-ticks").textContent = ++n; }, 500);
+</script>`;
+const MOVED_PARENT = `<!doctype html><meta charset="utf-8"><div id="first"><iframe id="frame" sandbox="allow-scripts" style="width:300px;height:140px"
+ srcdoc="${MOVED_CHILD.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"></iframe></div><div id="second"></div><script>
+setTimeout(() => document.getElementById("second").moveBefore(document.getElementById("frame"), null), 3000);
+</script>`;
+const MOVED_PAGE = `<!doctype html><meta charset="utf-8"><title>Moved frame</title><iframe style="width:360px;height:380px"
+ src="data:text/html;charset=utf-8,${encodeURIComponent(MOVED_PARENT)}"></iframe>`;
+
+async function checkMovedFrame(page, address) {
+  await address.fill(`data:text/html;charset=utf-8,${encodeURIComponent(MOVED_PAGE)}`);
+  await address.press("Enter");
+  const find = (id) =>
+    page.evaluate((id) => {
+      const visit = (doc, x, y) => {
+        const found = doc.getElementById(id);
+        if (found) {
+          const r = found.getBoundingClientRect();
+          return {
+            text: found.textContent,
+            checked: found.checked,
+            x: x + r.left + r.width / 2,
+            y: y + r.top + r.height / 2,
+          };
+        }
+        for (const frame of doc.querySelectorAll("iframe")) {
+          const inner = frame.contentDocument;
+          if (!inner) continue;
+          const r = frame.getBoundingClientRect();
+          const got = visit(inner, x + r.left, y + r.top);
+          if (got) return got;
+        }
+        return null;
+      };
+      const top = document.querySelector("#mirror-host .mirror-stage:not([data-parked]) iframe");
+      const o = top.getBoundingClientRect();
+      return top.contentDocument ? visit(top.contentDocument, o.left, o.top) : null;
+    }, id);
+  // Past the move, and past when a report would arrive.
+  await page.waitForTimeout(8_000);
+  const before = await find("moved-ticks");
+  assert.ok(before, "The moved frame's content is missing from the mirror");
+  await page.waitForTimeout(2_000);
+  const after = await find("moved-ticks");
+  assert.ok(Number(after?.text) > Number(before.text), "The moved frame stopped updating");
+  const box = await find("moved-box");
+  await page.mouse.click(box.x, box.y);
+  await page.waitForTimeout(2_000);
+  assert.equal((await find("moved-log"))?.text, "true", "A press did not reach the moved frame");
+  assert.equal(
+    (await find("moved-box"))?.checked,
+    true,
+    "The mirror did not show the moved frame's check",
+  );
+  console.log("A frame moved without reloading stays in the mirror, live and usable.");
+}
+
 async function checkForm(page, address, mirrored) {
   await address.fill(`data:text/html,${encodeURIComponent(FORM_PAGE)}`);
   await address.press("Enter");
@@ -239,6 +300,7 @@ try {
   console.log("The address bar follows the page, and keeps what is being typed.");
 
   await checkForm(page, address, mirrored);
+  await checkMovedFrame(page, address);
 
   if (process.env.SMOKE_VIDEO === "1") await checkVideo(page, address);
 

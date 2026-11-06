@@ -76,22 +76,48 @@ export function installStitchReadyListener(target: Window = window): () => void 
   return () => target.removeEventListener("message", onMessage);
 }
 
+interface SerializedTree {
+  id: number;
+  type?: number;
+  tagName?: string;
+  childNodes?: SerializedTree[];
+}
+
+function framesIn(node: SerializedTree, found: number[] = []): number[] {
+  if (node.tagName === "iframe") found.push(node.id);
+  for (const child of node.childNodes ?? []) framesIn(child, found);
+  return found;
+}
+
 /**
- * A page can move a frame without reloading it, as Claude does when an artifact panel reopens. The
- * frames inside never restart, so nothing else tells them that the replay has lost their content.
- * Documents return with the same id, except after a snapshot, which requests the reports itself.
+ * A page can move a frame without reloading it, as Claude does when an artifact panel reopens, and
+ * with moveBefore as its documents open. The frames inside never restart, so nothing else tells them
+ * that the replay has built a new, empty frame and lost their content. Such a frame comes back with
+ * the same id, as does a document. A snapshot requests the reports itself, and a report arriving is
+ * only remembered, since treating it as a return would ask for another report forever.
  */
 export function createReturnedDocumentCheck(): (event: eventWithTime) => boolean {
   const attached = new Set<number>();
+  const frames = new Set<number>();
   return (event) => {
-    if (event.type === EventType.FullSnapshot) attached.clear();
+    if (event.type === EventType.FullSnapshot) {
+      attached.clear();
+      frames.clear();
+      for (const id of framesIn(event.data.node as unknown as SerializedTree)) frames.add(id);
+      return false;
+    }
     if (event.type !== EventType.IncrementalSnapshot) return false;
     if (event.data.source !== IncrementalSource.Mutation) return false;
     let returned = false;
     for (const { node } of event.data.adds) {
-      if (node.type !== DOCUMENT_NODE) continue;
-      if (attached.has(node.id)) returned = true;
-      attached.add(node.id);
+      const found = framesIn(node as unknown as SerializedTree);
+      if (node.type === DOCUMENT_NODE) {
+        if (attached.has(node.id)) returned = true;
+        attached.add(node.id);
+      } else if (found.some((id) => frames.has(id))) {
+        returned = true;
+      }
+      for (const id of found) frames.add(id);
     }
     return returned;
   };
