@@ -49,6 +49,19 @@ export type InputRelay = ((viewerId: string, msg: InputMsg) => Promise<boolean>)
   rectFallbacksFor(tabId: string): number;
 };
 
+const FAILURE_REPORT_INTERVAL_MS = 60_000;
+const lastFailureReports = new Map<string, number>();
+
+/** Input goes wrong quietly otherwise. These hold ids and error text, never what was typed. */
+function reportFailure(what: string, error: unknown): void {
+  const message = `${what}: ${String(error).slice(0, 200)}`;
+  const now = Date.now();
+  if (now - (lastFailureReports.get(message) ?? 0) < FAILURE_REPORT_INTERVAL_MS) return;
+  if (lastFailureReports.size > 100) lastFailureReports.clear();
+  lastFailureReports.set(message, now);
+  console.warn(`input: ${message}`);
+}
+
 export function createInputRelay(deps: InputRelayDeps): InputRelay {
   const rectTimeoutMs = deps.rectTimeoutMs ?? DEFAULT_RECT_TIMEOUT_MS;
   if (!Number.isSafeInteger(rectTimeoutMs) || rectTimeoutMs < 1) {
@@ -215,7 +228,8 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
           return response.ok;
         }
       }
-    } catch {
+    } catch (error) {
+      reportFailure(`${msg.t} was dropped`, error);
       if (msg.t === "value" && valid()) valueStatus(msg.tab, true);
       // Navigation/detach can invalidate a session between authorization and dispatch. Input is
       // ephemeral; dropping that event is safer than turning a transient race into a WS failure.
@@ -275,8 +289,9 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     let resolvedRect: ResolvedRect;
     try {
       resolvedRect = await resolveRect(msg.tab, msg.nodeId, msg.kind === "move");
-    } catch {
+    } catch (error) {
       rectFallbacks.set(msg.tab, (rectFallbacks.get(msg.tab) ?? 0) + 1);
+      reportFailure("pointer fell back to viewport coordinates", error);
       return fallback;
     }
 
