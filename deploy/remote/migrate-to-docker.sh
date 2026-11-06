@@ -51,6 +51,8 @@ if [ ! -f .env ]; then
     printf 'SERVER_MEMORY=3584m\nSERVER_MEMSWAP=3712m\nSERVER_CPUS=3.8\n'
   } >.env
 fi
+# Compose reads this itself, so every later command on this host gets the host network.
+grep -q '^COMPOSE_FILE=' .env || printf 'COMPOSE_FILE=compose.yml:compose.hostnet.yml\n' >>.env
 docker pull --quiet "$server_image"
 echo "The image is ready, and the systemd browser is still running."
 REMOTE

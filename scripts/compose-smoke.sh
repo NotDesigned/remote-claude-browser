@@ -5,6 +5,10 @@
 set -euo pipefail
 
 compose=(docker compose --file compose.yml)
+# SMOKE_HOSTNET=1 tests compose.hostnet.yml.
+if [[ ${SMOKE_HOSTNET:-} == 1 ]]; then
+  compose+=(--file compose.hostnet.yml)
+fi
 project=${REMOTE_BROWSER_SMOKE_PROJECT:-remote-browser-smoke-$$}
 smoke_port=${REMOTE_BROWSER_SMOKE_PORT:-}
 if [[ -z $smoke_port ]]; then
@@ -94,7 +98,7 @@ fetch_from_browser() {
     );
   " "$1"
 }
-for blocked in http://169.254.169.254/ http://10.0.0.1/ "http://${SERVER_SUBNET%0/*}1/" http://127.0.0.1:3010/healthz; do
+for blocked in http://169.254.169.254/ http://10.0.0.1/ "http://${SERVER_SUBNET%0/*}1/" "http://127.0.0.1:$smoke_port/healthz"; do
   if fetch_from_browser "$blocked"; then
     echo "The browser user reached $blocked" >&2
     false

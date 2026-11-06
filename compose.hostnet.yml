@@ -1,0 +1,26 @@
+# Optional: put the server on the host's network, for a host with a public IP. On Compose's bridge
+# network a site's video has a layer of NAT to cross, so someone behind a symmetric NAT, as on many
+# mobile networks, can't connect to it without a TURN server. Here it behaves as on the bare host.
+#
+# The trade-off is a weaker boundary. The firewall's rules go in the host's own table, for the browser
+# user alone, and only they stand between a compromised browser and what the host can reach.
+#   docker compose -f compose.yml -f compose.hostnet.yml up -d
+services:
+  server:
+    network_mode: host
+    ports: !reset []
+    networks: !reset []
+    sysctls: !reset {}
+    environment:
+      GATEWAY_HOST: ${SERVER_BIND:-127.0.0.1}
+      GATEWAY_PORT: ${SERVER_PORT:-3010}
+      # A proxy on this host arrives from loopback, which is always trusted.
+      MIRROR_TRUSTED_PROXIES: ""
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:'+process.env.GATEWAY_PORT+'/healthz').then(r=>{if(!r.ok)throw Error(r.status);return r.json()}).then(x=>{if(!x.ok||!x.browser)process.exit(1)}).catch(()=>process.exit(1))",
+        ]

@@ -132,11 +132,21 @@ bash deploy/remote/migrate-to-docker.sh tunnel    # 切换入口机的隧道，�
 bash deploy/remote/migrate-to-docker.sh rollback  # 随时退回 systemd
 ```
 
-迁移会把 Chrome 配置复制给容器里的 Chromium，原配置不会被修改。容器里的 Chromium 版本不能低于原来的 Chrome，否则配置无法打开。网站会看到浏览器品牌变成 Chromium，部分网站可能要求重新验证。退回 systemd 后，在容器里新产生的登录状态不会带回去。
+迁移后服务端使用主机网络（见[视频播放](#视频播放)）。迁移会把 Chrome 配置复制给容器里的 Chromium，原配置不会被修改。容器里的 Chromium 版本不能低于原来的 Chrome，否则配置无法打开。网站会看到浏览器品牌变成 Chromium，部分网站可能要求重新验证。退回 systemd 后，在容器里新产生的登录状态不会带回去。
 
 ## 视频播放
 
-页面模式下，网站的视频通过 WebRTC 从服务端直接发到你的设备，这条连接不经过入口机。如果服务端防火墙拦截了 UDP，视频可能出不来。项目没有内置 TURN 服务。设置 `MIRROR_DISABLE_RTC=1` 可以关闭这项功能。
+页面模式下，网站的视频通过 WebRTC 从服务端直接发到你的设备，这条连接不经过入口机，项目也没有内置 TURN 服务。默认的 Docker 桥接网络多了一层 NAT，如果你的设备也在对称 NAT 后面（很多手机网络都是），视频可能出不来。
+
+服务端有公网 IP 时，可以改用主机网络，行为就和直接运行在主机上一样：
+
+```bash
+docker compose -f compose.yml -f compose.hostnet.yml up -d
+```
+
+要长期使用，在 `.env` 里写上 `COMPOSE_FILE=compose.yml:compose.hostnet.yml`。代价是隔离变弱：防火墙规则写进主机的规则表（只针对浏览器用户），被攻破的浏览器能访问的范围就只靠这些规则限制。
+
+设置 `MIRROR_DISABLE_RTC=1` 可以关闭这项功能。
 
 ## 升级
 

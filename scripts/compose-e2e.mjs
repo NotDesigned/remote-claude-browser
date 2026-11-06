@@ -9,6 +9,96 @@ const origin = process.env.SMOKE_ORIGIN;
 const password = process.env.SMOKE_PASSWORD;
 assert.ok(origin && password, "Set SMOKE_ORIGIN and SMOKE_PASSWORD");
 
+/**
+ * Records a moment of picture and tone, and plays it from a blob as a site's player would: the mirror
+ * then takes it over WebRTC, through the same capture of a media element that a real site's video gets.
+ */
+const VIDEO_PAGE = `<!doctype html><meta charset="utf-8"><title>Video check</title>
+<video id="film" loop autoplay width="320" height="180"></video>
+<script>
+(async () => {
+  const canvas = document.createElement("canvas");
+  canvas.width = 320;
+  canvas.height = 180;
+  const paint = canvas.getContext("2d");
+  let hue = 0;
+  const painting = setInterval(() => {
+    paint.fillStyle = "hsl(" + (hue = (hue + 9) % 360) + ",80%,50%)";
+    paint.fillRect(0, 0, 320, 180);
+  }, 40);
+  const sound = new AudioContext();
+  await sound.resume();
+  const tone = sound.createOscillator();
+  const out = sound.createMediaStreamDestination();
+  tone.connect(out);
+  tone.start();
+  const tracks = [...canvas.captureStream(25).getTracks(), ...out.stream.getTracks()];
+  const recorder = new MediaRecorder(new MediaStream(tracks), { mimeType: "video/webm;codecs=vp8,opus" });
+  const parts = [];
+  recorder.ondataavailable = (event) => parts.push(event.data);
+  recorder.onstop = () => {
+    clearInterval(painting);
+    const film = document.getElementById("film");
+    film.src = URL.createObjectURL(new Blob(parts, { type: "video/webm" }));
+    film.play();
+  };
+  recorder.start();
+  setTimeout(() => recorder.stop(), 4000);
+})();
+</script>`;
+
+async function checkVideo(page, address) {
+  await page.evaluate(() => {
+    const Native = window.RTCPeerConnection;
+    window.__peers = [];
+    window.RTCPeerConnection = class extends Native {
+      constructor(...args) {
+        super(...args);
+        window.__peers.push(this);
+      }
+    };
+  });
+  await address.fill(`data:text/html,${encodeURIComponent(VIDEO_PAGE)}`);
+  await address.press("Enter");
+  const read = () =>
+    page.evaluate(async () => {
+      const frame = document.querySelector("#mirror-host .mirror-stage:not([data-parked]) iframe");
+      const video = frame?.contentDocument?.querySelector("video");
+      const state = {
+        tracks:
+          video?.srcObject
+            ?.getTracks?.()
+            .map((track) => track.kind[0])
+            .join("") ?? null,
+        muted: video?.muted,
+        width: video?.videoWidth,
+        frames: 0,
+        energy: 0,
+      };
+      for (const peer of window.__peers) {
+        if (peer.connectionState === "closed") continue;
+        state.connection = peer.connectionState;
+        (await peer.getStats()).forEach((entry) => {
+          if (entry.type !== "inbound-rtp") return;
+          if (entry.kind === "video") state.frames = entry.framesDecoded;
+          if (entry.kind === "audio") state.energy = entry.totalAudioEnergy ?? 0;
+        });
+      }
+      return state;
+    });
+  const deadline = Date.now() + 60_000;
+  let state;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    state = await read();
+  } while (Date.now() < deadline && !(state.frames > 30 && state.energy > 0.001));
+  console.log("Video state:", JSON.stringify(state));
+  assert.equal(state.muted, false, "The mirrored video is muted");
+  assert.ok(state.frames > 30, "No picture arrived over WebRTC");
+  assert.ok(state.energy > 0.001, "No sound arrived over WebRTC");
+  console.log("Picture and sound arrived over WebRTC.");
+}
+
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH,
   headless: true,
@@ -51,6 +141,8 @@ try {
   // The mirror holds what the script wrote, and none of the script's code could have run in it.
   const scripts = await mirrored.locator("script:not([type='text/plain'])").count();
   console.log(`Mirrored a page from ${origin}; live scripts in the mirror: ${scripts}.`);
+
+  if (process.env.SMOKE_VIDEO === "1") await checkVideo(page, address);
 } finally {
   await browser.close();
 }

@@ -56,3 +56,9 @@ jobs:
         run: pnpm smoke:compose
         env:
           CHROME_PATH: /usr/bin/google-chrome
+      - name: Test it on the host's network, with video and sound
+        run: pnpm smoke:compose
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+          SMOKE_HOSTNET: "1"
+          SMOKE_VIDEO: "1"

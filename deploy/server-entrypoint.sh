@@ -30,7 +30,8 @@ rm -f "$CHROME_USER_DATA_DIR/SingletonLock" \
   "$CHROME_USER_DATA_DIR/SingletonCookie"
 
 display_number=${DISPLAY#:}
-Xvfb "$DISPLAY" -screen 0 "${XVFB_SCREEN:-12800x2880x24}" -nolisten tcp -noreset &
+# Abstract sockets belong to the network namespace, which compose.hostnet.yml shares with the host.
+Xvfb "$DISPLAY" -screen 0 "${XVFB_SCREEN:-12800x2880x24}" -nolisten tcp -nolisten local -noreset &
 tries=0
 until [ -S "/tmp/.X11-unix/X$display_number" ]; do
   tries=$((tries + 1))
