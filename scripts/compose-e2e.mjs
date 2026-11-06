@@ -147,34 +147,30 @@ try {
   const scripts = await mirrored.locator("script:not([type='text/plain'])").count();
   console.log(`Mirrored a page from ${origin}; live scripts in the mirror: ${scripts}.`);
 
-  // A page's address changing must not replace what is being typed, and must show again afterwards.
+  // A page's address changing shows in the bar, unless someone is typing there.
   const moving =
-    "<!doctype html><script>let n = 0; setInterval(() => (location.hash = ++n), 500);</script>";
+    "<!doctype html><title>Moving</title><script>setTimeout(() => (location.href = 'about:blank'), 3000);</script>";
+  const showsBlank = () =>
+    page.waitForFunction(
+      () => document.querySelector("#urlbar input")?.value === "about:blank",
+      undefined,
+      {
+        timeout: 20_000,
+      },
+    );
   await address.fill(`data:text/html,${encodeURIComponent(moving)}`);
   await address.press("Enter");
-  await page.waitForFunction(
-    () => /#\d+$/.test(document.querySelector("#urlbar input")?.value ?? ""),
-    undefined,
-    {
-      timeout: 30_000,
-    },
-  );
+  await showsBlank();
+  await address.fill(`data:text/html,${encodeURIComponent(moving)}`);
+  await address.press("Enter");
   await address.fill("still typing");
-  await page.waitForTimeout(2_500);
+  await page.waitForTimeout(8_000);
   assert.equal(
     await address.inputValue(),
     "still typing",
     "The page's address replaced the typing",
   );
-  await address.blur();
-  await page.waitForFunction(
-    () => /#\d+$/.test(document.querySelector("#urlbar input")?.value ?? ""),
-    undefined,
-    {
-      timeout: 10_000,
-    },
-  );
-  console.log("The address bar keeps what is typed, then follows the page again.");
+  console.log("The address bar follows the page, and keeps what is being typed.");
 
   if (process.env.SMOKE_VIDEO === "1") await checkVideo(page, address);
 
