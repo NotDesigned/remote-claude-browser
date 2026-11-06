@@ -245,6 +245,9 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
             if (event.type === EventType.FullSnapshot) {
               addFontsToSnapshot(event.data.node, fontCapture.css());
               recordReadiness.markStarted();
+              // A new snapshot here means new frames in the replay, so what is inside them has to
+              // report after it. A request passed down before a delayed snapshot came too early.
+              if (!isTop) broadcastStitchSync();
             }
             if (isReturnedDocument(event)) broadcastStitchSync();
             return event;
