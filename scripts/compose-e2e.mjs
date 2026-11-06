@@ -124,6 +124,12 @@ try {
   const html =
     '<!doctype html><meta charset="utf-8"><title>Mirror check</title><p id="ran">not run</p>' +
     "<script>document.getElementById('ran').textContent = navigator.userAgent.includes('Chrome') ? 'ran' : 'odd';</script>";
+  // The address bar drops a navigation until a tab exists, and takes the first page's address over
+  // anything typed before that arrives.
+  await page
+    .locator('#urlbar button[aria-label="Reload"]:not([disabled])')
+    .waitFor({ timeout: 60_000 });
+  await page.waitForFunction(() => document.querySelector("#urlbar input")?.value !== "");
   const address = page.locator("#urlbar input");
   await address.fill(`data:text/html,${encodeURIComponent(html)}`);
   await address.press("Enter");
