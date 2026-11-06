@@ -87,7 +87,9 @@ export function isolatedAgentBridgeSource(channel: AgentBridgeChannel): string {
     const nodeResponseEventName = ${JSON.stringify(channel.nodeResponseEventName)};
     const readyEventName = ${JSON.stringify(channel.readyEventName)};
     const nativeAddEventListener = EventTarget.prototype.addEventListener;
+    const nativeRemoveEventListener = EventTarget.prototype.removeEventListener;
     const nativeDispatchEvent = EventTarget.prototype.dispatchEvent;
+    const nativeQuerySelectorAll = Document.prototype.querySelectorAll;
     const NativeCustomEvent = CustomEvent;
     const parse = JSON.parse;
     const stringify = JSON.stringify;
@@ -111,9 +113,18 @@ export function isolatedAgentBridgeSource(channel: AgentBridgeChannel): string {
       }
       binding(envelope.payload);
     });
-    nativeAddEventListener.call(document, nodeResponseEventName, (event) => {
-      nodeResult = event.target;
-    }, true);
+    const onNodeResponse = (event) => { nodeResult = event.target; };
+    // A recorder also covers the same-origin documents below it. The agent answers on the node
+    // itself, and an event stays within the node's own document.
+    const documentsBelow = (root, found = []) => {
+      found.push(root);
+      for (const frame of nativeQuerySelectorAll.call(root, "iframe")) {
+        let inner = null;
+        try { inner = frame.contentDocument; } catch {}
+        if (inner) documentsBelow(inner, found);
+      }
+      return found;
+    };
 
     Object.defineProperty(globalThis, bridgeKey, {
       configurable: true,
@@ -125,9 +136,16 @@ export function isolatedAgentBridgeSource(channel: AgentBridgeChannel): string {
         },
         node(nodeId) {
           nodeResult = undefined;
+          const documents = documentsBelow(document);
+          for (const each of documents) {
+            nativeAddEventListener.call(each, nodeResponseEventName, onNodeResponse, true);
+          }
           nativeDispatchEvent.call(document, new NativeCustomEvent(inboundEventName, {
             detail: stringify({ method: "node", args: [nodeId] }),
           }));
+          for (const each of documents) {
+            nativeRemoveEventListener.call(each, nodeResponseEventName, onNodeResponse, true);
+          }
           return nodeResult;
         },
         rtc(value) {
@@ -240,12 +258,28 @@ function frameCallExpression(
       detail: ${JSON.stringify(JSON.stringify({ method, args }))},
     })`;
   if (method === "command") return `void document.dispatchEvent(${event})`;
+  // A recorder also covers the same-origin documents below it. The agent answers on the node itself,
+  // and an event stays within the node's own document.
   return `(() => {
     let found;
     const listener = (event) => { found = event.target; };
-    document.addEventListener(${JSON.stringify(channel.nodeResponseEventName)}, listener, true);
+    const documents = [];
+    const collect = (root) => {
+      documents.push(root);
+      for (const frame of root.querySelectorAll("iframe")) {
+        let inner = null;
+        try { inner = frame.contentDocument; } catch {}
+        if (inner) collect(inner);
+      }
+    };
+    collect(document);
+    for (const each of documents) {
+      each.addEventListener(${JSON.stringify(channel.nodeResponseEventName)}, listener, true);
+    }
     document.dispatchEvent(${event});
-    document.removeEventListener(${JSON.stringify(channel.nodeResponseEventName)}, listener, true);
+    for (const each of documents) {
+      each.removeEventListener(${JSON.stringify(channel.nodeResponseEventName)}, listener, true);
+    }
     return found;
   })()`;
 }

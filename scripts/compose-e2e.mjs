@@ -161,7 +161,21 @@ addEventListener("mousedown", (event) => { pressed = event.target.id || event.ta
 const quoted = (html) => html.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 const sandboxed = (html, style) =>
   `<iframe sandbox="allow-scripts" style="${style}" srcdoc="${quoted(html)}"></iframe>`;
+// The frame sits in a same-origin document, filled by script, below the recorder of a cross-origin
+// frame: Claude's documents have this between the artifact and its text.
+const belowSameOrigin = (
+  html,
+) => `<!doctype html><meta charset="utf-8"><body style="margin:0"><iframe id="holder" style="width:320px;height:320px;border:0;display:block"></iframe><script>
+const holder = document.getElementById("holder").contentDocument;
+holder.body.style.margin = "0";
+const inner = holder.createElement("iframe");
+inner.setAttribute("sandbox", "allow-scripts");
+inner.style.cssText = "width:300px;height:300px;display:block";
+inner.srcdoc = ${JSON.stringify(html).replace(/</g, "\\u003c")};
+holder.body.append(inner);
+</script>`;
 const NESTED_PAGE = `<!doctype html><meta charset="utf-8"><title>Nested</title><body style="margin:6px;display:flex;gap:6px">
+<iframe style="width:330px;height:340px" src="data:text/html;charset=utf-8,${encodeURIComponent(belowSameOrigin(longDocument("deep")))}"></iframe>
 ${sandboxed(longDocument("single"), "width:330px;height:340px")}
 <iframe style="width:330px;height:340px" src="data:text/html;charset=utf-8,${encodeURIComponent(
   `<!doctype html><meta charset="utf-8"><body style="margin:0">${sandboxed(longDocument("indata"), "width:300px;height:300px;display:block")}`,
@@ -199,7 +213,7 @@ async function checkNestedFrames(page, address) {
       return top.contentDocument ? visit(top.contentDocument, o.left, o.top) : null;
     }, id);
   await page.waitForTimeout(6_000);
-  for (const tag of ["single", "indata", "insandbox"]) {
+  for (const tag of ["deep", "single", "indata", "insandbox"]) {
     const near = await find(`${tag}-row2`);
     assert.ok(near, `The ${tag} document is missing from the mirror`);
     await page.mouse.move(near.x, near.y);
