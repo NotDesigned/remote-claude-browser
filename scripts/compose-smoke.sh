@@ -98,7 +98,7 @@ fetch_from_browser() {
     );
   " "$1"
 }
-for blocked in http://169.254.169.254/ http://10.0.0.1/ "http://${SERVER_SUBNET%0/*}1/" "http://127.0.0.1:$smoke_port/healthz"; do
+for blocked in http://169.254.169.254/ http://10.0.0.1/ "http://${SERVER_SUBNET%0/*}1/" http://127.0.0.1:3010/healthz "http://127.0.0.1:$smoke_port/healthz"; do
   if fetch_from_browser "$blocked"; then
     echo "The browser user reached $blocked" >&2
     false
