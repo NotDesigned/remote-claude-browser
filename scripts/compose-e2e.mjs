@@ -143,6 +143,18 @@ try {
   console.log(`Mirrored a page from ${origin}; live scripts in the mirror: ${scripts}.`);
 
   if (process.env.SMOKE_VIDEO === "1") await checkVideo(page, address);
+
+  // Picture mode, in a session of its own. Its canvas only appears once a frame has arrived.
+  const pictureContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const picture = await pictureContext.newPage();
+  await picture.goto(`${origin}/?mode=px`);
+  await picture.locator('input[name="password"]').fill(password);
+  await picture.locator('button[type="submit"]').click();
+  await picture.waitForSelector("#shell-bar", { timeout: 60_000 });
+  await picture.waitForFunction(() => document.querySelector(".px-canvas")?.width > 0, undefined, {
+    timeout: 60_000,
+  });
+  console.log("Picture mode shows frames.");
 } finally {
   await browser.close();
 }

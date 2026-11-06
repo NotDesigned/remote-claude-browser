@@ -37,7 +37,7 @@ Nice=10
 MemoryAccounting=yes
 MemoryHigh=3072M
 MemoryMax=3328M
-MemorySwapMax=128M
+MemorySwapMax=2048M
 OOMPolicy=kill
 TasksMax=768
 

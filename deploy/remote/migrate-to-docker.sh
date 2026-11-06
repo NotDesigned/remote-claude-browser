@@ -48,7 +48,7 @@ if [ ! -f .env ]; then
     printf 'EGRESS_BLOCK=%s\n' "$own_ips${own_ips:+,}$(value GATEWAY_A_IP)"
     printf 'SERVER_IMAGE=%s\n' "$server_image"
     printf 'SERVER_BIND=127.0.0.1\nSERVER_PORT=3010\nMIRROR_CLIENTS=16\n'
-    printf 'SERVER_MEMORY=3584m\nSERVER_MEMSWAP=3712m\nSERVER_CPUS=3.8\n'
+    printf 'SERVER_MEMORY=3584m\nSERVER_MEMSWAP=5632m\nSERVER_CPUS=3.8\n'
   } >.env
 fi
 # Compose reads this itself, so every later command on this host gets the host network.

@@ -84,6 +84,15 @@ echo "Chromium runs as the browser user with its sandbox on."
 # Picture mode needs both of these.
 in_server pgrep -x Xvfb >/dev/null
 [[ $(in_server ffmpeg -hide_banner -devices 2>/dev/null) == *x11grab* ]]
+# Capture while Chromium runs, with what the gateway passes. ffmpeg can log a failed grab and still
+# exit 0, so this counts the bytes and treats anything it logs as a failure.
+capture=$(in_server sh -c 'setpriv --reuid=browser --regid=browser --clear-groups \
+  ffmpeg -hide_banner -loglevel error -f x11grab -draw_mouse 0 -framerate 5 -video_size 320x200 -i :99 \
+  -frames:v 5 -f rawvideo -pix_fmt gray - 2>/tmp/capture.log | wc -c; cat /tmp/capture.log; rm -f /tmp/capture.log')
+if [[ $capture != 320000 ]]; then
+  echo "Capturing the display gave: $capture" >&2
+  false
+fi
 echo "The display and its capture are in place."
 
 # The firewall, from the browser user: blocked where it matters, and the internet still open.
