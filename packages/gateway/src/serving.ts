@@ -13,6 +13,15 @@ export const VIEWER_DIST_ROOT =
  */
 export const LOOPBACK_PROXIES = ["127.0.0.1", "::1"];
 
+/** In a container the proxy arrives from a network address, named by MIRROR_TRUSTED_PROXIES. */
+export function trustedProxies(env: NodeJS.ProcessEnv = process.env): string[] {
+  const named = (env.MIRROR_TRUSTED_PROXIES ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+  return [...LOOPBACK_PROXIES, ...named];
+}
+
 export function gatewayHost(env: NodeJS.ProcessEnv = process.env): string {
   return env.GATEWAY_HOST ?? "127.0.0.1";
 }

@@ -1,85 +1,67 @@
 # Configuration
 
-Copy `.env.example` to `.env`. Compose reads that file automatically and `.gitignore` excludes it.
-Do not commit a populated `.env`.
+The server reads `.env` in the repository root, and the entry host reads `client/.env`. Both are
+excluded from Git. Do not commit a populated one. `scripts/bootstrap.sh` writes the server's for you.
 
-## Compose-facing settings
+## Server (`.env`)
 
 | Variable | Required | Default | Notes |
 | --- | :---: | --- | --- |
-| `MIRROR_ACCESS_PASSWORD` | yes | none | No built-in fallback; choose a long unique value |
-| `REMOTE_BROWSER_BIND` | no | `127.0.0.1` | Keep loopback for a host reverse proxy |
-| `REMOTE_BROWSER_PORT` | no | `8080` | Public gateway port on the host |
-| `MIRROR_ACCESS_SECRET` | production | random per process | Signs remembered-device cookies |
-| `MIRROR_AUTH_SECRET` | production | random per process | Signs driver/viewer session tokens |
-| `MIRROR_PUBLIC_ORIGIN` | invite helper | `http://localhost:8080` | Absolute origin printed by `pnpm invite` |
+| `MIRROR_ACCESS_PASSWORD` | yes | none | The login page's password. Long and unique |
+| `MIRROR_ACCESS_SECRET` | yes | none | At least 16 characters. Signs remembered devices |
+| `MIRROR_AUTH_SECRET` | yes | none | At least 16 characters. Signs session tokens |
+| `MIRROR_PUBLIC_ORIGIN` | for public use | empty | The exact origin people open. WebSockets from others are refused |
+| `SERVER_BIND` | no | `127.0.0.1` | Keep loopback behind a tunnel or reverse proxy |
+| `SERVER_PORT` | no | `3010` | The gateway's port on the host |
+| `SERVER_MEMORY` | no | `4g` | Container memory limit. New sessions are refused as it runs short |
+| `SERVER_MEMSWAP` | no | `0` | Memory plus swap. `0` leaves it to Docker |
+| `SERVER_CPUS` | no | `0` | CPU limit. `0` means all of the host's CPUs |
+| `SERVER_SUBNET` | no | `172.31.66.0/24` | The Compose network. Change it if it collides with another network |
+| `SERVER_IMAGE` | no | local build | A prebuilt image |
+| `MIRROR_CLIENTS` | no | `8` | Session slots: 2, 5, 8 or 16 |
+| `MIRROR_START_URL` | no | `https://claude.ai/new` | The page a new session opens |
+| `EGRESS_POLICY` | no | `on` | `off` lets pages reach private networks and the host |
+| `EGRESS_BLOCK` | no | empty | More addresses to block, comma-separated. Add the host's public IP |
 | `TZ` | no | `Etc/UTC` | Browser and gateway timezone |
+| `PUBLIC_HOST` | for `compose.https.yml` | none | The domain Caddy serves |
 
-Empty signing secrets are convenient for disposable localhost evaluation. Every gateway restart
-then invalidates remembered devices and invites. Production operators should generate two
-independent random values and keep them stable in a secret store or root-readable environment
-file.
+Generate each secret independently with `openssl rand -hex 32`, and keep them stable: changing them
+logs every device out.
 
-Compose interpolation passes the password and signing keys as container environment variables.
-Anyone who can inspect the container or control the Docker daemon can read them; Docker daemon
-access is already host-root-equivalent. Use an external secret injection mechanism if that
-boundary is insufficient.
+The server's `compose.yml` also accepts these if you add them to its `environment`:
 
-## Gateway runtime settings
-
-These are set by `compose.yml` and usually do not need editing:
-
-| Variable | Compose value | Purpose |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `GATEWAY_HOST` | `0.0.0.0` | Listen inside the gateway container |
-| `GATEWAY_PORT` | `3000` | Internal HTTP port |
-| `BROWSER_CDP_URL` | `http://browser:9222` | Private Chromium discovery endpoint |
-| `BROWSER_CDP_TIMEOUT_MS` | `30000` | Startup discovery timeout |
-| `CHROME_USER_DATA_DIR` | `/runtime/gateway` | Shared asset/download/upload workspace |
-| `VIEWER_DIST_ROOT` | `/app/viewer` | Compiled viewer files in the gateway image |
+| `MIRROR_DISABLE_RTC` | unset | `1` turns off video over WebRTC in page mode |
+| `MIRROR_SCREEN_GRAB` | on | `0` turns off the screen capture behind picture mode's video |
+| `MIRROR_TRUSTED_PROXIES` | `SERVER_SUBNET` | Comma-separated proxies that may set `X-Forwarded-For` |
+| `XVFB_SCREEN` | `12800x2880x24` | The virtual display's size |
 
-`BROWSER_CDP_URL` is HTTP discovery only; Chromium's advertised WebSocket authority is rewritten
-to this private host. Do not point it at an endpoint exposed to untrusted networks.
+Compose passes the password and signing keys as container environment variables. Anyone who can
+inspect the container or control the Docker daemon can read them, and Docker daemon access is already
+equivalent to root on the host.
 
-For local development outside Docker, omit `BROWSER_CDP_URL` and set:
+## Entry host (`client/.env`)
+
+| Variable | Required | Default | Notes |
+| --- | :---: | --- | --- |
+| `PUBLIC_HOST` | yes | none | The domain people open, pointing at this host |
+| `SERVER_SSH_HOST` | yes | none | The server's SSH address |
+| `SERVER_SSH_PORT` | no | `22` | |
+| `SERVER_SSH_USER` | no | `root` | The user whose `authorized_keys` holds the tunnel's key |
+| `SERVER_PORT` | no | `3010` | `SERVER_PORT` from the server's `.env` |
+| `HTTP_BIND` | no | `0.0.0.0` | The address Caddy is published on |
+| `HTTP_PORT`, `HTTPS_PORT` | no | `80`, `443` | Change them if the host already uses these |
+| `TUNNEL_IMAGE` | no | local build | A prebuilt tunnel image |
+
+## Development outside Docker
 
 | Variable | Meaning |
 | --- | --- |
 | `CHROME_PATH` | Absolute path to Chromium or Google Chrome |
-| `CHROME_HEADFUL=1` | Run the authoritative local browser headfully |
+| `CHROME_HEADFUL=1` | Run the browser headfully. Needs `DISPLAY` |
+| `CHROME_USER_DATA_DIR` | Where the profile, downloads and uploads go. Temporary if unset |
 | `VIEWER_PORT` | Vite port, default `5173` |
 | `VITE_GATEWAY_URL` | Vite proxy target, default `http://127.0.0.1:3000` |
 
-`MIRROR_E2E=1` enables test-only unauthenticated driver routes. Never use it in a deployment.
-
-## Persistent profile
-
-The default profile path is `/tmp/browser-profile` on a container tmpfs. Enable persistence only
-with both Compose files:
-
-```bash
-docker compose -f compose.yml -f compose.persistent.yml up -d --build
-```
-
-This mounts `browser-profile` at `/profile`. It can contain cookies, browsing history, saved
-passwords, tokens, and site storage. Restrict Docker access, decide whether backups are
-appropriate, and document retention.
-
-Return to ephemeral mode by bringing the overlay deployment down and starting only `compose.yml`.
-The named volume is intentionally retained until explicitly removed.
-
-## Invites
-
-The password login grants the first viewer the driver session. With a stable
-`MIRROR_AUTH_SECRET`, generate a narrower invite for the current single session (`dev`):
-
-```bash
-set -a
-. ./.env
-set +a
-pnpm invite dev viewer 3600
-```
-
-The tool prints a `/join#...` URL. The token stays in the fragment so it is not sent in the HTTP
-request line. Send invite URLs only through an appropriate private channel. Use `driver` instead
-of `viewer` only when remote control is intended.
+`MIRROR_E2E=1` enables test-only unauthenticated routes. The gateway refuses it in production.

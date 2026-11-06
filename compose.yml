@@ -1,86 +1,81 @@
-services:
-  browser:
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile.browser
-    image: remote-browser-chromium:local
-    init: true
-    restart: unless-stopped
-    # Chromium keeps its namespace sandbox enabled. Standard Docker seccomp otherwise blocks
-    # creation of the nested sandbox namespaces; do not replace this with --no-sandbox.
-    cap_add:
-      - SYS_ADMIN
-      - SYS_CHROOT
-    cap_drop:
-      - ALL
-    environment:
-      BROWSER_PROFILE_DIR: /tmp/browser-profile
-      TZ: ${TZ:-Etc/UTC}
-    tmpfs:
-      - /tmp:rw,nosuid,nodev,size=2g,uid=10001,gid=10001,mode=1777
-    shm_size: 1gb
-    volumes:
-      - runtime-data:/runtime
-    networks:
-      - browser
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9222/json/version"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 15s
-    stop_grace_period: 15s
+# The server: the browser and the gateway. See docs/deployment.md.
+name: remote-claude-browser
 
-  gateway:
+services:
+  server:
+    image: ${SERVER_IMAGE:-remote-claude-browser-server:local}
     build:
       context: .
-      dockerfile: deploy/Dockerfile.gateway
-    image: remote-browser-gateway:local
+      dockerfile: deploy/Dockerfile.server
     init: true
     restart: unless-stopped
+    # Chromium's profile lock names the host, so keep the name across re-created containers.
+    hostname: remote-browser
     read_only: true
-    cap_drop:
-      - ALL
     security_opt:
       - no-new-privileges:true
-    depends_on:
-      browser:
-        condition: service_healthy
+    cap_drop:
+      - ALL
+    cap_add:
+      # For the entrypoint, as root: the firewall, handing over /data, and becoming the browser user.
+      - CHOWN
+      - NET_ADMIN
+      - SETGID
+      - SETUID
+      # Docker's default seccomp profile allows the calls behind Chromium's namespace sandbox only
+      # with these. The browser runs unprivileged with its sandbox on: do not use --no-sandbox.
+      - SYS_ADMIN
+      - SYS_CHROOT
     environment:
-      BROWSER_CDP_URL: http://browser:9222
-      BROWSER_CDP_TIMEOUT_MS: "30000"
-      CHROME_USER_DATA_DIR: /runtime/gateway
-      GATEWAY_HOST: 0.0.0.0
-      GATEWAY_PORT: "3000"
       MIRROR_ACCESS_PASSWORD: ${MIRROR_ACCESS_PASSWORD:?Set MIRROR_ACCESS_PASSWORD in .env}
-      MIRROR_ACCESS_SECRET: ${MIRROR_ACCESS_SECRET:-}
-      MIRROR_AUTH_SECRET: ${MIRROR_AUTH_SECRET:-}
+      MIRROR_ACCESS_SECRET: ${MIRROR_ACCESS_SECRET:?Set MIRROR_ACCESS_SECRET in .env}
+      MIRROR_AUTH_SECRET: ${MIRROR_AUTH_SECRET:?Set MIRROR_AUTH_SECRET in .env}
+      MIRROR_PUBLIC_ORIGIN: ${MIRROR_PUBLIC_ORIGIN:-}
+      MIRROR_CLIENTS: ${MIRROR_CLIENTS:-8}
+      MIRROR_START_URL: ${MIRROR_START_URL:-https://claude.ai/new}
+      MIRROR_CANVAS_SNAPSHOTS: "0"
+      # Connections reach the gateway from this network's gateway address or from Caddy on it.
+      MIRROR_TRUSTED_PROXIES: ${SERVER_SUBNET:-172.31.66.0/24}
+      EGRESS_POLICY: ${EGRESS_POLICY:-on}
+      EGRESS_BLOCK: ${EGRESS_BLOCK:-}
       TZ: ${TZ:-Etc/UTC}
     ports:
-      - "${REMOTE_BROWSER_BIND:-127.0.0.1}:${REMOTE_BROWSER_PORT:-8080}:3000"
+      - "${SERVER_BIND:-127.0.0.1}:${SERVER_PORT:-3010}:3010"
     volumes:
-      - runtime-data:/runtime
+      - data:/data
     tmpfs:
-      - /tmp:rw,nosuid,nodev,size=128m,uid=1000,gid=1000,mode=1777
+      - /tmp:rw,nosuid,nodev,size=1g,mode=1777
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: "1"
     networks:
       - browser
+    mem_limit: ${SERVER_MEMORY:-4g}
+    # 0 leaves these to Docker: swap up to the memory limit, and all of the host's CPUs.
+    memswap_limit: ${SERVER_MEMSWAP:-0}
+    cpus: ${SERVER_CPUS:-0}
+    # The browser gives way when something else on the host needs the CPU.
+    cpu_shares: 256
+    pids_limit: 1024
     healthcheck:
       test:
         [
           "CMD",
           "node",
           "-e",
-          "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)throw Error(r.status);return r.json()}).then(x=>{if(!x.ok||!x.browser)process.exit(1)}).catch(()=>process.exit(1))",
+          "fetch('http://127.0.0.1:3010/healthz').then(r=>{if(!r.ok)throw Error(r.status);return r.json()}).then(x=>{if(!x.ok||!x.browser)process.exit(1)}).catch(()=>process.exit(1))",
         ]
       interval: 10s
       timeout: 5s
       retries: 12
-      start_period: 20s
-    stop_grace_period: 20s
+      start_period: 30s
+    stop_grace_period: 25s
 
 networks:
   browser:
-    driver: bridge
+    ipam:
+      config:
+        - subnet: ${SERVER_SUBNET:-172.31.66.0/24}
 
 volumes:
-  runtime-data:
+  # The browser profile: site logins, history and downloads in progress. Treat it as a secret.
+  data:

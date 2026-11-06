@@ -21,7 +21,7 @@ if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use limited-run.sh
 const require = createRequire(new URL("../packages/gateway/package.json", import.meta.url));
 const WebSocket = require("ws");
 const run = promisify(execFile);
-const origin = "https://claude.example.com";
+const origin = process.env.MIRROR_ORIGIN ?? "http://127.0.0.1:3010";
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const password = (await readFile("/etc/claude-browser/agent.env", "utf8"))
   .split("\n")
@@ -34,7 +34,7 @@ async function stats(phase) {
   const { stdout } = await run(
     "ssh",
     [
-      "remote-server",
+      process.env.REMOTE_HOST,
       "systemctl show claude-browser -p MainPID -p MemoryCurrent -p MemoryPeak -p CPUUsageNSec -p TasksCurrent -p NRestarts; cat /proc/meminfo",
     ],
     { timeout: 15000 },

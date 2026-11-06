@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ACCESS_COOKIE, createAccessGate } from "./auth/access-gate";
-import { gatewayHost, registerViewerStatic, staticCacheControl } from "./serving";
+import { gatewayHost, registerViewerStatic, staticCacheControl, trustedProxies } from "./serving";
 
 const roots: string[] = [];
 
@@ -75,5 +75,20 @@ describe("gateway production serving", () => {
       "private, max-age=31536000, immutable",
     );
     expect(staticCacheControl("/opt/viewer/index.html")).toBe("private, no-cache");
+  });
+});
+
+describe("trustedProxies", () => {
+  it("trusts only the loopback addresses by default", () => {
+    expect(trustedProxies({})).toEqual(["127.0.0.1", "::1"]);
+  });
+
+  it("adds the networks it is told to", () => {
+    expect(trustedProxies({ MIRROR_TRUSTED_PROXIES: " 172.31.66.0/24, 10.1.0.0/16,," })).toEqual([
+      "127.0.0.1",
+      "::1",
+      "172.31.66.0/24",
+      "10.1.0.0/16",
+    ]);
   });
 });

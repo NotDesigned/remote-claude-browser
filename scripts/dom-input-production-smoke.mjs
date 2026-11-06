@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { chromium, webkit } from "playwright";
 import { editableText } from "../packages/protocol/src/editable.ts";
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use limited-run.sh");
-const origin = "https://claude.example.com";
+const origin = process.env.MIRROR_ORIGIN ?? "http://127.0.0.1:3010";
 const marker = "DOM-QA-" + Date.now();
 const mobile = process.env.DOM_QA_MOBILE === "1";
 const webkitViewer = process.env.DOM_QA_ENGINE === "webkit";

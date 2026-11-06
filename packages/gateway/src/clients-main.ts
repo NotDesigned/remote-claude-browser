@@ -36,7 +36,7 @@ import { ANY_SESSION_TAB } from "./assets/token";
 import { createRtcSignalRelay } from "./rtcsig";
 import { createClaudeTheme, createThemeCopies, isClaudeTheme } from "./claude/theme";
 import { registerSecurityHeaders } from "./security-headers";
-import { gatewayHost, LOOPBACK_PROXIES, registerViewerStatic } from "./serving";
+import { gatewayHost, registerViewerStatic, trustedProxies } from "./serving";
 import { createTabLifecycle } from "./session/tabs";
 import { CLIENT_SLOTS, ClientSessionError, createClientSessions } from "./session/clients";
 import { createIdleReaper, PAGE_GENERATING_EXPRESSION } from "./session/idle-reaper";
@@ -133,7 +133,7 @@ export async function startClientGateway(): Promise<void> {
       }
     },
   });
-  const app = Fastify({ logger: false, trustProxy: LOOPBACK_PROXIES });
+  const app = Fastify({ logger: false, trustProxy: trustedProxies() });
   registerSecurityHeaders(app);
   const key = process.env.MIRROR_AUTH_SECRET
     ? Buffer.from(process.env.MIRROR_AUTH_SECRET)

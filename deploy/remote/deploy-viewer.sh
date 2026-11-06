@@ -6,7 +6,8 @@ if [ "${CLAUDE_LIMITED_TASK:-}" != 1 ]; then
   exec bash scripts/limited-run.sh bash deploy/remote/deploy-viewer.sh "$@"
 fi
 test -s packages/viewer/dist/index.html
-remote_host=${REMOTE_HOST:-remote-server}
+if [ -f deploy/remote/local.env ]; then . deploy/remote/local.env; fi
+remote_host=${REMOTE_HOST:?Set REMOTE_HOST to the server\'s SSH host, here or in deploy/remote/local.env}
 archive=$(mktemp /tmp/claude-viewer.XXXXXX.tar.gz)
 trap 'rm -f "$archive"' EXIT
 tar -C packages/viewer/dist -czf "$archive" .

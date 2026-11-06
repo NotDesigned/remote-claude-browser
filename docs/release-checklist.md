@@ -14,11 +14,11 @@
 - [ ] `pnpm install --frozen-lockfile`
 - [ ] `pnpm audit:prod`
 - [ ] `CHROME_PATH=/path/to/chrome pnpm run ci`
-- [ ] `docker compose config`
+- [ ] `docker compose config`, and the same in `client/`
 - [ ] `pnpm smoke:compose`
 - [ ] Development mode and production container build both start.
 - [ ] Gateway health reports a live browser.
-- [ ] Ephemeral and persistent-profile Compose modes were checked.
+- [ ] A re-created server container keeps its profile.
 
 ## Security and privacy
 

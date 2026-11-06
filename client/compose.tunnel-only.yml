@@ -1,0 +1,7 @@
+# For an entry host that already has a reverse proxy on 80 and 443: only the tunnel, published on the
+# host's loopback for that proxy to forward to. Start just that service:
+#   docker compose -f compose.yml -f compose.tunnel-only.yml up -d tunnel
+services:
+  tunnel:
+    ports:
+      - "127.0.0.1:${TUNNEL_PORT:-3010}:3010"

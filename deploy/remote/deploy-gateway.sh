@@ -7,7 +7,8 @@ if [ "${CLAUDE_LIMITED_TASK:-}" != 1 ]; then
 fi
 test -s packages/gateway/dist/main.mjs
 case ${1:-} in ""|--with-viewer) ;; *) echo 'usage: deploy-gateway.sh [--with-viewer]' >&2; exit 2;; esac
-remote_host=${REMOTE_HOST:-remote-server}
+if [ -f deploy/remote/local.env ]; then . deploy/remote/local.env; fi
+remote_host=${REMOTE_HOST:?Set REMOTE_HOST to the server\'s SSH host, here or in deploy/remote/local.env}
 release_id="$(date -u +%Y%m%dT%H%M%SZ)-gateway"
 remote_bundle=$(ssh "$remote_host" 'mktemp /tmp/claude-gateway.XXXXXX')
 scp packages/gateway/dist/main.mjs "$remote_host:$remote_bundle"

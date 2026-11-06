@@ -3,7 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { chromium } from "playwright";
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use limited-run.sh");
 const watchdog = setTimeout(() => process.exit(124), 70000);
-const origin = "https://claude.example.com";
+const origin = process.env.MIRROR_ORIGIN ?? "http://127.0.0.1:3010";
 const password = (await readFile("/etc/claude-browser/agent.env", "utf8"))
   .split("\n")
   .find((line) => line.startsWith("MIRROR_ACCESS_PASSWORD="))

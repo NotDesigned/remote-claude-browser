@@ -8,12 +8,9 @@ trusted input is applied.
 
 ### Chromium
 
-The supported Compose path runs Debian Chromium as uid/gid `10001` under Xvfb. Its CDP endpoint is
-reachable only on the Compose network and has no host port mapping. The default profile directory
-is on tmpfs; `compose.persistent.yml` replaces it with a named volume.
-
-Chromium binds DevTools to container loopback. A container-local TCP forwarder exposes that
-listener to the gateway on the private Compose network; neither endpoint is published on the host.
+The Compose deployment runs Debian Chromium as uid/gid `10001` under Xvfb, in the same container as
+the gateway, which starts it and drives it over a private pipe. No debugging port is open. The
+profile is kept in the `data` volume.
 
 Chromium runs headfully because canvas/video capture and compositor behavior differ in headless
 mode. Back/forward cache is disabled so history traversal produces a new injectible document.

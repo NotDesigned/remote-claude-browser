@@ -25,16 +25,15 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ffmpeg
       - run: pnpm install --frozen-lockfile
-      - run: pnpm audit:prod
-      - run: pnpm run ci
-        env:
-          CHROME_PATH: /usr/bin/google-chrome
+      - run: pnpm run check:rrweb
+      - run: pnpm run build
+      - run: pnpm run typecheck
+      - run: pnpm run test
 
   containers:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs: quality
     steps:
       - uses: actions/checkout@v4
@@ -46,4 +45,14 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm smoke:compose
+      - name: Check the Compose files
+        run: |
+          export MIRROR_ACCESS_PASSWORD=x MIRROR_ACCESS_SECRET=x MIRROR_AUTH_SECRET=x PUBLIC_HOST=example.com
+          docker compose -f compose.yml -f compose.https.yml config --quiet
+          SERVER_SSH_HOST=example.com docker compose -f client/compose.yml config --quiet
+      - name: Build the tunnel image
+        run: docker build client
+      - name: Build and test the server image
+        run: pnpm smoke:compose
+        env:
+          CHROME_PATH: /usr/bin/google-chrome

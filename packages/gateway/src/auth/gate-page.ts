@@ -42,7 +42,7 @@ footer{display:flex;justify-content:space-between;gap:12px;color:#9a9b90;font-si
 ${escaped ? `<p id="login-error" class="error" role="alert">${escaped}</p>` : ""}
 <button class="submit" type="submit">进入工作台<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 10h13m-5-5 5 5-5 5"/></svg></button></form>
 <p class="hint">这里使用的是<strong>工作台访问密码</strong>，<br>无需输入 Claude 账号密码。</p></section></main>
-<footer><span>claude.example.com</span><span>MAKE ROOM FOR GOOD IDEAS</span></footer></div>
+<footer><span>Remote Workspace</span><span>MAKE ROOM FOR GOOD IDEAS</span></footer></div>
 <script>const field=document.getElementById('access-password');const reveal=document.querySelector('.reveal');reveal.addEventListener('click',()=>{const visible=field.type==='password';field.type=visible?'text':'password';reveal.setAttribute('aria-label',visible?'隐藏密码':'显示密码');reveal.setAttribute('aria-pressed',String(visible));});</script>
 </body></html>`;
 }

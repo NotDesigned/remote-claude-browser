@@ -1,158 +1,169 @@
-# Deployment
+# 部署
 
-## Supported path
+项目分成两部分，都用 Docker Compose 部署：
 
-The primary path is Docker Engine plus Docker Compose v2 on a modern Linux distribution. The host
-needs enough memory for headful Chromium; 2 GiB free memory is a practical minimum for one light
-session, and complex sites may require substantially more.
+- **服务端**（仓库根目录的 `compose.yml`）：运行 Chromium、Xvfb 和网关，保存网站的登录状态。
+- **客户端**（`client/compose.yml`）：对外的入口机。Caddy 负责 HTTPS，SSH 隧道把请求转发到服务端。这台机器不运行浏览器，也不保存登录状态。
 
-Install Docker from your distribution or Docker's official packages, add the intended operator to
-the Docker group only if host-root-equivalent access is acceptable, then run:
+如果只有一台机器，不需要客户端，用 `compose.https.yml` 即可，见[单机部署](#单机部署)。
+
+## 需要准备
+
+|                | 服务端                               | 客户端                 |
+| -------------- | ------------------------------------ | ---------------------- |
+| 系统           | Linux，Docker 和 Compose v2          | 同左                   |
+| 配置           | 建议至少 2 核 4 GB，会话越多需要越多 | 1 核 512 MB 足够       |
+| 磁盘           | 约 3 GB 镜像，加上浏览器配置         | 约 100 MB              |
+| 网络           | 能访问目标网站，入口机能 SSH 进来    | 80、443 端口，一个域名 |
+
+本地构建服务端镜像时，额外需要约 2 GB 可用内存。配置较低的机器可以使用预构建镜像。
+
+## 服务端
 
 ```bash
+git clone https://github.com/NotDesigned/remote-claude-browser.git remote-claude-browser
+cd remote-claude-browser
 ./scripts/bootstrap.sh
 ```
 
-The bootstrap requires OpenSSL and curl, creates `.env` only when it is absent, generates three
-independent credentials, starts the stack, and waits for browser-aware health. For a manual start,
-copy `.env.example`, set the password and signing secrets, then run
-`docker compose up --detach --build`.
-
-Node and pnpm are needed for development helpers, not for either normal Compose path.
-
-## What Compose creates
-
-- `browser`: non-root Chromium under Xvfb, CDP exposed only to the project network;
-- `gateway`: Node gateway plus the production viewer build;
-- one project bridge network;
-- `runtime-data`: shared asset cache and transient upload/download workspace;
-- browser `/tmp`: tmpfs, including the default ephemeral profile.
-
-The gateway waits for Chromium's CDP health check. Its own health check verifies both HTTP and the
-live browser connection. Both services use an init process, bounded shutdown grace, and
-`restart: unless-stopped`. The gateway filesystem is read-only, `/tmp` and `/runtime` are the only
-writable locations, all Linux capabilities are dropped, and privilege escalation is disabled.
-
-The browser service drops the default capability set, then adds `SYS_ADMIN` and `SYS_CHROOT`
-because standard Docker seccomp otherwise blocks Chromium from creating and entering the nested
-namespaces used by its sandbox. Chromium remains non-root and the browser sandbox stays enabled.
-`SYS_ADMIN` is a broad capability, so use a dedicated host/VM for hostile browsing and consider a
-reviewed custom seccomp profile as a future hardening step. Do not trade it for Chromium's
-`--no-sandbox` flag.
-
-## Local evaluation
-
-The default gateway mapping is `127.0.0.1:8080`. Modern browsers treat localhost as a potentially
-trustworthy origin and accept the Secure authentication cookies used by the application. If a
-browser loops back to the login page, use local HTTPS or test through the production proxy.
-
-Do not change `REMOTE_BROWSER_BIND` to `0.0.0.0` merely for convenience. Plain HTTP on a network
-interface exposes page content, credentials, and input.
-
-## Production TLS
-
-Keep `REMOTE_BROWSER_BIND=127.0.0.1`, set `MIRROR_PUBLIC_ORIGIN` to the public HTTPS origin, and
-terminate TLS on the same host.
-
-Minimal Caddy example:
-
-```caddyfile
-browser.example.com {
-    reverse_proxy 127.0.0.1:8080
-}
-```
-
-Minimal Nginx location:
-
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:8080;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-}
-```
-
-Use a real certificate, restrict the upstream port with the host firewall, and verify `/ws`,
-uploads, and larger downloads through the proxy. If the reverse proxy runs in another container,
-attach it to a narrowly scoped network instead of publishing CDP.
-
-## Stable secrets
-
-Set independent stable values for `MIRROR_ACCESS_SECRET` and `MIRROR_AUTH_SECRET`. Rotation logs
-out remembered devices and invalidates outstanding invites. Keep `.env` out of backups unless the
-backup is encrypted and access-controlled.
-
-The access password is a shared front door, not a full identity provider. Use a private network,
-VPN, or upstream access proxy when the service is exposed to more than a small trusted group.
-
-## Browser egress
-
-Compose does not silently modify the host firewall. Without an operator-installed policy,
-authoritative Chromium can reach addresses routable from the Docker host. This matters because
-visited sites execute untrusted JavaScript.
-
-For a production Linux/iptables host, inspect `deploy/egress-policy.sh`, identify the Compose
-network, validate, then install:
+脚本生成 `.env`、启动服务并等待健康检查通过，最后打印访问密码。然后编辑 `.env`：
 
 ```bash
-browser_container=$(docker compose ps -q browser)
-browser_network=$(
-  docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' \
-    "$browser_container"
-)
-sudo BROWSER_NETWORK="$browser_network" deploy/egress-policy.sh --check
-sudo BROWSER_NETWORK="$browser_network" deploy/egress-policy.sh
+# 用户实际打开的地址，必须完全一致，否则 WebSocket 连接会被拒绝
+MIRROR_PUBLIC_ORIGIN=https://browser.example.com
+# 这台机器的公网 IP。容器看不到它，要手动填，网页才碰不到这台机器上的服务
+EGRESS_BLOCK=203.0.113.10
 ```
 
-The script installs an idempotent jump in `DOCKER-USER`. It is optional and host-mutating, so the
-project never runs it automatically. Arrange persistence using the host firewall manager and
-re-test after Docker upgrades. Environments using nftables, firewalld, cloud firewalls, or an
-egress proxy should implement equivalent denial of private, carrier-NAT, link-local, and metadata
-ranges while preserving gateway-to-browser CDP.
-
-## Persistence and backups
-
-Enable a persistent Chromium profile only when needed:
+让配置生效：
 
 ```bash
-docker compose -f compose.yml -f compose.persistent.yml up -d --build
+docker compose up -d
+docker compose ps
 ```
 
-The profile is credential material. A normal `docker compose down` keeps named volumes. The
-following removes volumes and is irreversible:
+网关只监听服务端的 `127.0.0.1:3010`，公网无法直接访问。
+
+### 使用预构建镜像
+
+不想在服务器上构建时，在 `.env` 里指定镜像：
 
 ```bash
-docker compose -f compose.yml -f compose.persistent.yml down --volumes
+SERVER_IMAGE=ghcr.io/notdesigned/remote-claude-browser-server:latest
 ```
 
-Do not back up an ephemeral deployment by accident just because `runtime-data` exists. That
-volume contains cache and transfer state, not the default browser profile.
+```bash
+docker compose pull
+docker compose up -d
+```
 
-## Updates and rollback
+## 客户端（入口机）
 
-Before an update, note the current commit and back up only explicitly persistent data. Then:
+把域名解析到这台机器，然后：
 
 ```bash
-docker compose build --pull
+git clone https://github.com/NotDesigned/remote-claude-browser.git remote-claude-browser
+cd remote-claude-browser/client
+cp .env.example .env
+```
+
+编辑 `.env`，填写 `PUBLIC_HOST` 和 `SERVER_SSH_HOST`。然后为隧道生成一把专用的 SSH 密钥，并记录服务端的主机指纹：
+
+```bash
+mkdir -p ssh
+ssh-keygen -t ed25519 -N '' -C remote-claude-browser-tunnel -f ssh/id_ed25519
+ssh-keyscan -t ed25519 server.example.com > ssh/known_hosts
+ssh-keygen -lf ssh/known_hosts   # 和服务端上看到的指纹核对
+cat ssh/id_ed25519.pub
+```
+
+在**服务端**把这把公钥加入 `SERVER_SSH_USER` 用户的 `~/.ssh/authorized_keys`。前面的限制让它只能转发到网关端口，不能登录 shell：
+
+```text
+restrict,port-forwarding,permitopen="127.0.0.1:3010" ssh-ed25519 AAAA... remote-claude-browser-tunnel
+```
+
+服务端的 `sshd` 需要允许 TCP 转发（`AllowTcpForwarding` 默认开启）。回到入口机启动：
+
+```bash
 docker compose up -d
 docker compose ps
 curl --fail https://browser.example.com/healthz
 ```
 
-Compose retains the previous local images until pruned, which permits an operator-directed image
-tag rollback. Database migration is not part of this MVP.
+### 入口机上已经有反向代理
 
-## Isolated smoke test
-
-Contributors can build and exercise both services without colliding with an existing project:
+如果 80 和 443 已被占用，可以只启动隧道，发布到本机回环地址，由已有的代理转发。`PUBLIC_HOST` 这时用不到，随便填一个值即可：
 
 ```bash
-pnpm smoke:compose
+docker compose -f compose.yml -f compose.tunnel-only.yml up -d tunnel
 ```
 
-The script chooses a unique Compose project and loopback port, verifies Chromium health, gateway
-health, and the built viewer, then removes only its own containers, network, and volumes.
+代理需要支持 WebSocket，并且关闭响应缓冲。以 Caddy 为例：
+
+```text
+browser.example.com {
+    reverse_proxy 127.0.0.1:3010 {
+        flush_interval -1
+    }
+}
+```
+
+## 单机部署
+
+把域名解析到这台机器，在 `.env` 里设置 `PUBLIC_HOST` 和 `MIRROR_PUBLIC_ORIGIN`，然后：
+
+```bash
+docker compose -f compose.yml -f compose.https.yml up -d
+```
+
+## 从 systemd 部署迁移
+
+`deploy/remote/migrate-to-docker.sh` 把[双机 systemd 部署](operations.md)换成 Docker，在入口机上分步执行：
+
+```bash
+export REPO_URL=https://github.com/NotDesigned/remote-claude-browser.git
+export SERVER_IMAGE=ghcr.io/notdesigned/remote-claude-browser-server:latest
+export TUNNEL_IMAGE=ghcr.io/notdesigned/remote-claude-browser-tunnel:latest
+
+bash deploy/remote/migrate-to-docker.sh prepare   # 在服务端安装 Docker，备好镜像，不影响运行中的服务
+bash deploy/remote/migrate-to-docker.sh cutover   # 切换服务端，打开的页面会中断，不健康时自动退回
+bash deploy/remote/migrate-to-docker.sh tunnel    # 切换入口机的隧道，反向代理不用改
+bash deploy/remote/migrate-to-docker.sh rollback  # 随时退回 systemd
+```
+
+迁移会把 Chrome 配置复制给容器里的 Chromium，原配置不会被修改。容器里的 Chromium 版本不能低于原来的 Chrome，否则配置无法打开。网站会看到浏览器品牌变成 Chromium，部分网站可能要求重新验证。退回 systemd 后，在容器里新产生的登录状态不会带回去。
+
+## 视频播放
+
+页面模式下，网站的视频通过 WebRTC 从服务端直接发到你的设备，这条连接不经过入口机。如果服务端防火墙拦截了 UDP，视频可能出不来。项目没有内置 TURN 服务。设置 `MIRROR_DISABLE_RTC=1` 可以关闭这项功能。
+
+## 升级
+
+```bash
+git pull
+docker compose up -d --build   # 使用预构建镜像时：docker compose pull && docker compose up -d
+```
+
+升级服务端会重启浏览器，打开的远程页面和未发送的草稿会中断。登录状态保存在 `data` 卷里，不受影响。
+
+## 备份
+
+`data` 卷保存浏览器配置，里面有 Cookie 和登录令牌，备份必须加密：
+
+```bash
+docker compose stop server
+docker run --rm -v remote-claude-browser_data:/data:ro -v "$PWD":/backup debian:bookworm-slim \
+  tar -czf /backup/browser-data.tar.gz -C /data .
+docker compose start server
+```
+
+## 更换密码和彻底清除
+
+- 换访问密码：修改 `.env` 的 `MIRROR_ACCESS_PASSWORD`，然后 `docker compose up -d`。这不会让已记住的设备退出。
+- 让所有设备退出：同时给 `MIRROR_ACCESS_SECRET` 换一个新的随机值（`openssl rand -hex 32`）。
+- 清除全部登录状态：`docker compose down --volumes`。这个操作不可恢复。
+
+## 资源
+
+`SERVER_MEMORY`（默认 4g）是容器的内存上限。新会话按这个上限做准入检查，内存不足时会被拒绝，已有会话不受影响。`MIRROR_CLIENTS` 决定会话名额，可选 2、5、8、16。每个活跃页面都要占用内存，多路真实负载的容量请按自己的使用情况测试。

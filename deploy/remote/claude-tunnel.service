@@ -6,7 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 Slice=claude.slice
-ExecStart=/usr/bin/ssh -NT -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=15 -L 127.0.0.1:3010:127.0.0.1:3010 remote-server
+EnvironmentFile=/etc/claude-browser/tunnel.env
+ExecStart=/usr/bin/ssh -NT -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=15 -L 127.0.0.1:3010:127.0.0.1:3010 ${REMOTE_HOST}
 Restart=always
 RestartSec=3
 CPUAccounting=yes

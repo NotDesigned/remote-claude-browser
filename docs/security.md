@@ -20,8 +20,8 @@ Production deployments should:
 - isolate the Docker host from unrelated sensitive services;
 - patch host, Docker, Chromium base image, and Node dependencies regularly.
 
-The portable Compose file does not make host firewall changes. See
-[Deployment](deployment.md#browser-egress).
+The server's container sets these egress rules in its own network namespace, leaving the host's
+firewall alone. It cannot see the host's public IP, so add that to `EGRESS_BLOCK`.
 
 ### Viewers are trusted with page content
 

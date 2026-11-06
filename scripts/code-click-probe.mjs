@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { chromium } from "playwright";
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use limited-run.sh");
 
-const origin = "https://claude.example.com";
+const origin = process.env.MIRROR_ORIGIN ?? "http://127.0.0.1:3010";
 const target = process.argv[2] || "https://claude.ai/code";
 const password = (await readFile("/etc/claude-browser/agent.env", "utf8"))
   .split("\n")

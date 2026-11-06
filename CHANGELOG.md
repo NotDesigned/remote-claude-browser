@@ -4,6 +4,9 @@ Notable changes to Remote Browser are recorded here.
 
 ## [Unreleased]
 
+- The server is one container holding Xvfb, Chromium and the gateway, with its own firewall.
+- `client/` deploys an entry host with HTTPS and an SSH tunnel; `compose.https.yml` does HTTPS on one machine.
+
 ## [0.1.0] - 2026-07-26
 
 - First portable self-hosted release of the semantic DOM browser and scriptless viewer.

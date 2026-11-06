@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { chromium } from "playwright";
 
-const origin = process.env.SMOKE_ORIGIN || "https://claude.example.com";
+const origin = process.env.SMOKE_ORIGIN || (process.env.MIRROR_ORIGIN ?? "http://127.0.0.1:3010");
 if (process.env.CLAUDE_LIMITED_TASK !== "1")
   throw new Error("Run through pnpm test:remote to enforce A's resource budget");
 const env = Object.fromEntries(

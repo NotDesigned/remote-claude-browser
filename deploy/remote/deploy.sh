@@ -5,7 +5,8 @@ cd "$(dirname "$0")/../.."
 if [ "${CLAUDE_LIMITED_TASK:-}" != 1 ]; then
   exec bash scripts/limited-run.sh bash deploy/remote/deploy.sh "$@"
 fi
-remote_host=${REMOTE_HOST:-remote-server}
+if [ -f deploy/remote/local.env ]; then . deploy/remote/local.env; fi
+remote_host=${REMOTE_HOST:?Set REMOTE_HOST to the server\'s SSH host, here or in deploy/remote/local.env}
 release_id=$(date -u +%Y%m%dT%H%M%SZ)
 stage_dir=$(mktemp -d /tmp/claude-release.XXXXXX)
 trap 'rm -rf "$stage_dir"' EXIT
@@ -51,6 +52,8 @@ fi
 ssh "$remote_host" "cd $releases && ls -1 | sort -r | tail -n +6 | while read -r old; do
   [ \"$releases/\$old\" = \"\$(readlink -f /opt/claude-browser/current)\" ] || rm -rf -- \"\$old\"
 done"
+install -d -m 755 /etc/claude-browser
+printf 'REMOTE_HOST=%s\n' "$remote_host" >/etc/claude-browser/tunnel.env
 install -m 644 deploy/remote/claude-tunnel.service /etc/systemd/system/claude-tunnel.service
 systemctl daemon-reload
 systemctl enable --now claude-tunnel

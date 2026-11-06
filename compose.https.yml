@@ -1,0 +1,35 @@
+# Optional: HTTPS on the same machine as the server, for a deployment with no separate entry host.
+#   docker compose -f compose.yml -f compose.https.yml up -d
+services:
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?Set PUBLIC_HOST in .env}
+      UPSTREAM: server:3010
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - ./client/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    tmpfs:
+      - /tmp
+    networks:
+      - browser
+    depends_on:
+      server:
+        condition: service_healthy
+
+volumes:
+  caddy-data:
+  caddy-config:

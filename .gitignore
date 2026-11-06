@@ -14,3 +14,8 @@ remote-browser-oss-agent-final.md
 
 # Validation output may contain production screenshots, conversation URLs and host details.
 artifacts/
+
+# This deployment's own notes and settings.
+/requirement.md
+deploy/remote/local.env
+client/ssh/

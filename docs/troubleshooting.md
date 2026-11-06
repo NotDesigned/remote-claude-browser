@@ -4,7 +4,7 @@ Start with:
 
 ```bash
 docker compose ps
-docker compose logs --tail=200 browser gateway
+docker compose logs --tail=200 server
 curl --verbose http://localhost:8080/healthz
 ```
 
@@ -28,14 +28,15 @@ Inspect browser logs. Common causes are:
 - a persistent profile owned by a different uid.
 
 The image intentionally does not add `--no-sandbox`. Fix the host/runtime or volume ownership
-instead of weakening Chromium isolation. The supplied image uses uid/gid `10001` and Compose
-grants `SYS_ADMIN` so Chromium can create its sandbox namespaces.
+instead of weakening Chromium isolation. The browser runs as uid/gid `10001`, and Compose grants
+`SYS_ADMIN` so that Docker's seccomp profile allows Chromium to create its sandbox namespaces.
 
-## Gateway is restarting
+## The server is restarting
 
-The gateway exits when it cannot discover CDP or when the browser connection dies. Confirm the
-browser is healthy and that no custom Compose override published or moved port 9222. The default
-`BROWSER_CDP_URL` is `http://browser:9222`.
+Read `docker compose logs --tail=100 server`. If it says the outbound firewall could not be set, the
+host's kernel or Docker setup refused the iptables rules: the container needs `NET_ADMIN`, and
+`EGRESS_POLICY=off` is the way to run without the firewall. A message about an unsafe production
+configuration means a secret in `.env` is missing or shorter than 16 characters.
 
 If logs show an authentication-password error, ensure the variable is present inside the Compose
 configuration:

@@ -1,0 +1,71 @@
+# The client side: the entry host people connect to. It serves HTTPS and forwards everything through
+# an SSH tunnel to the server, whose gateway stays on the server's loopback. See docs/deployment.md.
+name: remote-claude-browser-client
+
+services:
+  tunnel:
+    image: ${TUNNEL_IMAGE:-remote-claude-browser-tunnel:local}
+    build: .
+    init: true
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # Lets the tunnel read a key owned by whichever user generated it.
+      - DAC_READ_SEARCH
+    environment:
+      SERVER_SSH_HOST: ${SERVER_SSH_HOST:?Set SERVER_SSH_HOST in .env}
+      SERVER_SSH_PORT: ${SERVER_SSH_PORT:-22}
+      SERVER_SSH_USER: ${SERVER_SSH_USER:-root}
+      SERVER_PORT: ${SERVER_PORT:-3010}
+    volumes:
+      - ./ssh:/ssh:ro
+    networks:
+      - entry
+    mem_limit: 64m
+    pids_limit: 16
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "3010"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?Set PUBLIC_HOST in .env}
+      UPSTREAM: tunnel:3010
+    ports:
+      - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80"
+      - "${HTTP_BIND:-0.0.0.0}:${HTTPS_PORT:-443}:443"
+      - "${HTTP_BIND:-0.0.0.0}:${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    tmpfs:
+      - /tmp
+    networks:
+      - entry
+    mem_limit: 256m
+    depends_on:
+      - tunnel
+
+networks:
+  entry:
+
+volumes:
+  caddy-data:
+  caddy-config:

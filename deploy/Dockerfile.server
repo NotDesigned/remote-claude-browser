@@ -1,0 +1,69 @@
+# The server: one container holding Xvfb, Chromium and the gateway, which drives Chromium over a
+# private pipe. Nothing here listens for the browser's debugging protocol.
+FROM node:22.23.1-bookworm-slim AS build
+
+ENV PNPM_HOME=/pnpm
+ENV PATH=/pnpm:$PATH
+WORKDIR /app
+
+RUN corepack enable \
+    && corepack prepare pnpm@9.15.9 --activate
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches patches
+COPY packages/agent/package.json packages/agent/package.json
+COPY packages/gateway/package.json packages/gateway/package.json
+COPY packages/protocol/package.json packages/protocol/package.json
+COPY packages/viewer/package.json packages/viewer/package.json
+RUN pnpm install --frozen-lockfile
+
+COPY tsconfig.base.json ./
+COPY packages packages
+RUN pnpm -r --workspace-concurrency=1 --if-present run build \
+    && pnpm --filter @mirror/gateway deploy --prod /opt/gateway
+
+FROM node:22.23.1-bookworm-slim AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        chromium \
+        ffmpeg \
+        fonts-dejavu-core \
+        fonts-liberation \
+        fonts-noto-cjk \
+        fonts-noto-color-emoji \
+        fonts-noto-core \
+        iproute2 \
+        iptables \
+        procps \
+        xauth \
+        xvfb \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 browser \
+    && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin browser \
+    && install -d -o browser -g browser /data \
+    && install -d /opt/remote-browser
+
+COPY --from=build /opt/gateway/ /app/
+COPY --from=build /app/packages/viewer/dist/ /app/viewer/
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md UPSTREAM_COMMIT /app/
+COPY deploy/server-entrypoint.sh deploy/server-egress.sh /opt/remote-browser/
+RUN chmod 0755 /opt/remote-browser/server-entrypoint.sh /opt/remote-browser/server-egress.sh
+
+ENV NODE_ENV=production
+ENV VIEWER_DIST_ROOT=/app/viewer
+ENV CHROME_PATH=/usr/bin/chromium
+ENV CHROME_HEADFUL=1
+ENV CHROME_USER_DATA_DIR=/data/profile
+ENV DISPLAY=:99
+ENV HOME=/tmp/home
+ENV GATEWAY_HOST=0.0.0.0
+ENV GATEWAY_PORT=3010
+WORKDIR /app
+VOLUME /data
+EXPOSE 3010
+
+# Starts as root only to set the container's firewall, then becomes the browser user for good.
+ENTRYPOINT ["/opt/remote-browser/server-entrypoint.sh"]

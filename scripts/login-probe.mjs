@@ -15,7 +15,7 @@ const pixelMessage = (raw) => {
 };
 const require = createRequire(new URL("../packages/gateway/package.json", import.meta.url));
 const WebSocket = require("ws");
-const origin = "https://claude.example.com";
+const origin = process.env.MIRROR_ORIGIN ?? "http://127.0.0.1:3010";
 const password = (await readFile("/etc/claude-browser/agent.env", "utf8"))
   .split("\n")
   .find((line) => line.startsWith("MIRROR_ACCESS_PASSWORD="))
@@ -31,7 +31,7 @@ const cookie = response.headers
   .getSetCookie()
   .map((line) => line.split(";")[0])
   .join("; ");
-const socket = new WebSocket("wss://claude.example.com/ws", {
+const socket = new WebSocket(origin.replace(/^http/, "ws") + "/ws", {
   headers: { Cookie: cookie, Origin: origin },
 });
 let tab,
