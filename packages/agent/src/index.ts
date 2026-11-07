@@ -28,6 +28,12 @@ import { installVoiceBridge } from "./voice";
 import { captureMediaKeySystemAccess, installVideoDrmMonitor } from "./video";
 import { captureClipboardWrite, installClipboardHooks } from "./clipboard";
 import { canStartCanvasSnapshotWorker } from "./canvas-snapshot";
+import {
+  captureCanvasSamplerNatives,
+  matchesCanvasSite,
+  startCanvasSampler,
+  type CanvasSampler,
+} from "./canvas-sampler";
 import { record } from "@rrweb/record";
 import { addFontsToSnapshot, installFontCapture } from "./font-capture";
 import {
@@ -127,6 +133,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   const rtcConstructors = captureRtcConstructors(globalThis);
   const requestMediaKeySystemAccess = captureMediaKeySystemAccess(navigator);
   const clipboardWrite = captureClipboardWrite(navigator);
+  const canvasNatives = captureCanvasSamplerNatives(globalThis);
   const config = readAgentConfig(w[AGENT_CONFIG_KEY]);
   delete w[AGENT_CONFIG_KEY];
   if (isHiddenBlankFrame()) return;
@@ -177,6 +184,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
     onError: (error) => console.warn("mirror EME detection unavailable", error),
   });
   const recordCanvas = config.canvas.enabled && canStartCanvasSnapshotWorker();
+  let canvasSampler: CanvasSampler | null = null;
 
   installStitchReadyListener(window);
   if (isCrossOriginChild()) {
@@ -248,6 +256,8 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
               // A new snapshot here means new frames in the replay, so what is inside them has to
               // report after it. A request passed down before a delayed snapshot came too early.
               if (!isTop) broadcastStitchSync();
+              // Its canvases are blank in the replay until they are sent again.
+              canvasSampler?.reset();
             }
             if (isReturnedDocument(event)) broadcastStitchSync();
             return event;
@@ -265,4 +275,29 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
     });
   }
   startRecording();
+
+  // A same-origin child is recorded by the document above it, which samples its canvases too.
+  if (
+    !recordCanvas &&
+    canvasNatives !== null &&
+    (isTop || isCrossOriginChild()) &&
+    matchesCanvasSite(location, config.canvas.sites)
+  ) {
+    canvasSampler = startCanvasSampler({
+      document,
+      natives: canvasNatives,
+      getId: (node) => record.mirror.getId(node),
+      quality: config.canvas.quality,
+      emit: (event) => {
+        if (!recordReadiness.isStarted()) return;
+        if (isTop) emitter.emit({ kind: "rrweb", docId, e: event });
+        // The way rrweb itself passes a child's events up, so the frames above translate its ids.
+        else
+          window.parent.postMessage(
+            { type: "rrweb", event, origin: window.location.origin, isCheckout: false },
+            "*",
+          );
+      },
+    });
+  }
 })();

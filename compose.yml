@@ -34,6 +34,8 @@ services:
       MIRROR_CLIENTS: ${MIRROR_CLIENTS:-8}
       MIRROR_START_URL: ${MIRROR_START_URL:-https://claude.ai/new}
       MIRROR_CANVAS_SNAPSHOTS: "0"
+      # Sites whose canvases the page view samples. Unset means the verification challenges.
+      MIRROR_CANVAS_SITES: ${MIRROR_CANVAS_SITES:-}
       # Connections reach the gateway from this network's gateway address or from Caddy on it.
       MIRROR_TRUSTED_PROXIES: ${SERVER_SUBNET:-172.31.66.0/24}
       EGRESS_POLICY: ${EGRESS_POLICY:-on}

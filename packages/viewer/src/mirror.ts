@@ -32,6 +32,7 @@ import {
 } from "./media/canvas-rtc";
 import { REPLAY_ANCHOR_RULES } from "./replay-anchors";
 import { REPLAY_THUMBNAIL_RULES } from "./replay-thumbnails";
+import { createCanvasCompositor, type CanvasCompositor } from "./media/canvas";
 
 /** How long the page in view waits for the snapshot of the tab that is replacing it. */
 const TAB_SWITCH_WAIT_MS = 1_500;
@@ -103,6 +104,8 @@ interface LiveState {
   detachMediaRestore: () => void;
   rtc: LiveRtc | null;
   bufferMs: number;
+  /** Paints sampled canvas pictures; the replayer itself is never handed canvas commands. */
+  canvas: CanvasCompositor;
 }
 
 interface MediaRestoreState {
@@ -193,6 +196,13 @@ function armLiveMediaRestore(replayer: Replayer): {
       replayer.off("fullsnapshot-rebuilded", capture);
     },
   };
+}
+
+function isCanvasMutation(event: eventWithTime): boolean {
+  return (
+    event.type === EventType.IncrementalSnapshot &&
+    event.data.source === IncrementalSource.CanvasMutation
+  );
 }
 
 export function createMirror(opts: MirrorOpts): Mirror {
@@ -393,6 +403,10 @@ export function createMirror(opts: MirrorOpts): Mirror {
   };
 
   const addEvent = (live: LiveState, event: eventWithTime): boolean => {
+    if (isCanvasMutation(event)) {
+      void live.canvas.apply(event);
+      return true;
+    }
     const processed = runPipeline(live.tab, event);
     if (processed === null) return true;
     try {
@@ -450,8 +464,13 @@ export function createMirror(opts: MirrorOpts): Mirror {
     opts.container.dataset.mirrorState = "building";
 
     const initialEvents: eventWithTime[] = [];
+    const initialCanvas: eventWithTime[] = [];
     remoteViewport = extractSnapshotViewport(message) ?? remoteViewport;
     for (const event of message.data) {
+      if (isCanvasMutation(event)) {
+        initialCanvas.push(event);
+        continue;
+      }
       const processed = runPipeline(message.tab, event);
       if (processed !== null) initialEvents.push(processed);
     }
@@ -564,7 +583,15 @@ export function createMirror(opts: MirrorOpts): Mirror {
       detachMediaRestore: mediaRestore.detach,
       rtc,
       bufferMs: clock.liveBufferMs(),
+      canvas: createCanvasCompositor(
+        { getReplayer: () => replayer },
+        {
+          isLive: (id) => rtc?.controller.isLive(id) === true,
+          onError: (error) => console.warn("mirror canvas picture failed", error),
+        },
+      ),
     };
+    for (const event of initialCanvas) void state.canvas.apply(event);
     state.detachInteraction = opts.attachInteraction?.(message.tab, replayer) ?? (() => {});
     applyViewportLayout();
     resyncRequested = false;

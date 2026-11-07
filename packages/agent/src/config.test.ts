@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { DEFAULT_CANVAS_SITES } from "./canvas-sampler";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_AGENT_CONFIG, readAgentConfig } from "./config";
 
@@ -9,25 +10,29 @@ describe("agent session config", () => {
 
   it("accepts per-session fps and quality and bounds the CPU-sensitive range", () => {
     expect(readAgentConfig({ canvas: { fps: 12, quality: 0.55 } })).toEqual({
-      canvas: { enabled: true, fps: 12, quality: 0.55 },
+      canvas: { enabled: true, fps: 12, quality: 0.55, sites: [...DEFAULT_CANVAS_SITES] },
       bridge: DEFAULT_AGENT_CONFIG.bridge,
     });
     expect(readAgentConfig({ canvas: { fps: 1, quality: -1 } })).toEqual({
-      canvas: { enabled: true, fps: 4, quality: 0.1 },
+      canvas: { enabled: true, fps: 4, quality: 0.1, sites: [...DEFAULT_CANVAS_SITES] },
       bridge: DEFAULT_AGENT_CONFIG.bridge,
     });
     expect(readAgentConfig({ canvas: { fps: 60, quality: 2 } })).toEqual({
-      canvas: { enabled: true, fps: 15, quality: 1 },
+      canvas: { enabled: true, fps: 15, quality: 1, sites: [...DEFAULT_CANVAS_SITES] },
       bridge: DEFAULT_AGENT_CONFIG.bridge,
     });
   });
 
   it("disables optional bitmap workers explicitly while retaining sampling and bridge defaults", () => {
     expect(readAgentConfig({ canvas: { enabled: false } })).toEqual({
-      canvas: { enabled: false, fps: 8, quality: 0.7 },
+      canvas: { enabled: false, fps: 8, quality: 0.7, sites: [...DEFAULT_CANVAS_SITES] },
       bridge: DEFAULT_AGENT_CONFIG.bridge,
     });
     expect(readAgentConfig({ canvas: { enabled: true } }).canvas.enabled).toBe(true);
+    expect(readAgentConfig({ canvas: { sites: ["*"] } }).canvas.sites).toEqual(["*"]);
+    expect(readAgentConfig({ canvas: { sites: [""] } }).canvas.sites).toEqual([
+      ...DEFAULT_CANVAS_SITES,
+    ]);
   });
 
   it.each([undefined, null, "false", 0])(

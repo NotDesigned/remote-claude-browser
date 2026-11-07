@@ -23,6 +23,16 @@ import type { BrowserHandle } from "./launch";
 
 /** Native AutomationControlled already returns false. This conditional fallback only changes the
  * descriptor if a future Chromium/embedder regresses despite the launch invariant. */
+/** MIRROR_CANVAS_SITES: comma-separated, "none" for no sites, unset for the challenge providers. */
+export function canvasSites(value: string | undefined): string[] {
+  if (value === undefined || value.trim() === "") return [...DEFAULT_AGENT_CONFIG.canvas.sites];
+  if (value.trim() === "none") return [];
+  return value
+    .split(",")
+    .map((site) => site.trim())
+    .filter((site) => site !== "");
+}
+
 export const WEBDRIVER_NORMALIZER = `(() => {
   const prototype = Navigator.prototype;
   const descriptor = Object.getOwnPropertyDescriptor(prototype, "webdriver");
@@ -144,6 +154,7 @@ export function injectAgent(
       canvas: {
         ...DEFAULT_AGENT_CONFIG.canvas,
         enabled: process.env.MIRROR_CANVAS_SNAPSHOTS !== "0",
+        sites: canvasSites(process.env.MIRROR_CANVAS_SITES),
       },
       bridge: {
         bindingName: channel.bindingName,

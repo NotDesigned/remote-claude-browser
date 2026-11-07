@@ -283,6 +283,47 @@ async function checkForm(page, address, mirrored) {
   console.log("A Markdown download keeps its Chinese name and its content.");
 }
 
+const CANVAS_CHILD = `<!doctype html><meta charset="utf-8"><body style="margin:0"><canvas id="painted" width="160" height="90"></canvas><script>
+const paint = document.getElementById("painted").getContext("2d");
+let red = true;
+setInterval(() => { paint.fillStyle = red ? "rgb(255,0,0)" : "rgb(0,0,255)"; paint.fillRect(0, 0, 160, 90); red = !red; }, 700);
+</script>`;
+const CANVAS_PAGE = `<!doctype html><meta charset="utf-8"><title>Canvas</title><iframe style="width:200px;height:120px"
+ src="data:text/html;charset=utf-8,${encodeURIComponent(CANVAS_CHILD)}"></iframe>`;
+
+/** With MIRROR_CANVAS_SITES=*, a canvas in a cross-origin frame shows, and keeps changing. */
+async function checkCanvas(page, address) {
+  await address.fill(`data:text/html;charset=utf-8,${encodeURIComponent(CANVAS_PAGE)}`);
+  await address.press("Enter");
+  const colour = () =>
+    page.evaluate(() => {
+      const top = document.querySelector("#mirror-host .mirror-stage:not([data-parked]) iframe");
+      const canvas = top?.contentDocument
+        ?.querySelector("iframe")
+        ?.contentDocument?.querySelector("canvas");
+      if (!canvas) return "missing";
+      const [r, g, b, a] = canvas.getContext("2d").getImageData(80, 45, 1, 1).data;
+      return a === 0
+        ? "blank"
+        : r > 200 && b < 60
+          ? "red"
+          : b > 200 && r < 60
+            ? "blue"
+            : `other ${r},${g},${b},${a}`;
+    });
+  const seen = new Set();
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline && !(seen.has("red") && seen.has("blue"))) {
+    seen.add(await colour());
+    await page.waitForTimeout(200);
+  }
+  assert.ok(
+    seen.has("red") && seen.has("blue"),
+    `The mirrored canvas showed: ${[...seen].join(", ")}`,
+  );
+  console.log("A canvas in a cross-origin frame shows in the page view, and keeps up.");
+}
+
 async function checkVideo(page, address) {
   await page.evaluate(() => {
     const Native = window.RTCPeerConnection;
@@ -413,6 +454,7 @@ try {
   await checkNestedFrames(page, address);
 
   if (process.env.SMOKE_VIDEO === "1") await checkVideo(page, address);
+  if (process.env.SMOKE_CANVAS === "1") await checkCanvas(page, address);
 
   // Picture mode, in a session of its own. Its canvas only appears once a frame has arrived.
   const pictureContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });

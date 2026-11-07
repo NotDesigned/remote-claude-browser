@@ -62,3 +62,5 @@ jobs:
           CHROME_PATH: /usr/bin/google-chrome
           SMOKE_HOSTNET: "1"
           SMOKE_VIDEO: "1"
+          SMOKE_CANVAS: "1"
+          MIRROR_CANVAS_SITES: "*"
