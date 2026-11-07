@@ -239,7 +239,21 @@ async function checkNestedFrames(page, address) {
 
 /** Accounts are separate Chromes: a cookie set in one is not there in another, and stays in its own. */
 async function checkAccounts(page) {
-  const api = page.request;
+  // From the page, as the viewer itself asks: its cookies are Secure, which only it sends to plain http.
+  const call = (method, path, body) =>
+    page.evaluate(
+      async ({ method, path, body }) => {
+        const response = await fetch(path, {
+          method,
+          credentials: "same-origin",
+          ...(body === undefined
+            ? {}
+            : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+        });
+        return { status: response.status, json: await response.json().catch(() => null) };
+      },
+      { method, path, body },
+    );
   const sid = new URL(page.url()).searchParams.get("sid");
   assert.ok(sid, "The page has no session");
   const mirrorText = () =>
@@ -277,17 +291,13 @@ async function checkAccounts(page) {
   };
 
   assert.match(await cookiesAfter("/cookies/set?mirror=first"), /"mirror":\s*"first"/);
-  const made = await (
-    await api.post(`${origin}/api/accounts`, { data: { name: "第二个" } })
-  ).json();
-  assert.ok(made.id, "The account was not created");
-  const switched = await api.post(`${origin}/api/client/session/${sid}/account`, {
-    data: { account: made.id },
-  });
-  assert.equal(switched.status(), 200, "Switching the session failed");
+  const made = (await call("POST", "/api/accounts", { name: "第二个" })).json;
+  assert.ok(made?.id, "The account was not created");
+  const switched = await call("POST", `/api/client/session/${sid}/account`, { account: made.id });
+  assert.equal(switched.status, 200, "Switching the session failed");
   await page.reload();
   await ready();
-  const listed = await (await api.get(`${origin}/api/accounts?sid=${sid}`)).json();
+  const listed = (await call("GET", `/api/accounts?sid=${sid}`)).json;
   assert.equal(listed.current, made.id, "The session is not on the new account");
   assert.equal(listed.accounts.find((account) => account.id === made.id)?.running, true);
   assert.doesNotMatch(
@@ -296,7 +306,7 @@ async function checkAccounts(page) {
     "The new account sees the other's cookie",
   );
 
-  await api.post(`${origin}/api/client/session/${sid}/account`, { data: { account: "default" } });
+  await call("POST", `/api/client/session/${sid}/account`, { account: "default" });
   await page.reload();
   await ready();
   assert.match(
@@ -304,9 +314,9 @@ async function checkAccounts(page) {
     /"mirror":\s*"first"/,
     "The first account lost its cookie",
   );
-  const removed = await api.delete(`${origin}/api/accounts/${made.id}`);
-  assert.equal(removed.status(), 204, "Deleting the account failed");
-  const after = await (await api.get(`${origin}/api/accounts?sid=${sid}`)).json();
+  const removed = await call("DELETE", `/api/accounts/${made.id}`);
+  assert.equal(removed.status, 204, "Deleting the account failed");
+  const after = (await call("GET", `/api/accounts?sid=${sid}`)).json;
   assert.ok(
     !after.accounts.some((account) => account.id === made.id),
     "The account is still listed",
