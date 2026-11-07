@@ -10,6 +10,8 @@ export interface CanvasSnapshotConfig {
   fps?: number;
   /** WebP encoding quality from 0.1 through 1. Values outside that range are bounded in-page. */
   quality?: number;
+  /** Sites whose canvases are sampled for the page view. Defaults to the verification challenges. */
+  sites?: string[];
 }
 
 /** Session-facing controls for the injected recorder. */

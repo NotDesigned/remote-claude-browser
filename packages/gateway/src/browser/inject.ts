@@ -10,6 +10,7 @@
  * Gotchas: Runtime.bindingCalled fires per execution context — dedupe by msgId. Commands and node
  * handles use Runtime.callFunctionOn against the acquired per-document bridge RemoteObject.
  */
+import { DEFAULT_CANVAS_SITES } from "@mirror/protocol";
 import { createAgentBundle, DEFAULT_AGENT_CONFIG } from "@mirror/agent";
 
 import type { TargetRef } from "../types";
@@ -25,7 +26,7 @@ import type { BrowserHandle } from "./launch";
  * descriptor if a future Chromium/embedder regresses despite the launch invariant. */
 /** MIRROR_CANVAS_SITES: comma-separated, "none" for no sites, unset for the challenge providers. */
 export function canvasSites(value: string | undefined): string[] {
-  if (value === undefined || value.trim() === "") return [...DEFAULT_AGENT_CONFIG.canvas.sites];
+  if (value === undefined || value.trim() === "") return [...DEFAULT_CANVAS_SITES];
   if (value.trim() === "none") return [];
   return value
     .split(",")

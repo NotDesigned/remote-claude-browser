@@ -97,3 +97,15 @@ export interface CmdRes {
 type DistributiveOmit<T, K extends keyof any> = T extends unknown ? Omit<T, K> : never;
 /** An AgentCmd before the sender assigns a reqId (used by AgentLink.sendCmd implementations). */
 export type AgentCmdInput = DistributiveOmit<AgentCmd, "reqId">;
+
+/**
+ * Sites whose canvases the page view samples, as verification challenges draw their pictures on
+ * canvases. A rule is a host, which also covers its subdomains, optionally followed by a path prefix.
+ */
+export const DEFAULT_CANVAS_SITES: readonly string[] = [
+  "hcaptcha.com",
+  "google.com/recaptcha/",
+  "recaptcha.net",
+  "challenges.cloudflare.com",
+  "arkoselabs.com",
+];

@@ -9,16 +9,14 @@
  * and sends a picture only when it changed. Its events take the shape of rrweb's sampled canvas
  * snapshots, which the viewer paints with a compositor that accepts nothing else.
  */
-import { EventType, IncrementalSource, type eventWithTime } from "@mirror/protocol";
+import {
+  DEFAULT_CANVAS_SITES,
+  EventType,
+  IncrementalSource,
+  type eventWithTime,
+} from "@mirror/protocol";
 
-/** Where challenges draw on canvases. A rule is a host, optionally followed by a path prefix. */
-export const DEFAULT_CANVAS_SITES: readonly string[] = [
-  "hcaptcha.com",
-  "google.com/recaptcha/",
-  "recaptcha.net",
-  "challenges.cloudflare.com",
-  "arkoselabs.com",
-];
+export { DEFAULT_CANVAS_SITES };
 
 export function matchesCanvasSite(
   location: Pick<Location, "hostname" | "pathname">,

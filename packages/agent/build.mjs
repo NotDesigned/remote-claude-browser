@@ -42,7 +42,7 @@ export function createAgentBundle(config = DEFAULT_AGENT_CONFIG) {
     ? config.bridge
     : {};
   const embedded = {
-    canvas: { enabled: canvas.enabled, fps: canvas.fps, quality: canvas.quality },
+    canvas: { enabled: canvas.enabled, fps: canvas.fps, quality: canvas.quality, sites: canvas.sites },
     bridge: {
       bindingName: bridge.bindingName,
       rtcBindingName: bridge.rtcBindingName,
