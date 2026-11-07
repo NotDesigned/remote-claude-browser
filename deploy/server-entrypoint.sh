@@ -31,7 +31,10 @@ rm -f "$CHROME_USER_DATA_DIR/SingletonLock" \
 
 display_number=${DISPLAY#:}
 # Abstract sockets belong to the network namespace, which compose.hostnet.yml shares with the host.
-Xvfb "$DISPLAY" -screen 0 "${XVFB_SCREEN:-12800x2880x24}" -nolisten tcp -nolisten local -noreset &
+# Chromium draws with its own SwiftShader, so GLX would only load Mesa's LLVM (about 45 MB). A black
+# root leaves the unused screen as zero pages, which compressed swap stores for almost nothing.
+Xvfb "$DISPLAY" -screen 0 "${XVFB_SCREEN:-12800x2880x24}" -br -extension GLX \
+  -nolisten tcp -nolisten local -noreset &
 tries=0
 until [ -S "/tmp/.X11-unix/X$display_number" ]; do
   tries=$((tries + 1))
