@@ -1,4 +1,7 @@
-/** Two independent workspaces over one authoritative Chrome and persistent login profile. */
+/**
+ * Independent workspaces over one Chrome per account. Sessions on one account share its login
+ * profile; accounts share nothing, as each has a Chrome and a profile of its own.
+ */
 import { encodeMsg, type Down, type Up, type ServerStatusMsg } from "@mirror/protocol";
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -20,7 +23,7 @@ import {
   createClientBrowserPool,
   type ClientBrowserScope,
 } from "./browser/client-scope";
-import { launchBrowser, type BrowserTargetInfo } from "./browser/launch";
+import { launchBrowser, type BrowserHandle, type BrowserTargetInfo } from "./browser/launch";
 import { connectRemoteBrowser } from "./browser/remote";
 import { createNavigationController } from "./browser/nav";
 import { createRendererRecovery } from "./browser/recovery";
@@ -40,14 +43,32 @@ import { gatewayHost, registerViewerStatic, trustedProxies } from "./serving";
 import { createTabLifecycle } from "./session/tabs";
 import { CLIENT_SLOTS, ClientSessionError, createClientSessions } from "./session/clients";
 import { createIdleReaper, PAGE_GENERATING_EXPRESSION } from "./session/idle-reaper";
+import { createProfileStore, DEFAULT_PROFILE } from "./session/profiles";
 import { createResourceSampler } from "./monitor/resources";
 import type { TargetRef, AgentLink } from "./types";
 import { createRoleManager } from "./ws/roles";
 import { createWsServer, resumeCursorsFor } from "./ws/server";
 import type { ViewerConn } from "./ws/viewerconn";
 
+/** One account: its Chrome, and what the gateway keeps for that Chrome. */
+interface Account {
+  id: string;
+  dir: string;
+  browser: BrowserHandle;
+  pool: ReturnType<typeof createClientBrowserPool>;
+  agent: ReturnType<typeof createAgentLink>;
+  themeCopies: ReturnType<typeof createThemeCopies>;
+  downloads: Awaited<ReturnType<typeof createDownloadManager>>;
+  zoomReady: boolean;
+  frameOwners: Map<string, string>;
+  sessionTargets: Map<string, string>;
+  /** Since when no session has used it. The default account's Chrome is never closed. */
+  unusedSince: number | null;
+}
+
 interface ClientRuntime {
   sid: string;
+  account: Account;
   theme: ReturnType<typeof createClaudeTheme>;
   browser: ClientBrowserScope;
   targets: Map<string, TargetRef>;
@@ -66,6 +87,27 @@ interface ClientRuntime {
 /** Frames wait before encoding beyond this, since a viewer cannot skip one once it is encoded. */
 const VIDEO_BACKLOG_BYTES = 512 * 1024;
 const PAGE_IDLE_RELEASE_MS = 60_000;
+/** An account's Chrome nobody has used for this long is closed. It starts again when needed. */
+const ACCOUNT_IDLE_CLOSE_MS = 120_000;
+/** About what another Chrome takes before its first page. */
+const ACCOUNT_MEMORY_BYTES = 400 * 1048576;
+
+const CHROME_ARGS = [
+  "--disable-dev-shm-usage",
+  // Sets the first window. On this display's wide screen it would otherwise be huge.
+  "--window-size=1050,980",
+  // Nobody is at this browser to click: Claude's sound starts without a gesture here, and the
+  // viewer's own browser applies its own rule.
+  "--autoplay-policy=no-user-gesture-required",
+  // This host is short of memory rather than of JavaScript speed, and new windows are rare
+  // enough not to need a renderer waiting for them.
+  "--js-flags=--optimize-for-size",
+  "--disable-features=SpareRendererForSitePerProcess",
+  // Sessions share the profile now, so a restart would otherwise offer to restore them.
+  "--hide-crash-restore-bubble",
+  // Only over this private pipe: it lets the picture's zoom extension be loaded below.
+  "--enable-unsafe-extension-debugging",
+];
 
 /** Kept across restarts, so that a restart does not invalidate what viewers have cached. */
 async function loadAssetKey(file: string): Promise<Buffer> {
@@ -85,54 +127,9 @@ export async function startClientGateway(): Promise<void> {
   const managedProfile = !process.env.CHROME_USER_DATA_DIR;
   const profile =
     process.env.CHROME_USER_DATA_DIR ?? (await mkdtemp(join(tmpdir(), "mirror-clients-")));
-  const browser = process.env.BROWSER_CDP_URL
-    ? await connectRemoteBrowser(process.env.BROWSER_CDP_URL)
-    : await launchBrowser({
-        userDataDir: profile,
-        executablePath: process.env.CHROME_PATH,
-        headful: process.env.CHROME_HEADFUL === "1",
-        enableExtensions: true,
-        // Sets the first window. On this display's wide screen it would otherwise be huge.
-        // Nobody is at this browser to click: Claude's sound starts without a gesture here, and the
-        // viewer's own browser applies its own rule.
-        args: [
-          "--disable-dev-shm-usage",
-          "--window-size=1050,980",
-          "--autoplay-policy=no-user-gesture-required",
-          // This host is short of memory rather than of JavaScript speed, and new windows are rare
-          // enough not to need a renderer waiting for them.
-          "--js-flags=--optimize-for-size",
-          "--disable-features=SpareRendererForSitePerProcess",
-          // Sessions share the profile now, so a restart would otherwise offer to restore them.
-          "--hide-crash-restore-bubble",
-          // Only over this private pipe: it lets the picture's zoom extension be loaded below.
-          "--enable-unsafe-extension-debugging",
-        ],
-      });
-  const zoomExtensionReady = await installZoomExtension(
-    browser,
-    join(profile, "zoom-extension"),
-  ).then(
-    () => true,
-    (error: unknown) => {
-      console.warn("The picture will stop at CSS pixels:", (error as Error).message);
-      return false;
-    },
-  );
-  const pool = createClientBrowserPool(browser, {
-    onSignedIn: () => {
-      for (const runtime of runtimes.values()) {
-        for (const target of runtime.targets.values()) {
-          if (target.type !== "page") continue;
-          const destination = afterSignInUrl(runtime.metadata.get(target.targetId)?.url);
-          if (destination === null) continue;
-          void runtime.browser
-            .send(target.sessionId, "Page.navigate", { url: destination })
-            .catch((error) => report("shared login navigation failed", error));
-        }
-      }
-    },
-  });
+  // Other accounts keep their profiles beside the default one.
+  const accountsDir = process.env.MIRROR_ACCOUNTS_DIR ?? `${profile}-accounts`;
+  const accountStore = await createProfileStore({ file: join(profile, "accounts.json") });
   const app = Fastify({ logger: false, trustProxy: trustedProxies() });
   registerSecurityHeaders(app);
   const key = process.env.MIRROR_AUTH_SECRET
@@ -193,64 +190,18 @@ export async function startClientGateway(): Promise<void> {
   const closing = new Set<string>();
   const viewerIds = new WeakMap<ViewerConn, string>();
   const viewers = new Map<string, { viewer: ViewerConn; sid: string; owner: string }>();
-  const frameOwners = new Map<string, string>();
-  const sessionTargets = new Map<string, string>();
-  browser.onAttached((target) => sessionTargets.set(target.sessionId, target.targetId));
-  browser.onDetached((target) => {
-    if (sessionTargets.get(target.sessionId) === target.targetId)
-      sessionTargets.delete(target.sessionId);
-  });
-  browser.onSessionEvent("Page.frameNavigated", (session, event) => {
-    const target = sessionTargets.get(session),
-      owner = target ? pool.ownerOf(target) : undefined;
-    if (owner) frameOwners.set(event.frame.id, owner);
-  });
   /** Tabs whose page is using its microphone, for a viewer that connects while it does. */
   const micTabs = new Set<string>();
   const hasViewer = (sid: string) =>
     [...viewers.values()].some((connection) => connection.sid === sid);
-  const preparePhoneTarget = createPhoneTargetPreparer({
-    send: browser.send,
-    ownerOf: (targetId) => pool.ownerOf(targetId),
-    isPhoneSession: (sid) => clientSessions.get(sid)?.phone === true,
-    onError: (error) => report("phone identity failed", error),
-  });
-  const themeCopies = createThemeCopies(browser.send);
-  browser.onDetached((target) => themeCopies.forget(target.sessionId));
-  const prepareThemeCopy = async (target: TargetRef): Promise<void> => {
-    if (target.type !== "page") return;
-    const owner = await waitForOwner(target, { ownerOf: (id) => pool.ownerOf(id) });
-    if (owner === undefined) return;
-    void themeCopies
-      .install(target.sessionId, runtimes.get(owner)?.theme.current() ?? "auto", true)
-      .catch((error) => report("client theme failed", error));
-  };
-  const agent = createAgentLink(browser, {
-    prepareTarget: async (target) => {
-      await Promise.all([preparePhoneTarget(target), prepareThemeCopy(target)]);
-    },
-    publishClipboard(message, target) {
-      const sid = pool.ownerOf(target);
-      if (sid) publish(sid, message);
-    },
-    publishVoice(message, target) {
-      const sid = pool.ownerOf(target);
-      if (!sid) return;
-      if ("audio" in message) {
-        publish(sid, { t: "audio", tab: target, pcm: message.audio });
-        return;
-      }
-      if (message.mic) micTabs.add(target);
-      else micTabs.delete(target);
-      publish(sid, { t: "mic", tab: target, on: message.mic });
-      // With nobody connected there is no device to ask, so the page should not wait for one.
-      if (message.mic && !hasViewer(sid)) sendVoice(target, { state: false });
-    },
-  });
-  const sendVoice = (tab: string, value: { state: boolean } | { pcm: string }) => {
-    const session = [...sessionTargets].find(([, target]) => target === tab)?.[0];
+  const sendVoice = (
+    account: Pick<Account, "browser" | "sessionTargets">,
+    tab: string,
+    value: { state: boolean } | { pcm: string },
+  ) => {
+    const session = [...account.sessionTargets].find(([, target]) => target === tab)?.[0];
     if (session)
-      void callAgentBridge(browser, session, "voice", [value]).catch(() => {
+      void callAgentBridge(account.browser, session, "voice", [value]).catch(() => {
         // The page navigated away, which ends its use of the microphone as well.
       });
   };
@@ -477,46 +428,236 @@ export async function startClientGateway(): Promise<void> {
     if (!currentOwner(request.raw)) return reply.code(401).send({ error: "请重新输入访问密码" });
     return reply.header("cache-control", "no-store").send(status());
   });
+  await openAccount(DEFAULT_PROFILE);
   const assetKey = await loadAssetKey(join(profile, "asset-token.key"));
   registerAssetRoutes(app, {
     serverKey: assetKey,
     cache: createAssetCache(join(profile, "asset-cache")),
     fetcher: createAssetFetcher({
-      send: browser.send,
+      // A CDP session belongs to one Chrome, and so to one account.
+      send: (sessionId, method, params) => {
+        const owner = [...accounts.values()].find((account) =>
+          account.sessionTargets.has(sessionId),
+        );
+        return owner
+          ? owner.browser.send(sessionId, method, params)
+          : Promise.reject(new Error("Unknown browser session"));
+      },
       sessionFor: (ref) => {
-        const targets = runtimes.get(ref.sessionId)?.targets;
+        const runtime = runtimes.get(ref.sessionId);
+        const targets = runtime?.targets;
         if (ref.tabId === ANY_SESSION_TAB)
           return [...(targets?.values() ?? [])].find((target) => target.type === "page")?.sessionId;
-        return pool.ownerOf(ref.tabId) === ref.sessionId
+        return runtime?.account.pool.ownerOf(ref.tabId) === ref.sessionId
           ? targets?.get(ref.tabId)?.sessionId
           : undefined;
       },
     }),
     preHandler: requireSession(),
   });
-  const downloadDir = join(profile, "downloads");
-  await mkdir(downloadDir, { recursive: true });
-  const downloads = await createDownloadManager({
-    sessionId: "shared-account",
-    browser,
-    downloadDir,
-    sessionForFrame: (frame) => {
-      const sid = frameOwners.get(frame) ?? pool.ownerOf(frame);
-      return sid && !closing.has(sid) ? sid : undefined;
-    },
-    publish: (message, sid) => publish(sid, message),
-    onError: (error) => report("client download failed", error),
-  });
   registerDownloadRoutes(app, {
     preHandler: requireSession(),
-    managerFor: (sid) => (CLIENT_SLOTS.includes(sid as never) ? downloads : undefined),
+    managerFor: (sid) =>
+      CLIENT_SLOTS.includes(sid as never)
+        ? accounts.get(clientSessions.profileOf(sid))?.downloads
+        : undefined,
   });
   registerUploadRoutes(app, {
     preHandler: requireSession(),
     managerFor: (sid) => runtimes.get(sid)?.uploads,
   });
 
+  const accounts = new Map<string, Account>();
+  const openingAccounts = new Map<string, Promise<Account>>();
+  const accountDir = (id: string) => (id === DEFAULT_PROFILE ? profile : join(accountsDir, id));
+  const memoryShort = async (extraBytes = 0): Promise<boolean> => {
+    resources = await resourceSampler.sample();
+    const available =
+      resources.memoryTotalBytes === null || resources.memoryUsedBytes === null
+        ? null
+        : resources.memoryTotalBytes - resources.memoryUsedBytes;
+    const memoryBudget =
+      resources.browserMemoryLimitBytes ??
+      (resources.memoryTotalBytes === null ? 1600 * 1048576 : resources.memoryTotalBytes * 0.8);
+    const workspaceHeadroom = Math.max(300 * 1048576, memoryBudget * 0.1) + extraBytes;
+    return (
+      (resources.browserMemoryBytes !== null &&
+        resources.browserMemoryBytes > memoryBudget - workspaceHeadroom) ||
+      (available !== null && available < 256 * 1048576 + extraBytes)
+    );
+  };
+
+  async function buildAccount(id: string, dir: string, browser: BrowserHandle): Promise<Account> {
+    const zoomReady = await installZoomExtension(browser, join(dir, "zoom-extension")).then(
+      () => true,
+      (error: unknown) => {
+        console.warn("The picture will stop at CSS pixels:", (error as Error).message);
+        return false;
+      },
+    );
+    const pool = createClientBrowserPool(browser, {
+      onSignedIn: () => {
+        for (const runtime of runtimes.values()) {
+          if (runtime.account.id !== id) continue;
+          for (const target of runtime.targets.values()) {
+            if (target.type !== "page") continue;
+            const destination = afterSignInUrl(runtime.metadata.get(target.targetId)?.url);
+            if (destination === null) continue;
+            void runtime.browser
+              .send(target.sessionId, "Page.navigate", { url: destination })
+              .catch((error) => report("shared login navigation failed", error));
+          }
+        }
+      },
+    });
+    const frameOwners = new Map<string, string>();
+    const sessionTargets = new Map<string, string>();
+    browser.onAttached((target) => sessionTargets.set(target.sessionId, target.targetId));
+    browser.onDetached((target) => {
+      if (sessionTargets.get(target.sessionId) === target.targetId)
+        sessionTargets.delete(target.sessionId);
+    });
+    browser.onSessionEvent("Page.frameNavigated", (session, event) => {
+      const target = sessionTargets.get(session),
+        owner = target ? pool.ownerOf(target) : undefined;
+      if (owner) frameOwners.set(event.frame.id, owner);
+    });
+    const preparePhoneTarget = createPhoneTargetPreparer({
+      send: browser.send,
+      ownerOf: (targetId) => pool.ownerOf(targetId),
+      isPhoneSession: (sid) => clientSessions.get(sid)?.phone === true,
+      onError: (error) => report("phone identity failed", error),
+    });
+    const themeCopies = createThemeCopies(browser.send);
+    browser.onDetached((target) => themeCopies.forget(target.sessionId));
+    const prepareThemeCopy = async (target: TargetRef): Promise<void> => {
+      if (target.type !== "page") return;
+      const owner = await waitForOwner(target, { ownerOf: (targetId) => pool.ownerOf(targetId) });
+      if (owner === undefined) return;
+      void themeCopies
+        .install(target.sessionId, runtimes.get(owner)?.theme.current() ?? "auto", true)
+        .catch((error) => report("client theme failed", error));
+    };
+    const agent = createAgentLink(browser, {
+      prepareTarget: async (target) => {
+        await Promise.all([preparePhoneTarget(target), prepareThemeCopy(target)]);
+      },
+      publishClipboard(message, target) {
+        const sid = pool.ownerOf(target);
+        if (sid) publish(sid, message);
+      },
+      publishVoice(message, target) {
+        const sid = pool.ownerOf(target);
+        if (!sid) return;
+        if ("audio" in message) {
+          publish(sid, { t: "audio", tab: target, pcm: message.audio });
+          return;
+        }
+        if (message.mic) micTabs.add(target);
+        else micTabs.delete(target);
+        publish(sid, { t: "mic", tab: target, on: message.mic });
+        // With nobody connected there is no device to ask, so the page should not wait for one.
+        if (message.mic && !hasViewer(sid))
+          sendVoice({ browser, sessionTargets }, target, { state: false });
+      },
+    });
+    const downloadDir = join(dir, "downloads");
+    await mkdir(downloadDir, { recursive: true });
+    const downloads = await createDownloadManager({
+      sessionId: "shared-account",
+      browser,
+      downloadDir,
+      sessionForFrame: (frame) => {
+        const sid = frameOwners.get(frame) ?? pool.ownerOf(frame);
+        return sid && !closing.has(sid) ? sid : undefined;
+      },
+      publish: (message, sid) => publish(sid, message),
+      onError: (error) => report("client download failed", error),
+    });
+    return {
+      id,
+      dir,
+      browser,
+      pool,
+      agent,
+      themeCopies,
+      downloads,
+      zoomReady,
+      frameOwners,
+      sessionTargets,
+      unusedSince: null,
+    };
+  }
+
+  /** The account's Chrome, started if it is not running. */
+  async function openAccount(id: string): Promise<Account> {
+    const open = accounts.get(id);
+    if (open) return open;
+    let pending = openingAccounts.get(id);
+    if (!pending) {
+      pending = (async () => {
+        if (!accountStore.has(id))
+          throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
+        if (id !== DEFAULT_PROFILE) {
+          if (process.env.BROWSER_CDP_URL)
+            throw new ClientSessionError(
+              503,
+              "PROFILE_UNSUPPORTED",
+              "连接外部浏览器时只能用一个账号",
+            );
+          if (!e2e && (await memoryShort(ACCOUNT_MEMORY_BYTES)))
+            throw new ClientSessionError(
+              503,
+              "PROFILE_RESOURCES",
+              "B 的内存不够再启动一个账号的浏览器，请先结束其他账号的会话",
+            );
+        }
+        const dir = accountDir(id);
+        await mkdir(dir, { recursive: true, mode: 0o700 });
+        const browser =
+          id === DEFAULT_PROFILE && process.env.BROWSER_CDP_URL
+            ? await connectRemoteBrowser(process.env.BROWSER_CDP_URL)
+            : await launchBrowser({
+                userDataDir: dir,
+                executablePath: process.env.CHROME_PATH,
+                headful: process.env.CHROME_HEADFUL === "1",
+                enableExtensions: true,
+                args: CHROME_ARGS,
+              });
+        try {
+          const account = await buildAccount(id, dir, browser);
+          accounts.set(id, account);
+          return account;
+        } catch (error) {
+          await browser.close().catch(() => {});
+          throw error;
+        }
+      })();
+      openingAccounts.set(id, pending);
+      void pending
+        .finally(() => {
+          if (openingAccounts.get(id) === pending) openingAccounts.delete(id);
+        })
+        .catch(() => {});
+    }
+    return pending;
+  }
+
+  async function closeAccount(account: Account): Promise<void> {
+    if (accounts.get(account.id) === account) accounts.delete(account.id);
+    account.downloads.close();
+    account.pool.dispose();
+    await account.browser.close().catch(() => {});
+  }
+
+  /** Whether any session is using the account, or about to. */
+  const accountInUse = (id: string) =>
+    [...runtimes.values()].some((runtime) => runtime.account.id === id) ||
+    [...runtimePromises.keys()].some((sid) => clientSessions.profileOf(sid) === id);
+
   async function createRuntime(sid: string): Promise<ClientRuntime> {
+    const account = await openAccount(clientSessions.profileOf(sid));
+    const { pool, agent, themeCopies, browser, frameOwners } = account;
     const scoped = pool.scope(sid),
       targets = new Map<string, TargetRef>(),
       metadata = new Map<string, BrowserTargetInfo>();
@@ -616,7 +757,7 @@ export async function startClientGateway(): Promise<void> {
           (connection) =>
             connection.sid === sid && connection.viewer.socket.bufferedAmount > VIDEO_BACKLOG_BYTES,
         ),
-      ...(zoomExtensionReady ? { browserZoom } : {}),
+      ...(account.zoomReady ? { browserZoom } : {}),
       mobile: clientSessions.get(sid)?.phone === true,
       ...(displayGrabbable && scoped.sendBrowser
         ? {
@@ -666,6 +807,7 @@ export async function startClientGateway(): Promise<void> {
     const runtime: ClientRuntime = {
       theme,
       sid,
+      account,
       browser: scoped,
       targets,
       metadata,
@@ -763,12 +905,12 @@ export async function startClientGateway(): Promise<void> {
       return;
     }
     if (message.t === "mic-pcm") {
-      sendVoice(message.tab, { pcm: message.pcm });
+      sendVoice(runtime.account, message.tab, { pcm: message.pcm });
       return;
     }
     if (message.t === "mic-state") {
       if (!message.ok) micTabs.delete(message.tab);
-      sendVoice(message.tab, { state: message.ok });
+      sendVoice(runtime.account, message.tab, { state: message.ok });
       return;
     }
     if (message.t === "resync-req") {
@@ -835,29 +977,12 @@ export async function startClientGateway(): Promise<void> {
               record.owner === owner &&
               (record.clientKey === request.body?.clientKey || record.sid === request.body?.sid),
           );
-        if (!e2e && !existing) {
-          resources = await resourceSampler.sample();
-          const available =
-            resources.memoryTotalBytes === null || resources.memoryUsedBytes === null
-              ? null
-              : resources.memoryTotalBytes - resources.memoryUsedBytes;
-          const memoryBudget =
-            resources.browserMemoryLimitBytes ??
-            (resources.memoryTotalBytes === null
-              ? 1600 * 1048576
-              : resources.memoryTotalBytes * 0.8);
-          const workspaceHeadroom = Math.max(300 * 1048576, memoryBudget * 0.1);
-          if (
-            (resources.browserMemoryBytes !== null &&
-              resources.browserMemoryBytes > memoryBudget - workspaceHeadroom) ||
-            (available !== null && available < 256 * 1048576)
-          )
-            throw new ClientSessionError(
-              503,
-              "CLIENT_RESOURCES",
-              "B 的内存较紧张，请等待离线会话自动回收后重试",
-            );
-        }
+        if (!e2e && !existing && (await memoryShort()))
+          throw new ClientSessionError(
+            503,
+            "CLIENT_RESOURCES",
+            "B 的内存较紧张，请等待离线会话自动回收后重试",
+          );
         const record = await clientSessions.acquire(
           owner,
           request.body?.clientKey,
@@ -869,6 +994,7 @@ export async function startClientGateway(): Promise<void> {
         await ensureRuntime(record.sid);
         return {
           ...clientSessions.describe(record.sid),
+          account: clientSessions.profileOf(record.sid),
           maxClients: CLIENT_SLOTS.length,
           available: clientSessions.available(),
           sharedAccount: true,
@@ -878,40 +1004,40 @@ export async function startClientGateway(): Promise<void> {
       }
     },
   );
+  /** Closes a session's windows and forgets its runtime. The caller marks it closing. */
+  async function stopRuntime(sid: string): Promise<void> {
+    ws.closeSession(sid);
+    for (const [id, connection] of viewers)
+      if (connection.sid === sid) {
+        roles.disconnect(id);
+        viewers.delete(id);
+      }
+    const runtime = await runtimePromises.get(sid)?.catch(() => undefined);
+    const account = runtime?.account ?? accounts.get(clientSessions.profileOf(sid));
+    account?.downloads.revokeSession(sid);
+    if (!account) return;
+    if (runtime) await runtime.stop();
+    else await account.pool.scope(sid).close();
+    const pages = () =>
+      account.pool
+        .scope(sid)
+        .targets()
+        .some((target) => target.type === "page");
+    const deadline = Date.now() + 2000;
+    while (pages() && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    if (pages()) throw new Error("Client window did not close");
+    for (const [frame, session] of account.frameOwners)
+      if (session === sid) account.frameOwners.delete(frame);
+  }
   async function releaseClient(owner: string, sid: string) {
     if (!clientSessions.owns(owner, sid))
       throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个会话已结束");
     if (closing.has(sid)) throw new ClientSessionError(409, "CLIENT_CLOSING", "会话正在结束");
     closing.add(sid);
     try {
-      ws.closeSession(sid);
-      downloads.revokeSession(sid);
-      for (const [id, connection] of viewers)
-        if (connection.sid === sid) {
-          roles.disconnect(id);
-          viewers.delete(id);
-        }
-      const runtime = await runtimePromises.get(sid);
-      if (runtime) await runtime.stop();
-      else await pool.scope(sid).close();
-      const deadline = Date.now() + 2000;
-      while (
-        pool
-          .scope(sid)
-          .targets()
-          .some((target) => target.type === "page") &&
-        Date.now() < deadline
-      )
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      if (
-        pool
-          .scope(sid)
-          .targets()
-          .some((target) => target.type === "page")
-      )
-        throw new Error("Client window did not close");
+      await stopRuntime(sid);
       await clientSessions.release(owner, sid);
-      for (const [frame, session] of frameOwners) if (session === sid) frameOwners.delete(frame);
     } finally {
       runtimes.delete(sid);
       runtimePromises.delete(sid);
@@ -919,6 +1045,112 @@ export async function startClientGateway(): Promise<void> {
       broadcastStatus();
     }
   }
+  /** Moves a session to another account. Its windows close; the viewer reconnects to new ones. */
+  async function switchAccount(owner: string, sid: string, id: string) {
+    if (!clientSessions.owns(owner, sid))
+      throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个会话已结束");
+    if (!accountStore.has(id)) throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
+    if (closing.has(sid)) throw new ClientSessionError(409, "CLIENT_CLOSING", "会话正在结束");
+    if (clientSessions.profileOf(sid) === id) return;
+    closing.add(sid);
+    try {
+      await stopRuntime(sid);
+      await clientSessions.setProfile(owner, sid, id);
+    } finally {
+      runtimes.delete(sid);
+      runtimePromises.delete(sid);
+      closing.delete(sid);
+      broadcastStatus();
+    }
+  }
+  const describeAccounts = () =>
+    accountStore.all().map((record) => ({
+      id: record.id,
+      name: record.name,
+      running: accounts.has(record.id),
+      sessions: clientSessions
+        .all()
+        .filter((session) => (session.profile ?? DEFAULT_PROFILE) === record.id).length,
+    }));
+  app.get<{ Querystring: { sid?: string } }>("/api/accounts", async (request, reply) => {
+    const owner = currentOwner(request.raw);
+    if (!owner) return reply.code(401).send({ error: "请重新输入访问密码" });
+    const sid = request.query.sid;
+    return reply.header("cache-control", "no-store").send({
+      accounts: describeAccounts(),
+      current: sid && clientSessions.owns(owner, sid) ? clientSessions.profileOf(sid) : null,
+    });
+  });
+  app.post<{ Body: { name?: unknown } }>(
+    "/api/accounts",
+    { bodyLimit: 1024 },
+    async (request, reply) => {
+      const owner = currentOwner(request.raw);
+      if (!owner) return reply.code(401).send({ error: "请重新输入访问密码" });
+      try {
+        return await accountStore.create(request.body?.name);
+      } catch (error) {
+        return clientError(reply, error, owner);
+      }
+    },
+  );
+  app.patch<{ Params: { id: string }; Body: { name?: unknown } }>(
+    "/api/accounts/:id",
+    { bodyLimit: 1024 },
+    async (request, reply) => {
+      const owner = currentOwner(request.raw);
+      if (!owner) return reply.code(401).send({ error: "请重新输入访问密码" });
+      try {
+        return await accountStore.rename(request.params.id, request.body?.name);
+      } catch (error) {
+        return clientError(reply, error, owner);
+      }
+    },
+  );
+  app.delete<{ Params: { id: string } }>("/api/accounts/:id", async (request, reply) => {
+    const owner = currentOwner(request.raw);
+    if (!owner) return reply.code(401).send({ error: "请重新输入访问密码" });
+    const id = request.params.id;
+    try {
+      if (!accountStore.has(id))
+        throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
+      if (id === DEFAULT_PROFILE)
+        throw new ClientSessionError(409, "PROFILE_DEFAULT", "默认账号不能删除");
+      const using = clientSessions.all().filter((record) => record.profile === id);
+      if (using.some((record) => record.owner !== owner))
+        throw new ClientSessionError(
+          409,
+          "PROFILE_IN_USE",
+          "别的设备正在用这个账号，请先在那边切换或结束",
+        );
+      // This device's own sessions move to the default account first.
+      for (const record of using) await switchAccount(owner, record.sid, DEFAULT_PROFILE);
+      const account = accounts.get(id) ?? (await openingAccounts.get(id)?.catch(() => undefined));
+      if (account) await closeAccount(account);
+      await accountStore.remove(id);
+      await rm(accountDir(id), { recursive: true, force: true });
+      return reply.code(204).send();
+    } catch (error) {
+      return clientError(reply, error, owner);
+    }
+  });
+  app.post<{ Params: { sid: string }; Body: { account?: unknown } }>(
+    "/api/client/session/:sid/account",
+    { bodyLimit: 1024 },
+    async (request, reply) => {
+      const owner = currentOwner(request.raw);
+      if (!owner) return reply.code(403).send({ error: "这个会话不属于当前客户端" });
+      const id = request.body?.account;
+      try {
+        if (typeof id !== "string")
+          throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
+        await switchAccount(owner, request.params.sid, id);
+        return { account: clientSessions.profileOf(request.params.sid) };
+      } catch (error) {
+        return clientError(reply, error, owner);
+      }
+    },
+  );
   app.delete<{ Params: { sid: string } }>("/api/client/session/:sid", async (request, reply) => {
     const owner = currentOwner(request.raw);
     if (!owner) return reply.code(403).send({ error: "这个会话不属于当前客户端" });
@@ -949,7 +1181,7 @@ export async function startClientGateway(): Promise<void> {
     );
   }
   app.get("/healthz", async (_request, reply) => {
-    const alive = browser.isAlive?.() !== false,
+    const alive = accounts.get(DEFAULT_PROFILE)?.browser.isAlive?.() !== false,
       pages = [...runtimes.values()].flatMap((runtime) =>
         runtime.recovery.status().map(({ state }) => state),
       );
@@ -1014,9 +1246,23 @@ export async function startClientGateway(): Promise<void> {
     );
   }
   const healthTimer = setInterval(() => {
-    if (browser.isAlive?.() === false) {
-      console.error("Chrome process died; restarting client gateway");
-      process.exit(1);
+    for (const account of [...accounts.values()]) {
+      if (account.browser.isAlive?.() !== false) continue;
+      if (account.id === DEFAULT_PROFILE) {
+        console.error("Chrome process died; restarting client gateway");
+        process.exit(1);
+      }
+      // Another account's Chrome only takes its own sessions down. Their viewers reconnect, which
+      // starts it again.
+      console.error(`Chrome for account ${account.id} died; closing its sessions`);
+      void closeAccount(account);
+      for (const runtime of [...runtimes.values()])
+        if (runtime.account === account) {
+          ws.closeSession(runtime.sid);
+          runtimes.delete(runtime.sid);
+          runtimePromises.delete(runtime.sid);
+          void runtime.stop().catch(() => {});
+        }
     }
   }, 2000);
   healthTimer.unref?.();
@@ -1041,15 +1287,28 @@ export async function startClientGateway(): Promise<void> {
         const session = runtime.targets.get(hub.tabId)?.sessionId;
         if (!session) continue;
         releasedAt.set(hub, now);
-        void browser
+        void runtime.account.browser
           .send(session, "Memory.simulatePressureNotification", { level: "critical" })
           .catch((error) => report("page memory release failed", error));
       }
+  };
+  const closeUnusedAccounts = () => {
+    const now = Date.now();
+    for (const account of [...accounts.values()]) {
+      if (account.id === DEFAULT_PROFILE || accountInUse(account.id)) {
+        account.unusedSince = null;
+        continue;
+      }
+      account.unusedSince ??= now;
+      if (now - account.unusedSince >= ACCOUNT_IDLE_CLOSE_MS)
+        void closeAccount(account).catch((error) => report("account close failed", error));
+    }
   };
   const idleTimer = setInterval(
     () => {
       void idleReaper.sweep();
       releaseIdlePageMemory();
+      closeUnusedAccounts();
     },
     e2e ? 200 : 3000,
   );
@@ -1061,14 +1320,12 @@ export async function startClientGateway(): Promise<void> {
     clearInterval(statusTimer);
     clearInterval(idleTimer);
     idleReaper.dispose();
-    downloads.close();
     await ws.close().catch(() => {});
     for (const runtime of runtimes.values()) {
       await runtime.stop().catch((error) => report("client shutdown failed", error));
     }
-    pool.dispose();
     await app.close().catch(() => {});
-    await browser.close().catch(() => {});
+    for (const account of [...accounts.values()]) await closeAccount(account);
     if (managedProfile) await rm(profile, { recursive: true, force: true });
   };
   for (const signal of ["SIGINT", "SIGTERM"] as const)

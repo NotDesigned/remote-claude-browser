@@ -1096,3 +1096,14 @@ body,
   color: #d3cfcb;
   border-color: #5e5a56;
 }
+
+/* Account names can be long and many; they wrap instead of stretching the menu. */
+.shell-menu-accounts {
+  flex-wrap: wrap;
+}
+.shell-menu-accounts button {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -27,6 +27,8 @@ export interface ClientRecord {
   createdAt: number;
   /** Opened from a phone, so it lives in the browser that asks for Claude's phone interface. */
   phone?: boolean;
+  /** The account it uses, when not the default one. */
+  profile?: string;
 }
 export class ClientSessionError extends Error {
   constructor(
@@ -127,6 +129,27 @@ export async function createClientSessions(options: { file?: string; now?: () =>
       }
       return record;
     },
+    /** The account a session uses. */
+    profileOf(sid: string): string {
+      return records.get(sid as ClientSlot)?.profile ?? "default";
+    },
+    async setProfile(owner: string, sid: string, profile: string) {
+      if (!owns(owner, sid))
+        throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个独立会话不属于当前客户端");
+      if (!PROFILE_ID.test(profile))
+        throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
+      const record = records.get(sid as ClientSlot)!;
+      const previous = record.profile;
+      if (profile === "default") delete record.profile;
+      else record.profile = profile;
+      try {
+        await persist();
+      } catch (error) {
+        if (previous === undefined) delete record.profile;
+        else record.profile = previous;
+        throw error;
+      }
+    },
     async release(owner: string, sid: string) {
       if (!owns(owner, sid))
         throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个独立会话不属于当前客户端");
@@ -135,6 +158,7 @@ export async function createClientSessions(options: { file?: string; now?: () =>
     },
   };
 }
+const PROFILE_ID = /^(default|p-[0-9a-f]{10})$/;
 function isRecord(value: unknown): value is ClientRecord {
   if (!value || typeof value !== "object") return false;
   const r = value as ClientRecord;
@@ -144,6 +168,7 @@ function isRecord(value: unknown): value is ClientRecord {
     r.owner.length > 0 &&
     typeof r.clientKey === "string" &&
     /^[A-Za-z0-9_-]{1,128}$/.test(r.clientKey) &&
-    Number.isFinite(r.createdAt)
+    Number.isFinite(r.createdAt) &&
+    (r.profile === undefined || (typeof r.profile === "string" && PROFILE_ID.test(r.profile)))
   );
 }

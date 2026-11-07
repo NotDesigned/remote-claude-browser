@@ -237,6 +237,81 @@ async function checkNestedFrames(page, address) {
   console.log("Scrolling and pressing reach the right place in nested frames.");
 }
 
+/** Accounts are separate Chromes: a cookie set in one is not there in another, and stays in its own. */
+async function checkAccounts(page) {
+  const api = page.request;
+  const sid = new URL(page.url()).searchParams.get("sid");
+  assert.ok(sid, "The page has no session");
+  const mirrorText = () =>
+    page.evaluate(
+      () =>
+        document.querySelector("#mirror-host .mirror-stage:not([data-parked]) iframe")
+          ?.contentDocument?.body?.innerText ?? "",
+    );
+  const ready = async () => {
+    await page.waitForSelector("#shell-bar", { timeout: 60_000 });
+    await page
+      .locator('#urlbar button[aria-label="Reload"]:not([disabled])')
+      .waitFor({ timeout: 60_000 });
+    await page.waitForFunction(() => document.querySelector("#urlbar input")?.value !== "");
+  };
+  // Two echo services, in case one is down: each sets a cookie and shows the cookies it got back.
+  const services = ["https://httpbin.org", "https://postman-echo.com"];
+  let service = null;
+  const cookiesAfter = async (path) => {
+    for (const base of service ? [service] : services) {
+      const address = page.locator("#urlbar input");
+      await address.fill(`${base}${path}`);
+      await address.press("Enter");
+      const deadline = Date.now() + 25_000;
+      while (Date.now() < deadline) {
+        const text = await mirrorText();
+        if (/"cookies"/.test(text)) {
+          service = base;
+          return text;
+        }
+        await page.waitForTimeout(500);
+      }
+    }
+    throw new Error("No cookie echo service answered");
+  };
+
+  assert.match(await cookiesAfter("/cookies/set?mirror=first"), /"mirror":\s*"first"/);
+  const made = await (await api.post("/api/accounts", { data: { name: "第二个" } })).json();
+  assert.ok(made.id, "The account was not created");
+  const switched = await api.post(`/api/client/session/${sid}/account`, {
+    data: { account: made.id },
+  });
+  assert.equal(switched.status(), 200, "Switching the session failed");
+  await page.reload();
+  await ready();
+  const listed = await (await api.get(`/api/accounts?sid=${sid}`)).json();
+  assert.equal(listed.current, made.id, "The session is not on the new account");
+  assert.equal(listed.accounts.find((account) => account.id === made.id)?.running, true);
+  assert.doesNotMatch(
+    await cookiesAfter("/cookies"),
+    /mirror/,
+    "The new account sees the other's cookie",
+  );
+
+  await api.post(`/api/client/session/${sid}/account`, { data: { account: "default" } });
+  await page.reload();
+  await ready();
+  assert.match(
+    await cookiesAfter("/cookies"),
+    /"mirror":\s*"first"/,
+    "The first account lost its cookie",
+  );
+  const removed = await api.delete(`/api/accounts/${made.id}`);
+  assert.equal(removed.status(), 204, "Deleting the account failed");
+  const after = await (await api.get(`/api/accounts?sid=${sid}`)).json();
+  assert.ok(
+    !after.accounts.some((account) => account.id === made.id),
+    "The account is still listed",
+  );
+  console.log(`Accounts keep their cookies apart, through ${service}.`);
+}
+
 async function checkForm(page, address, mirrored) {
   await address.fill(`data:text/html,${encodeURIComponent(FORM_PAGE)}`);
   await address.press("Enter");
@@ -452,6 +527,7 @@ try {
   await checkForm(page, address, mirrored);
   await checkMovedFrame(page, address);
   await checkNestedFrames(page, address);
+  await checkAccounts(page);
 
   if (process.env.SMOKE_VIDEO === "1") await checkVideo(page, address);
   if (process.env.SMOKE_CANVAS === "1") await checkCanvas(page, address);

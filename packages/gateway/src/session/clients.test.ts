@@ -68,4 +68,26 @@ describe("client ownership", () => {
     expect(await sessions.acquire("device-a", "tab-a")).toBe(phone);
     expect((await sessions.acquire("device-b", "tab-b")).phone).toBeUndefined();
   });
+
+  it("keeps the account a session uses, across restarts, and starts on the default one", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "clients-profile-"));
+    try {
+      const file = join(dir, "sessions.json");
+      const sessions = await createClientSessions({ file });
+      const record = await sessions.acquire("device-a", "key-a");
+      expect(sessions.profileOf(record.sid)).toBe("default");
+      await sessions.setProfile("device-a", record.sid, "p-0123456789");
+      expect((await createClientSessions({ file })).profileOf(record.sid)).toBe("p-0123456789");
+      await expect(sessions.setProfile("device-b", record.sid, "default")).rejects.toMatchObject({
+        code: "CLIENT_FORBIDDEN",
+      });
+      await expect(sessions.setProfile("device-a", record.sid, "../x")).rejects.toMatchObject({
+        code: "PROFILE_UNKNOWN",
+      });
+      await sessions.setProfile("device-a", record.sid, "default");
+      expect(sessions.get(record.sid)?.profile).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -20,6 +20,7 @@ excluded from Git. Do not commit a populated one. `scripts/bootstrap.sh` writes 
 | `SERVER_IMAGE` | no | local build | A prebuilt image |
 | `MIRROR_CLIENTS` | no | `8` | Session slots: 2, 5, 8 or 16 |
 | `MIRROR_START_URL` | no | `https://claude.ai/new` | The page a new session opens |
+| `MIRROR_ACCOUNTS_DIR` | no | `<profile>-accounts` | Where accounts other than the default keep their Chrome profiles |
 | `EGRESS_POLICY` | no | `on` | `off` lets pages reach private networks and the host |
 | `EGRESS_BLOCK` | no | empty | More addresses to block, comma-separated. Add the host's public IP |
 | `TZ` | no | `Etc/UTC` | Browser and gateway timezone |

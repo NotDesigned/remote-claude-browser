@@ -2,6 +2,7 @@
  * The unified page's single top bar: view switch (页面 / 画面), the browser's tabs when it is
  * showing, connection status and the ⋯ menu.
  */
+import { DEFAULT_ACCOUNT, type AccountAction, type AccountList } from "./accounts";
 import type { PxQuality } from "@mirror/protocol";
 import { formatSpeed } from "./hud";
 import type { ComponentChildren } from "preact";
@@ -31,6 +32,10 @@ export interface ShellBarProps {
   rttMs: number | null;
   speedBps: number | null;
   frameRate: number | null;
+  /** The accounts this session can switch between, once known. */
+  accounts: AccountList | null;
+  onAccount(action: AccountAction): void;
+  onMenuOpen?(): void;
 }
 
 const VIEWS: { mode: ViewMode; label: string; title: string }[] = [
@@ -42,6 +47,10 @@ export function ShellBar(props: ShellBarProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (menuOpen) props.onMenuOpen?.();
+  }, [menuOpen]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -187,6 +196,37 @@ export function ShellBar(props: ShellBarProps) {
               ))}
             </div>
           </div>
+          {props.accounts !== null && (
+            <div class="shell-menu-section" role="group" aria-label="账号">
+              <span>账号</span>
+              <div class="shell-menu-choices shell-menu-accounts">
+                {props.accounts.accounts.map((account) => (
+                  <button
+                    key={account.id}
+                    type="button"
+                    aria-pressed={props.accounts?.current === account.id}
+                    title={account.sessions > 0 ? `${account.sessions} 个会话在用` : "没有会话在用"}
+                    onClick={() => props.onAccount({ kind: "switch", id: account.id })}
+                  >
+                    {account.name}
+                  </button>
+                ))}
+              </div>
+              <div class="shell-menu-choices">
+                <button type="button" onClick={() => props.onAccount({ kind: "create" })}>
+                  新建
+                </button>
+                <button type="button" onClick={() => props.onAccount({ kind: "rename" })}>
+                  重命名
+                </button>
+                {props.accounts.current !== DEFAULT_ACCOUNT && (
+                  <button type="button" onClick={() => props.onAccount({ kind: "delete" })}>
+                    删除
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
           <div class="shell-menu-section" aria-label="服务状态">
             <span>服务状态</span>
             {warning && (

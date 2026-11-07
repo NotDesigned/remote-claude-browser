@@ -1,5 +1,6 @@
 /** Viewer shell layout. */
-import { useEffect, useRef, useState } from "preact/hooks";
+import { listAccounts, runAccountAction, type AccountList } from "./accounts";
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import type { AgentMsg, Down, eventWithTime, TabId } from "@mirror/protocol";
 import { EventType, encodeResumeCursors } from "@mirror/protocol";
 import { createMirror, type Mirror } from "./mirror";
@@ -124,6 +125,7 @@ export function App() {
   const mountedRef = useRef(false);
   const fixturePath = useRef(new URLSearchParams(window.location.search).get("fixture")).current;
   const [clientSession, setClientSession] = useState<ClientSession | null>(null);
+  const [accountList, setAccountList] = useState<AccountList | null>(null);
   const [clientPhase, setClientPhase] = useState<
     "starting" | "ready" | "error" | "ending" | "closed" | "replaced"
   >(() => {
@@ -267,6 +269,15 @@ export function App() {
   // The same choice as Claude's Appearance setting. This page's choice goes first, and is repeated
   // until a Claude page has taken it. Only then can a change made under Settings come back.
   const themeSid = clientPhase === "ready" ? (clientSession?.sid ?? null) : null;
+  const refreshAccounts = useCallback(() => {
+    if (themeSid === null) return;
+    void listAccounts(themeSid)
+      .then(setAccountList)
+      .catch(() => {
+        // The menu keeps whatever it last showed.
+      });
+  }, [themeSid]);
+  useEffect(refreshAccounts, [refreshAccounts]);
   const themeKey = `${themePreference}:${systemDark}`;
   const syncedThemeRef = useRef<string | null>(null);
   useEffect(() => {
@@ -1093,6 +1104,22 @@ export function App() {
         onTheme={setThemePreference}
         linkTarget={linkTarget}
         onLinkTarget={setLinkTarget}
+        accounts={accountList}
+        onMenuOpen={refreshAccounts}
+        onAccount={(action) => {
+          if (themeSid === null || accountList === null) return;
+          void runAccountAction(action, {
+            sid: themeSid,
+            list: accountList,
+            refresh: refreshAccounts,
+            dialogs: {
+              confirm: (message) => window.confirm(message),
+              prompt: (message, value) => window.prompt(message, value),
+              alert: (message) => window.alert(message),
+              reload: () => window.location.reload(),
+            },
+          });
+        }}
         pxQuality={pxQuality}
         onPxQuality={(quality) => {
           setPxQuality(quality);
