@@ -277,15 +277,17 @@ async function checkAccounts(page) {
   };
 
   assert.match(await cookiesAfter("/cookies/set?mirror=first"), /"mirror":\s*"first"/);
-  const made = await (await api.post("/api/accounts", { data: { name: "第二个" } })).json();
+  const made = await (
+    await api.post(`${origin}/api/accounts`, { data: { name: "第二个" } })
+  ).json();
   assert.ok(made.id, "The account was not created");
-  const switched = await api.post(`/api/client/session/${sid}/account`, {
+  const switched = await api.post(`${origin}/api/client/session/${sid}/account`, {
     data: { account: made.id },
   });
   assert.equal(switched.status(), 200, "Switching the session failed");
   await page.reload();
   await ready();
-  const listed = await (await api.get(`/api/accounts?sid=${sid}`)).json();
+  const listed = await (await api.get(`${origin}/api/accounts?sid=${sid}`)).json();
   assert.equal(listed.current, made.id, "The session is not on the new account");
   assert.equal(listed.accounts.find((account) => account.id === made.id)?.running, true);
   assert.doesNotMatch(
@@ -294,7 +296,7 @@ async function checkAccounts(page) {
     "The new account sees the other's cookie",
   );
 
-  await api.post(`/api/client/session/${sid}/account`, { data: { account: "default" } });
+  await api.post(`${origin}/api/client/session/${sid}/account`, { data: { account: "default" } });
   await page.reload();
   await ready();
   assert.match(
@@ -302,9 +304,9 @@ async function checkAccounts(page) {
     /"mirror":\s*"first"/,
     "The first account lost its cookie",
   );
-  const removed = await api.delete(`/api/accounts/${made.id}`);
+  const removed = await api.delete(`${origin}/api/accounts/${made.id}`);
   assert.equal(removed.status(), 204, "Deleting the account failed");
-  const after = await (await api.get(`/api/accounts?sid=${sid}`)).json();
+  const after = await (await api.get(`${origin}/api/accounts?sid=${sid}`)).json();
   assert.ok(
     !after.accounts.some((account) => account.id === made.id),
     "The account is still listed",
