@@ -428,7 +428,6 @@ export async function startClientGateway(): Promise<void> {
     if (!currentOwner(request.raw)) return reply.code(401).send({ error: "请重新输入访问密码" });
     return reply.header("cache-control", "no-store").send(status());
   });
-  await openAccount(DEFAULT_PROFILE);
   const assetKey = await loadAssetKey(join(profile, "asset-token.key"));
   registerAssetRoutes(app, {
     serverKey: assetKey,
@@ -649,6 +648,9 @@ export async function startClientGateway(): Promise<void> {
     account.pool.dispose();
     await account.browser.close().catch(() => {});
   }
+
+  // The default account starts with the gateway, before any session can ask for it.
+  await openAccount(DEFAULT_PROFILE);
 
   /** Whether any session is using the account, or about to. */
   const accountInUse = (id: string) =>
