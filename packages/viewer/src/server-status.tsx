@@ -90,6 +90,7 @@ function isServerStatus(value: unknown): value is ServerStatusMsg {
     (item.cpuCount as number) > 0 &&
     [item.cpuPercent, item.memoryUsedBytes, item.memoryTotalBytes, item.browserMemoryBytes].every(
       (v) => v === null || nonnegative(v),
-    )
+    ) &&
+    (item.timeZone === undefined || typeof item.timeZone === "string")
   );
 }

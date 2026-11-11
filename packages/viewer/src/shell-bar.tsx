@@ -1,6 +1,6 @@
 /**
  * The unified page's single top bar: view switch (页面 / 画面), the browser's tabs when it is
- * showing, connection status and the ⋯ menu.
+ * showing, the time where the remote browser is, connection status and the ⋯ menu.
  */
 import { DEFAULT_ACCOUNT, type AccountAction, type AccountList } from "./accounts";
 import type { PxQuality } from "@mirror/protocol";
@@ -8,6 +8,7 @@ import { formatSpeed } from "./hud";
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { SERVER_STATUS_STALE_MS, type ReceivedServerStatus } from "./server-status";
+import { formatRemoteClock, msToNextMinute } from "./remote-clock";
 import type { ViewMode } from "./client-session";
 import type { FrontendUser } from "./users";
 
@@ -85,6 +86,8 @@ export function ShellBar(props: ShellBarProps) {
       ? props.serverStatus.value
       : null;
   const warning = sample ? resourceWarning(props.serverStatus) : null;
+  // The zone does not go stale with the numbers: keep showing the last one heard.
+  const clock = useRemoteClock(props.serverStatus?.value.timeZone);
   const gib = (bytes: number | null | undefined) =>
     bytes === null || bytes === undefined ? "—" : (bytes / 1024 ** 3).toFixed(1);
 
@@ -109,6 +112,15 @@ export function ShellBar(props: ShellBarProps) {
       <div class="shell-bar-tabs">{props.children}</div>
 
       <div class="shell-bar-end">
+        {clock && (
+          <span
+            id="shell-clock"
+            title={clock.title}
+            aria-label={`远程浏览器当地时间 ${clock.title}`}
+          >
+            {clock.label}
+          </span>
+        )}
         <span
           id="shell-status"
           role="status"
@@ -270,6 +282,12 @@ export function ShellBar(props: ShellBarProps) {
               </p>
             )}
             <dl class="shell-menu-stats">
+              {clock && (
+                <div>
+                  <dt>当地时间</dt>
+                  <dd title={clock.title}>{clock.label}</dd>
+                </div>
+              )}
               <div>
                 <dt>在线设备</dt>
                 <dd>{sample?.clientsOnline ?? "—"}</dd>
@@ -335,4 +353,23 @@ export function resourceWarning(received: ReceivedServerStatus | null): string |
   if (free !== null && free < 384 * 1024 ** 2)
     return "服务器内存紧张，新建会话可能失败；已打开的会话不受影响。";
   return null;
+}
+
+/**
+ * The remote browser's time. Each render reads the clock, so one after a throttled background
+ * timer is right anyway; the timer only redraws on each new minute.
+ */
+function useRemoteClock(timeZone: string | undefined) {
+  const [, redraw] = useState(0);
+  useEffect(() => {
+    if (!timeZone) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      redraw((count) => count + 1);
+      timer = setTimeout(tick, msToNextMinute(Date.now()) + 50);
+    };
+    timer = setTimeout(tick, msToNextMinute(Date.now()) + 50);
+    return () => clearTimeout(timer);
+  }, [timeZone]);
+  return formatRemoteClock(timeZone);
 }

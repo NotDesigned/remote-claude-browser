@@ -193,6 +193,21 @@ body {
   cursor: not-allowed;
 }
 
+/* The remote browser's time */
+#shell-clock {
+  flex: none;
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* Where tabs need the room, the ⋯ menu still shows it. */
+@media (max-width: 960px) {
+  #shell-clock {
+    display: none;
+  }
+}
+
 /* Status pill */
 #shell-status {
   display: inline-flex;

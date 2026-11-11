@@ -73,6 +73,8 @@ export interface ServerStatusMsg {
   memoryUsedBytes: number | null;
   memoryTotalBytes: number | null;
   browserMemoryBytes: number | null;
+  /** The remote browser's IANA time zone, which sites see. */
+  timeZone?: string;
 }
 
 export type Down =

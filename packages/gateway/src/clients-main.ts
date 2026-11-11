@@ -429,6 +429,8 @@ export async function startClientGateway(
     return owners.size;
   };
   let lastStatusAt = 0;
+  // Chrome runs in this process's zone: TZ, or the system's.
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   function status(): ServerStatusMsg {
     lastStatusAt = Math.max(Date.now(), lastStatusAt + 1);
     const stale = Date.now() - resources.sampledAt > 10000;
@@ -449,6 +451,7 @@ export async function startClientGateway(
       clientsMax: clientSessions.capacity(),
       pixelsActive: pixelCapacity.count(),
       pixelsMax: null,
+      timeZone,
     };
   }
   function broadcastStatus() {
