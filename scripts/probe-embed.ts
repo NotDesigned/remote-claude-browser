@@ -494,7 +494,7 @@ async function main(): Promise<void> {
     });
 
     await page.goto(viewerUrl, { waitUntil: "domcontentloaded", timeout: START_TIMEOUT_MS });
-    await page.waitForSelector('#connection-state[data-state="open"]', {
+    await page.waitForSelector('#shell[data-connection="open"]', {
       timeout: START_TIMEOUT_MS,
     });
     await currentTab(gatewayUrl);

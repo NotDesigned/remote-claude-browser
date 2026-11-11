@@ -1,8 +1,7 @@
 import type { PxQuality } from "@mirror/protocol";
 export const CLIENT_KEY_STORAGE_KEY = "mirror.client-session.key";
 
-export type ClientSessionId =
-  `client-${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16}`;
+export type ClientSessionId = `client-${number}`;
 
 export interface OwnedClientSession {
   sid: ClientSessionId;
@@ -106,7 +105,6 @@ export async function requestClientSession(
     value.label.length === 0 ||
     !Number.isSafeInteger(value.maxClients) ||
     (value.maxClients as number) < 1 ||
-    (value.maxClients as number) > 100 ||
     !Number.isSafeInteger(value.available) ||
     (value.available as number) < 0 ||
     (value.available as number) > (value.maxClients as number) ||
@@ -184,7 +182,11 @@ export function clientReturnUrl(sid: ClientSessionId): string {
 }
 
 function isSid(value: unknown): value is ClientSessionId {
-  return typeof value === "string" && /^client-(?:[1-9]|1[0-6])$/.test(value);
+  return (
+    typeof value === "string" &&
+    /^client-[1-9]\d*$/.test(value) &&
+    Number.isSafeInteger(Number(value.slice("client-".length)))
+  );
 }
 
 function isUuid(value: string): boolean {

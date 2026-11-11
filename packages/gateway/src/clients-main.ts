@@ -6,10 +6,12 @@ import { encodeMsg, type Down, type Up, type ServerStatusMsg } from "@mirror/pro
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import { randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAccessGate, ACCESS_MAX_AGE_SECONDS } from "./auth/access-gate";
+import { ACCESS_MAX_AGE_SECONDS } from "./auth/access-gate";
+import { createUserGate } from "./auth/user-gate";
+import { createUserStore, UserStoreError, type FrontendUser } from "./auth/users";
 import { createSessionGuard, SESSION_COOKIE } from "./auth/middleware";
 import { mintInvite } from "./auth/invite";
 import { createAssetCache } from "./assets/cache";
@@ -41,9 +43,11 @@ import { createClaudeTheme, createThemeCopies, isClaudeTheme } from "./claude/th
 import { registerSecurityHeaders } from "./security-headers";
 import { gatewayHost, registerViewerStatic, trustedProxies } from "./serving";
 import { createTabLifecycle } from "./session/tabs";
-import { CLIENT_SLOTS, ClientSessionError, createClientSessions } from "./session/clients";
+import { isClientSlot, ClientSessionError, createClientSessions } from "./session/clients";
+import { createLifecycleLock } from "./session/lifecycle-lock";
 import { createIdleReaper, PAGE_GENERATING_EXPRESSION } from "./session/idle-reaper";
-import { createProfileStore, DEFAULT_PROFILE } from "./session/profiles";
+import { createPageSleep, pageSleepAfterMs, sleepPlaceholderUrl } from "./session/page-sleep";
+import { createProfileStore, DEFAULT_PROFILE, MAX_PROFILES } from "./session/profiles";
 import { createResourceSampler } from "./monitor/resources";
 import type { TargetRef, AgentLink } from "./types";
 import { createRoleManager } from "./ws/roles";
@@ -62,12 +66,14 @@ interface Account {
   zoomReady: boolean;
   frameOwners: Map<string, string>;
   sessionTargets: Map<string, string>;
-  /** Since when no session has used it. The default account's Chrome is never closed. */
+  /** Since when no session has used it. */
   unusedSince: number | null;
 }
 
 interface ClientRuntime {
   sid: string;
+  /** Changes whenever a workspace is recreated, including slot reuse and profile switches. */
+  assetKey: Buffer;
   account: Account;
   theme: ReturnType<typeof createClaudeTheme>;
   browser: ClientBrowserScope;
@@ -109,27 +115,33 @@ const CHROME_ARGS = [
   "--enable-unsafe-extension-debugging",
 ];
 
-/** Kept across restarts, so that a restart does not invalidate what viewers have cached. */
-async function loadAssetKey(file: string): Promise<Buffer> {
-  try {
-    const stored = await readFile(file);
-    if (stored.length === 32) return stored;
-  } catch {
-    // Not there yet.
-  }
-  const key = randomBytes(32);
-  await writeFile(file, key, { mode: 0o600 });
-  return key;
-}
-
-export async function startClientGateway(): Promise<void> {
+export async function startClientGateway(
+  options: {
+    listen?: boolean;
+    signals?: boolean;
+    resourceSampler?: ReturnType<typeof createResourceSampler>;
+  } = {},
+) {
   const e2e = process.env.MIRROR_E2E === "1";
   const managedProfile = !process.env.CHROME_USER_DATA_DIR;
   const profile =
     process.env.CHROME_USER_DATA_DIR ?? (await mkdtemp(join(tmpdir(), "mirror-clients-")));
   // Other accounts keep their profiles beside the default one.
   const accountsDir = process.env.MIRROR_ACCOUNTS_DIR ?? `${profile}-accounts`;
-  const accountStore = await createProfileStore({ file: join(profile, "accounts.json") });
+  const accountStore = await createProfileStore({
+    file: join(profile, "accounts.json"),
+    maxProfiles: Infinity,
+  });
+  const userStore = await createUserStore({
+    file: process.env.MIRROR_USERS_DB ?? join(profile, "users.sqlite"),
+    bootstrapUsername: process.env.MIRROR_ADMIN_USERNAME ?? "admin",
+    bootstrapPassword: process.env.MIRROR_ACCESS_PASSWORD ?? (e2e ? "e2e-test-only" : undefined),
+  });
+  userStore.claimLegacyProfiles(
+    accountStore.all().map((record) => record.id),
+    userStore.bootstrapAdmin.id,
+  );
+  const accountLifecycle = createLifecycleLock();
   const app = Fastify({ logger: false, trustProxy: trustedProxies() });
   registerSecurityHeaders(app);
   const key = process.env.MIRROR_AUTH_SECRET
@@ -139,7 +151,11 @@ export async function startClientGateway(): Promise<void> {
   const clientSessions = await createClientSessions({
     file: join(profile, "client-sessions.json"),
   });
-  const resourceSampler = createResourceSampler();
+  if (!e2e)
+    await clientSessions.migrateOwners((owner) =>
+      owner.startsWith("device-") ? `${userStore.bootstrapAdmin.id}/${owner}` : owner,
+    );
+  const resourceSampler = options.resourceSampler ?? createResourceSampler();
   let resources = await resourceSampler.sample();
   const currentOwner = (request: IncomingMessage): string | undefined => {
     if (e2e) {
@@ -150,8 +166,30 @@ export async function startClientGateway(): Promise<void> {
         ? `test-${value}`
         : undefined;
     }
+    const user = gate.currentUser(request);
+    return user ? ownerForUser(request, user) : undefined;
+  };
+  const ownerForUser = (request: IncomingMessage, user: FrontendUser): string | undefined => {
     const invite = sessionGuard.session(request);
-    return invite?.role === "driver" && invite.sid.startsWith("device-") ? invite.sid : undefined;
+    return invite?.role === "driver" && invite.sid.startsWith("device-")
+      ? `${user.id}/${invite.sid}`
+      : undefined;
+  };
+  const currentUser = (request: IncomingMessage) =>
+    e2e ? userStore.bootstrapAdmin : gate.currentUser(request);
+  const requireLiveOwner = (request: IncomingMessage, owner: string) => {
+    const user = currentUser(request);
+    if (stopping || !user || currentOwner(request) !== owner)
+      throw new UserStoreError(401, "LOGIN_REQUIRED", "请重新登录");
+    return user;
+  };
+  const ownsSession = (request: IncomingMessage, sid: string) => {
+    const user = currentUser(request);
+    return (
+      !!user &&
+      clientSessions.owns(currentOwner(request), sid) &&
+      userStore.profileOwner(clientSessions.profileOf(sid)) === user.id
+    );
   };
   const deviceCookie = (request: IncomingMessage) => {
     const previous = sessionGuard.session(request);
@@ -162,11 +200,19 @@ export async function startClientGateway(): Promise<void> {
     const exp = Math.floor(Date.now() / 1000) + ACCESS_MAX_AGE_SECONDS;
     return `${SESSION_COOKIE}=${mintInvite({ sid: owner, role: "driver", exp }, key)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${ACCESS_MAX_AGE_SECONDS}`;
   };
-  const gate = createAccessGate({
-    ...(e2e ? { password: "e2e-test-only" } : {}),
+  const gate = createUserGate({
+    store: userStore,
+    publicOrigin: process.env.MIRROR_PUBLIC_ORIGIN,
     cookiesOnSuccess: (request) => [deviceCookie(request)],
+    async onLogout(request, user) {
+      const owner = user && ownerForUser(request, user);
+      if (owner)
+        for (const record of clientSessions.all())
+          if (record.owner === owner) await releaseClient(owner, record.sid);
+    },
   });
   app.addHook("preHandler", async (request, reply) => {
+    if (stopping) return reply.code(503).send({ error: "服务正在重启，请稍后重试" });
     if (e2e) return;
     await gate.preHandler.call(app, request, reply);
     if (reply.sent) return;
@@ -178,18 +224,25 @@ export async function startClientGateway(): Promise<void> {
   await registerViewerStatic(app);
   const requireSession = (sid?: string) => async (request: FastifyRequest, reply: FastifyReply) => {
     const requested = sid ?? (request.params as { sid?: string })?.sid;
-    if (
-      !requested ||
-      closing.has(requested) ||
-      !clientSessions.owns(currentOwner(request.raw), requested)
-    )
+    if (!requested || closing.has(requested) || !ownsSession(request.raw, requested))
       await reply.code(403).send({ error: "这个独立会话不属于当前客户端" });
   };
   const runtimePromises = new Map<string, Promise<ClientRuntime>>();
   const runtimes = new Map<string, ClientRuntime>();
   const closing = new Set<string>();
   const viewerIds = new WeakMap<ViewerConn, string>();
-  const viewers = new Map<string, { viewer: ViewerConn; sid: string; owner: string }>();
+  const viewers = new Map<
+    string,
+    {
+      viewer: ViewerConn;
+      sid: string;
+      owner: string;
+      userId: string;
+      authorized(): boolean;
+      /** Whether it is on screen. Viewers that never say count as looking. */
+      visible: boolean;
+    }
+  >();
   /** Tabs whose page is using its microphone, for a viewer that connects while it does. */
   const micTabs = new Set<string>();
   const hasViewer = (sid: string) =>
@@ -228,10 +281,7 @@ export async function startClientGateway(): Promise<void> {
     hubsForSession: (sid) => runtimes.get(sid)?.tabs.hubs() ?? [],
     sessionForRequest: (request) => {
       const sid = sidFromRequest(request);
-      return sid &&
-        !closing.has(sid) &&
-        clientSessions.owns(currentOwner(request), sid) &&
-        runtimes.has(sid)
+      return sid && !closing.has(sid) && ownsSession(request, sid) && runtimes.has(sid)
         ? sid
         : undefined;
     },
@@ -244,11 +294,10 @@ export async function startClientGateway(): Promise<void> {
       )
         return false;
       const sid = sidFromRequest(request);
-      if (!sid || !clientSessions.owns(currentOwner(request), sid) || closing.has(sid))
-        return false;
+      if (!sid || !ownsSession(request, sid) || closing.has(sid)) return false;
       try {
         await ensureRuntime(sid);
-        return !closing.has(sid) && clientSessions.owns(currentOwner(request), sid);
+        return !closing.has(sid) && ownsSession(request, sid);
       } catch (error) {
         report("client websocket unavailable", error);
         return false;
@@ -258,7 +307,14 @@ export async function startClientGateway(): Promise<void> {
       if (!sid) return;
       const id = `viewer-${nextViewer++}`;
       viewerIds.set(viewer, id);
-      viewers.set(id, { viewer, sid, owner: currentOwner(request)! });
+      viewers.set(id, {
+        viewer,
+        sid,
+        owner: currentOwner(request)!,
+        userId: currentUser(request)!.id,
+        authorized: () => ownsSession(request, sid),
+        visible: true,
+      });
       idleReaper.touch(sid);
       const runtime = runtimes.get(sid)!;
       // A reconnect whose replay position is still buffered keeps its geometry agreement: the
@@ -320,6 +376,7 @@ export async function startClientGateway(): Promise<void> {
         !id ||
         !sid ||
         !connection ||
+        !connection.authorized() ||
         !clientSessions.owns(connection.owner, sid) ||
         closing.has(sid)
       )
@@ -329,6 +386,12 @@ export async function startClientGateway(): Promise<void> {
       // A valid driver is still forbidden from naming another client's CDP target.
       if ("tab" in message && message.tab !== "" && !runtime.browser.ownsTarget(message.tab))
         return;
+      // Any viewer, driver or not, says whether it is on screen.
+      if (message.t === "visibility") {
+        connection.visible = message.visible === true;
+        if (connection.visible) await pageSleep.wake(sid);
+        return;
+      }
       await roles.routeUp(id, message, (forwarded) => handle(runtime, id, forwarded));
     },
   });
@@ -377,8 +440,8 @@ export async function startClientGateway(): Promise<void> {
         : {}),
       t: "server-status",
       clientsOnline: onlineOwnerCount(),
-      clientsAllocated: CLIENT_SLOTS.length - clientSessions.available(),
-      clientsMax: CLIENT_SLOTS.length,
+      clientsAllocated: clientSessions.all().length,
+      clientsMax: clientSessions.capacity(),
       pixelsActive: pixelCapacity.count(),
       pixelsMax: null,
     };
@@ -389,6 +452,70 @@ export async function startClientGateway(): Promise<void> {
     for (const sid of runtimes.keys()) publish(sid, message);
   }
   let e2eIdleOffset = 0;
+  /** Whether a page is writing a reply, which closing or reloading it would cut short. */
+  async function pageGenerating(runtime: ClientRuntime, target: TargetRef): Promise<boolean> {
+    const response = (await Promise.race([
+      runtime.browser.send(target.sessionId, "Runtime.evaluate", {
+        expression: PAGE_GENERATING_EXPRESSION,
+        returnByValue: true,
+      }),
+      new Promise<never>((_resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("Idle page inspection timed out")), 1500);
+        timeout.unref?.();
+      }),
+    ])) as { result?: { value?: unknown } };
+    return response.result?.value === true;
+  }
+  /** Pages of sessions whose viewers have all been hidden or gone for a long time. */
+  const pageSleepMs = pageSleepAfterMs(process.env.MIRROR_PAGE_SLEEP_MS);
+  const pageSleep = createPageSleep({
+    afterMs: pageSleepMs,
+    watched: (sid) =>
+      [...viewers.values()].some((connection) => connection.sid === sid && connection.visible),
+    pages: (sid) =>
+      [...(runtimes.get(sid)?.targets.values() ?? [])]
+        .filter((target) => target.type === "page")
+        .map((target) => target.targetId),
+    async canSleep(sid, tab) {
+      const runtime = runtimes.get(sid);
+      const target = runtime?.targets.get(tab);
+      if (!runtime || !target || closing.has(sid)) return false;
+      if (runtime.recovery.isBlocked(tab) || micTabs.has(tab)) return false;
+      if (runtime.pixels.modeFor(tab) === "px") return false;
+      // A page that cannot be asked counts as busy.
+      return !(await pageGenerating(runtime, target).catch(() => true));
+    },
+    async sleep(sid, tab) {
+      const runtime = runtimes.get(sid);
+      const target = runtime?.targets.get(tab);
+      if (!runtime || !target) return null;
+      const history = (await runtime.browser.send(
+        target.sessionId,
+        "Page.getNavigationHistory",
+      )) as {
+        currentIndex: number;
+        entries: { id: number; url: string; title: string }[];
+      };
+      const entry = history.entries[history.currentIndex];
+      if (!entry || !/^https?:/.test(entry.url)) return null;
+      await runtime.browser.send(target.sessionId, "Page.navigate", {
+        url: sleepPlaceholderUrl(entry.title),
+      });
+      console.log(`page asleep: ${sid}`);
+      return { entryId: entry.id, url: entry.url };
+    },
+    async wake(sid, tab, page) {
+      const runtime = runtimes.get(sid);
+      const target = runtime?.targets.get(tab);
+      if (!runtime || !target) return;
+      // Back to the page's own entry keeps its history as it was; a lost entry loads the address.
+      await runtime.browser
+        .send(target.sessionId, "Page.navigateToHistoryEntry", { entryId: page.entryId })
+        .catch(() => runtime.browser.send(target.sessionId, "Page.navigate", { url: page.url }));
+      console.log(`page awake: ${sid}`);
+    },
+    onError: (error) => report("page sleep", error),
+  });
   const idleReaper = createIdleReaper({
     sessions: () => clientSessions.all().map((record) => ({ sid: record.sid, token: record })),
     isOnline: (sid) => onlineSessions().has(sid),
@@ -398,20 +525,7 @@ export async function startClientGateway(): Promise<void> {
       for (const target of runtime.targets.values()) {
         if (target.type !== "page") continue;
         if (runtime.recovery.isBlocked(target.targetId)) continue;
-        const response = (await Promise.race([
-          runtime.browser.send(target.sessionId, "Runtime.evaluate", {
-            expression: PAGE_GENERATING_EXPRESSION,
-            returnByValue: true,
-          }),
-          new Promise<never>((_resolve, reject) => {
-            const timeout = setTimeout(
-              () => reject(new Error("Idle page inspection timed out")),
-              1500,
-            );
-            timeout.unref?.();
-          }),
-        ])) as { result?: { value?: unknown } };
-        if (response.result?.value === true) return true;
+        if (await pageGenerating(runtime, target)) return true;
       }
       return false;
     },
@@ -428,9 +542,9 @@ export async function startClientGateway(): Promise<void> {
     if (!currentOwner(request.raw)) return reply.code(401).send({ error: "请重新输入访问密码" });
     return reply.header("cache-control", "no-store").send(status());
   });
-  const assetKey = await loadAssetKey(join(profile, "asset-token.key"));
   registerAssetRoutes(app, {
-    serverKey: assetKey,
+    serverKey: randomBytes(32),
+    serverKeyForSession: (sid) => (closing.has(sid) ? undefined : runtimes.get(sid)?.assetKey),
     cache: createAssetCache(join(profile, "asset-cache")),
     fetcher: createAssetFetcher({
       // A CDP session belongs to one Chrome, and so to one account.
@@ -457,9 +571,7 @@ export async function startClientGateway(): Promise<void> {
   registerDownloadRoutes(app, {
     preHandler: requireSession(),
     managerFor: (sid) =>
-      CLIENT_SLOTS.includes(sid as never)
-        ? accounts.get(clientSessions.profileOf(sid))?.downloads
-        : undefined,
+      isClientSlot(sid) ? accounts.get(clientSessions.profileOf(sid))?.downloads : undefined,
   });
   registerUploadRoutes(app, {
     preHandler: requireSession(),
@@ -604,13 +716,13 @@ export async function startClientGateway(): Promise<void> {
               "PROFILE_UNSUPPORTED",
               "连接外部浏览器时只能用一个账号",
             );
-          if (!e2e && (await memoryShort(ACCOUNT_MEMORY_BYTES)))
-            throw new ClientSessionError(
-              503,
-              "PROFILE_RESOURCES",
-              "B 的内存不够再启动一个账号的浏览器，请先结束其他账号的会话",
-            );
         }
+        if (!e2e && (await memoryShort(ACCOUNT_MEMORY_BYTES)))
+          throw new ClientSessionError(
+            503,
+            "PROFILE_RESOURCES",
+            "内存不足以启动另一个浏览器，请等待空闲会话自动回收",
+          );
         const dir = accountDir(id);
         await mkdir(dir, { recursive: true, mode: 0o700 });
         const browser =
@@ -649,8 +761,7 @@ export async function startClientGateway(): Promise<void> {
     await account.browser.close().catch(() => {});
   }
 
-  // The default account starts with the gateway, before any session can ask for it.
-  await openAccount(DEFAULT_PROFILE);
+  // Every user's Chrome, including the migrated administrator profile, starts on demand.
 
   /** Whether any session is using the account, or about to. */
   const accountInUse = (id: string) =>
@@ -659,6 +770,7 @@ export async function startClientGateway(): Promise<void> {
 
   async function createRuntime(sid: string): Promise<ClientRuntime> {
     const account = await openAccount(clientSessions.profileOf(sid));
+    const assetKey = randomBytes(32);
     const { pool, agent, themeCopies, browser, frameOwners } = account;
     const scoped = pool.scope(sid),
       targets = new Map<string, TargetRef>(),
@@ -809,6 +921,7 @@ export async function startClientGateway(): Promise<void> {
     const runtime: ClientRuntime = {
       theme,
       sid,
+      assetKey,
       account,
       browser: scoped,
       targets,
@@ -883,8 +996,21 @@ export async function startClientGateway(): Promise<void> {
     }
   }
   async function ensureRuntime(sid: string): Promise<ClientRuntime> {
+    return accountLifecycle.run(() => ensureRuntimeLocked(sid));
+  }
+  async function ensureRuntimeLocked(sid: string): Promise<ClientRuntime> {
+    if (stopping) throw new ClientSessionError(503, "SERVICE_STOPPING", "服务正在重启");
     if (closing.has(sid))
       throw new ClientSessionError(503, "CLIENT_CLOSING", "会话正在结束，请稍后重试");
+    const record = clientSessions.get(sid);
+    const userId = record && userIdForOwner(record.owner);
+    if (
+      !record ||
+      !userId ||
+      userStore.getUser(userId)?.enabled !== true ||
+      userStore.profileOwner(clientSessions.profileOf(sid)) !== userId
+    )
+      throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个会话不属于当前用户");
     let pending = runtimePromises.get(sid);
     if (!pending) {
       pending = createRuntime(sid);
@@ -955,7 +1081,7 @@ export async function startClientGateway(): Promise<void> {
       await runtime.pixels.handle({ t: "mode", tab: holder.tab, mode: "dom" });
   }
   const clientError = (reply: FastifyReply, error: unknown, owner?: string) => {
-    if (error instanceof ClientSessionError)
+    if (error instanceof ClientSessionError || error instanceof UserStoreError)
       return reply.code(error.statusCode).send({
         error: error.message,
         code: error.code,
@@ -972,35 +1098,58 @@ export async function startClientGateway(): Promise<void> {
       const owner = currentOwner(request.raw);
       if (!owner) return reply.code(401).send({ error: "请重新输入访问密码" });
       try {
-        const existing = clientSessions
-          .all()
-          .some(
-            (record) =>
-              record.owner === owner &&
-              (record.clientKey === request.body?.clientKey || record.sid === request.body?.sid),
+        return await accountLifecycle.run(async () => {
+          const user = requireLiveOwner(request.raw, owner);
+          const existing = clientSessions
+            .all()
+            .some(
+              (record) =>
+                record.owner === owner &&
+                (record.clientKey === request.body?.clientKey || record.sid === request.body?.sid),
+            );
+          if (!e2e && !existing && (await memoryShort()))
+            throw new ClientSessionError(
+              503,
+              "CLIENT_RESOURCES",
+              "内存较紧张，请等待离线会话自动回收后重试",
+            );
+          const record = await clientSessions.acquire(
+            owner,
+            request.body?.clientKey,
+            request.body?.sid,
+            isPhoneRequest(request.headers["user-agent"]),
           );
-        if (!e2e && !existing && (await memoryShort()))
-          throw new ClientSessionError(
-            503,
-            "CLIENT_RESOURCES",
-            "B 的内存较紧张，请等待离线会话自动回收后重试",
-          );
-        const record = await clientSessions.acquire(
-          owner,
-          request.body?.clientKey,
-          request.body?.sid,
-          isPhoneRequest(request.headers["user-agent"]),
-        );
-        idleReaper.touch(record.sid);
-        broadcastStatus();
-        await ensureRuntime(record.sid);
-        return {
-          ...clientSessions.describe(record.sid),
-          account: clientSessions.profileOf(record.sid),
-          maxClients: CLIENT_SLOTS.length,
-          available: clientSessions.available(),
-          sharedAccount: true,
-        };
+          try {
+            if (
+              !existing ||
+              userStore.profileOwner(clientSessions.profileOf(record.sid)) !== user.id
+            ) {
+              if (runtimes.has(record.sid))
+                throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "浏览器不属于当前用户");
+              await clientSessions.setProfile(
+                owner,
+                record.sid,
+                await defaultProfileFor(user, record.sid),
+              );
+            }
+            idleReaper.touch(record.sid);
+            broadcastStatus();
+            await ensureRuntimeLocked(record.sid);
+            return {
+              ...clientSessions.describe(record.sid),
+              account: clientSessions.profileOf(record.sid),
+              maxClients: clientSessions.capacity(),
+              available: clientSessions.available(),
+              sharedAccount: true,
+            };
+          } catch (error) {
+            if (!existing)
+              await releaseClientLocked(owner, record.sid).catch((cleanupError) =>
+                report("new workspace rollback failed", cleanupError),
+              );
+            throw error;
+          }
+        });
       } catch (error) {
         return clientError(reply, error, owner);
       }
@@ -1033,6 +1182,9 @@ export async function startClientGateway(): Promise<void> {
       if (session === sid) account.frameOwners.delete(frame);
   }
   async function releaseClient(owner: string, sid: string) {
+    return accountLifecycle.run(() => releaseClientLocked(owner, sid));
+  }
+  async function releaseClientLocked(owner: string, sid: string) {
     if (!clientSessions.owns(owner, sid))
       throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个会话已结束");
     if (closing.has(sid)) throw new ClientSessionError(409, "CLIENT_CLOSING", "会话正在结束");
@@ -1048,10 +1200,18 @@ export async function startClientGateway(): Promise<void> {
     }
   }
   /** Moves a session to another account. Its windows close; the viewer reconnects to new ones. */
-  async function switchAccount(owner: string, sid: string, id: string) {
+  async function switchAccount(request: IncomingMessage, owner: string, sid: string, id: string) {
+    return accountLifecycle.run(() => {
+      requireLiveOwner(request, owner);
+      return switchAccountLocked(owner, sid, id);
+    });
+  }
+  async function switchAccountLocked(owner: string, sid: string, id: string) {
     if (!clientSessions.owns(owner, sid))
       throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个会话已结束");
     if (!accountStore.has(id)) throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
+    if (userStore.profileOwner(id) !== userIdForOwner(owner))
+      throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
     if (closing.has(sid)) throw new ClientSessionError(409, "CLIENT_CLOSING", "会话正在结束");
     if (clientSessions.profileOf(sid) === id) return;
     closing.add(sid);
@@ -1065,21 +1225,58 @@ export async function startClientGateway(): Promise<void> {
       broadcastStatus();
     }
   }
-  const describeAccounts = () =>
-    accountStore.all().map((record) => ({
-      id: record.id,
-      name: record.name,
-      running: accounts.has(record.id),
-      sessions: clientSessions
-        .all()
-        .filter((session) => (session.profile ?? DEFAULT_PROFILE) === record.id).length,
-    }));
+  function userIdForOwner(owner: string): string | undefined {
+    return e2e && owner.startsWith("test-")
+      ? userStore.bootstrapAdmin.id
+      : owner.includes("/")
+        ? owner.slice(0, owner.indexOf("/"))
+        : undefined;
+  }
+  async function defaultProfileFor(user: FrontendUser, exceptSid?: string): Promise<string> {
+    const owned = accountStore
+      .all()
+      .filter((record) => userStore.profileOwner(record.id) === user.id);
+    const recent = clientSessions
+      .all()
+      .find(
+        (record) =>
+          record.sid !== exceptSid &&
+          userIdForOwner(record.owner) === user.id &&
+          owned.some((profile) => profile.id === clientSessions.profileOf(record.sid)),
+      );
+    const first =
+      (recent && owned.find((record) => record.id === clientSessions.profileOf(recent.sid))) ??
+      owned.find((record) => record.id === DEFAULT_PROFILE) ??
+      owned[0];
+    if (first) return first.id;
+    const created = await accountStore.create("默认浏览器");
+    try {
+      userStore.assignProfile(created.id, user.id);
+    } catch (error) {
+      await accountStore.remove(created.id);
+      throw error;
+    }
+    return created.id;
+  }
+  const describeAccounts = (user: FrontendUser) =>
+    accountStore
+      .all()
+      .filter((record) => userStore.profileOwner(record.id) === user.id)
+      .map((record) => ({
+        id: record.id,
+        name: record.name,
+        running: accounts.has(record.id),
+        sessions: clientSessions
+          .all()
+          .filter((session) => (session.profile ?? DEFAULT_PROFILE) === record.id).length,
+      }));
   app.get<{ Querystring: { sid?: string } }>("/api/accounts", async (request, reply) => {
     const owner = currentOwner(request.raw);
-    if (!owner) return reply.code(401).send({ error: "请重新输入访问密码" });
+    const user = currentUser(request.raw);
+    if (!owner || !user) return reply.code(401).send({ error: "请重新登录" });
     const sid = request.query.sid;
     return reply.header("cache-control", "no-store").send({
-      accounts: describeAccounts(),
+      accounts: describeAccounts(user),
       current: sid && clientSessions.owns(owner, sid) ? clientSessions.profileOf(sid) : null,
     });
   });
@@ -1088,9 +1285,26 @@ export async function startClientGateway(): Promise<void> {
     { bodyLimit: 1024 },
     async (request, reply) => {
       const owner = currentOwner(request.raw);
-      if (!owner) return reply.code(401).send({ error: "请重新输入访问密码" });
+      const user = currentUser(request.raw);
+      if (!owner || !user) return reply.code(401).send({ error: "请重新登录" });
       try {
-        return await accountStore.create(request.body?.name);
+        return await accountLifecycle.run(async () => {
+          requireLiveOwner(request.raw, owner);
+          if (userStore.listOwnedProfiles(user.id).length >= MAX_PROFILES)
+            throw new ClientSessionError(
+              409,
+              "PROFILE_LIMIT",
+              `每个用户最多 ${MAX_PROFILES} 个浏览器配置`,
+            );
+          const created = await accountStore.create(request.body?.name);
+          try {
+            userStore.assignProfile(created.id, user.id);
+          } catch (error) {
+            await accountStore.remove(created.id);
+            throw error;
+          }
+          return created;
+        });
       } catch (error) {
         return clientError(reply, error, owner);
       }
@@ -1103,7 +1317,12 @@ export async function startClientGateway(): Promise<void> {
       const owner = currentOwner(request.raw);
       if (!owner) return reply.code(401).send({ error: "请重新输入访问密码" });
       try {
-        return await accountStore.rename(request.params.id, request.body?.name);
+        return await accountLifecycle.run(async () => {
+          const user = requireLiveOwner(request.raw, owner);
+          if (userStore.profileOwner(request.params.id) !== user.id)
+            throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
+          return accountStore.rename(request.params.id, request.body?.name);
+        });
       } catch (error) {
         return clientError(reply, error, owner);
       }
@@ -1114,24 +1333,35 @@ export async function startClientGateway(): Promise<void> {
     if (!owner) return reply.code(401).send({ error: "请重新输入访问密码" });
     const id = request.params.id;
     try {
-      if (!accountStore.has(id))
-        throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
-      if (id === DEFAULT_PROFILE)
-        throw new ClientSessionError(409, "PROFILE_DEFAULT", "默认账号不能删除");
-      const using = clientSessions.all().filter((record) => record.profile === id);
-      if (using.some((record) => record.owner !== owner))
-        throw new ClientSessionError(
-          409,
-          "PROFILE_IN_USE",
-          "别的设备正在用这个账号，请先在那边切换或结束",
-        );
-      // This device's own sessions move to the default account first.
-      for (const record of using) await switchAccount(owner, record.sid, DEFAULT_PROFILE);
-      const account = accounts.get(id) ?? (await openingAccounts.get(id)?.catch(() => undefined));
-      if (account) await closeAccount(account);
-      await accountStore.remove(id);
-      await rm(accountDir(id), { recursive: true, force: true });
-      return reply.code(204).send();
+      return await accountLifecycle.run(async () => {
+        const user = requireLiveOwner(request.raw, owner);
+        if (userStore.profileOwner(id) !== user.id)
+          throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
+        if (!accountStore.has(id))
+          throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
+        if (id === DEFAULT_PROFILE)
+          throw new ClientSessionError(409, "PROFILE_DEFAULT", "默认账号不能删除");
+        const using = clientSessions.all().filter((record) => record.profile === id);
+        if (using.some((record) => record.owner !== owner))
+          throw new ClientSessionError(
+            409,
+            "PROFILE_IN_USE",
+            "别的设备正在用这个账号，请先在那边切换或结束",
+          );
+        // Only configurations of this user are valid destinations, including their default.
+        const fallback = accountStore
+          .all()
+          .find((record) => record.id !== id && userStore.profileOwner(record.id) === user.id);
+        if (!fallback)
+          throw new ClientSessionError(409, "PROFILE_LAST", "需要保留至少一个浏览器配置");
+        for (const record of using) await switchAccountLocked(owner, record.sid, fallback.id);
+        const account = accounts.get(id) ?? (await openingAccounts.get(id)?.catch(() => undefined));
+        if (account) await closeAccount(account);
+        await accountStore.remove(id);
+        userStore.unassignProfile(id);
+        await rm(accountDir(id), { recursive: true, force: true });
+        return reply.code(204).send();
+      });
     } catch (error) {
       return clientError(reply, error, owner);
     }
@@ -1146,7 +1376,7 @@ export async function startClientGateway(): Promise<void> {
       try {
         if (typeof id !== "string")
           throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
-        await switchAccount(owner, request.params.sid, id);
+        await switchAccount(request.raw, owner, request.params.sid, id);
         return { account: clientSessions.profileOf(request.params.sid) };
       } catch (error) {
         return clientError(reply, error, owner);
@@ -1157,40 +1387,165 @@ export async function startClientGateway(): Promise<void> {
     const owner = currentOwner(request.raw);
     if (!owner) return reply.code(403).send({ error: "这个会话不属于当前客户端" });
     try {
-      await releaseClient(owner, request.params.sid);
+      await accountLifecycle.run(() => {
+        requireLiveOwner(request.raw, owner);
+        return releaseClientLocked(owner, request.params.sid);
+      });
       return reply.code(204).send();
     } catch (error) {
       return clientError(reply, error, owner);
     }
   });
-  for (const sid of CLIENT_SLOTS) {
-    app.get(`/s/${sid}/theme`, { preHandler: requireSession(sid) }, async () => ({
+  app.get<{ Params: { sid: string } }>(
+    "/s/:sid/theme",
+    { preHandler: requireSession() },
+    async (request) => ({
       theme:
         (await runtimes
-          .get(sid)
+          .get(request.params.sid)
           ?.theme.read()
           .catch(() => null)) ?? null,
-    }));
-    app.post<{ Body: { theme?: unknown; systemDark?: unknown } }>(
-      `/s/${sid}/theme`,
-      { preHandler: requireSession(sid), bodyLimit: 1024 },
-      async (request, reply) => {
-        const { theme, systemDark } = request.body ?? {};
-        if (!isClaudeTheme(theme)) return reply.code(400).send({ error: "未知的外观" });
-        const applied = (await runtimes.get(sid)?.theme.set(theme, systemDark === true)) ?? false;
-        return { applied };
-      },
-    );
+    }),
+  );
+  app.post<{ Params: { sid: string }; Body: { theme?: unknown; systemDark?: unknown } }>(
+    "/s/:sid/theme",
+    { preHandler: requireSession(), bodyLimit: 1024 },
+    async (request, reply) => {
+      const { theme, systemDark } = request.body ?? {};
+      if (!isClaudeTheme(theme)) return reply.code(400).send({ error: "未知的外观" });
+      const applied =
+        (await runtimes.get(request.params.sid)?.theme.set(theme, systemDark === true)) ?? false;
+      return { applied };
+    },
+  );
+  const requireAdmin = (request: IncomingMessage) => {
+    if (stopping) throw new UserStoreError(503, "SERVICE_STOPPING", "服务正在重启");
+    const user = currentUser(request);
+    if (!user) throw new UserStoreError(401, "LOGIN_REQUIRED", "请重新登录");
+    if (user.role !== "admin") throw new UserStoreError(403, "ADMIN_REQUIRED", "需要管理员权限");
+    return user;
+  };
+  /** Revocation must finish cleaning every Chrome even if one renderer refuses to close. */
+  async function closeUserWorkspacesLocked(userId: string, profiles: string[]) {
+    const failures: unknown[] = [];
+    for (const record of clientSessions.all()) {
+      if (userIdForOwner(record.owner) !== userId) continue;
+      closing.add(record.sid);
+      try {
+        await stopRuntime(record.sid);
+      } catch (error) {
+        report("revoked workspace cleanup failed", error);
+      } finally {
+        runtimes.delete(record.sid);
+        runtimePromises.delete(record.sid);
+        try {
+          await clientSessions.release(record.owner, record.sid);
+        } catch (error) {
+          failures.push(error);
+        }
+        closing.delete(record.sid);
+      }
+    }
+    for (const id of profiles) {
+      const account = accounts.get(id);
+      if (account) await closeAccount(account);
+    }
+    broadcastStatus();
+    if (failures.length) throw new AggregateError(failures, "Could not persist revoked workspaces");
   }
+  app.get("/api/me", async (request, reply) => {
+    const user = currentUser(request.raw);
+    return user
+      ? reply.header("cache-control", "no-store").send({ user })
+      : reply.code(401).send({ error: "请重新登录" });
+  });
+  app.get("/api/users", async (request, reply) => {
+    try {
+      requireAdmin(request.raw);
+      return reply.header("cache-control", "no-store").send({ users: userStore.listUsers() });
+    } catch (error) {
+      return clientError(reply, error);
+    }
+  });
+  app.post<{ Body: { username?: unknown; password?: unknown; role?: unknown } }>(
+    "/api/users",
+    { bodyLimit: 4096 },
+    async (request, reply) => {
+      try {
+        return await accountLifecycle.run(async () => {
+          requireAdmin(request.raw);
+          const user = await userStore.createUser({
+            username: request.body?.username,
+            password: request.body?.password,
+            role: request.body?.role,
+          });
+          try {
+            await defaultProfileFor(user);
+          } catch (error) {
+            userStore.deleteUser(user.id);
+            throw error;
+          }
+          return reply.code(201).send(user);
+        });
+      } catch (error) {
+        return clientError(reply, error);
+      }
+    },
+  );
+  app.patch<{
+    Params: { id: string };
+    Body: { username?: unknown; password?: unknown; role?: unknown; enabled?: unknown };
+  }>("/api/users/:id", { bodyLimit: 4096 }, async (request, reply) => {
+    try {
+      return await accountLifecycle.run(async () => {
+        requireAdmin(request.raw);
+        const previous = userStore.getUser(request.params.id);
+        const user = await userStore.updateUser(request.params.id, request.body ?? {});
+        if (
+          request.body?.password !== undefined ||
+          previous?.role !== user.role ||
+          previous?.enabled !== user.enabled
+        ) {
+          for (const connection of viewers.values())
+            if (connection.userId === user.id) ws.closeSession(connection.sid);
+        }
+        if (!user.enabled)
+          await closeUserWorkspacesLocked(user.id, userStore.listOwnedProfiles(user.id));
+        return user;
+      });
+    } catch (error) {
+      return clientError(reply, error);
+    }
+  });
+  app.delete<{ Params: { id: string } }>("/api/users/:id", async (request, reply) => {
+    try {
+      return await accountLifecycle.run(async () => {
+        const admin = requireAdmin(request.raw);
+        if (admin.id === request.params.id)
+          throw new UserStoreError(409, "USER_SELF_DELETE", "请使用另一个管理员账户删除此用户");
+        const profiles = userStore.listOwnedProfiles(request.params.id);
+        userStore.deleteUser(request.params.id);
+        await closeUserWorkspacesLocked(request.params.id, profiles);
+        // Chrome directories are retained for deliberate administrator recovery; no user can claim them.
+        return reply.code(204).send();
+      });
+    } catch (error) {
+      return clientError(reply, error);
+    }
+  });
   app.get("/healthz", async (_request, reply) => {
-    const alive = accounts.get(DEFAULT_PROFILE)?.browser.isAlive?.() !== false,
+    const alive = [...accounts.values()].every((account) => account.browser.isAlive?.() !== false),
       pages = [...runtimes.values()].flatMap((runtime) =>
         runtime.recovery.status().map(({ state }) => state),
       );
     const ok = alive && pages.length === 0;
-    return reply
-      .code(ok ? 200 : 503)
-      .send({ ok, browser: alive, pages, clients: runtimes.size, maxClients: CLIENT_SLOTS.length });
+    return reply.code(ok ? 200 : 503).send({
+      ok,
+      browser: alive,
+      pages,
+      clients: runtimes.size,
+      maxClients: clientSessions.capacity(),
+    });
   });
   if (e2e) {
     app.post<{ Body: { milliseconds?: number } }>("/__e2e/advance-idle", async (request, reply) => {
@@ -1247,28 +1602,42 @@ export async function startClientGateway(): Promise<void> {
       },
     );
   }
+  let healthPending = false;
   const healthTimer = setInterval(() => {
-    for (const account of [...accounts.values()]) {
-      if (account.browser.isAlive?.() !== false) continue;
-      if (account.id === DEFAULT_PROFILE) {
-        console.error("Chrome process died; restarting client gateway");
-        process.exit(1);
-      }
-      // Another account's Chrome only takes its own sessions down. Their viewers reconnect, which
-      // starts it again.
-      console.error(`Chrome for account ${account.id} died; closing its sessions`);
-      void closeAccount(account);
-      for (const runtime of [...runtimes.values()])
-        if (runtime.account === account) {
-          ws.closeSession(runtime.sid);
-          runtimes.delete(runtime.sid);
-          runtimePromises.delete(runtime.sid);
-          void runtime.stop().catch(() => {});
+    if (stopping || healthPending) return;
+    healthPending = true;
+    void accountLifecycle
+      .run(async () => {
+        if (stopping) return;
+        for (const account of [...accounts.values()]) {
+          if (account.browser.isAlive?.() !== false) continue;
+          // Wait for old cleanup before another operation can reuse a SID or profile.
+          console.error(`Chrome for account ${account.id} died; closing its sessions`);
+          for (const runtime of [...runtimes.values()]) {
+            if (runtime.account !== account) continue;
+            closing.add(runtime.sid);
+            try {
+              await stopRuntime(runtime.sid);
+            } catch (error) {
+              report("crashed workspace cleanup", error);
+            } finally {
+              runtimes.delete(runtime.sid);
+              runtimePromises.delete(runtime.sid);
+              closing.delete(runtime.sid);
+            }
+          }
+          await closeAccount(account);
         }
-    }
+      })
+      .catch((error) => report("browser health recovery", error))
+      .finally(() => {
+        healthPending = false;
+      });
   }, 2000);
   healthTimer.unref?.();
   const statusTimer = setInterval(() => {
+    for (const connection of viewers.values())
+      if (!connection.authorized()) ws.closeSession(connection.sid);
     void resourceSampler
       .sample()
       .then((sample) => {
@@ -1294,50 +1663,76 @@ export async function startClientGateway(): Promise<void> {
           .catch((error) => report("page memory release failed", error));
       }
   };
-  const closeUnusedAccounts = () => {
-    const now = Date.now();
-    for (const account of [...accounts.values()]) {
-      if (account.id === DEFAULT_PROFILE || accountInUse(account.id)) {
-        account.unusedSince = null;
-        continue;
+  const closeUnusedAccounts = () =>
+    accountLifecycle.run(async () => {
+      if (stopping) return;
+      const now = Date.now();
+      for (const account of [...accounts.values()]) {
+        if (accountInUse(account.id)) {
+          account.unusedSince = null;
+          continue;
+        }
+        account.unusedSince ??= now;
+        if (now - account.unusedSince >= ACCOUNT_IDLE_CLOSE_MS)
+          await closeAccount(account).catch((error) => report("account close failed", error));
       }
-      account.unusedSince ??= now;
-      if (now - account.unusedSince >= ACCOUNT_IDLE_CLOSE_MS)
-        void closeAccount(account).catch((error) => report("account close failed", error));
-    }
-  };
+    });
   const idleTimer = setInterval(
     () => {
       void idleReaper.sweep();
       releaseIdlePageMemory();
-      closeUnusedAccounts();
+      if (pageSleepMs > 0)
+        void pageSleep.sweep([...runtimes.keys()]).catch((error) => report("page sleep", error));
+      void closeUnusedAccounts().catch((error) => report("account cleanup failed", error));
     },
     e2e ? 200 : 3000,
   );
   idleTimer.unref?.();
-  const stop = async () => {
-    if (stopping) return;
+  let stopPromise: Promise<void> | undefined;
+  const signalHandlers = new Map<NodeJS.Signals, () => void>();
+  const stop = (): Promise<void> => {
+    if (stopPromise) return stopPromise;
     stopping = true;
     clearInterval(healthTimer);
     clearInterval(statusTimer);
     clearInterval(idleTimer);
     idleReaper.dispose();
-    await ws.close().catch(() => {});
-    for (const runtime of runtimes.values()) {
-      await runtime.stop().catch((error) => report("client shutdown failed", error));
-    }
-    await app.close().catch(() => {});
-    for (const account of [...accounts.values()]) await closeAccount(account);
-    if (managedProfile) await rm(profile, { recursive: true, force: true });
+    for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
+    stopPromise = (async () => {
+      await ws.close().catch(() => {});
+      await app.close().catch(() => {});
+      await accountLifecycle.run(async () => {
+        for (const runtime of runtimes.values()) {
+          await runtime.stop().catch((error) => report("client shutdown failed", error));
+        }
+        runtimes.clear();
+        runtimePromises.clear();
+        for (const account of [...accounts.values()]) await closeAccount(account);
+        userStore.close();
+        if (managedProfile) {
+          await rm(profile, { recursive: true, force: true });
+          if (!process.env.MIRROR_ACCOUNTS_DIR)
+            await rm(accountsDir, { recursive: true, force: true });
+        }
+      });
+    })();
+    return stopPromise;
   };
-  for (const signal of ["SIGINT", "SIGTERM"] as const)
-    process.once(signal, () => void stop().finally(() => process.exit(0)));
+  if (options.signals !== false)
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+      const handler = () => void stop().finally(() => process.exit(0));
+      signalHandlers.set(signal, handler);
+      process.once(signal, handler);
+    }
   const port = Number(process.env.GATEWAY_PORT ?? 3000);
   if (!Number.isSafeInteger(port) || port < 1 || port > 65535)
     throw new Error("Invalid GATEWAY_PORT");
   try {
-    await app.listen({ host: gatewayHost(), port });
-    console.log(`multi-client gateway listening at http://${gatewayHost()}:${port}`);
+    if (options.listen !== false) {
+      await app.listen({ host: gatewayHost(), port });
+      console.log(`multi-client gateway listening at http://${gatewayHost()}:${port}`);
+    } else await app.ready();
+    return { app, stop };
   } catch (error) {
     await stop();
     throw error;

@@ -9,6 +9,7 @@ import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { SERVER_STATUS_STALE_MS, type ReceivedServerStatus } from "./server-status";
 import type { ViewMode } from "./client-session";
+import type { FrontendUser } from "./users";
 
 export type ThemePreference = "auto" | "light" | "dark";
 export type StatusTone = "ok" | "busy" | "bad";
@@ -36,6 +37,11 @@ export interface ShellBarProps {
   accounts: AccountList | null;
   onAccount(action: AccountAction): void;
   onMenuOpen?(): void;
+  currentUser?: FrontendUser | null;
+  onManageUsers?(): void;
+  onLogout?(): void;
+  logoutPending?: boolean;
+  userError?: string | null;
 }
 
 const VIEWS: { mode: ViewMode; label: string; title: string }[] = [
@@ -133,6 +139,34 @@ export function ShellBar(props: ShellBarProps) {
 
       {menuOpen && (
         <div id="shell-menu" ref={menuRef} role="dialog" aria-label="更多">
+          {props.currentUser && (
+            <div class="shell-menu-section" role="group" aria-label="当前用户">
+              <span>
+                {props.currentUser.username}
+                {props.currentUser.role === "admin" && " · 管理员"}
+              </span>
+              <div class="shell-menu-choices">
+                {props.currentUser.role === "admin" && props.onManageUsers && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      toggleRef.current?.focus();
+                      props.onManageUsers?.();
+                    }}
+                  >
+                    用户管理
+                  </button>
+                )}
+                {props.onLogout && (
+                  <button type="button" disabled={props.logoutPending} onClick={props.onLogout}>
+                    {props.logoutPending ? "正在退出…" : "退出登录"}
+                  </button>
+                )}
+              </div>
+              {props.userError && <p role="alert">{props.userError}</p>}
+            </div>
+          )}
           <div class="shell-menu-section" role="group" aria-label="画面清晰度">
             <span>画面模式：越清晰，服务器负担越重</span>
             <div class="shell-menu-choices">
@@ -197,8 +231,8 @@ export function ShellBar(props: ShellBarProps) {
             </div>
           </div>
           {props.accounts !== null && (
-            <div class="shell-menu-section" role="group" aria-label="账号">
-              <span>账号</span>
+            <div class="shell-menu-section" role="group" aria-label="浏览器配置">
+              <span>浏览器配置</span>
               <div class="shell-menu-choices shell-menu-accounts">
                 {props.accounts.accounts.map((account) => (
                   <button
@@ -219,11 +253,12 @@ export function ShellBar(props: ShellBarProps) {
                 <button type="button" onClick={() => props.onAccount({ kind: "rename" })}>
                   重命名
                 </button>
-                {props.accounts.current !== DEFAULT_ACCOUNT && (
-                  <button type="button" onClick={() => props.onAccount({ kind: "delete" })}>
-                    删除
-                  </button>
-                )}
+                {props.accounts.current !== DEFAULT_ACCOUNT &&
+                  props.accounts.accounts.length > 1 && (
+                    <button type="button" onClick={() => props.onAccount({ kind: "delete" })}>
+                      删除
+                    </button>
+                  )}
               </div>
             </div>
           )}

@@ -26,7 +26,7 @@ cd remote-claude-browser
 ./scripts/bootstrap.sh
 ```
 
-脚本生成 `.env`、启动服务并等待健康检查通过，最后打印访问密码。然后编辑 `.env`：
+脚本生成 `.env`、启动服务并等待健康检查通过，最后打印初始管理员密码。默认用户名是 `admin`，可在首次初始化前用 `MIRROR_ADMIN_USERNAME` 修改。然后编辑 `.env`：
 
 ```bash
 # 用户实际打开的地址，必须完全一致，否则 WebSocket 连接会被拒绝
@@ -43,6 +43,24 @@ docker compose ps
 ```
 
 网关只监听服务端的 `127.0.0.1:3010`，公网无法直接访问。
+
+### 前端用户与浏览器配置
+
+工作台使用用户名和密码登录。`MIRROR_ACCESS_PASSWORD` 只用于空数据库的初始管理员创建；已有用户以后由数据库管理，修改环境变量不会重置其密码。
+
+管理员在 ⋯ 菜单的用户管理中创建用户、修改名称或角色、禁用用户、重置密码和删除用户。普通用户只能访问自己的浏览器配置和会话，各自可以自由登录浏览器内的网站；前端用户不会自动获得任何网站账号。用户登录最多保留 60 天，密码或角色变更、禁用和删除会撤销已有登录。
+
+每个用户的浏览器配置使用独立的 Chrome 进程和磁盘目录。同一用户可以新建、选择自己的多个浏览器配置；多个会话选择同一配置时会共享其中的网站登录状态。所有用户仍共享容器的 CPU、内存和全局会话名额。
+
+所有 Chrome（包括旧默认配置）都在实际使用时才启动，没有会话使用的配置空闲 120 秒后会关闭进程，磁盘上的网站登录资料继续保留。每次会话运行都使用新的随机资源令牌密钥，缓存按密封令牌区分；即使会话名额被其他用户复用，也不会取得之前用户的资源缓存。运行实例关闭或变更后，旧令牌失效，进行中的资源请求也会重新检查实例身份。
+
+首次升级时，旧默认配置和已有其他配置统一归初始管理员，不会把这些网站 Cookie 复制给新用户。旧设备 Cookie 不能代替用户身份，升级后需要重新登录。迁移只执行一次，删除用户后留下的浏览器资料不会在重启时被重新认领给管理员。
+
+用户数据默认保存在 `/data/profile/users.sqlite`，包括用户、密码散列、登录令牌摘要和浏览器配置归属。删除用户会撤销其登录并停止其会话，但保留磁盘上的浏览器数据和全局配置记录；删除前端用户不是磁盘数据擦除操作。备份时必须同时保存 SQLite 和浏览器配置，见[备份](#备份)。
+
+### 时区
+
+在 `.env` 里用 `TZ` 写一个 IANA 时区名，例如 `TZ=Asia/Shanghai`，未设置时为 UTC。夏令时自动处理。详见[时区说明](timezone.md)。
 
 ### 使用预构建镜像
 
@@ -157,9 +175,26 @@ docker compose up -d --build   # 使用预构建镜像时：docker compose pull 
 
 升级服务端会重启浏览器，打开的远程页面和未发送的草稿会中断。登录状态保存在 `data` 卷里，不受影响。
 
+### 资源紧张的双机部署
+
+`deploy/remote/deploy-container.sh` 可从入口机发布已经构建、验收过的网关和前端产物。在运行中的服务端镜像上只增加文件层，不在服务端安装依赖或编译源码，保留现有 Chromium 与持久化浏览器资料。这要求基础镜像已提供 Node 22.23.1、`node:sqlite`、`tzdata` 和标准的 `/data/profile` 布局；依赖或运行环境变更应改用完整镜像升级。
+
+```bash
+# 先在受限资源环境完成构建和验收，再执行发布。
+export REMOTE_HOST=server.example.com
+export REMOTE_SSH_IDENTITY=/path/to/administrative-ssh-key
+export REMOTE_SSH_KNOWN_HOSTS=/path/to/verified-known-hosts
+export DEPLOY_SESSION_CAPACITY=8
+bash deploy/remote/deploy-container.sh
+```
+
+此处 SSH 身份必须有部署权限，不能使用只允许端口转发的隧道密钥。脚本默认服务端目录为 `/opt/claude-browser/docker`，可用 `REMOTE_SERVER_DIR` 覆盖。镜像准备与校验通过后，脚本短暂停服，备份用户数据库、会话归属等管理元数据，再切换容器；失败会恢复旧镜像、Compose 配置和这些元数据。脚本不替换浏览器数据目录，也不代替完整备份。
+
+发布只更换镜像，服务端 `.env` 里的 `TZ` 和 `MIRROR_CLIENTS` 保持不变；需要改会话容量时，用 `DEPLOY_SESSION_CAPACITY` 指定一个正整数。受保护的发布记录和回滚备份保存在服务端 `/opt/claude-browser/container-releases/`，其中含凭据，应按完整数据备份保护。
+
 ## 备份
 
-`data` 卷保存浏览器配置，里面有 Cookie 和登录令牌，备份必须加密：
+`data` 卷保存浏览器配置、`users.sqlite` 及其 WAL、配置归属和时区状态。里面有 Cookie 和登录令牌，备份应存放在受保护位置，离机副本应加密。先停服再备份整个卷，避免 SQLite 与浏览器资料来自不同时间点：
 
 ```bash
 docker compose stop server
@@ -168,12 +203,14 @@ docker run --rm -v remote-claude-browser_data:/data:ro -v "$PWD":/backup debian:
 docker compose start server
 ```
 
+实际卷名可用 `docker volume ls` 核对；自定义了项目名时要相应调整。还原也应先停服，并一起还原数据库和配置目录，保留原 UID/GID 及权限。
+
 ## 更换密码和彻底清除
 
-- 换访问密码：修改 `.env` 的 `MIRROR_ACCESS_PASSWORD`，然后 `docker compose up -d`。这不会让已记住的设备退出。
-- 让所有设备退出：同时给 `MIRROR_ACCESS_SECRET` 换一个新的随机值（`openssl rand -hex 32`）。
+- 换用户密码：在管理员用户管理中重置密码，该用户已记住的登录会被撤销。修改 `.env` 不会覆盖已有数据库的密码。
+- 撤销用户访问：禁用或删除用户；角色变更也会撤销其现有登录。签名密钥轮换不等于撤销 SQLite 里的用户登录。
 - 清除全部登录状态：`docker compose down --volumes`。这个操作不可恢复。
 
 ## 资源
 
-`SERVER_MEMORY`（默认 4g）是容器的内存上限。新会话按这个上限做准入检查，内存不足时会被拒绝，已有会话不受影响。`MIRROR_CLIENTS` 决定会话名额，可选 2、5、8、16。每个活跃页面都要占用内存，多路真实负载的容量请按自己的使用情况测试。
+`SERVER_MEMORY`（默认 4g）是容器的内存上限。新会话按这个上限做准入检查，内存不足时会被拒绝，已有会话不受影响。`MIRROR_CLIENTS` 决定所有前端用户共享的会话总名额，默认 `8`，接受任意正的安全整数，不限制在线设备数量，也不限制画面模式数量。降低名额不会强制终止已有会话；占用未降到上限以下前不会接收新会话。每个活跃页面都要占用内存，新增用户首次使用也会启动独立 Chrome，多路真实负载的容量请按实际页面测试。

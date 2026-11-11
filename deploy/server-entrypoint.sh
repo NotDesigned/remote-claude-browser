@@ -23,6 +23,10 @@ fi
 
 umask 0077
 mkdir -p "$HOME" "$CHROME_USER_DATA_DIR"
+# Geo-IP follows this container's public egress, not the device opening the viewer. The resolver
+# writes /etc/localtime's writable target too, so other container processes use the same timezone.
+TZ=$(node /opt/remote-browser/timezone.mjs)
+export TZ
 # Only this container uses the profile, so a lock in it was left by a previous run. Chromium would
 # take one from a container with another hostname to mean the profile is in use elsewhere.
 rm -f "$CHROME_USER_DATA_DIR/SingletonLock" \
@@ -45,4 +49,6 @@ until [ -S "/tmp/.X11-unix/X$display_number" ]; do
   sleep 0.1
 done
 
-exec node dist/main.mjs
+# The gateway keeps about 130 MB live, but V8 sizes its heap from the host's memory and lets garbage
+# pile up to several times that before a full collection. This keeps the heap closer to what is used.
+exec node --optimize-for-size dist/main.mjs

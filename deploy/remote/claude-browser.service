@@ -21,7 +21,7 @@ Environment=GATEWAY_PORT=3010
 Environment=MIRROR_CLIENTS=16
 Environment=MIRROR_CANVAS_SNAPSHOTS=0
 Environment=MIRROR_START_URL=https://claude.ai/new
-ExecStart=/usr/local/bin/node /opt/claude-browser/current/dist/main.mjs
+ExecStart=/usr/local/bin/node --optimize-for-size /opt/claude-browser/current/dist/main.mjs
 Restart=always
 RestartSec=3
 TimeoutStopSec=25

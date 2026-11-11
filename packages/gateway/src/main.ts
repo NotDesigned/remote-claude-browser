@@ -164,6 +164,18 @@ async function main(): Promise<void> {
     }
   });
   accessGate.registerRoutes(app);
+  if (e2eMode) {
+    // The legacy loopback fixture has one browser and its original driver/follower roles.
+    // The shared viewer still performs workspace bootstrap before opening its WebSocket.
+    app.post("/api/client/session", async () => ({
+      sid: "client-1",
+      label: "E2E fixture",
+      maxClients: 1,
+      available: 0,
+      sharedAccount: true,
+    }));
+    app.get("/api/me", async () => ({ user: { id: "e2e", username: "fixture", role: "user" } }));
+  }
   await registerViewerStatic(app);
   sessionGuard.registerJoinRoutes(app);
   registerAssetRoutes(app, {
@@ -582,5 +594,7 @@ function isInputMsg(msg: Up): msg is InputMsg {
 }
 
 assertProductionSafe();
-if (["2", "5", "8", "16"].includes(process.env.MIRROR_CLIENTS ?? "")) await startClientGateway();
-else await main();
+// Older single-browser fixtures omit MIRROR_CLIENTS deliberately. Every ordinary deployment uses
+// independent sessions, including when the capacity is left at its default.
+if (process.env.MIRROR_E2E === "1" && process.env.MIRROR_CLIENTS === undefined) await main();
+else await startClientGateway();

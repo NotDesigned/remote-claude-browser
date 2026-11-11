@@ -315,7 +315,7 @@ try {
     await remote.evaluate(() => window.scrollTo(0, 0));
     await local.locator("body").evaluate((el) => el.ownerDocument.defaultView!.scrollTo(0, 0));
     await settle();
-    await page.locator("#view-mode-select").selectOption("px");
+    await page.locator('[data-view-mode="px"]').click();
     await page.locator("#mirror-host canvas").waitFor();
     await controlWork;
     let canvasRect = (await page.locator("#mirror-host canvas").boundingBox())!;

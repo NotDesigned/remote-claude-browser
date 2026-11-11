@@ -1,25 +1,30 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-export const CLIENT_SLOTS = [
-  "client-1",
-  "client-2",
-  "client-3",
-  "client-4",
-  "client-5",
-  "client-6",
-  "client-7",
-  "client-8",
-  "client-9",
-  "client-10",
-  "client-11",
-  "client-12",
-  "client-13",
-  "client-14",
-  "client-15",
-  "client-16",
-] as const;
-export type ClientSlot = (typeof CLIENT_SLOTS)[number];
+export const DEFAULT_SESSION_CAPACITY = 8;
+export type ClientSlot = `client-${number}`;
+
+export function parseSessionCapacity(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.MIRROR_CLIENTS?.trim();
+  if (raw === undefined || raw === "") return DEFAULT_SESSION_CAPACITY;
+  if (!/^[1-9]\d*$/.test(raw)) throw new Error("MIRROR_CLIENTS must be a positive safe integer");
+  return sessionCapacity(Number(raw));
+}
+
+function sessionCapacity(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1)
+    throw new Error("MIRROR_CLIENTS must be a positive safe integer");
+  return value;
+}
+
+/** A persisted slot remains valid when the operator reduces the admission limit. */
+export function isClientSlot(value: unknown): value is ClientSlot {
+  return (
+    typeof value === "string" &&
+    /^client-[1-9]\d*$/.test(value) &&
+    Number.isSafeInteger(Number(value.slice("client-".length)))
+  );
+}
 export interface ClientRecord {
   sid: ClientSlot;
   owner: string;
@@ -41,7 +46,10 @@ export class ClientSessionError extends Error {
 }
 
 /** Stable device ownership is separate from the workspace selected in a browser tab. */
-export async function createClientSessions(options: { file?: string; now?: () => number } = {}) {
+export async function createClientSessions(
+  options: { file?: string; now?: () => number; maxSessions?: number } = {},
+) {
+  const maxSessions = sessionCapacity(options.maxSessions ?? parseSessionCapacity());
   const records = new Map<ClientSlot, ClientRecord>();
   const now = options.now ?? Date.now;
   if (options.file) {
@@ -74,9 +82,15 @@ export async function createClientSessions(options: { file?: string; now?: () =>
     !!owner && records.get(sid as ClientSlot)?.owner === owner;
   const describe = (sid: ClientSlot) => ({
     sid,
-    label: `独立会话 ${CLIENT_SLOTS.indexOf(sid) + 1}`,
+    label: `独立会话 ${sid.slice("client-".length)}`,
   });
   return {
+    capacity() {
+      return maxSessions;
+    },
+    *slots(): IterableIterator<ClientSlot> {
+      for (let slot = 1; slot <= maxSessions; slot++) yield `client-${slot}`;
+    },
     owns,
     all() {
       return [...records.values()];
@@ -87,15 +101,33 @@ export async function createClientSessions(options: { file?: string; now?: () =>
     owned(owner: string) {
       return [...records.values()].filter((r) => r.owner === owner).map((r) => describe(r.sid));
     },
+    /** Rebind legacy device identities during user-account migration, retaining every session. */
+    async migrateOwners(mapper: (owner: string) => string): Promise<void> {
+      const changes = [...records.values()].map((record) => ({
+        record,
+        previous: record.owner,
+        next: mapper(record.owner),
+      }));
+      if (changes.some(({ next }) => typeof next !== "string" || next.length === 0))
+        throw new Error("Invalid migrated session owner");
+      if (changes.every(({ previous, next }) => previous === next)) return;
+      for (const { record, next } of changes) record.owner = next;
+      try {
+        await persist();
+      } catch (error) {
+        for (const { record, previous } of changes) record.owner = previous;
+        throw error;
+      }
+    },
     describe,
     available() {
-      return CLIENT_SLOTS.length - records.size;
+      return Math.max(0, maxSessions - records.size);
     },
     async acquire(owner: string, clientKey: unknown, requested?: unknown, phone = false) {
       if (!owner || typeof clientKey !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(clientKey))
         throw new ClientSessionError(400, "INVALID_CLIENT_KEY", "客户端标识无效，请刷新重试");
       if (requested !== undefined) {
-        if (typeof requested !== "string" || !CLIENT_SLOTS.includes(requested as ClientSlot))
+        if (!isClientSlot(requested))
           throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个独立会话不属于当前客户端");
         const hinted = records.get(requested as ClientSlot);
         if (hinted && hinted.owner !== owner)
@@ -106,13 +138,15 @@ export async function createClientSessions(options: { file?: string; now?: () =>
         (r) => r.owner === owner && r.clientKey === clientKey,
       );
       if (current) return current;
-      const sid = CLIENT_SLOTS.find((id) => !records.has(id));
-      if (!sid)
+      if (records.size >= maxSessions)
         throw new ClientSessionError(
           503,
           "CLIENT_CAPACITY",
-          "16 个会话均已占用，离线会话会自动回收，请稍后重试",
+          `${maxSessions} 个会话均已占用，离线会话会自动回收，请稍后重试`,
         );
+      let slot = 1;
+      while (records.has(`client-${slot}`)) slot++;
+      const sid: ClientSlot = `client-${slot}`;
       const record: ClientRecord = {
         sid,
         owner,
@@ -153,8 +187,14 @@ export async function createClientSessions(options: { file?: string; now?: () =>
     async release(owner: string, sid: string) {
       if (!owns(owner, sid))
         throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个独立会话不属于当前客户端");
+      const record = records.get(sid as ClientSlot)!;
       records.delete(sid as ClientSlot);
-      await persist();
+      try {
+        await persist();
+      } catch (error) {
+        if (!records.has(record.sid)) records.set(record.sid, record);
+        throw error;
+      }
     },
   };
 }
@@ -163,7 +203,7 @@ function isRecord(value: unknown): value is ClientRecord {
   if (!value || typeof value !== "object") return false;
   const r = value as ClientRecord;
   return (
-    CLIENT_SLOTS.includes(r.sid) &&
+    isClientSlot(r.sid) &&
     typeof r.owner === "string" &&
     r.owner.length > 0 &&
     typeof r.clientKey === "string" &&

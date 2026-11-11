@@ -1,22 +1,20 @@
 // Diagnose clicks on claude.ai/code through the DOM and pixel views of a temporary workspace.
 // Sends no chat messages; only navigates and clicks UI controls. Run with limited-run.sh.
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright";
+import { readProbeCredentials } from "./probe-session.mjs";
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use limited-run.sh");
 
 const origin = process.env.MIRROR_ORIGIN ?? "http://127.0.0.1:3010";
 const target = process.argv[2] || "https://claude.ai/code";
-const password = (await readFile("/etc/claude-browser/agent.env", "utf8"))
-  .split("\n")
-  .find((line) => line.startsWith("MIRROR_ACCESS_PASSWORD="))
-  .slice("MIRROR_ACCESS_PASSWORD=".length);
+const { username, password } = await readProbeCredentials();
 const login = await fetch(origin + "/gate", {
   method: "POST",
   redirect: "manual",
   headers: { "content-type": "application/x-www-form-urlencoded" },
-  body: new URLSearchParams({ password }),
+  body: new URLSearchParams({ username, password }),
   signal: AbortSignal.timeout(20000),
 });
 assert.equal(login.status, 303, "gate login");
@@ -233,7 +231,10 @@ try {
 
   // Pixel mode on the same page (never clicked on a sign-in page).
   if (onAuthPage) throw Object.assign(new Error("auth page"), { skip: true });
-  await page.selectOption("#view-mode-select", "px").catch(() => {});
+  await page
+    .locator('[data-view-mode="px"]')
+    .click()
+    .catch(() => {});
   await page.waitForTimeout(6000);
   const canvas = page.locator("#mirror-host canvas").first();
   if (await canvas.count()) {

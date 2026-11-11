@@ -57,7 +57,7 @@ export async function listAccounts(
   const value: unknown = await (await call(`/api/accounts${query}`, {}, fetcher)).json();
   const list = (value as { accounts?: unknown })?.accounts;
   const current = (value as { current?: unknown })?.current;
-  if (!Array.isArray(list) || !list.every(isAccount)) throw new Error("账号列表无法读取");
+  if (!Array.isArray(list) || !list.every(isAccount)) throw new Error("浏览器配置列表无法读取");
   return { accounts: list, current: typeof current === "string" ? current : null };
 }
 
@@ -137,7 +137,7 @@ export async function runAccountAction(
       if (!dialogs.confirm(`切换到「${target.name}」？这个会话现在打开的页面会关闭。`)) return;
       await move(target.id);
     } else if (action.kind === "create") {
-      const name = dialogs.prompt("新账号的名字")?.trim();
+      const name = dialogs.prompt("新浏览器配置的名字")?.trim();
       if (!name) return;
       const made = await createAccount(name, context.fetcher);
       if (dialogs.confirm(`已新建「${made.name}」。现在把这个会话切换过去吗？`))
@@ -145,7 +145,7 @@ export async function runAccountAction(
       else context.refresh();
     } else if (action.kind === "rename") {
       if (!current) return;
-      const name = dialogs.prompt("账号的名字", current.name)?.trim();
+      const name = dialogs.prompt("浏览器配置的名字", current.name)?.trim();
       if (!name || name === current.name) return;
       await renameAccount(current.id, name, context.fetcher);
       context.refresh();
@@ -153,7 +153,7 @@ export async function runAccountAction(
       if (!current || current.id === DEFAULT_ACCOUNT) return;
       if (
         !dialogs.confirm(
-          `删除「${current.name}」？它的登录状态和浏览数据都会被清除，不能恢复。这个会话会先切换到默认账号。`,
+          `删除「${current.name}」？它的登录状态和浏览数据都会被清除，不能恢复。这个会话会先切换到默认浏览器配置。`,
         )
       )
         return;

@@ -8,6 +8,7 @@ import { chromium } from "playwright";
 
 const origin = process.env.SMOKE_ORIGIN;
 const password = process.env.SMOKE_PASSWORD;
+const username = process.env.SMOKE_USERNAME ?? process.env.MIRROR_ADMIN_USERNAME ?? "admin";
 assert.ok(origin && password, "Set SMOKE_ORIGIN and SMOKE_PASSWORD");
 
 /**
@@ -238,6 +239,34 @@ async function checkNestedFrames(page, address) {
 }
 
 /** Accounts are separate Chromes: a cookie set in one is not there in another, and stays in its own. */
+/** A session whose viewers are all hidden sleeps its pages, and wakes them when one shows again. */
+async function checkPageSleep(page, address) {
+  const value = () => page.evaluate(() => document.querySelector("#urlbar input")?.value ?? "");
+  const until = async (test, what) => {
+    const deadline = Date.now() + 40_000;
+    while (Date.now() < deadline) {
+      if (test(await value())) return;
+      await page.waitForTimeout(500);
+    }
+    throw new Error(`${what}; the address bar shows ${(await value()).slice(0, 80)}`);
+  };
+  const setHidden = (hidden) =>
+    page.evaluate((hidden) => {
+      // As a browser does when the tab goes to the background or comes back.
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+      document.dispatchEvent(new Event("visibilitychange"));
+      if (!hidden) delete document.hidden;
+    }, hidden);
+  await address.fill("https://example.com/");
+  await address.press("Enter");
+  await until((url) => url.startsWith("https://example.com"), "The page did not open");
+  await setHidden(true);
+  await until((url) => url.startsWith("data:text/html"), "The hidden session's page did not sleep");
+  await setHidden(false);
+  await until((url) => url.startsWith("https://example.com"), "The page did not wake");
+  console.log("A page nobody is looking at sleeps, and wakes when someone looks.");
+}
+
 async function checkAccounts(page) {
   // From the page, as the viewer itself asks: its cookies are Secure, which only it sends to plain http.
   const call = (method, path, body) =>
@@ -481,6 +510,8 @@ try {
   assert.notEqual(refused.status(), 200, "The API answered without logging in");
 
   await page.goto(origin);
+  if (await page.locator('input[name="username"]').count())
+    await page.locator('input[name="username"]').fill(username);
   await page.locator('input[name="password"]').fill(password);
   await page.locator('button[type="submit"]').click();
   await page.waitForSelector("#shell-bar", { timeout: 60_000 });
@@ -539,6 +570,7 @@ try {
   await checkForm(page, address, mirrored);
   await checkMovedFrame(page, address);
   await checkNestedFrames(page, address);
+  await checkPageSleep(page, address);
   await checkAccounts(page);
 
   if (process.env.SMOKE_VIDEO === "1") await checkVideo(page, address);
@@ -548,6 +580,8 @@ try {
   const pictureContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const picture = await pictureContext.newPage();
   await picture.goto(origin);
+  if (await picture.locator('input[name="username"]').count())
+    await picture.locator('input[name="username"]').fill(username);
   await picture.locator('input[name="password"]').fill(password);
   await picture.locator('button[type="submit"]').click();
   await picture.waitForSelector("#shell-bar", { timeout: 60_000 });

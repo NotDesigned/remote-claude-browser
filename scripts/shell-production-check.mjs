@@ -2,21 +2,19 @@
 // state and both views' screenshots, and never clicks inside the remote page.
 // Run with: bash scripts/limited-run.sh node scripts/shell-production-check.mjs
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright";
+import { readProbeCredentials } from "./probe-session.mjs";
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use limited-run.sh");
 
 const origin = process.env.MIRROR_ORIGIN ?? "http://127.0.0.1:3010";
-const password = (await readFile("/etc/claude-browser/agent.env", "utf8"))
-  .split("\n")
-  .find((line) => line.startsWith("MIRROR_ACCESS_PASSWORD="))
-  .slice("MIRROR_ACCESS_PASSWORD=".length);
+const { username, password } = await readProbeCredentials();
 const login = await fetch(origin + "/gate", {
   method: "POST",
   redirect: "manual",
   headers: { "content-type": "application/x-www-form-urlencoded" },
-  body: new URLSearchParams({ password }),
+  body: new URLSearchParams({ username, password }),
   signal: AbortSignal.timeout(20000),
 });
 assert.equal(login.status, 303, "gate login");

@@ -38,6 +38,8 @@ export type AssetPreHandler = preHandlerHookHandler | preHandlerAsyncHookHandler
 
 export interface AssetRouteDeps {
   serverKey: Buffer;
+  /** Overrides the static key; an inactive session must return undefined and fail closed. */
+  serverKeyForSession?: (sid: string) => Buffer | undefined;
   cache: AssetCache;
   fetcher: AssetFetcher;
   preHandler?: AssetPreHandler;
@@ -55,9 +57,21 @@ export function registerAssetRoutes(app: FastifyInstance, deps: AssetRouteDeps):
     "/s/:sid/a/*",
     { preHandler },
     async (request, reply) => {
+      const serverKey = deps.serverKeyForSession
+        ? deps.serverKeyForSession(request.params.sid)
+        : deps.serverKey;
+      if (serverKey === undefined) {
+        return reply.code(404).send({ error: "Asset session not found" });
+      }
+      const stillCurrent = () => {
+        if (!deps.serverKeyForSession) return true;
+        const current = deps.serverKeyForSession(request.params.sid);
+        return current !== undefined && serverKey.equals(current);
+      };
+      const token = request.params["*"];
       let ref: AssetRef;
       try {
-        ref = openAssetToken(request.params["*"], deps.serverKey);
+        ref = openAssetToken(token, serverKey);
       } catch {
         return reply.code(400).send({ error: "Invalid asset token" });
       }
@@ -75,17 +89,29 @@ export function registerAssetRoutes(app: FastifyInstance, deps: AssetRouteDeps):
       }
 
       const range = request.headers.range;
-      const cacheKey = assetCacheKey(ref);
+      // Tokens include the sealing-key namespace as well as the reference. A reused SID and URL
+      // must never recover content cached by an earlier browser runtime or another user.
+      const cacheKey = token;
       if (range === undefined) {
         const cached = await deps.cache.get(cacheKey);
+        if (!stillCurrent()) return reply.code(404).send({ error: "Asset session not found" });
         if (cached !== undefined) return sendCached(reply, cached);
       }
+      if (!stillCurrent()) return reply.code(404).send({ error: "Asset session not found" });
 
       let response: AssetFetchResponse;
       try {
         response = await deps.fetcher.fetch({ ref, ...(range === undefined ? {} : { range }) });
+        if (!stillCurrent()) {
+          response.body.destroy();
+          return reply.code(404).send({ error: "Asset session not found" });
+        }
         if (range === undefined)
-          response = await rewriteFetchedStylesheet(response, ref, deps.serverKey);
+          response = await rewriteFetchedStylesheet(response, ref, serverKey);
+        if (!stillCurrent()) {
+          response.body.destroy();
+          return reply.code(404).send({ error: "Asset session not found" });
+        }
       } catch {
         return reply.code(502).send({ error: "Asset fetch failed" });
       }
@@ -96,6 +122,7 @@ export function registerAssetRoutes(app: FastifyInstance, deps: AssetRouteDeps):
             statusCode: response.statusCode,
             headers: response.headers,
           });
+          if (!stillCurrent()) return reply.code(404).send({ error: "Asset session not found" });
           return sendCached(reply, stored);
         } catch {
           return reply.code(502).send({ error: "Asset stream failed" });
@@ -255,10 +282,6 @@ const HOP_BY_HOP_HEADERS = new Set([
   "transfer-encoding",
   "upgrade",
 ]);
-
-function assetCacheKey(ref: AssetRef): string {
-  return JSON.stringify([ref.sessionId, ref.tabId, ref.url]);
-}
 
 function unbracket(hostname: string): string {
   return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;

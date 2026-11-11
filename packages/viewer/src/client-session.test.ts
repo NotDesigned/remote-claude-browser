@@ -201,15 +201,19 @@ describe("client session bootstrap", () => {
     ).toThrow("浏览器无法保存");
   });
 
-  it("accepts sixteen sessions and validates dynamic capacity bounds", async () => {
+  it("validates dynamic capacity metadata without a fixed slot list", async () => {
     const fifth = { ...SESSION, sid: "client-5", label: "独立会话 5", available: 0 };
     await expect(
       requestClientSession({ clientKey: FIRST_KEY }, { fetcher: fetchResponse(fifth) }),
     ).resolves.toEqual(fifth);
     for (const fields of [
-      { sid: "client-17" },
+      { sid: "client-0" },
+      { sid: "client-01" },
+      { sid: "client-1.5" },
+      { sid: "client-9007199254740992" },
       { maxClients: 0 },
       { maxClients: 1.5 },
+      { maxClients: Number.MAX_SAFE_INTEGER + 1 },
       { available: -1 },
       { available: 6 },
     ]) {
@@ -224,7 +228,7 @@ describe("client session bootstrap", () => {
     }
   });
 
-  it.each(["client-9", "client-10", "client-16"])("restores and accepts %s", async (sid) => {
+  it.each(["client-9", "client-17", "client-128"])("restores and accepts %s", async (sid) => {
     expect(
       prepareClientSession(
         new URL(`https://viewer.test/?sid=${sid}`),
@@ -236,9 +240,18 @@ describe("client session bootstrap", () => {
     await expect(
       requestClientSession(
         { clientKey: FIRST_KEY },
-        { fetcher: fetchResponse({ ...SESSION, sid, maxClients: 16, available: 0 }) },
+        { fetcher: fetchResponse({ ...SESSION, sid, maxClients: 128, available: 0 }) },
       ),
     ).resolves.toMatchObject({ sid });
+  });
+
+  it("accepts a restored session above a newly reduced capacity", async () => {
+    await expect(
+      requestClientSession(
+        { clientKey: FIRST_KEY },
+        { fetcher: fetchResponse({ ...SESSION, sid: "client-12", maxClients: 3, available: 0 }) },
+      ),
+    ).resolves.toMatchObject({ sid: "client-12", maxClients: 3, available: 0 });
   });
 
   it("retries a recycled forbidden sid once using only this tab's key", async () => {

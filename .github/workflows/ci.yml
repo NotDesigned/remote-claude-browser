@@ -30,7 +30,8 @@ jobs:
       - run: pnpm run check:rrweb
       - run: pnpm run build
       - run: pnpm run typecheck
-      - run: pnpm run test
+      - name: Test packages and deployment helpers
+        run: pnpm run test
 
   containers:
     runs-on: ubuntu-24.04

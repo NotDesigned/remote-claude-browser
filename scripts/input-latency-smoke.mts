@@ -439,7 +439,7 @@ try {
       .evaluate((element) => element.ownerDocument.activeElement === element),
     true,
   );
-  await page.locator("#view-mode-select").selectOption("px");
+  await page.locator('[data-view-mode="px"]').click();
   await page.locator("#mirror-host canvas").waitFor();
   await remote.locator("#editor").evaluate((el) => {
     el.textContent = "";
@@ -462,7 +462,7 @@ try {
   const pixelTextMessages = received
     .filter((m) => m.t === "text")
     .map((m) => (m as Extract<Up, { t: "text" }>).insert);
-  await page.locator("#view-mode-select").selectOption("dom");
+  await page.locator('[data-view-mode="dom"]').click();
   await page.locator("#mirror-host iframe").waitFor();
   assert.equal(await page.locator(".px-ime-input").count(), 0);
   const result = {

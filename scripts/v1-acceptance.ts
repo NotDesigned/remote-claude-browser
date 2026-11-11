@@ -472,7 +472,7 @@ async function runFullStack(
     driver.on("pageerror", (error) => viewerErrors.push(`pageerror: ${error.message}`));
     driverWire = observeWire(driver);
     await driver.goto(viewerUrl, { waitUntil: "domcontentloaded", timeout: START_TIMEOUT_MS });
-    await driver.waitForSelector('#connection-state[data-state="open"]', {
+    await driver.waitForSelector('#shell[data-connection="open"]', {
       timeout: START_TIMEOUT_MS,
     });
 
@@ -723,7 +723,7 @@ async function runFullStack(
           waitUntil: "domcontentloaded",
           timeout: START_TIMEOUT_MS,
         });
-        await follower.waitForSelector('#connection-state[data-state="open"]', {
+        await follower.waitForSelector('#shell[data-connection="open"]', {
           timeout: START_TIMEOUT_MS,
         });
         await mirrorTop(follower).locator("#v1-marker").waitFor({

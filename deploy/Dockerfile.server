@@ -38,6 +38,7 @@ RUN apt-get update \
         iproute2 \
         iptables \
         procps \
+        tzdata \
         x11-utils \
         xauth \
         xdotool \
@@ -46,12 +47,14 @@ RUN apt-get update \
     && groupadd --gid 10001 browser \
     && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin browser \
     && install -d -o browser -g browser /data \
-    && install -d /opt/remote-browser
+    && install -d /opt/remote-browser \
+    && ln -sfn /data/timezone/localtime /etc/localtime \
+    && ln -sfn /data/timezone/name /etc/timezone
 
 COPY --from=build /opt/gateway/ /app/
 COPY --from=build /app/packages/viewer/dist/ /app/viewer/
 COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md UPSTREAM_COMMIT /app/
-COPY deploy/server-entrypoint.sh deploy/server-egress.sh /opt/remote-browser/
+COPY deploy/server-entrypoint.sh deploy/server-egress.sh deploy/timezone.mjs /opt/remote-browser/
 RUN chmod 0755 /opt/remote-browser/server-entrypoint.sh /opt/remote-browser/server-egress.sh
 
 # Without a UTF-8 locale Chromium can't name a download in Chinese, which comes out as "download", and

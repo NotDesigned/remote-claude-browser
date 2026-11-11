@@ -1,5 +1,7 @@
 /** Viewer shell layout. */
 import { listAccounts, runAccountAction, type AccountList } from "./accounts";
+import { currentUser, logout, UserApiError, type FrontendUser } from "./users";
+import { UserPanel } from "./user-panel";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import type { AgentMsg, Down, eventWithTime, TabId } from "@mirror/protocol";
 import { EventType, encodeResumeCursors } from "@mirror/protocol";
@@ -126,6 +128,10 @@ export function App() {
   const fixturePath = useRef(new URLSearchParams(window.location.search).get("fixture")).current;
   const [clientSession, setClientSession] = useState<ClientSession | null>(null);
   const [accountList, setAccountList] = useState<AccountList | null>(null);
+  const [user, setUser] = useState<FrontendUser | null>(null);
+  const [userPanelOpen, setUserPanelOpen] = useState(false);
+  const [logoutPending, setLogoutPending] = useState(false);
+  const [userError, setUserError] = useState<string | null>(null);
   const [clientPhase, setClientPhase] = useState<
     "starting" | "ready" | "error" | "ending" | "closed" | "replaced"
   >(() => {
@@ -278,6 +284,32 @@ export function App() {
       });
   }, [themeSid]);
   useEffect(refreshAccounts, [refreshAccounts]);
+  const refreshUser = useCallback(() => {
+    if (fixturePath !== null) return;
+    void currentUser()
+      .then((loaded) => {
+        if (!mountedRef.current) return;
+        setUser(loaded);
+        if (loaded.role !== "admin") setUserPanelOpen(false);
+      })
+      .catch((error) => {
+        if (error instanceof UserApiError && error.status === 401) window.location.assign("/gate");
+      });
+  }, [fixturePath]);
+  useEffect(refreshUser, [refreshUser]);
+  const signOut = async () => {
+    if (logoutPending) return;
+    setLogoutPending(true);
+    setUserError(null);
+    try {
+      await logout();
+      runtimeCleanupRef.current?.();
+      window.location.assign("/gate");
+    } catch (error) {
+      setUserError(error instanceof Error ? error.message : "退出失败，请稍后重试。");
+      setLogoutPending(false);
+    }
+  };
   const themeKey = `${themePreference}:${systemDark}`;
   const syncedThemeRef = useRef<string | null>(null);
   useEffect(() => {
@@ -995,6 +1027,9 @@ export function App() {
             return;
           }
           if (state === "closed" && !presentation.isPixel(currentTab)) mirror.connectionLost();
+          // The server puts pages to sleep when every viewer has been hidden for a long time.
+          if (state === "open")
+            socketRef.current?.send({ t: "visibility", visible: !document.hidden });
           if (state === "open" && reconnected && !presentation.isPixel(currentTab)) {
             // `hello` says whether the gateway resumed this replay; recovery waits for it.
             // Content recovery does not unlock input before its viewport acknowledgement.
@@ -1013,6 +1048,12 @@ export function App() {
 
     return cleanup;
   }, [clientPhase, clientSession?.sid, fixturePath]);
+
+  useEffect(() => {
+    const report = () => socketRef.current?.send({ t: "visibility", visible: !document.hidden });
+    document.addEventListener("visibilitychange", report);
+    return () => document.removeEventListener("visibilitychange", report);
+  }, []);
 
   const closeClientSession = async () => {
     if (clientSession === null || endControllerRef.current !== null) return;
@@ -1094,7 +1135,7 @@ export function App() {
   };
 
   return (
-    <div id="shell" data-theme={theme}>
+    <div id="shell" data-theme={theme} data-connection={connection}>
       <ShellBar
         viewMode={(activeTab !== null && modeByTab[activeTab]) || viewMode}
         onViewMode={changeView}
@@ -1105,7 +1146,15 @@ export function App() {
         linkTarget={linkTarget}
         onLinkTarget={setLinkTarget}
         accounts={accountList}
-        onMenuOpen={refreshAccounts}
+        currentUser={user}
+        onManageUsers={() => setUserPanelOpen(true)}
+        onLogout={() => void signOut()}
+        logoutPending={logoutPending}
+        userError={userError}
+        onMenuOpen={() => {
+          refreshAccounts();
+          refreshUser();
+        }}
         onAccount={(action) => {
           if (themeSid === null || accountList === null) return;
           void runAccountAction(action, {
@@ -1148,6 +1197,9 @@ export function App() {
           send={(message) => socketRef.current?.send(message)}
         />
       </ShellBar>
+      {userPanelOpen && user?.role === "admin" && (
+        <UserPanel current={user} onClose={() => setUserPanelOpen(false)} onChanged={refreshUser} />
+      )}
       <UrlBar
         tab={activeTab}
         chrome={activeChrome}
@@ -1204,7 +1256,7 @@ export function App() {
           role={clientPhase === "error" || clientPhase === "replaced" ? "alert" : "status"}
         >
           <div class="client-session-card">
-            <span class="session-eyebrow">共用账号 · 独立页面</span>
+            <span class="session-eyebrow">独立浏览器</span>
             <h1>
               {clientPhase === "replaced"
                 ? "此会话已在另一页面打开"
@@ -1229,11 +1281,11 @@ export function App() {
                     ? "已停止本页面的输入和连接，正在释放会话名额。"
                     : clientPhase === "error"
                       ? clientError?.message
-                      : "共用当前 Claude 登录和浏览器数据，各自保留独立页面。首次打开可能需要一些时间。"}
+                      : "正在连接当前用户的独立浏览器。首次打开可能需要一些时间。"}
             </p>
             <p class="session-policy">
-              共用账号，历史、设置和额度共享。关闭网页后保留 60
-              秒，随后自动回收；正在生成时暂缓。可选择结束会话立即释放名额。
+              不同用户的浏览器数据互相隔离。同一浏览器配置下的会话共享网站登录。关闭网页 60
+              秒后自动回收会话；正在生成时暂缓。
             </p>
             {clientPhase === "error" &&
               clientError !== null &&

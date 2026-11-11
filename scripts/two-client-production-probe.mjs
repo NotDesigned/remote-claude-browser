@@ -1,10 +1,9 @@
 // Temporary, owned production workspaces only. No typing, chat submission, or user-page navigation.
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { readProbeCredentials } from "./probe-session.mjs";
 // Pixel frames arrive as binary WebSocket frames (see encodePxBinary); keep only their metadata.
 const pixelMessage = (raw) => {
   const b = new Uint8Array(raw);
@@ -20,51 +19,35 @@ const pixelMessage = (raw) => {
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use limited-run.sh");
 const require = createRequire(new URL("../packages/gateway/package.json", import.meta.url));
 const WebSocket = require("ws");
-const run = promisify(execFile);
 const origin = process.env.MIRROR_ORIGIN ?? "http://127.0.0.1:3010";
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const password = (await readFile("/etc/claude-browser/agent.env", "utf8"))
-  .split("\n")
-  .find((line) => line.startsWith("MIRROR_ACCESS_PASSWORD="))
-  .slice("MIRROR_ACCESS_PASSWORD=".length);
+const { username, password } = await readProbeCredentials();
+const capacityText = process.env.MIRROR_EXPECT_SESSIONS ?? process.env.MIRROR_CLIENTS ?? "8";
+assert.match(capacityText, /^[1-9]\d*$/);
+const expectedCapacity = Number(capacityText);
+assert.ok(Number.isSafeInteger(expectedCapacity) && expectedCapacity >= 2);
 const owned = [];
 const samples = [];
+let telemetryCookie;
 async function stats(phase) {
-  const health = await fetch(origin + "/healthz").then((response) => response.json());
-  const { stdout } = await run(
-    "ssh",
-    [
-      process.env.REMOTE_HOST,
-      "systemctl show claude-browser -p MainPID -p MemoryCurrent -p MemoryPeak -p CPUUsageNSec -p TasksCurrent -p NRestarts; cat /proc/meminfo",
-    ],
-    { timeout: 15000 },
-  );
-  const values = {};
-  for (const name of [
-    "MainPID",
-    "MemoryCurrent",
-    "MemoryPeak",
-    "CPUUsageNSec",
-    "TasksCurrent",
-    "NRestarts",
-  ]) {
-    values[name] = Number(stdout.match(new RegExp("^" + name + "=(\\d+)", "m"))?.[1]);
-  }
-  const availableMemoryBytes = Number(stdout.match(/^MemAvailable:\s+(\d+)/m)?.[1]) * 1024;
+  telemetryCookie ??= await login();
+  const response = await api(telemetryCookie, "/api/status");
+  assert.equal(response.status, 200, "authenticated resource telemetry");
+  const value = await response.json();
+  assert.equal(value.clientsMax, expectedCapacity);
+  assert.equal(value.pixelsMax, null, "pixel streams have no separate admission limit");
   const sample = {
     phase,
     at: new Date().toISOString(),
-    activeClients: health.clients,
-    ...values,
-    availableMemoryBytes,
+    ...value,
   };
   samples.push(sample);
   console.log(
     JSON.stringify({
       phase,
-      memoryMiB: Math.round(values.MemoryCurrent / 1048576),
-      availableMiB: Math.round(availableMemoryBytes / 1048576),
-      tasks: values.TasksCurrent,
+      browserMemoryMiB: Math.round(value.browserMemoryBytes / 1048576),
+      availableMiB: Math.round((value.memoryTotalBytes - value.memoryUsedBytes) / 1048576),
+      cpuPercent: value.cpuPercent,
     }),
   );
   return sample;
@@ -74,7 +57,7 @@ async function login() {
     method: "POST",
     redirect: "manual",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ password }),
+    body: new URLSearchParams({ username, password }),
     signal: AbortSignal.timeout(15000),
   });
   assert.equal(response.status, 303, "access authentication");
@@ -101,12 +84,15 @@ async function allocate() {
   const response = await api(cookie, "/api/client/session", "POST", { clientKey: randomUUID() });
   if (response.status === 503) {
     const result = await response.json();
-    if (result.code === "CLIENT_CAPACITY") return undefined;
+    if (result.code === "CLIENT_CAPACITY") {
+      await api(cookie, "/logout", "POST");
+      return undefined;
+    }
     throw new Error("Workspace unavailable");
   }
   assert.equal(response.status, 200);
   const lease = await response.json();
-  assert.equal(lease.maxClients, 2);
+  assert.equal(lease.maxClients, expectedCapacity);
   const client = {
     cookie,
     sid: lease.sid,
@@ -118,9 +104,14 @@ async function allocate() {
     socket: null,
   };
   owned.push(client);
-  const socket = new WebSocket(origin.replace("https:", "wss:") + "/ws?sid=" + lease.sid, {
-    headers: { Cookie: cookie, Origin: origin },
-  });
+  const socket = new WebSocket(
+    origin.replace(/^http/, "ws") +
+      "/ws?" +
+      new URLSearchParams({ sid: lease.sid, connectionKey: randomUUID() }),
+    {
+      headers: { Cookie: cookie, Origin: origin },
+    },
+  );
   client.socket = socket;
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Owned workspace did not connect")), 20000);
@@ -157,20 +148,22 @@ async function allocate() {
 }
 let result;
 try {
-  const initial = await fetch(origin + "/healthz").then((response) => response.json());
-  assert.equal(initial.maxClients, 2);
-  await stats("before-probe");
+  const initial = await fetch(origin + "/healthz", { signal: AbortSignal.timeout(15000) }).then(
+    (response) => response.json(),
+  );
+  assert.equal(initial.maxClients, expectedCapacity);
+  const before = await stats("before-probe");
+  assert.ok(
+    expectedCapacity - before.clientsAllocated >= 2,
+    "two free session slots required; existing sessions are never released by the probe",
+  );
   for (let index = 0; index < 2; index++) {
     const client = await allocate();
-    if (!client) break;
+    assert.ok(client, "a temporary workspace slot must remain available");
     await delay(18000);
     await stats("owned-clients-" + owned.length);
   }
   if (owned.length === 2) {
-    const thirdCookie = await login();
-    const full = await api(thirdCookie, "/api/client/session", "POST", { clientKey: randomUUID() });
-    assert.equal(full.status, 503);
-    assert.equal((await full.json()).code, "CLIENT_CAPACITY");
     for (const client of owned)
       assert.equal(
         (
@@ -196,20 +189,23 @@ try {
     await delay(10000);
     assert.ok(owned[0].frames > 0, "owned pixel frame");
     owned[1].socket.send(JSON.stringify({ t: "mode", tab: [...owned[1].tabs][0], mode: "px" }));
-    await delay(1500);
-    assert.equal(owned[1].frames, 0, "second pixel stream blocked");
-    await stats("two-clients-one-pixel-stream");
+    await delay(10000);
+    assert.ok(owned[1].frames > 0, "second owned pixel stream is allowed");
+    await stats("two-clients-two-pixel-streams");
     owned[0].socket.send(JSON.stringify({ t: "mode", tab, mode: "dom" }));
+    owned[1].socket.send(JSON.stringify({ t: "mode", tab: [...owned[1].tabs][0], mode: "dom" }));
   }
-  const health = await fetch(origin + "/healthz").then((response) => response.json());
+  const health = await fetch(origin + "/healthz", { signal: AbortSignal.timeout(15000) }).then(
+    (response) => response.json(),
+  );
   assert.equal(health.ok, true);
   result = {
     at: new Date().toISOString(),
     scope: "Temporary owned Claude windows, no typing/submission; memory is idle-page sample only",
     initialActiveClients: initial.clients,
     testedOwnClients: owned.length,
-    maxClients: 2,
-    maxPixelStreams: 1,
+    maxClients: expectedCapacity,
+    maxPixelStreams: null,
     workspaces: owned.map((client) => ({
       sid: client.sid,
       pages: client.tabs.size,
@@ -232,8 +228,11 @@ try {
   }
   await delay(1000);
   await stats("probe-workspaces-released");
+  for (const cookie of [...owned.map((client) => client.cookie), telemetryCookie].filter(Boolean))
+    await api(cookie, "/logout", "POST");
   if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "Workspace cleanup failed");
 }
+await mkdir("artifacts", { recursive: true });
 await writeFile("artifacts/two-client-production.json", JSON.stringify(result, null, 2) + "\n", {
   mode: 0o600,
 });

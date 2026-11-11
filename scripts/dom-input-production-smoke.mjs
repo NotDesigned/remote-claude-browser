@@ -4,20 +4,18 @@ import { readFile, writeFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { chromium, webkit } from "playwright";
 import { editableText } from "../packages/protocol/src/editable.ts";
+import { readProbeCredentials } from "./probe-session.mjs";
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use limited-run.sh");
 const origin = process.env.MIRROR_ORIGIN ?? "http://127.0.0.1:3010";
 const marker = "DOM-QA-" + Date.now();
 const mobile = process.env.DOM_QA_MOBILE === "1";
 const webkitViewer = process.env.DOM_QA_ENGINE === "webkit";
-const password = (await readFile("/etc/claude-browser/agent.env", "utf8"))
-  .split("\n")
-  .find((line) => line.startsWith("MIRROR_ACCESS_PASSWORD="))
-  .slice("MIRROR_ACCESS_PASSWORD=".length);
+const { username, password } = await readProbeCredentials();
 const login = await fetch(origin + "/gate", {
   method: "POST",
   redirect: "manual",
   headers: { "content-type": "application/x-www-form-urlencoded" },
-  body: new URLSearchParams({ password }),
+  body: new URLSearchParams({ username, password }),
   signal: AbortSignal.timeout(15000),
 });
 assert.equal(login.status, 303);
@@ -303,11 +301,7 @@ try {
     await recordPath();
     report.checks.clickSendMatchesVisibleText = true;
     console.log(JSON.stringify({ check: "clickSendMatchesVisibleText" }));
-    if (
-      mobile &&
-      !webkitViewer &&
-      !(await page.locator('#view-mode-select option[value="px"]').isDisabled())
-    ) {
+    if (mobile && !webkitViewer && !(await page.locator('[data-view-mode="px"]').isDisabled())) {
       await page.waitForFunction(
         () => {
           const root = document.querySelector("#mirror-host iframe")?.contentDocument;
@@ -335,7 +329,7 @@ try {
           );
       const before = await scrollTop();
       assert.ok(before > 20, "test conversation is scrollable");
-      await page.locator("#view-mode-select").selectOption("px");
+      await page.locator('[data-view-mode="px"]').click();
       const canvas = page.locator("#mirror-host canvas");
       await canvas.waitFor();
       await page.waitForTimeout(700);
@@ -354,7 +348,7 @@ try {
       await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
       await page.waitForTimeout(700);
       await touch.detach();
-      await page.locator("#view-mode-select").selectOption("dom");
+      await page.locator('[data-view-mode="dom"]').click();
       await canvas.waitFor({ state: "hidden" });
       await ready();
       const after = await scrollTop();

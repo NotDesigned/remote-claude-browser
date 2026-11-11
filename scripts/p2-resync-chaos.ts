@@ -387,7 +387,7 @@ async function main(): Promise<void> {
     });
     const page = await viewerBrowser.newPage({ viewport: { width: 1280, height: 800 } });
     await page.goto(viewerUrl, { waitUntil: "domcontentloaded", timeout: START_TIMEOUT_MS });
-    await page.waitForSelector('#connection-state[data-state="open"]', {
+    await page.waitForSelector('#shell[data-connection="open"]', {
       timeout: START_TIMEOUT_MS,
     });
     const tab = await currentTab(gatewayUrl, Date.now() + START_TIMEOUT_MS);

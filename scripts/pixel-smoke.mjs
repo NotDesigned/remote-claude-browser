@@ -208,7 +208,7 @@ try {
     () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
   );
   const toolbarVisible = () =>
-    page.locator("#view-mode-select").evaluate((button) => {
+    page.locator(".shell-views").evaluate((button) => {
       const box = button.getBoundingClientRect(),
         header = button.closest("header").getBoundingClientRect(),
         host = document.querySelector("#mirror-host").getBoundingClientRect();
@@ -234,7 +234,7 @@ try {
   await page.waitForFunction(
     () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
   );
-  await page.locator("#view-mode-select").selectOption("px");
+  await page.locator('[data-view-mode="px"]').click();
   await page.locator("#mirror-host canvas").waitFor({ state: "visible" });
   await page.setViewportSize({ width: 900, height: 700 });
   await page.waitForFunction(
@@ -308,7 +308,7 @@ try {
   socket.close(1012, "controlled reconnect");
   await page.waitForFunction(
     () =>
-      document.querySelector("#connection-state")?.getAttribute("data-state") === "open" &&
+      document.querySelector("#shell")?.getAttribute("data-connection") === "open" &&
       document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
   );
   for (let attempt = 0; attempt < 30 && views.length === countBefore; attempt++)
@@ -316,14 +316,14 @@ try {
   assert(views.length > countBefore);
   assert.equal(await page.locator("#mirror-host canvas").count(), 1);
   checks.reconnectPreservesPictureAndRenegotiates = true;
-  await page.locator("#view-mode-select").selectOption("dom");
+  await page.locator('[data-view-mode="dom"]').click();
   await page.locator("#mirror-host iframe").waitFor();
   await page.waitForFunction(
     () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
   );
   assert.equal(await page.locator("#mirror-host canvas").count(), 0);
   checks.returnToDomRenegotiates = true;
-  await page.locator("#connection-state").screenshot({ path: "artifacts/toolbar-fixture.png" });
+  await page.locator("#shell-status").screenshot({ path: "artifacts/toolbar-fixture.png" });
   await writeFile(
     "artifacts/pixel-smoke.json",
     JSON.stringify({ fixtureOnly: true, checks }, null, 2) + "\n",

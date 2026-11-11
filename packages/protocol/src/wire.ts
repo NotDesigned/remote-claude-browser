@@ -258,6 +258,8 @@ export type Up =
   | { t: "mic-pcm"; tab: TabId; pcm: string }
   /** Whether this device could open its microphone when the remote page asked. */
   | { t: "mic-state"; tab: TabId; ok: boolean }
+  /** Whether this viewer is on screen. Pages nobody is looking at for a long time are put to sleep. */
+  | { t: "visibility"; visible: boolean }
   | { t: "clip"; text: string };
 
 const DOWN_TAGS: ReadonlySet<string> = new Set([
@@ -308,6 +310,7 @@ const UP_TAGS: ReadonlySet<string> = new Set([
   "mic-pcm",
   "mic-state",
   "clip",
+  "visibility",
 ]);
 
 /** Single serialization choke point (future CBOR switch lives here). */

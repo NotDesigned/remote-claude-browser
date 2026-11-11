@@ -1,19 +1,31 @@
 // Passive viewer inspection: no remote input, viewport, mode, navigation, or resync commands.
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { chromium } from "playwright";
+import { createProbeSession } from "./probe-session.mjs";
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use limited-run.sh");
 const watchdog = setTimeout(() => process.exit(124), 70000);
 const origin = process.env.MIRROR_ORIGIN ?? "http://127.0.0.1:3010";
-const password = (await readFile("/etc/claude-browser/agent.env", "utf8"))
-  .split("\n")
-  .find((line) => line.startsWith("MIRROR_ACCESS_PASSWORD="))
-  .slice("MIRROR_ACCESS_PASSWORD=".length);
-const browser = await chromium.launch({
-  executablePath: "/opt/claude-test-chrome/chrome",
-  headless: true,
-});
+const probe = await createProbeSession(origin);
+let browser;
 try {
+  browser = await chromium.launch({
+    executablePath: "/opt/claude-test-chrome/chrome",
+    headless: true,
+  });
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.addCookies(
+    probe.headers.Cookie.split("; ").map((item) => {
+      const at = item.indexOf("=");
+      return {
+        name: item.slice(0, at),
+        value: item.slice(at + 1),
+        url: origin,
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+      };
+    }),
+  );
   await context.addInitScript(() => {
     const send = WebSocket.prototype.send;
     WebSocket.prototype.send = function (data) {
@@ -22,11 +34,6 @@ try {
       } catch {}
     };
   });
-  const auth = await context.request.post(origin + "/gate", {
-    form: { password },
-    maxRedirects: 0,
-  });
-  if (auth.status() !== 303) throw new Error("Gateway authentication failed");
   const page = await context.newPage();
   const failures = [];
   page.on("requestfailed", (r) =>
@@ -36,7 +43,10 @@ try {
       error: r.failure()?.errorText,
     }),
   );
-  await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 20000 });
+  await page.goto(`${origin}/?sid=${encodeURIComponent(probe.sid)}`, {
+    waitUntil: "domcontentloaded",
+    timeout: 20000,
+  });
   await page.waitForTimeout(12000);
   const report = await page.evaluate(() => {
     const f = document.querySelector("iframe");
@@ -152,6 +162,10 @@ try {
     ),
   );
 } finally {
-  await browser.close();
-  clearTimeout(watchdog);
+  try {
+    await browser?.close();
+  } finally {
+    clearTimeout(watchdog);
+    await probe.close();
+  }
 }

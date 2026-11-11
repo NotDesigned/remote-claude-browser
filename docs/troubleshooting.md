@@ -5,7 +5,7 @@ Start with:
 ```bash
 docker compose ps
 docker compose logs --tail=200 server
-curl --verbose http://localhost:8080/healthz
+curl --verbose http://127.0.0.1:3010/healthz
 ```
 
 The healthy response includes `"ok":true`, `"browser":true`, and a non-negative page count.
@@ -49,12 +49,15 @@ Do not paste the rendered output into an issue because it contains secrets.
 
 ## Login redirects back to the gate
 
-Authentication cookies are `Secure`. Use exactly `http://localhost:8080` for local evaluation, or
+Authentication cookies are `Secure`. Use `http://127.0.0.1:3010` for local evaluation in a browser that
+supports Secure cookies on loopback, or
 use HTTPS. Accessing the service by a LAN IP over plain HTTP will generally cause a login loop.
 Production must use HTTPS.
 
-After changing either signing secret, old cookies no longer validate. Clear cookies for the
-Remote Browser origin and sign in again.
+Log in with a front-end username and password; the initial administrator name defaults to `admin`.
+`MIRROR_ACCESS_PASSWORD` is only used when initializing an empty user database. After that, use user
+management to reset passwords. Password or role changes, disabling and deletion revoke logins;
+rotating signing secrets alone does not revoke SQLite user sessions.
 
 ## Viewer says disconnected
 
@@ -79,9 +82,16 @@ Check asset requests under `/s/.../a/...` and use pixel mode for a blocking mism
 
 ## Uploads or downloads fail
 
-Both containers must mount the same `runtime-data` volume at `/runtime`. Check available disk
+The server holds browser profiles and transfer state in its `/data` volume. Check available disk
 space and gateway logs. One-time download URLs require the same authenticated browser session and
 cannot be reused after successful redemption.
+
+## Wrong time in the remote browser
+
+Read the `Browser timezone` startup log, and check `docker compose exec server date -Is` and
+`docker compose exec server cat /data/timezone/name`. The zone comes only from `TZ` in `.env`, and is
+UTC when it is unset; it does not follow the front-end user's device. Set it and recreate the
+container. See [timezone behavior](timezone.md).
 
 ## Media is unavailable
 

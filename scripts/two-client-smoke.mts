@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import type { Down, Up } from "../packages/protocol/src/index";
 import { decodePxBinary, encodeResumeCursors } from "../packages/protocol/src/index";
+import { parseSessionCapacity } from "../packages/gateway/src/session/clients";
 
 /** Binary pixel frames carry raw JPEG; keep only the metadata the checks use. */
 function pixelDown(raw: Buffer): Down {
@@ -19,6 +20,8 @@ function pixelDown(raw: Buffer): Down {
 }
 
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Run through scripts/limited-run.sh");
+const sessionCapacity = parseSessionCapacity({ MIRROR_CLIENTS: process.env.TWO_CLIENT_CAPACITY });
+assert.ok(sessionCapacity >= 3, "two-client smoke needs at least three fixture session slots");
 const require = createRequire(new URL("../packages/gateway/package.json", import.meta.url));
 const WebSocket = require("ws") as typeof import("ws").WebSocket;
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
@@ -92,6 +95,7 @@ class Viewer {
   readonly frames = new Map<string, number>();
   readonly modes = new Map<string, "dom" | "px">();
   readonly acknowledged = new Map<string, number>();
+  readonly geometryConfirmed = new Map<string, number>();
   /** Replay position per tab, as a real viewer would report it when resuming. */
   readonly cursors = new Map<string, { epoch: number; nextSeq: number }>();
   resumed: string[] = [];
@@ -132,6 +136,13 @@ class Viewer {
           cursor.nextSeq += message.data.length;
         else this.cursors.delete(message.tab);
       }
+      if (
+        message.t === "view-ok" &&
+        this.expected?.tab === message.tab &&
+        this.expected.w === message.w &&
+        this.expected.h === message.h
+      )
+        this.geometryConfirmed.set(message.tab, (this.geometryConfirmed.get(message.tab) ?? 0) + 1);
       if (message.t === "driver") this.driver = message.viewerId === this.viewerId;
       if (message.t === "mode") this.modes.set(message.tab, message.mode);
       if (message.t === "px-capacity") this.pixelAvailable = message.available;
@@ -180,10 +191,13 @@ class Viewer {
   }
   async negotiate(tab: string, w: number, h: number) {
     const previous = this.acknowledged.get(tab);
+    const previousConfirmation = this.geometryConfirmed.get(tab) ?? 0;
     this.expected = { tab, w, h };
     this.send({ t: "view", tab, w, h, dpr: 1 });
     await waitFor(
-      () => this.acknowledged.get(tab) !== undefined && this.acknowledged.get(tab) !== previous,
+      () =>
+        (this.acknowledged.get(tab) !== undefined && this.acknowledged.get(tab) !== previous) ||
+        (this.geometryConfirmed.get(tab) ?? 0) > previousConfirmation,
       `viewport agreement ${this.owner}`,
     );
   }
@@ -257,7 +271,7 @@ function assertStatus(status: ServerStatus, online: number, allocated: number, p
   assert.equal(status.t, "server-status");
   assert.equal(status.clientsOnline, online);
   assert.equal(status.clientsAllocated, allocated);
-  assert.equal(status.clientsMax, 16);
+  assert.equal(status.clientsMax, sessionCapacity);
   assert.equal(status.pixelsActive, pixels);
   assert.equal(status.pixelsMax, null);
   assert.ok(Number.isFinite(status.sampledAt) && status.sampledAt > 0);
@@ -348,7 +362,7 @@ try {
     stdio: ["ignore", "pipe", "pipe"],
     env: {
       ...process.env,
-      MIRROR_CLIENTS: "16",
+      MIRROR_CLIENTS: String(sessionCapacity),
       MIRROR_E2E: "1",
       MIRROR_IDLE_GRACE_MS: "60000",
       CHROME_HEADFUL: "0",
@@ -382,10 +396,10 @@ try {
   const first = await lease("a", "a-test"),
     second = await lease("b", "b-test");
   assert.notEqual(first.sid, second.sid);
-  assert.equal(first.maxClients, 16);
+  assert.equal(first.maxClients, sessionCapacity);
   assert.equal(first.sharedAccount, true);
-  assert.equal(first.available, 15);
-  checks.sixteenSessionCapacityMetadata = true;
+  assert.equal(first.available, sessionCapacity - 1);
+  checks.configurableSessionCapacityMetadata = true;
   let a = await new Viewer("a", first.sid).open();
   const b = await new Viewer("b", second.sid).open();
   assert.notEqual(a.viewerId, b.viewerId);
@@ -956,7 +970,7 @@ try {
     oneGatewayOwnedChrome: true,
     checks,
     clientSlots: [first.sid, second.sid],
-    maxClients: 16,
+    maxClients: sessionCapacity,
     finalStatus: freshViewer.status,
     downloadSkipped: process.env.TWO_CLIENT_SKIP_DOWNLOAD === "1",
   };

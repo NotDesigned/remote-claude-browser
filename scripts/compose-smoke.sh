@@ -21,10 +21,13 @@ export SERVER_BIND=127.0.0.1
 export SERVER_PORT=$smoke_port
 export SERVER_SUBNET=${SERVER_SUBNET:-172.31.67.0/24}
 export MIRROR_ACCESS_PASSWORD=compose-smoke-password
+export MIRROR_ADMIN_USERNAME=${MIRROR_ADMIN_USERNAME:-compose-admin}
 export MIRROR_ACCESS_SECRET=compose-smoke-access-key
 export MIRROR_AUTH_SECRET=compose-smoke-auth-key
 export MIRROR_PUBLIC_ORIGIN=http://127.0.0.1:$smoke_port
 export MIRROR_START_URL=about:blank
+# Short enough for the end-to-end check to see a page sleep and wake.
+export MIRROR_PAGE_SLEEP_MS=4000
 
 in_server() {
   "${compose[@]}" --project-name "$project" exec -T server "$@"
@@ -66,7 +69,19 @@ echo "Healthy: $health"
 
 gate=$(curl --fail --silent "http://127.0.0.1:${smoke_port}/gate")
 [[ $gate == *'<form method="post" action="/gate">'* ]]
+[[ $gate == *'name="username"'* ]]
 in_server test -s /app/viewer/index.html
+
+# Browsers now start on demand: a temporary owned workspace starts one for the sandbox checks.
+node --input-type=module <<'NODE'
+import { createProbeSession } from './scripts/probe-session.mjs';
+const probe = await createProbeSession(process.env.MIRROR_PUBLIC_ORIGIN);
+try {
+  if (!probe.sid) throw new Error('The authenticated smoke workspace was not allocated');
+} finally {
+  await probe.close();
+}
+NODE
 
 # The browser and its sandbox.
 browser_processes=$(in_server pgrep -a -x chromium || true)
@@ -118,7 +133,7 @@ echo "The firewall blocks private addresses, and names still resolve for public 
 
 # A login and a mirrored page, from a browser outside the container.
 if [[ -n ${CHROME_PATH:-} ]]; then
-  SMOKE_ORIGIN=$MIRROR_PUBLIC_ORIGIN SMOKE_PASSWORD=$MIRROR_ACCESS_PASSWORD \
+  SMOKE_ORIGIN=$MIRROR_PUBLIC_ORIGIN SMOKE_USERNAME=$MIRROR_ADMIN_USERNAME SMOKE_PASSWORD=$MIRROR_ACCESS_PASSWORD \
     node scripts/compose-e2e.mjs
   # A missing program or a failed capture only shows in the gateway's log.
   problems=$("${compose[@]}" --project-name "$project" logs --no-color server 2>&1 |

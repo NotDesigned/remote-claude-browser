@@ -28,19 +28,23 @@ services:
       - SYS_CHROOT
     environment:
       MIRROR_ACCESS_PASSWORD: ${MIRROR_ACCESS_PASSWORD:?Set MIRROR_ACCESS_PASSWORD in .env}
+      MIRROR_ADMIN_USERNAME: ${MIRROR_ADMIN_USERNAME:-admin}
       MIRROR_ACCESS_SECRET: ${MIRROR_ACCESS_SECRET:?Set MIRROR_ACCESS_SECRET in .env}
       MIRROR_AUTH_SECRET: ${MIRROR_AUTH_SECRET:?Set MIRROR_AUTH_SECRET in .env}
       MIRROR_PUBLIC_ORIGIN: ${MIRROR_PUBLIC_ORIGIN:-}
       MIRROR_CLIENTS: ${MIRROR_CLIENTS:-8}
       MIRROR_START_URL: ${MIRROR_START_URL:-https://claude.ai/new}
       MIRROR_CANVAS_SNAPSHOTS: "0"
+      # Pages nobody has looked at for this long sleep until someone does. Unset is 30 minutes, 0 is off.
+      MIRROR_PAGE_SLEEP_MS: ${MIRROR_PAGE_SLEEP_MS:-}
       # Sites whose canvases the page view samples. Unset means the verification challenges.
       MIRROR_CANVAS_SITES: ${MIRROR_CANVAS_SITES:-}
       # Connections reach the gateway from this network's gateway address or from Caddy on it.
       MIRROR_TRUSTED_PROXIES: ${SERVER_SUBNET:-172.31.66.0/24}
       EGRESS_POLICY: ${EGRESS_POLICY:-on}
       EGRESS_BLOCK: ${EGRESS_BLOCK:-}
-      TZ: ${TZ:-Etc/UTC}
+      # The entrypoint checks it, exports TZ and points /etc/localtime at it before Chrome starts.
+      MIRROR_TIMEZONE: ${TZ:-Etc/UTC}
     ports:
       - "${SERVER_BIND:-127.0.0.1}:${SERVER_PORT:-3010}:3010"
     volumes:

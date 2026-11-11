@@ -1,5 +1,5 @@
 /** Self-contained access page: no third-party requests or account credentials in the markup. */
-export function renderGatePage(error?: string): string {
+export function renderGatePage(error?: string, options: { users?: boolean } = {}): string {
   const message =
     error === "Incorrect password."
       ? "访问密码不正确，请重新输入。"
@@ -34,14 +34,14 @@ footer{display:flex;justify-content:space-between;gap:12px;color:#9a9b90;font-si
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head><body><div class="shell">
 <header class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M4 10h16M9 4v6m2 4 3 2-3 2"/></svg></span>Remote Workspace</header>
-<main><section class="intro"><div class="eyebrow">A LITTLE SPACE TO FOCUS</div><h1>Your workspace,<br><em>one step away.</em></h1><p>留一点空间，给专注的对话。<br>输入访问密码，继续你的思考与创作。</p><div class="note"><span></span>对话 · 创作 · 思考</div></section>
+<main><section class="intro"><div class="eyebrow">A LITTLE SPACE TO FOCUS</div><h1>Your workspace,<br><em>one step away.</em></h1><p>留一点空间，给专注的对话。<br>${options.users ? "登录你的账户，回到独立的浏览空间。" : "输入访问密码，继续你的思考与创作。"}</p><div class="note"><span></span>对话 · 创作 · 思考</div></section>
 <section class="card" aria-labelledby="login-title"><div class="card-top"><span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round"><rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></svg></span><span class="badge">安全访问入口</span></div>
-<h2 id="login-title">欢迎回来</h2><p class="description">输入访问密码，进入远程工作台。</p>
-<form method="post" action="/gate"><label for="access-password">访问密码</label><div class="field"><input id="access-password" name="password" type="password" required autocomplete="current-password" placeholder="输入你的访问密码" ${error ? 'aria-invalid="true" aria-describedby="login-error"' : ""}>
+<h2 id="login-title">欢迎回来</h2><p class="description">${options.users ? "输入用户名和密码，进入你的远程工作台。" : "输入访问密码，进入远程工作台。"}</p>
+<form method="post" action="/gate">${options.users ? '<label for="access-username">用户名</label><input id="access-username" name="username" type="text" required maxlength="64" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="输入用户名" style="margin-bottom:20px">' : ""}<label for="access-password">${options.users ? "密码" : "访问密码"}</label><div class="field"><input id="access-password" name="password" type="password" required autocomplete="current-password" placeholder="${options.users ? "输入账户密码" : "输入你的访问密码"}" ${error ? 'aria-invalid="true" aria-describedby="login-error"' : ""}>
 <button class="reveal" type="button" aria-label="显示密码" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></svg></button></div>
 ${escaped ? `<p id="login-error" class="error" role="alert">${escaped}</p>` : ""}
 <button class="submit" type="submit">进入工作台<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 10h13m-5-5 5 5-5 5"/></svg></button></form>
-<p class="hint">这里使用的是<strong>工作台访问密码</strong>，<br>无需输入 Claude 账号密码。</p></section></main>
+<p class="hint">${options.users ? "使用管理员分配的<strong>工作台账户</strong>登录。<br>各用户的浏览器数据独立，网站账号可自行登录。" : "这里使用的是<strong>工作台访问密码</strong>，<br>无需输入 Claude 账号密码。"}</p></section></main>
 <footer><span>Remote Workspace</span><span>MAKE ROOM FOR GOOD IDEAS</span></footer></div>
 <script>const field=document.getElementById('access-password');const reveal=document.querySelector('.reveal');reveal.addEventListener('click',()=>{const visible=field.type==='password';field.type=visible?'text':'password';reveal.setAttribute('aria-label',visible?'隐藏密码':'显示密码');reveal.setAttribute('aria-pressed',String(visible));});</script>
 </body></html>`;

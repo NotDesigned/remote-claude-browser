@@ -21,6 +21,9 @@ export default defineConfig({
     proxy: {
       "/ws": { target: gateway, ws: true },
       "/s/": { target: gateway },
+      "/api/": { target: gateway },
+      "/gate": { target: gateway },
+      "/logout": { target: gateway },
       // Present only when MIRROR_E2E=1; keeps the harness on the viewer's origin too.
       "/__e2e": { target: gateway },
     },

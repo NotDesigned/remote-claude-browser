@@ -29,8 +29,13 @@ function cleanName(value: unknown): string {
   return name;
 }
 
-export async function createProfileStore(options: { file?: string; now?: () => number } = {}) {
+export async function createProfileStore(
+  options: { file?: string; now?: () => number; maxProfiles?: number } = {},
+) {
   const now = options.now ?? Date.now;
+  const maxProfiles = options.maxProfiles ?? MAX_PROFILES;
+  if (maxProfiles !== Infinity && (!Number.isSafeInteger(maxProfiles) || maxProfiles < 1))
+    throw new Error("Invalid browser profile capacity");
   const records = new Map<string, ProfileRecord>([
     [DEFAULT_PROFILE, { id: DEFAULT_PROFILE, name: "默认账号", createdAt: 0 }],
   ]);
@@ -87,8 +92,8 @@ export async function createProfileStore(options: { file?: string; now?: () => n
     },
     async create(name: unknown): Promise<ProfileRecord> {
       const clean = cleanName(name);
-      if (records.size >= MAX_PROFILES)
-        throw new ClientSessionError(409, "PROFILE_LIMIT", `最多 ${MAX_PROFILES} 个账号`);
+      if (records.size >= maxProfiles)
+        throw new ClientSessionError(409, "PROFILE_LIMIT", `最多 ${maxProfiles} 个浏览器配置`);
       let id: string;
       do id = `p-${randomBytes(5).toString("hex")}`;
       while (records.has(id));

@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAssetCache } from "./cache";
 import type { AssetFetcher } from "./fetch";
 import { registerAssetRoutes, rejectPrivateAssetTarget } from "./route";
-import { sealAssetToken } from "./token";
+import { openAssetToken, sealAssetToken } from "./token";
 
 const dirs: string[] = [];
 
@@ -18,6 +18,117 @@ afterEach(async () => {
 });
 
 describe("asset route policy boundary", () => {
+  it("isolates cached private assets and CSS child tokens when a session is reused", async () => {
+    const app = Fastify();
+    const keyA = randomBytes(32);
+    const keyB = randomBytes(32);
+    let currentKey: Buffer | undefined = keyA;
+    let currentBody = "A-private";
+    const ref = { url: "https://assets.example/private.css", sessionId: "reused", tabId: "*" };
+    const dir = await mkdtemp(join(tmpdir(), "mirror-asset-runtime-isolation-"));
+    dirs.push(dir);
+    const fetchAsset = vi.fn<AssetFetcher["fetch"]>(async () => ({
+      statusCode: 200,
+      headers: { "content-type": "text/css" },
+      body: Readable.from([`/* ${currentBody} */ .avatar { background: url(./private.png); }`]),
+      lane: "cdp",
+    }));
+    registerAssetRoutes(app, {
+      // An absent hook result must never fall back to this otherwise valid static key.
+      serverKey: keyA,
+      serverKeyForSession: (sid) => (sid === ref.sessionId ? currentKey : undefined),
+      cache: createAssetCache(dir),
+      fetcher: { fetch: fetchAsset },
+      lookup: async () => [{ address: "203.0.113.8", family: 4 }],
+    });
+    const tokenA = sealAssetToken(ref, keyA);
+    const tokenB = sealAssetToken(ref, keyB);
+    const origin = await app.listen({ host: "127.0.0.1", port: 0 });
+    const request = (token: string) => fetch(`${origin}/s/${ref.sessionId}/a/${token}`);
+    try {
+      const first = await request(tokenA);
+      expect(first.status).toBe(200);
+      expect(await first.text()).toContain("A-private");
+      const cachedA = await request(tokenA);
+      expect(await cachedA.text()).toContain("A-private");
+      expect(fetchAsset).toHaveBeenCalledTimes(1);
+
+      // The SID, wildcard tab and source URL are identical; only the runtime identity changes.
+      currentKey = keyB;
+      currentBody = "B-private";
+      const obsolete = await request(tokenA);
+      expect(obsolete.status).toBe(400);
+      await obsolete.text();
+      expect(fetchAsset).toHaveBeenCalledTimes(1);
+      const replacement = await request(tokenB);
+      expect(replacement.status).toBe(200);
+      const css = await replacement.text();
+      expect(css).toContain("B-private");
+      expect(css).not.toContain("A-private");
+      const childToken = /\/s\/reused\/a\/([A-Za-z0-9_-]+)/.exec(css)?.[1];
+      expect(childToken).toBeDefined();
+      expect(openAssetToken(childToken!, keyB)).toEqual({
+        ...ref,
+        url: "https://assets.example/private.png",
+      });
+      expect(() => openAssetToken(childToken!, keyA)).toThrow();
+      const cachedB = await request(tokenB);
+      expect(await cachedB.text()).toContain("B-private");
+      expect(fetchAsset).toHaveBeenCalledTimes(2);
+
+      currentKey = undefined;
+      for (const token of [tokenA, tokenB]) {
+        const disconnected = await request(token);
+        expect(disconnected.status).toBe(404);
+        await disconnected.text();
+      }
+      expect(fetchAsset).toHaveBeenCalledTimes(2);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each(["dns", "fetch"])(
+    "rejects an in-flight asset if the runtime changes during %s",
+    async (phase) => {
+      const app = Fastify();
+      const keyA = randomBytes(32);
+      const keyB = randomBytes(32);
+      let currentKey = keyA;
+      const body = Readable.from(["must-not-leak"]);
+      const dir = await mkdtemp(join(tmpdir(), "mirror-asset-key-race-"));
+      dirs.push(dir);
+      const fetchAsset = vi.fn<AssetFetcher["fetch"]>(async () => {
+        if (phase === "fetch") currentKey = keyB;
+        return { statusCode: 200, headers: { "content-type": "image/png" }, body, lane: "cdp" };
+      });
+      registerAssetRoutes(app, {
+        serverKey: keyA,
+        serverKeyForSession: () => currentKey,
+        cache: createAssetCache(dir),
+        fetcher: { fetch: fetchAsset },
+        lookup: async () => {
+          if (phase === "dns") currentKey = keyB;
+          return [{ address: "203.0.113.8", family: 4 }];
+        },
+      });
+      const token = sealAssetToken(
+        { url: "https://assets.example/private.png", sessionId: "reused", tabId: "*" },
+        keyA,
+      );
+      try {
+        const response = await app.inject({ method: "GET", url: `/s/reused/a/${token}` });
+        expect(response.statusCode).toBe(404);
+        expect(response.body).not.toContain("must-not-leak");
+        expect(fetchAsset).toHaveBeenCalledTimes(phase === "dns" ? 0 : 1);
+        if (phase === "fetch") expect(body.destroyed).toBe(true);
+      } finally {
+        body.destroy();
+        await app.close();
+      }
+    },
+  );
+
   it.each([200, 206])(
     "survives CDP LF headers on real HTTP for status %i, including cache hits",
     async (statusCode) => {
