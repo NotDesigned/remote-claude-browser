@@ -10,6 +10,7 @@
 import {
   CMD_FN_NAME,
   MIRROR_NODE_FN_NAME,
+  NODE_IN_FRAME_ERROR,
   editableText,
   type AgentCmd,
   type ResolveResult,
@@ -223,6 +224,12 @@ export function createCommandHandler(
   const handler = (cmd: AgentCmd): void => {
     try {
       const nodeMirror = getNodeMirror();
+      /** A node this frame does not have may belong to a cross-origin frame inside it. */
+      const missing = (nodeId: number) =>
+        resolveMirrorNode(nodeMirror, dependencies.getCrossOriginIframeMirror?.() ?? null, nodeId)
+          ?.kind === "remote"
+          ? NODE_IN_FRAME_ERROR
+          : "node not found";
       switch (cmd.cmd) {
         case "snapshot": {
           const readiness = dependencies.recordReadiness;
@@ -261,7 +268,7 @@ export function createCommandHandler(
         case "rect": {
           const node = getMirrorNode(nodeMirror, cmd.nodeId);
           if (!isElement(node)) {
-            emitter.emit({ kind: "cmdres", reqId: cmd.reqId, ok: false, err: "node not found" });
+            emitter.emit({ kind: "cmdres", reqId: cmd.reqId, ok: false, err: missing(cmd.nodeId) });
             return;
           }
           const rect = node.getBoundingClientRect();
@@ -306,7 +313,7 @@ export function createCommandHandler(
                 kind: "cmdres",
                 reqId: cmd.reqId,
                 ok: false,
-                err: "node not found",
+                err: missing(cmd.nodeId),
               });
               return;
             }

@@ -1,5 +1,5 @@
 import type { AgentCmdInput, AgentMsg, CmdRes, Up } from "@mirror/protocol";
-import { Mod } from "@mirror/protocol";
+import { Mod, NODE_IN_FRAME_ERROR } from "@mirror/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentLink, CdpSend } from "../types";
 import { createInputRelay, type InputMsg } from "./relay";
@@ -204,10 +204,8 @@ describe("InputRelay", () => {
     await expect(h.relay("driver", { ...pointer("move"), nodeId: -1 })).resolves.toBe(true);
     await expect(h.relay("driver", pointer("down"))).resolves.toBe(true);
 
-    expect(h.commands).toEqual([
-      { cmd: "resolve", nodeId: 42 },
-      { cmd: "rect", nodeId: 42 },
-    ]);
+    // A node of the top document needs one trip to the page.
+    expect(h.commands).toEqual([{ cmd: "rect", nodeId: 42 }]);
     expect(h.cdp[1]?.params).toMatchObject({ type: "mousePressed", x: 60, y: 40 });
   });
 
@@ -250,7 +248,7 @@ describe("InputRelay", () => {
     expect(await h.relay("driver", pointer("move"))).toBe(true);
     expect(h.cdp).toHaveLength(1);
   });
-  it("re-resolves down and up independently and preserves their wire order", async () => {
+  it("releases a click where its press landed and preserves their wire order", async () => {
     let releaseFirstRect!: () => void;
     const firstRectReady = new Promise<void>((resolve) => (releaseFirstRect = resolve));
     const h = harness({
@@ -274,12 +272,7 @@ describe("InputRelay", () => {
     releaseFirstRect();
     await expect(Promise.all([down, up])).resolves.toEqual([true, true]);
 
-    expect(h.commands).toEqual([
-      { cmd: "resolve", nodeId: 42 },
-      { cmd: "rect", nodeId: 42 },
-      { cmd: "resolve", nodeId: 42 },
-      { cmd: "rect", nodeId: 42 },
-    ]);
+    expect(h.commands).toEqual([{ cmd: "rect", nodeId: 42 }]);
     expect(h.cdp.map(({ params }) => params)).toEqual([
       expect.objectContaining({
         type: "mousePressed",
@@ -291,12 +284,57 @@ describe("InputRelay", () => {
       }),
       expect.objectContaining({
         type: "mouseReleased",
-        x: 260,
-        y: 140,
+        x: 60,
+        y: 40,
         button: "left",
         modifiers: Mod.Shift,
         clickCount: 2,
       }),
+    ]);
+  });
+
+  it("looks again on release after a drag, which may have moved what was pressed", async () => {
+    const h = harness({
+      rect: async (call) => ({
+        reqId: call,
+        ok: true,
+        data: { x: 10 + 100 * (call - 1), y: 20, w: 100, h: 80, visible: true },
+      }),
+    });
+    await h.relay("driver", pointer("down"));
+    await h.relay("driver", { ...pointer("move"), buttons: 1 });
+    await h.relay("driver", pointer("up"));
+    expect(h.rectCalls()).toBe(3);
+    expect(h.cdp.at(-1)?.params).toMatchObject({ type: "mouseReleased", x: 260 });
+  });
+
+  it("does not resolve through frames a node the top document says is gone", async () => {
+    const h = harness({
+      rect: async (call) => ({ reqId: call, ok: false, err: "node not found" }),
+    });
+    await h.relay("driver", pointer("down"));
+    expect(h.commands).toEqual([{ cmd: "rect", nodeId: 42 }]);
+  });
+
+  it("keeps only the latest of the scrolls of one scroller waiting behind a busy page", async () => {
+    let release!: (value: CmdRes) => void;
+    const h = harness({
+      rect: () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+      rectTimeoutMs: 1000,
+    });
+    const down = h.relay("driver", pointer("down"));
+    await vi.waitFor(() => expect(h.rectCalls()).toBe(1));
+    const scroll = (nodeId: number, y: number) =>
+      h.relay("driver", { t: "scroll", tab: "tab-1", nodeId, x: 0, y });
+    const scrolls = [scroll(7, 100), scroll(7, 200), scroll(7, 300), scroll(8, 50), scroll(8, 60)];
+    release({ reqId: 1, ok: true, data: { x: 10, y: 20, w: 100, h: 80, visible: true } });
+    await Promise.all([down, ...scrolls]);
+    expect(h.commands.filter((command) => command.cmd === "scroll")).toEqual([
+      { cmd: "scroll", nodeId: 7, x: 0, y: 300 },
+      { cmd: "scroll", nodeId: 8, x: 0, y: 60 },
     ]);
   });
 
@@ -408,14 +446,13 @@ describe("InputRelay", () => {
         params: { text: "pasted line one\npasted line two" },
       },
     ]);
-    expect(h.commands.slice(-9)).toEqual([
+    expect(h.commands.slice(-8)).toEqual([
       { cmd: "resolve", nodeId: 8 },
       { cmd: "value", nodeId: 8, value: "selected", commit: false },
       { cmd: "resolve", nodeId: 9 },
       { cmd: "value", nodeId: 9, value: "on", checked: true },
       { cmd: "resolve", nodeId: 10 },
       { cmd: "value", nodeId: 10, value: "beta", values: ["beta", "gamma"] },
-      { cmd: "resolve", nodeId: 7 },
       { cmd: "scroll", nodeId: 7, x: 11, y: 22 },
       { cmd: "scroll", nodeId: 0, x: 0, y: 300 },
     ]);
@@ -433,6 +470,10 @@ describe("InputRelay", () => {
           return frameId === undefined
             ? { reqId: 1, ok: true, data: { kind: "remote", iframeNodeId: 5, remoteId: 8 } }
             : { reqId: 1, ok: true, data: { kind: "local" } };
+        }
+        // The top document has the iframe element, 5; the rest are inside the frame.
+        if (frameId === undefined && "nodeId" in command && command.nodeId !== 5) {
+          return { reqId: 1, ok: false, err: NODE_IN_FRAME_ERROR };
         }
         if (command.cmd === "rect") {
           return {
@@ -486,6 +527,14 @@ describe("InputRelay", () => {
       async *msgs(): AsyncIterable<AgentMsg> {},
       async sendCmd(targetId, command) {
         commands.push({ targetId, command });
+        if (
+          targetId === "tab-1" &&
+          command.cmd !== "resolve" &&
+          "nodeId" in command &&
+          command.nodeId !== 5
+        ) {
+          return { reqId: commands.length, ok: false, err: NODE_IN_FRAME_ERROR };
+        }
         if (command.cmd === "resolve") {
           return targetId === "tab-1"
             ? {

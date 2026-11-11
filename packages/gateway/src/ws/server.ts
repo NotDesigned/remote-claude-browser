@@ -54,6 +54,12 @@ export class Fanout {
   private readonly chaosRandom: () => number;
   private readonly chaosDropRate: number;
   private chaosConsidered = 0;
+  /** Sees each snapshot broadcast with its size on the wire, for the operator's log. */
+  onSnapshot?: (
+    sessionId: string | undefined,
+    msg: Extract<Down, { t: "snapshot" }>,
+    bytes: number,
+  ) => void;
   private chaosDropped = 0;
   private readonly chaosDroppedByTab = new Map<string, number>();
 
@@ -193,6 +199,17 @@ export class Fanout {
 
   private broadcastNow(sessionId: string | undefined, msg: Down): void {
     const serialized = serializeDown(msg);
+    if (msg.t === "snapshot" && this.onSnapshot !== undefined) {
+      try {
+        this.onSnapshot(
+          sessionId,
+          msg,
+          typeof serialized === "string" ? Buffer.byteLength(serialized) : serialized.byteLength,
+        );
+      } catch {
+        // Logging never stops a broadcast.
+      }
+    }
     for (const [viewer, viewerSessionId] of this.viewers) {
       if (viewerSessionId !== sessionId) continue;
       if (msg.t === "delta" && this.chaosDropRate > 0) {

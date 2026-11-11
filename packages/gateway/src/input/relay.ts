@@ -2,16 +2,26 @@
  * Gateway input dispatch.
  * The same relay handles IME composition and clipboard paste through CDP.
  *
- * DOM pointer coordinates are resolved against the live recorder mirror for every dispatch.
- * Rects are never retained, and a queued down/up pair performs two independent lookups. Pixel
- * pointers carry the node-less sentinel and use their negotiated viewport coordinates directly.
+ * DOM pointer coordinates are resolved against the live recorder mirror. Each lookup waits for the
+ * page's main thread, so a node of the top document is asked for its rect at once and only a node
+ * of another frame is resolved through the frames first. A hover reuses a rect for a moment, and a
+ * click's release reuses the rect its press found on the same node, as a hand that stays put
+ * would; a drag looks again. Pixel pointers carry the node-less sentinel and use their negotiated
+ * viewport coordinates directly.
  */
-import { Mod, type RectResult, type Up } from "@mirror/protocol";
+import { Mod, NODE_IN_FRAME_ERROR, type RectResult, type Up } from "@mirror/protocol";
 import { resolveNode, type FrameHop, type ResolveNodeDeps } from "../browser/resolvenode";
 import type { AgentLink, CdpSend } from "../types";
 import { describeKey } from "./keymap";
 
 const DEFAULT_RECT_TIMEOUT_MS = 100;
+/** A release this soon after its press, on the same node, lands where the press did. */
+const PRESS_RECT_REUSE_MS = 1_000;
+/**
+ * Scrolls carry the absolute position, so a later one replaces an earlier one. Waiting longer for
+ * a busy page only holds up the input queued behind it.
+ */
+const SCROLL_TIMEOUT_MS = 1_000;
 const IFRAME_EDGE_INSET_PX = 0.01;
 
 export interface InputRelayDeps {
@@ -71,11 +81,12 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
   // WebSocket callbacks may overlap. Serialize per tab so a fast `up` can never overtake a
   // slower `down` rect round-trip (the same ordering requirement applies to raw key pairs).
   const tabTails = new Map<string, Promise<void>>();
+  // The latest hover, wheel or scroll still waiting its turn; the next of its kind merges into it.
   const pendingMoves = new Map<
     string,
     {
       viewerId: string;
-      msg: Extract<InputMsg, { t: "ptr" }>;
+      msg: InputMsg;
       result: Promise<boolean>;
     }
   >();
@@ -89,6 +100,7 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     deps.onValueStatus?.(tab, failed);
   };
   const rectCache = new Map<string, { at: number; value: ResolvedRect }>();
+  const pressRects = new Map<string, { nodeId: number; at: number; value: ResolvedRect }>();
   const resolverDeps: ResolveNodeDeps = {
     agentLink: deps.agentLink,
     send: deps.send,
@@ -101,25 +113,26 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     const generation = generations.get(msg.tab) ?? 0;
     const hover = msg.t === "ptr" && msg.kind === "move" && msg.buttons === 0;
     const wheel = msg.t === "ptr" && msg.kind === "wheel";
+    const scroll = msg.t === "scroll";
     const pendingMove = pendingMoves.get(msg.tab);
-    if (hover && pendingMove?.viewerId === viewerId && pendingMove.msg.kind === "move") {
-      pendingMove.msg = msg;
-      return pendingMove.result;
+    const pending = pendingMove?.viewerId === viewerId ? pendingMove.msg : undefined;
+    if (hover && pending?.t === "ptr" && pending.kind === "move") {
+      pendingMove!.msg = msg;
+      return pendingMove!.result;
+    }
+    if (scroll && pending?.t === "scroll" && pending.nodeId === msg.nodeId) {
+      pendingMove!.msg = msg;
+      return pendingMove!.result;
     }
     // Each wheel event waits for the page. A trackpad sends far more of them than a busy page can
     // take, so ones still waiting are added together rather than left to scroll for seconds on.
-    if (
-      wheel &&
-      pendingMove?.viewerId === viewerId &&
-      pendingMove.msg.kind === "wheel" &&
-      pendingMove.msg.mods === msg.mods
-    ) {
-      pendingMove.msg = {
+    if (wheel && pending?.t === "ptr" && pending.kind === "wheel" && pending.mods === msg.mods) {
+      pendingMove!.msg = {
         ...msg,
-        dx: (pendingMove.msg.dx ?? 0) + (msg.dx ?? 0),
-        dy: (pendingMove.msg.dy ?? 0) + (msg.dy ?? 0),
+        dx: (pending.dx ?? 0) + (msg.dx ?? 0),
+        dy: (pending.dy ?? 0) + (msg.dy ?? 0),
       };
-      return pendingMove.result;
+      return pendingMove!.result;
     }
     // A click, drag or editor update is a barrier. Later moves and scrolls stay after that barrier.
     pendingMoves.delete(msg.tab);
@@ -129,7 +142,7 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
       if (move && pendingMoves.get(msg.tab) === move) pendingMoves.delete(msg.tab);
       return dispatch(viewerId, move?.msg ?? msg, generation);
     });
-    if (hover || wheel) {
+    if (hover || wheel || scroll) {
       move = { viewerId, msg, result };
       pendingMoves.set(msg.tab, move);
     }
@@ -149,6 +162,7 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     generations.set(tabId, (generations.get(tabId) ?? 0) + 1);
     tabTails.delete(tabId);
     for (const key of rectCache.keys()) if (key.startsWith(`${tabId}:`)) rectCache.delete(key);
+    pressRects.delete(tabId);
   };
   relay.rectFallbacksFor = (tabId) => rectFallbacks.get(tabId) ?? 0;
   return relay;
@@ -209,22 +223,28 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
           return response.ok;
         }
         case "scroll": {
-          // Protocol nodeId 0 is the top-level window sentinel, not an rrweb mirror node.
-          const resolved =
-            msg.nodeId === 0
-              ? { targetId: msg.tab, localId: 0 }
-              : await resolveNode(resolverDeps, msg.tab, msg.nodeId);
-          if (!valid()) return false;
-          const response = await deps.agentLink.sendCmd(
-            resolved.targetId,
-            {
-              cmd: "scroll",
-              nodeId: resolved.localId,
-              x: msg.x,
-              y: msg.y,
-            },
-            "frameId" in resolved ? resolved.frameId : undefined,
+          const command = { cmd: "scroll", x: msg.x, y: msg.y } as const;
+          // Protocol nodeId 0 is the top-level window sentinel, not an rrweb mirror node. Any other
+          // node is first tried in the top document, which is where nearly all of them are.
+          let response = await withTimeout(
+            deps.agentLink.sendCmd(msg.tab, { ...command, nodeId: msg.nodeId }),
+            SCROLL_TIMEOUT_MS,
+            "scroll",
           );
+          if (!response.ok && response.err === NODE_IN_FRAME_ERROR) {
+            const resolved = await resolveNode(resolverDeps, msg.tab, msg.nodeId);
+            if (!valid()) return false;
+            response = await withTimeout(
+              deps.agentLink.sendCmd(
+                resolved.targetId,
+                { ...command, nodeId: resolved.localId },
+                resolved.frameId,
+              ),
+              SCROLL_TIMEOUT_MS,
+              "scroll",
+            );
+          }
+          if (!response.ok) reportFailure("scroll was dropped", response.err);
           return response.ok;
         }
       }
@@ -287,8 +307,22 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     // retaining the same coordinate sanitation and dispatch authorization as DOM input.
     if (msg.nodeId === -1) return fallback;
     let resolvedRect: ResolvedRect;
+    const press = pressRects.get(msg.tab);
+    // After a drag, what was pressed may have moved with the pointer, such as a slider's thumb.
+    if (msg.kind === "down" || msg.kind === "up" || (msg.kind === "move" && msg.buttons !== 0))
+      pressRects.delete(msg.tab);
     try {
-      resolvedRect = await resolveRect(msg.tab, msg.nodeId, msg.kind === "move");
+      if (
+        msg.kind === "up" &&
+        press?.nodeId === msg.nodeId &&
+        Date.now() - press.at < PRESS_RECT_REUSE_MS
+      ) {
+        resolvedRect = press.value;
+      } else {
+        resolvedRect = await resolveRect(msg.tab, msg.nodeId, msg.kind === "move");
+        if (msg.kind === "down")
+          pressRects.set(msg.tab, { nodeId: msg.nodeId, at: Date.now(), value: resolvedRect });
+      }
     } catch (error) {
       rectFallbacks.set(msg.tab, (rectFallbacks.get(msg.tab) ?? 0) + 1);
       reportFailure("pointer fell back to viewport coordinates", error);
@@ -315,6 +349,17 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     const cacheKey = `${tabId}:${nodeId}`;
     const cached = rectCache.get(cacheKey);
     if (cacheable && cached !== undefined && Date.now() - cached.at < 120) return cached.value;
+    const direct = await withTimeout(
+      deps.agentLink.sendCmd(tabId, { cmd: "rect", nodeId }),
+      rectTimeoutMs,
+    );
+    if (direct.ok && isRectResult(direct.data)) {
+      const value = { rect: direct.data };
+      if (cacheable) rectCache.set(cacheKey, { at: Date.now(), value });
+      return value;
+    }
+    if (direct.ok || direct.err !== NODE_IN_FRAME_ERROR)
+      throw new Error(direct.err ?? "rect command failed");
     const resolved = await resolveNode(resolverDeps, tabId, nodeId);
     const response = await withTimeout(
       deps.agentLink.sendCmd(
@@ -536,10 +581,10 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, what = "rect"): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("rect command timed out")), timeoutMs);
+    timer = setTimeout(() => reject(new Error(`${what} command timed out`)), timeoutMs);
     timer.unref?.();
   });
   return Promise.race([promise, timeout]).finally(() => {

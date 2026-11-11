@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MIRROR_NODE_FN_NAME, type AgentMsg } from "@mirror/protocol";
+import { MIRROR_NODE_FN_NAME, NODE_IN_FRAME_ERROR, type AgentMsg } from "@mirror/protocol";
 import {
   createCommandHandler,
   createRecordReadiness,
@@ -82,6 +82,31 @@ describe("resolve command", () => {
 
     expect(() => handler({ cmd: "resolve", reqId: 3, nodeId: 999 })).not.toThrow();
     expect(messages).toEqual([{ kind: "cmdres", reqId: 3, ok: false, err: "node not found" }]);
+  });
+});
+
+describe("a node this document does not have", () => {
+  it("says when another frame has it, so the gateway resolves it through the frames", () => {
+    vi.stubGlobal("Node", { ELEMENT_NODE: 1 });
+    const iframe = iframeNode();
+    const remoteMaps = new WeakMap<HTMLIFrameElement, Map<number, number>>([
+      [iframe, new Map([[901, 37]])],
+    ]);
+    const crossOriginIframeMirror: CrossOriginIframeMirror = {
+      iframeRemoteIdToIdMap: remoteMaps,
+      getRemoteId: (candidate, nodeId) => remoteMaps.get(candidate)?.get(nodeId) ?? -1,
+    };
+    const { handler, messages } = harness(new Map([[44, iframe]]), crossOriginIframeMirror);
+
+    handler({ cmd: "rect", reqId: 1, nodeId: 901 });
+    handler({ cmd: "scroll", reqId: 2, nodeId: 901, x: 0, y: 10 });
+    handler({ cmd: "rect", reqId: 3, nodeId: 999 });
+
+    expect(messages).toEqual([
+      { kind: "cmdres", reqId: 1, ok: false, err: NODE_IN_FRAME_ERROR },
+      { kind: "cmdres", reqId: 2, ok: false, err: NODE_IN_FRAME_ERROR },
+      { kind: "cmdres", reqId: 3, ok: false, err: "node not found" },
+    ]);
   });
 });
 

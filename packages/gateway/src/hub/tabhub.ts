@@ -58,6 +58,9 @@ export class TabHub {
   meta: eventWithTime | null = null;
   snapshot: eventWithTime | null = null;
   deltas: eventWithTime[] = [];
+  /** How long the page took to deliver the latest snapshot asked for; null if nobody asked. */
+  lastSnapshotMs: number | null = null;
+  private snapshotRequestedAt: number | null = null;
   deltaBytes = 0;
   lastInputAt = Number.NEGATIVE_INFINITY;
   mode: "dom" | "px" = "dom";
@@ -294,6 +297,7 @@ export class TabHub {
     // epoch succeeds or a new document resets the recovery chain.
     this.clearSnapshotRetry(false);
     this.snapshotRequested = true;
+    this.snapshotRequestedAt = this.now();
     const attempt = ++this.snapshotRequestAttempt;
     this.snapshotRequestTimer = setTimeout(
       () => this.failSnapshotRequest(attempt),
@@ -317,6 +321,10 @@ export class TabHub {
     if (meta === null) return [];
 
     this.meta = meta;
+    this.lastSnapshotMs =
+      this.snapshotRequested && this.snapshotRequestedAt !== null
+        ? this.now() - this.snapshotRequestedAt
+        : null;
     this.snapshot = externalizeSheets(this.pendingFullSnapshot);
     this.historyDropped = false;
     this.nextMeta = null;

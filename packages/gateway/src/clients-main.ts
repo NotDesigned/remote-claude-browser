@@ -400,6 +400,15 @@ export async function startClientGateway(
       await roles.routeUp(id, message, (forwarded) => handle(runtime, id, forwarded));
     },
   });
+  // Full snapshots are the heavy part of page sync: how often, why, how big and how slow.
+  ws.fanout.onSnapshot = (sid, message, bytes) => {
+    if (sid === undefined) return;
+    const ms = runtimes.get(sid)?.tabs.hubFor(message.tab)?.lastSnapshotMs;
+    console.log(
+      `snapshot: ${sid} ${message.reason ?? "page"} ${(bytes / 1048576).toFixed(1)} MB` +
+        (ms === null || ms === undefined ? "" : ` in ${ms} ms`),
+    );
+  };
   function publish(sid: string, message: Down) {
     if (stopping || closing.has(sid)) return;
     if (message.t === "snapshot") runtimes.get(sid)?.viewport.noteSnapshot(message);

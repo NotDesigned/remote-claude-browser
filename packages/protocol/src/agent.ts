@@ -70,6 +70,12 @@ export type AgentCmd =
     } // native text edit or control setter + input/change
   | { cmd: "ping"; reqId: number }; // liveness
 
+/**
+ * The error `rect` and `scroll` give for a node another frame's recorder owns. The gateway
+ * then resolves it through the frames; any other failure means the node is gone.
+ */
+export const NODE_IN_FRAME_ERROR = "node is in another frame";
+
 /** `rect` result: viewport CSS px. */
 export interface RectResult {
   x: number;
