@@ -46,7 +46,12 @@ import { createTabLifecycle } from "./session/tabs";
 import { isClientSlot, ClientSessionError, createClientSessions } from "./session/clients";
 import { createLifecycleLock } from "./session/lifecycle-lock";
 import { createIdleReaper, PAGE_GENERATING_EXPRESSION } from "./session/idle-reaper";
-import { createPageSleep, pageSleepAfterMs, sleepPlaceholderUrl } from "./session/page-sleep";
+import {
+  createPageSleep,
+  PAGE_PLAYING_EXPRESSION,
+  pageSleepAfterMs,
+  sleepPlaceholderUrl,
+} from "./session/page-sleep";
 import { createProfileStore, DEFAULT_PROFILE, MAX_PROFILES } from "./session/profiles";
 import { createResourceSampler } from "./monitor/resources";
 import type { TargetRef, AgentLink } from "./types";
@@ -389,7 +394,7 @@ export async function startClientGateway(
       // Any viewer, driver or not, says whether it is on screen.
       if (message.t === "visibility") {
         connection.visible = message.visible === true;
-        if (connection.visible) await pageSleep.wake(sid);
+        if (connection.visible) await pageSleep.look(sid);
         return;
       }
       await roles.routeUp(id, message, (forwarded) => handle(runtime, id, forwarded));
@@ -453,10 +458,17 @@ export async function startClientGateway(
   }
   let e2eIdleOffset = 0;
   /** Whether a page is writing a reply, which closing or reloading it would cut short. */
-  async function pageGenerating(runtime: ClientRuntime, target: TargetRef): Promise<boolean> {
+  function pageGenerating(runtime: ClientRuntime, target: TargetRef): Promise<boolean> {
+    return pageAsks(runtime, target, PAGE_GENERATING_EXPRESSION);
+  }
+  async function pageAsks(
+    runtime: ClientRuntime,
+    target: TargetRef,
+    expression: string,
+  ): Promise<boolean> {
     const response = (await Promise.race([
       runtime.browser.send(target.sessionId, "Runtime.evaluate", {
-        expression: PAGE_GENERATING_EXPRESSION,
+        expression,
         returnByValue: true,
       }),
       new Promise<never>((_resolve, reject) => {
@@ -472,6 +484,7 @@ export async function startClientGateway(
     afterMs: pageSleepMs,
     watched: (sid) =>
       [...viewers.values()].some((connection) => connection.sid === sid && connection.visible),
+    activeTab: (sid) => runtimes.get(sid)?.tabs.activeTabId,
     pages: (sid) =>
       [...(runtimes.get(sid)?.targets.values() ?? [])]
         .filter((target) => target.type === "page")
@@ -483,7 +496,8 @@ export async function startClientGateway(
       if (runtime.recovery.isBlocked(tab) || micTabs.has(tab)) return false;
       if (runtime.pixels.modeFor(tab) === "px") return false;
       // A page that cannot be asked counts as busy.
-      return !(await pageGenerating(runtime, target).catch(() => true));
+      if (await pageGenerating(runtime, target).catch(() => true)) return false;
+      return !(await pageAsks(runtime, target, PAGE_PLAYING_EXPRESSION).catch(() => true));
     },
     async sleep(sid, tab) {
       const runtime = runtimes.get(sid);
@@ -1062,9 +1076,10 @@ export async function startClientGateway(
     if (message.t === "nav") {
       if (message.action === "newtab" || message.action === "activate")
         await stopPixels(runtime, message.action === "activate" ? message.tab : undefined);
-      if (["newtab", "close", "activate"].includes(message.action))
+      if (["newtab", "close", "activate"].includes(message.action)) {
         await runtime.tabs.handle(message);
-      else {
+        if (message.action === "activate") await pageSleep.look(runtime.sid);
+      } else {
         // An address that does not load is an ordinary outcome, shown as a failed page. Letting this
         // propagate would close the viewer's connection, which is how it would hear about that page.
         await runtime.navigation

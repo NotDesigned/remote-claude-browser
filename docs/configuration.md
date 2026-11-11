@@ -24,7 +24,7 @@ excluded from Git. Do not commit a populated one. `scripts/bootstrap.sh` writes 
 | `MIRROR_ACCOUNTS_DIR` | no | `<profile>-accounts` | Where browser configurations other than the legacy default keep their Chrome profiles |
 | `EGRESS_POLICY` | no | `on` | `off` lets pages reach private networks and the host |
 | `EGRESS_BLOCK` | no | empty | More addresses to block, comma-separated. Add the host's public IP |
-| `MIRROR_PAGE_SLEEP_MS` | no | `1800000` | When every viewer of a session has been hidden or gone this long, its pages sleep: each shows a placeholder and the site's renderer exits. They load again when someone looks. Pages writing a reply, using the microphone or in picture mode keep running. `0` turns it off |
+| `MIRROR_PAGE_SLEEP_MS` | no | `1800000` | A page nobody has seen for this long sleeps: it shows a placeholder and the site's renderer exits. A page is seen while it is its session's active tab and a viewer of that session is on screen, so tabs left behind the one in use sleep too. Each loads again when someone switches to it or comes back. Pages writing a reply, playing sound, using the microphone or in picture mode keep running. `0` turns it off |
 | `TZ` | no | `Etc/UTC` | The browser's timezone, an IANA name such as `Asia/Shanghai`. An invalid name stops the container from starting. See [timezone behavior](timezone.md) |
 | `PUBLIC_HOST` | for `compose.https.yml` | none | The domain Caddy serves |
 
