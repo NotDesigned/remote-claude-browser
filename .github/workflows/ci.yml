@@ -54,6 +54,15 @@ jobs:
           EGRESS_PROXY=socks5://127.0.0.1:1080 docker compose -f compose.yml -f compose.hostnet.yml \
             -f compose.proxy.yml config --quiet
           SERVER_SSH_HOST=example.com docker compose -f client/compose.yml config --quiet
+          CPA_API_KEY=fixture-client-key-00000000000000000000 \
+            CPA_MANAGEMENT_KEY=fixture-management-key-00000000000000000000 \
+            EGRESS_PROXY=socks5://127.0.0.1:1080 docker compose -f compose.yml -f compose.https.yml \
+              -f compose.cpa.yml -f compose.cpa.https.yml config --quiet
+      - name: Build and test optional CPA, Caddy routes, streaming and egress isolation
+        run: |
+          docker build -f deploy/Dockerfile.cpa --target cpa -t remote-claude-browser-cpa:local .
+          docker build -f deploy/Dockerfile.cpa --target egress -t remote-claude-browser-cpa-egress:local .
+          pnpm smoke:cpa
       - name: Build the tunnel image
         run: docker build client
       - name: Build and test the server image

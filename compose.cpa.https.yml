@@ -1,0 +1,10 @@
+# Append after compose.https.yml and compose.cpa.yml. Browser UI keeps the same URL.
+services:
+  caddy:
+    volumes:
+      - ./deploy/Caddyfile.cpa:/etc/caddy/Caddyfile:ro
+    networks:
+      - cpa
+    depends_on:
+      cpa:
+        condition: service_healthy

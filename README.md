@@ -19,6 +19,7 @@
 - **文件**：调起本机文件选择器上传；下载边传边存，不长期占用服务器磁盘
 - **视频和语音**：页面里的视频通过 WebRTC 播放，声音和麦克风都在你自己的设备上
 - **断线恢复**：刷新或重连后回到原来的会话，页面崩溃会自动恢复
+- **可选 CPA API**：独立授权 Claude Code 账号，提供兼容 API 和管理面板，独立保存凭据并经 Xray 出站；见 [CPA 部署](docs/cpa.md)
 
 ## 部署结构
 
@@ -81,6 +82,17 @@ docker compose -f compose.yml -f compose.https.yml up -d
 
 见 [docs/deployment.md](docs/deployment.md)。
 
+### 同一入口增加 CPA 面板和 API
+
+已有单机 HTTPS 部署并配置 `EGRESS_PROXY` 后：
+
+```bash
+node scripts/setup-cpa.mjs
+docker compose up -d --build cpa caddy
+```
+
+工作台地址不变，CPA 面板在 `/management.html`，OpenAI 兼容 API Base URL 为 `/v1`。面板和 API 分别使用 `.env` 中的 `CPA_MANAGEMENT_KEY`、`CPA_API_KEY`，需要在面板中单独完成 Claude Code OAuth 授权。完整地址、Caddy 路由、备份和检查命令见 [docs/cpa.md](docs/cpa.md)。
+
 ## 第一次使用
 
 1. 打开入口地址，输入**前端用户名和密码**。首次启动的管理员默认名为 `admin`，密码来自 `.env` 的 `MIRROR_ACCESS_PASSWORD`；这与浏览器内网站的账号无关。
@@ -105,6 +117,7 @@ docker compose -f compose.yml -f compose.https.yml up -d
 ## 文档
 
 - [部署](docs/deployment.md)：服务端、入口机、升级与备份
+- [CPA 面板与 API](docs/cpa.md)：可选服务、OAuth、接口地址、Caddy 路由和出站隔离
 - [配置](docs/configuration.md)：环境变量
 - [架构](docs/architecture.md) · [安全](docs/security.md) · [排错](docs/troubleshooting.md)
 - [双机 systemd 部署与运维](docs/operations.md)：不用 Docker 的部署方式和日常使用细节

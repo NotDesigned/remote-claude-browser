@@ -58,8 +58,23 @@ pending; stylesheet child-resource tokens use the same runtime key.
 
 ### The reconstructed DOM is inert, not sanitized
 
-The replay iframe omits `allow-scripts`, forms, popups, top navigation, and direct downloads.
-Local defaults that would navigate or fetch are cancelled. Visited-site JavaScript is not replayed.
+The replay iframe allows `allow-same-origin` and `allow-scripts` for replay interaction, while its
+inherited CSP sets `script-src 'none'` and blocks visited-site JavaScript and inline handlers.
+The sandbox omits forms, popups, top navigation and direct downloads. Local defaults that would
+navigate or fetch are cancelled.
+
+### Optional CPA has separate credentials
+
+CPA's inference key, management key and OAuth credentials are separate from front-end user logins
+and browser profiles. Its management page is publicly loadable, while configuration and credential
+APIs require the management key. Native OAuth callback routes use their pending OAuth state/PKCE
+flow instead of a management bearer key. The inference key does not grant management access.
+
+The CPA process only joins an internal network. A separate, unprivileged Xray service handles its
+outbound traffic and forwards the two host-loopback ports without changing their authentication.
+The SOCKS destination filter blocks private addresses and `EGRESS_BLOCK`; the SOCKS listener has
+no host port mapping. Proxy failure does not give CPA a direct internet route. The OAuth and config
+volumes contain credentials and must receive the same backup protection as browser profiles.
 
 However, markup, SVG, CSS, fonts, and browser parsing behavior still cross into the viewer origin.
 They are not passed through a general sanitizer or transcoder. This is a different boundary from

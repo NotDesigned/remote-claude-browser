@@ -95,6 +95,10 @@ docker compose pull
 docker compose up -d
 ```
 
+### 可选 CPA 面板和 API
+
+单机 HTTPS 部署可以增加 `compose.cpa.yml` 和 `compose.cpa.https.yml`。浏览器工作台继续使用原入口；CPA 面板为 `/management.html`，API 为 `/v1/*`，各自使用独立管理/调用密钥。CPA 运行在独立私有网络，经专用 Xray 出站，不读取 Chrome Cookie，也不共用浏览器用户数据库。完整初始化、OAuth、Caddy 配置、备份和回退步骤见 [CPA 部署](cpa.md)。
+
 ## 客户端（入口机）
 
 把域名解析到这台机器，然后：

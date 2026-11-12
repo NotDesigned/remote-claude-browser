@@ -55,12 +55,12 @@ docker compose down
 Most remote browsing hands you pixels. Remote Browser hands you a rebuilt page,
 so text is still text.
 
-| Compared with | Why use Remote Browser | Use the other tool when |
-| --- | --- | --- |
-| [Kasm Workspaces](https://github.com/kasmtech) and other streamed-container browsers | Text stays selectable, copyable, and findable with your browser's own search, and a page costs a DOM diff rather than a video stream. | You need full desktop applications, or a hardened throwaway container per session. |
-| [Apache Guacamole](https://guacamole.apache.org) | Built for the one case of a web page instead of being a general RDP, VNC, and SSH gateway. | You want remote desktops and shells through the same door. |
-| Commercial remote browser isolation (Cloudflare, Zscaler) | Self-hosted and inspectable, with the reconstruction rules in this repository. | You need enterprise policy, identity integration, and a support contract. |
-| A plain VNC or X session | Much less bandwidth, and the page reflows to your window instead of arriving as a fixed-size screenshot. | You want raw pixels for everything, rather than only where reconstruction gives up. |
+| Compared with                                                                        | Why use Remote Browser                                                                                                                | Use the other tool when                                                             |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| [Kasm Workspaces](https://github.com/kasmtech) and other streamed-container browsers | Text stays selectable, copyable, and findable with your browser's own search, and a page costs a DOM diff rather than a video stream. | You need full desktop applications, or a hardened throwaway container per session.  |
+| [Apache Guacamole](https://guacamole.apache.org)                                     | Built for the one case of a web page instead of being a general RDP, VNC, and SSH gateway.                                            | You want remote desktops and shells through the same door.                          |
+| Commercial remote browser isolation (Cloudflare, Zscaler)                            | Self-hosted and inspectable, with the reconstruction rules in this repository.                                                        | You need enterprise policy, identity integration, and a support contract.           |
+| A plain VNC or X session                                                             | Much less bandwidth, and the page reflows to your window instead of arriving as a fixed-size screenshot.                              | You want raw pixels for everything, rather than only where reconstruction gives up. |
 
 ## How it works
 

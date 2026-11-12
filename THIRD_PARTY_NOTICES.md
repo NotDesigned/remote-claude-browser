@@ -32,3 +32,11 @@ under `/usr/share/doc`.
 This summary is provided for convenience and is not a substitute for the dependency packages'
 license texts. Re-run `pnpm licenses list --prod` and inspect Debian package copyright metadata
 when dependencies or base images change.
+
+The optional CPA image carries the unmodified [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
+8.0.68 executable, copied from the upstream image pinned by digest in `deploy/Dockerfile.cpa`.
+It is MIT-licensed; its license is retained in `deploy/cpa.LICENSE` and in the image at
+`/usr/share/doc/cliproxyapi/LICENSE`. The optional Xray sidecar retains Xray's MPL-2.0 license as
+described above. The management panel is downloaded from the upstream
+[Management Center](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) on first
+access and kept in a separate volume. Its source and license remain with that upstream project.

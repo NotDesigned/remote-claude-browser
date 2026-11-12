@@ -45,10 +45,11 @@ URLs, and production reverse proxies.
 
 ### Viewer
 
-The Preact viewer reconstructs rrweb events into a sandboxed iframe. Its sandbox contains exactly
-`allow-same-origin`; scripts, forms, popups, top navigation, and direct downloads are not enabled.
-The parent can therefore attach input handlers and address mirror nodes while visited-site scripts
-and inline handlers do not run.
+The Preact viewer reconstructs rrweb events into a sandboxed iframe with `allow-same-origin` and
+`allow-scripts`, as required by the replay interaction lane. The inherited CSP sets
+`script-src 'none'`, so visited-site scripts and inline handlers still cannot execute. The sandbox
+does not allow forms, popups, top navigation or direct downloads. The parent attaches input
+handlers and addresses mirror nodes.
 
 The viewer cancels navigation-bearing local defaults. Links and form actions are forwarded as
 input to remote Chromium, while local selection, find, hover, scroll, and optimistic editable
@@ -107,7 +108,25 @@ bounded state and cheap recovery:
 
 ## Current deployment boundary
 
-The portable Compose runtime deliberately supports one browsing session. A tested session manager
-and Docker browser host remain in `packages/gateway/src/session`, including TTL cleanup and named
-profile support, but they are not wired to the default composition root. The public MVP uses
-Compose itself for browser lifecycle and an explicit persistent-profile overlay.
+The default Compose entrypoint runs the multi-client gateway in `clients-main.ts`. Front-end users
+and browser profile ownership live in SQLite. Each active browser profile has its own Chrome
+process and AgentLink; sessions using that profile own separate windows through a scoped browser
+facade. Login state is shared only by sessions choosing the same profile. All profiles share the
+server container's resource limits and the global `MIRROR_CLIENTS` session capacity.
+
+## Optional CPA
+
+`compose.cpa.yml` adds an unmodified CLIProxyAPI process, its own configuration/OAuth/static
+volumes and an independent Xray SOCKS service. It follows ClaudeBox's container/credential
+separation, while CPA performs protocol translation rather than spawning Claude CLI processes.
+No Chrome cookies or gateway session tokens are used for CPA authentication.
+
+CPA only joins an internal Docker network. Xray joins that network and a separate exit network,
+so CPA cannot reach the internet directly. The egress service also forwards the two host-loopback
+TCP ports to CPA; this gives Docker Desktop NAT traffic a return route without giving CPA an
+external network. The bytes, including authentication and the OAuth callback, are passed through.
+
+For single-host HTTPS, `compose.cpa.https.yml` installs `deploy/Caddyfile.cpa`: `/v1/*` and CPA's
+panel/management paths go directly to CPA, while all other paths retain the browser gateway.
+Management and inference use different CPA bearer keys; the browser gateway's user cookie does
+not authorize either API. See [CPA deployment](cpa.md).

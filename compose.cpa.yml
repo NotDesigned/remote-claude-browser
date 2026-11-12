@@ -1,0 +1,111 @@
+# Optional API service. Run scripts/setup-cpa.mjs first; see docs/cpa.md.
+services:
+  cpa-init:
+    image: ${CPA_IMAGE:-remote-claude-browser-cpa:local}
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.cpa
+      target: cpa
+    user: "0:0"
+    read_only: true
+    network_mode: none
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    entrypoint: [node, /opt/remote-browser/cpa-runtime.mjs]
+    command: [init]
+    environment:
+      CPA_API_KEY: ${CPA_API_KEY:?Run node scripts/setup-cpa.mjs}
+      CPA_MANAGEMENT_KEY: ${CPA_MANAGEMENT_KEY:?Run node scripts/setup-cpa.mjs}
+      TZ: ${TZ:-Etc/UTC}
+    volumes:
+      - cpa-config:/config
+      - cpa-auth:/auth
+      - cpa-static:/static
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 32
+
+  cpa:
+    image: ${CPA_IMAGE:-remote-claude-browser-cpa:local}
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.cpa
+      target: cpa
+    init: true
+    restart: unless-stopped
+    read_only: true
+    user: "10003:10003"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    environment:
+      TZ: ${TZ:-Etc/UTC}
+    volumes:
+      - cpa-config:/config
+      - cpa-auth:/auth
+      - cpa-static:/static
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m,uid=10003,gid=10003,mode=1777
+      - /logs:rw,nosuid,nodev,size=16m,uid=10003,gid=10003,mode=0700
+    networks: [cpa]
+    mem_limit: ${CPA_MEMORY:-512m}
+    memswap_limit: ${CPA_MEMSWAP:-512m}
+    cpus: ${CPA_CPUS:-1}
+    pids_limit: 128
+    healthcheck:
+      test: [CMD, node, /opt/remote-browser/cpa-runtime.mjs, health]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    depends_on:
+      cpa-init:
+        condition: service_completed_successfully
+      cpa-egress:
+        condition: service_healthy
+
+  cpa-egress:
+    image: ${CPA_EGRESS_IMAGE:-remote-claude-browser-cpa-egress:local}
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.cpa
+      target: egress
+    init: true
+    restart: unless-stopped
+    read_only: true
+    user: "10002:10002"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    environment:
+      EGRESS_PROXY: ${EGRESS_PROXY:?CPA needs an EGRESS_PROXY share link or Xray outbound}
+      EGRESS_BOOTSTRAP_DNS: ${EGRESS_BOOTSTRAP_DNS:-1.1.1.1}
+      EGRESS_BLOCK: ${EGRESS_BLOCK:-}
+    # TCP forwarding on the egress-side bridge also works with Docker Desktop's host NAT.
+    # CPA itself remains on the internal-only network. All authentication stays in CPA.
+    ports:
+      - "127.0.0.1:${CPA_PORT:-8317}:8317"
+      - "127.0.0.1:${CPA_CALLBACK_PORT:-54545}:54545"
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=32m,uid=10002,gid=10002,mode=1777
+    networks: [cpa, cpa-exit]
+    mem_limit: 128m
+    memswap_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
+    healthcheck:
+      test: [CMD, node, /opt/remote-browser/cpa-runtime.mjs, socks-health]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+
+networks:
+  # CPA has no direct internet route. It can only make upstream requests through cpa-egress.
+  cpa:
+    internal: true
+  cpa-exit: {}
+
+volumes:
+  cpa-config:
+  cpa-auth:
+  cpa-static:
