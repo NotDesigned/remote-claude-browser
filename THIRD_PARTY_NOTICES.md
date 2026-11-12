@@ -19,6 +19,12 @@ The MVP dependency review found the following major direct dependency families:
 | TypeScript and Playwright                           | Apache-2.0       |
 | esbuild and Prettier                                | MIT              |
 
+The server image also carries an unmodified [sing-box](https://github.com/SagerNet/sing-box) release
+binary (version in `deploy/fetch-sing-box.mjs`), which carries traffic to an outside proxy when
+`EGRESS_PROXY` is set. It is a separate program, licensed GPL-3.0-or-later; its notice is in the
+image at `/usr/share/doc/sing-box/LICENSE`, the license text at `/usr/share/common-licenses/GPL-3`,
+and its source is the matching tag of the project's repository.
+
 The Chromium container installs Debian's `chromium` package and its transitive system libraries.
 Chromium is primarily BSD-licensed and incorporates third-party components under additional
 permissive and weak-copyleft licenses; Debian package copyright files are included in the image

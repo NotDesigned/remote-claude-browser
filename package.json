@@ -31,7 +31,7 @@
     "build": "bash scripts/limited-run.sh pnpm -r --workspace-concurrency=1 --if-present run build",
     "typecheck": "bash scripts/limited-run.sh pnpm -r --workspace-concurrency=1 --if-present run typecheck",
     "test": "bash scripts/limited-run.sh bash -c 'pnpm -r --workspace-concurrency=1 --if-present run test && pnpm run test:deployment'",
-    "test:deployment": "bash scripts/limited-run.sh node --test deploy/timezone.test.mjs scripts/probe-session.test.mjs",
+    "test:deployment": "bash scripts/limited-run.sh node --test deploy/timezone.test.mjs deploy/egress-proxy.test.mjs scripts/probe-session.test.mjs",
     "test:users-ui": "bash scripts/limited-run.sh node scripts/user-ui-smoke.mjs",
     "test:remote": "bash scripts/limited-run.sh node scripts/remote-smoke.mjs",
     "format": "bash scripts/limited-run.sh bash -c 'prettier --write .'",

@@ -22,6 +22,12 @@ COPY packages packages
 RUN pnpm -r --workspace-concurrency=1 --if-present run build \
     && pnpm --filter @mirror/gateway deploy --prod /opt/gateway
 
+# sing-box carries the browser's traffic to an outside proxy when EGRESS_PROXY names one.
+FROM node:22.23.1-bookworm-slim AS sing-box
+ARG TARGETARCH=amd64
+COPY deploy/fetch-sing-box.mjs /tmp/
+RUN node /tmp/fetch-sing-box.mjs "$TARGETARCH" /opt/sing-box
+
 FROM node:22.23.1-bookworm-slim AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -54,8 +60,12 @@ RUN apt-get update \
 COPY --from=build /opt/gateway/ /app/
 COPY --from=build /app/packages/viewer/dist/ /app/viewer/
 COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md UPSTREAM_COMMIT /app/
-COPY deploy/server-entrypoint.sh deploy/server-egress.sh deploy/timezone.mjs /opt/remote-browser/
-RUN chmod 0755 /opt/remote-browser/server-entrypoint.sh /opt/remote-browser/server-egress.sh
+COPY --from=sing-box /opt/sing-box/sing-box /usr/local/bin/sing-box
+COPY --from=sing-box /opt/sing-box/LICENSE /usr/share/doc/sing-box/LICENSE
+COPY deploy/server-entrypoint.sh deploy/server-egress.sh deploy/egress-tunnel.sh \
+    deploy/egress-proxy.mjs deploy/timezone.mjs /opt/remote-browser/
+RUN chmod 0755 /opt/remote-browser/server-entrypoint.sh /opt/remote-browser/server-egress.sh \
+    /opt/remote-browser/egress-tunnel.sh
 
 # Without a UTF-8 locale Chromium can't name a download in Chinese, which comes out as "download", and
 # xwininfo can't print such a window's title, which picture mode finds the window by.

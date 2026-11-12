@@ -62,6 +62,23 @@ docker compose ps
 
 在 `.env` 里用 `TZ` 写一个 IANA 时区名，例如 `TZ=Asia/Shanghai`，未设置时为 UTC。夏令时自动处理。详见[时区说明](timezone.md)。
 
+### 出站代理
+
+想让远程浏览器的流量全部从另一个出口出去，在 `.env` 里写：
+
+```bash
+EGRESS_PROXY=vless://uuid@proxy.example.com:443?security=reality&sni=...&pbk=...&sid=...
+```
+
+再在 compose 文件列表里加上 `compose.proxy.yml`（比如 `COMPOSE_FILE=compose.yml:compose.hostnet.yml:compose.proxy.yml`）。`deploy-container.sh` 看到 `.env` 里有 `EGRESS_PROXY` 会自动加上，部署完会打印网页的出口 IP。
+
+- 支持 `socks5://`、`http://`、`https://`、`ss://`、`vless://`（含 REALITY）、`vmess://`、`trojan://`、`hy2://` 分享链接；其他协议可以直接写一段 sing-box outbound JSON，比如 `EGRESS_PROXY={"type":"tuic",...}`。
+- 容器里的 sing-box 建一个 TUN，只接管浏览器用户（uid 10001，Chrome 和网关都是它）的流量，宿主机和其他程序不受影响，`compose.hostnet.yml` 下也一样。网页的 DNS 经代理走 DoH，WebRTC 的 UDP 也走代理，这需要代理支持 UDP（SOCKS5 UDP、Shadowsocks、VLESS、VMess、Trojan、Hysteria2 都可以；HTTP 代理不行，此时网页里的 WebRTC 连不上）。
+- 代理断了或连不上时，网页直接没有网络，不会改用这台机器自己的 IP。sing-box 意外退出会在两秒后重启。
+- 代理的服务器名用 `EGRESS_BOOTSTRAP_DNS`（默认 `1.1.1.1`）解析，这一次查询不经过代理。
+- 代理地址和密码只交给 sing-box，浏览器和网关进程的环境里没有它们。
+- 链接或 JSON 里有 `$` 时，用单引号把整个值括起来，否则 compose 会把它当成变量。
+
 ### 使用预构建镜像
 
 不想在服务器上构建时，在 `.env` 里指定镜像：

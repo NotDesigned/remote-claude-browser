@@ -1,8 +1,16 @@
 #!/bin/sh
-# Runs twice: as root to set the firewall and hand over the data directory, then as the browser user.
+# Runs twice: as root to set the firewall, start the tunnel to an outside proxy if there is one and
+# hand over the data directory, then as the browser user.
 set -eu
 
 if [ "$(id -u)" = 0 ]; then
+  if [ -n "${EGRESS_PROXY:-}" ]; then
+    if [ "${EGRESS_POLICY:-on}" != on ]; then
+      echo "EGRESS_PROXY needs EGRESS_POLICY=on: its firewall keeps pages from going around the proxy." >&2
+      exit 1
+    fi
+    export EGRESS_TUNNEL=egress0
+  fi
   case ${EGRESS_POLICY:-on} in
     on)
       if ! /opt/remote-browser/server-egress.sh "$(id -u browser)"; then
@@ -17,6 +25,14 @@ if [ "$(id -u)" = 0 ]; then
       exit 1
       ;;
   esac
+  if [ -n "${EGRESS_PROXY:-}" ]; then
+    if ! /opt/remote-browser/egress-tunnel.sh "$(id -u browser)"; then
+      echo "Could not start the tunnel to EGRESS_PROXY, so the browser will not start." >&2
+      exit 1
+    fi
+  fi
+  # The browser and the gateway have no use for the proxy's address or password.
+  unset EGRESS_PROXY EGRESS_BOOTSTRAP_DNS EGRESS_TUNNEL
   chown browser:browser /data
   exec setpriv --reuid=browser --regid=browser --clear-groups --inh-caps=-all "$0" "$@"
 fi

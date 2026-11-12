@@ -45,7 +45,8 @@ fi
 ssh_server() { ssh "${ssh_options[@]}" "$remote_host" "$@"; }
 
 for checked_file in packages/gateway/dist/main.mjs packages/viewer/dist/index.html \
-  deploy/server-entrypoint.sh deploy/server-egress.sh deploy/timezone.mjs; do
+  deploy/server-entrypoint.sh deploy/server-egress.sh deploy/egress-tunnel.sh \
+  deploy/egress-proxy.mjs deploy/fetch-sing-box.mjs deploy/timezone.mjs compose.proxy.yml; do
   test -s "$checked_file"
 done
 stage=$(mktemp -d /tmp/claude-container-publish.XXXXXX)
@@ -54,12 +55,31 @@ mkdir -p "$stage/rootfs/app/dist" "$stage/rootfs/app/viewer" \
   "$stage/rootfs/opt/remote-browser" "$stage/rootfs/etc"
 install -m 644 packages/gateway/dist/main.mjs "$stage/rootfs/app/dist/main.mjs"
 cp -a packages/viewer/dist/. "$stage/rootfs/app/viewer/"
-install -m 755 deploy/server-entrypoint.sh deploy/server-egress.sh "$stage/rootfs/opt/remote-browser/"
-install -m 644 deploy/timezone.mjs "$stage/rootfs/opt/remote-browser/"
+install -m 755 deploy/server-entrypoint.sh deploy/server-egress.sh deploy/egress-tunnel.sh \
+  "$stage/rootfs/opt/remote-browser/"
+install -m 644 deploy/egress-proxy.mjs deploy/timezone.mjs "$stage/rootfs/opt/remote-browser/"
+# sing-box is large, so it goes over only when the running image lacks this very binary.
+case $(ssh_server uname -m) in
+  x86_64) sing_box_arch=amd64 ;;
+  aarch64) sing_box_arch=arm64 ;;
+  *) echo 'The browser host is neither x86_64 nor aarch64.' >&2; exit 1 ;;
+esac
+sing_box_cache=${XDG_CACHE_HOME:-$HOME/.cache}/remote-claude-browser
+mkdir -p "$sing_box_cache"
+node deploy/fetch-sing-box.mjs "$sing_box_arch" "$stage/sing-box" \
+  "$sing_box_cache/sing-box-$sing_box_arch.tar.gz"
+mkdir -p "$stage/rootfs/usr/share/doc/sing-box"
+install -m 644 "$stage/sing-box/LICENSE" "$stage/rootfs/usr/share/doc/sing-box/LICENSE"
+running_sing_box=$(ssh_server "cd '$server_dir' && docker exec \"\$(docker compose ps --quiet server)\" sha256sum /usr/local/bin/sing-box 2>/dev/null" | cut -d' ' -f1 || true)
+if [[ $running_sing_box != "$(sha256sum "$stage/sing-box/sing-box" | cut -d' ' -f1)" ]]; then
+  mkdir -p "$stage/rootfs/usr/local/bin"
+  install -m 755 "$stage/sing-box/sing-box" "$stage/rootfs/usr/local/bin/sing-box"
+fi
+rm -rf -- "$stage/sing-box"
 install -m 644 LICENSE NOTICE THIRD_PARTY_NOTICES.md UPSTREAM_COMMIT "$stage/rootfs/app/"
 ln -s /data/timezone/localtime "$stage/rootfs/etc/localtime"
 ln -s /data/timezone/name "$stage/rootfs/etc/timezone"
-install -m 644 compose.yml compose.hostnet.yml "$stage/"
+install -m 644 compose.yml compose.hostnet.yml compose.proxy.yml "$stage/"
 cat >"$stage/Dockerfile" <<'DOCKERFILE'
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
@@ -115,6 +135,7 @@ printf '%s\n' "$project" >"$release/backup/project"
 printf '%s\n' "$volume" >"$release/backup/volume"
 cp -a .env compose.yml "$release/backup/"
 if [[ -f compose.hostnet.yml ]]; then cp -a compose.hostnet.yml "$release/backup/"; fi
+if [[ -f compose.proxy.yml ]]; then cp -a compose.proxy.yml "$release/backup/"; fi
 
 # The current runtime already supplies these; fail before touching a live browser if it does not.
 docker exec "$container" node -e 'if(typeof require("node:sqlite").DatabaseSync!=="function") process.exit(1)'
@@ -130,11 +151,17 @@ DOCKER_BUILDKIT=0 docker build --quiet --network none --memory=128m --memory-swa
 # A tiny process checks the image without running Xvfb, a gateway or another Chrome.
 docker run --rm --network none --read-only --memory=64m --memory-swap=64m --pids-limit=32 \
   --entrypoint sh "$image" -c \
-  'test "$(readlink /etc/localtime)" = /data/timezone/localtime && test "$(readlink /etc/timezone)" = /data/timezone/name && test -x /opt/remote-browser/server-entrypoint.sh && node --check /opt/remote-browser/timezone.mjs'
+  'test "$(readlink /etc/localtime)" = /data/timezone/localtime && test "$(readlink /etc/timezone)" = /data/timezone/name && test -x /opt/remote-browser/server-entrypoint.sh && test -x /opt/remote-browser/egress-tunnel.sh && node --check /opt/remote-browser/timezone.mjs && node --check /opt/remote-browser/egress-proxy.mjs && sing-box version >/dev/null'
 echo "Prepared checked image: $image"
 
 compose=(docker compose --project-name "$project" --project-directory "$server_dir" --env-file "$server_dir/.env" -f "$server_dir/compose.yml")
 if [[ $network = host ]]; then compose+=(-f "$server_dir/compose.hostnet.yml"); fi
+# An outside proxy named in .env brings its overlay along.
+proxied=0
+if grep -Eq '^[[:space:]]*(export[[:space:]]+)?EGRESS_PROXY[[:space:]]*=[[:space:]]*[^[:space:]#]' .env; then
+  proxied=1
+  compose+=(-f "$server_dir/compose.proxy.yml")
+fi
 activated=0
 metadata_ready=0
 finished=0
@@ -183,6 +210,15 @@ rollback() {
     echo "Could not restore network configuration. Recovery files: $release" >&2
     return "$result"
   fi
+  if [[ -f $release/backup/compose.proxy.yml ]]; then
+    if ! cp -a "$release/backup/compose.proxy.yml" "$server_dir/compose.proxy.yml"; then
+      echo "Could not restore proxy configuration. Recovery files: $release" >&2
+      return "$result"
+    fi
+  elif [[ $proxied = 1 ]]; then
+    # The previous runtime predates the proxy and cannot start with it.
+    compose=("${compose[@]:0:${#compose[@]}-2}")
+  fi
   if [[ $metadata_ready = 1 ]]; then
     if ! python3 - "$volume" <<'PY'
 from pathlib import Path
@@ -229,6 +265,7 @@ tar -cpf "$release/backup/metadata.tar" --numeric-owner -C "$volume" --null -T "
 metadata_ready=1
 install -m 644 "$release/payload/compose.yml" "$server_dir/compose.yml"
 install -m 644 "$release/payload/compose.hostnet.yml" "$server_dir/compose.hostnet.yml"
+install -m 644 "$release/payload/compose.proxy.yml" "$server_dir/compose.proxy.yml"
 python3 - "$server_dir/.env" "$image" "$capacity" <<'PY'
 from pathlib import Path
 import os, re, sys
@@ -271,6 +308,13 @@ PY
     [[ $timezone_offset = "$expected_offset" ]]
     printf '%s\n' "$resolved_timezone"
     docker exec "$active" sha256sum /app/dist/main.mjs
+    if [[ $proxied = 1 ]]; then
+      docker logs "$active" 2>&1 | grep 'Browser traffic leaves through' | tail -1
+      # As the browser user, so through the tunnel. The proxy is outside this host and may be down,
+      # which leaves pages offline but is no reason to undo the deployment.
+      exit_ip=$(docker exec --user browser "$active" node -e 'fetch("https://api.ipify.org",{signal:AbortSignal.timeout(10000)}).then(r=>r.text()).then(t=>console.log(t.trim())).catch(()=>process.exit(1))' 2>/dev/null || true)
+      if [[ -n $exit_ip ]]; then echo "Pages leave from $exit_ip"; else echo 'Warning: pages cannot reach the internet through the outside proxy yet.' >&2; fi
+    fi
     printf '%s\n' "$image" >"$release/image"
     ln -sfn "$release" /opt/claude-browser/container-current
     finished=1

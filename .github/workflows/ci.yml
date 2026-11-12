@@ -51,6 +51,8 @@ jobs:
         run: |
           export MIRROR_ACCESS_PASSWORD=x MIRROR_ACCESS_SECRET=x MIRROR_AUTH_SECRET=x PUBLIC_HOST=example.com
           docker compose -f compose.yml -f compose.https.yml config --quiet
+          EGRESS_PROXY=socks5://127.0.0.1:1080 docker compose -f compose.yml -f compose.hostnet.yml \
+            -f compose.proxy.yml config --quiet
           SERVER_SSH_HOST=example.com docker compose -f client/compose.yml config --quiet
       - name: Build the tunnel image
         run: docker build client

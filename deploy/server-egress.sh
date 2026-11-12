@@ -3,6 +3,9 @@
 # live in the container's own network namespace, so the host's firewall is untouched. They apply to
 # the browser user, which is also what the gateway runs as: replies to incoming connections still
 # pass, and the gateway makes no other connections.
+#
+# With EGRESS_TUNNEL set to the outside proxy's interface, nothing else leaves: if the proxy is down,
+# pages get no connection rather than one from this host's own address.
 set -eu
 
 browser_uid=${1:?usage: server-egress.sh <browser uid>}
@@ -28,6 +31,9 @@ prepare() {
 }
 
 finish() {
+  if [ -n "${EGRESS_TUNNEL:-}" ]; then
+    "$1" -w -A "$chain" ! -o "$EGRESS_TUNNEL" -j REJECT
+  fi
   "$1" -w -A "$chain" -j RETURN
   "$1" -w -C OUTPUT -m owner --uid-owner "$browser_uid" -j "$chain" 2>/dev/null ||
     "$1" -w -I OUTPUT 1 -m owner --uid-owner "$browser_uid" -j "$chain"

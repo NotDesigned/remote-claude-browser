@@ -24,6 +24,8 @@ excluded from Git. Do not commit a populated one. `scripts/bootstrap.sh` writes 
 | `MIRROR_ACCOUNTS_DIR` | no | `<profile>-accounts` | Where browser configurations other than the legacy default keep their Chrome profiles |
 | `EGRESS_POLICY` | no | `on` | `off` lets pages reach private networks and the host |
 | `EGRESS_BLOCK` | no | empty | More addresses to block, comma-separated. Add the host's public IP |
+| `EGRESS_PROXY` | for `compose.proxy.yml` | none | An outside proxy all browser traffic leaves through, DNS and WebRTC included: a share link (`socks5://`, `http://`, `https://`, `ss://`, `vless://`, `vmess://`, `trojan://`, `hy2://`) or a sing-box outbound in JSON. Needs `EGRESS_POLICY=on`. If the proxy is down, pages get no connection rather than a direct one. See [outside proxy](deployment.md#出站代理) |
+| `EGRESS_BOOTSTRAP_DNS` | no | `1.1.1.1` | The resolver that looks up the proxy's own name, which cannot go through the proxy. An IP address |
 | `MIRROR_PAGE_SLEEP_MS` | no | `1800000` | A page nobody has seen for this long sleeps: it shows a placeholder and the site's renderer exits. A page is seen while it is its session's active tab and a viewer of that session is on screen, so tabs left behind the one in use sleep too. Each loads again when someone switches to it or comes back. Pages writing a reply, playing sound, using the microphone or in picture mode keep running. `0` turns it off |
 | `TZ` | no | `Etc/UTC` | The browser's timezone, an IANA name such as `Asia/Shanghai`. An invalid name stops the container from starting. See [timezone behavior](timezone.md) |
 | `PUBLIC_HOST` | for `compose.https.yml` | none | The domain Caddy serves |
