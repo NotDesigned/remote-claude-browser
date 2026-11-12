@@ -64,7 +64,7 @@ case $(ssh_server uname -m) in
   aarch64) sing_box_arch=arm64 ;;
   *) echo 'The browser host is neither x86_64 nor aarch64.' >&2; exit 1 ;;
 esac
-sing_box_cache=${XDG_CACHE_HOME:-$HOME/.cache}/remote-claude-browser
+sing_box_cache=${XDG_CACHE_HOME:-${HOME:-/var/tmp}/.cache}/remote-claude-browser
 mkdir -p "$sing_box_cache"
 node deploy/fetch-sing-box.mjs "$sing_box_arch" "$stage/sing-box" \
   "$sing_box_cache/sing-box-$sing_box_arch.tar.gz"
