@@ -234,6 +234,59 @@ describe("mobile input capture", () => {
     expect(move.preventDefault).toHaveBeenCalledOnce();
   });
 
+  it("drags with a sideways swipe over what cannot scroll sideways, as a slider wants", () => {
+    const doc = new FakeDocument();
+    const thumb = new FakeElement(20);
+    const sent: Up[] = [];
+    attachTouch(doc, sent);
+
+    doc.fire("touchstart", touch(thumb, [{ x: 20, y: 50 }]));
+    const first = touch(thumb, [{ x: 35, y: 52 }]);
+    doc.fire("touchmove", first);
+    const second = touch(thumb, [{ x: 80, y: 55 }]);
+    doc.fire("touchmove", second);
+    const end = touchEnd(thumb, { x: 90, y: 55 });
+    doc.fire("touchend", end);
+
+    expect(
+      sent.map((message) => message.t === "ptr" && [message.kind, message.vx, message.buttons]),
+    ).toEqual([
+      ["move", 20, 0],
+      ["down", 20, 1],
+      ["move", 35, 1],
+      ["move", 80, 1],
+      ["up", 90, 0],
+    ]);
+    expect(sent.every((message) => message.t === "ptr" && message.nodeId === 20)).toBe(true);
+    for (const event of [first, second, end]) expect(event.preventDefault).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a sideways swipe over a sideways scroller local, and lets go when a second finger joins a drag", () => {
+    const doc = new FakeDocument();
+    const strip = new FakeElement(10);
+    strip.overflowX = "auto";
+    strip.scrollWidth = 300;
+    const thumb = new FakeElement(20);
+    const sent: Up[] = [];
+    attachTouch(doc, sent, { afterEvent: () => undefined });
+
+    doc.fire("touchstart", touch(strip, [{ x: 80, y: 50 }]));
+    doc.fire("touchmove", touch(strip, [{ x: 50, y: 50 }]));
+    doc.fire("touchend", touchEnd(strip, { x: 50, y: 50 }));
+    expect(sent).toEqual([]);
+
+    doc.fire("touchstart", touch(thumb, [{ x: 20, y: 50 }]));
+    doc.fire("touchmove", touch(thumb, [{ x: 40, y: 50 }]));
+    doc.fire(
+      "touchstart",
+      touch(thumb, [
+        { x: 40, y: 50 },
+        { x: 60, y: 90 },
+      ]),
+    );
+    expect(sent.at(-1)).toMatchObject({ kind: "up", vx: 40, buttons: 0 });
+  });
+
   it("does nothing while movement remains below the touch slop", () => {
     const doc = new FakeDocument();
     const target = new FakeElement(20);

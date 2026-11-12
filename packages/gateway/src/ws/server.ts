@@ -27,6 +27,9 @@ import { ViewerConn, type ViewerConnOpts, type ViewerSocket } from "./viewerconn
 
 export const DEFAULT_BATCH_MS = 16;
 export const VIEWER_REPLACED_CODE = 4009;
+/** How often each viewer connection is pinged, which also keeps a tunnel from idling it out. */
+export const KEEPALIVE_MS = 30_000;
+const KEEPALIVE_MISSES = 2;
 
 export interface DeltaChaosOptions {
   /** Probability per (delta message, viewer). Production never supplies this option. */
@@ -440,7 +443,24 @@ export function createWsServer(opts: WsServerOpts): WsServer {
         );
       });
     });
+    // A tunnel closes a connection that stays quiet for a few minutes, as one to a phone in the
+    // background does, and the browser answers protocol pings without the page. One that leaves
+    // two unanswered is gone; ending it lets the page hear so and reconnect.
+    let unanswered = 0;
+    socket.on("pong", () => {
+      unanswered = 0;
+    });
+    const keepalive = setInterval(() => {
+      if (unanswered >= KEEPALIVE_MISSES) {
+        socket.terminate();
+        return;
+      }
+      unanswered += 1;
+      if (socket.readyState === socket.OPEN) socket.ping();
+    }, KEEPALIVE_MS);
+    keepalive.unref?.();
     socket.once("close", () => {
+      clearInterval(keepalive);
       try {
         notifyDisconnection(viewer, sessionId);
       } finally {

@@ -12,7 +12,7 @@ import type { AddressInfo } from "node:net";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TabHub } from "../hub/tabhub";
-import { createWsServer, Fanout, type WsServer } from "./server";
+import { createWsServer, Fanout, KEEPALIVE_MS, type WsServer } from "./server";
 import { STALL_BYTES, ViewerConn, type ViewerSocket } from "./viewerconn";
 import { createRoleManager } from "./roles";
 
@@ -217,6 +217,38 @@ describe("session-scoped WebSocket fanout", () => {
 });
 
 describe("session-scoped WebSocket upgrades", () => {
+  it("pings each viewer and ends a connection that stops answering", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const server = createServer();
+    const wsServer = createWsServer({ server, hubs: () => [] });
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/ws`;
+      const open = async (autoPong: boolean) => {
+        const socket = new WebSocket(url, { autoPong });
+        let pings = 0;
+        socket.on("ping", () => (pings += 1));
+        const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+        await new Promise((resolve) => socket.once("open", resolve));
+        return { socket, closed, pings: () => pings };
+      };
+      const alive = await open(true);
+      const silent = await open(false);
+      for (let round = 0; round < 3; round++) {
+        await vi.advanceTimersByTimeAsync(KEEPALIVE_MS);
+        await vi.waitFor(() => expect(alive.pings()).toBe(round + 1));
+      }
+      await silent.closed;
+      expect(silent.pings()).toBe(2);
+      expect(alive.socket.readyState).toBe(WebSocket.OPEN);
+      alive.socket.close();
+    } finally {
+      vi.useRealTimers();
+      await wsServer.close();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
   it("requires scoped join hubs instead of falling back to all sessions", () => {
     const server = createServer();
     expect(() => createWsServer({ server, hubs: () => [], sessionForRequest: () => "a" })).toThrow(

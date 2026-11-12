@@ -4,10 +4,11 @@
  *
  * DOM pointer coordinates are resolved against the live recorder mirror. Each lookup waits for the
  * page's main thread, so a node of the top document is asked for its rect at once and only a node
- * of another frame is resolved through the frames first. A hover reuses a rect for a moment, and a
- * click's release reuses the rect its press found on the same node, as a hand that stays put
- * would; a drag looks again. Pixel pointers carry the node-less sentinel and use their negotiated
- * viewport coordinates directly.
+ * of another frame is resolved through the frames first. A hover reuses a rect for a moment. Once a
+ * button is pressed, its moves and release land where the press did plus how far the pointer has
+ * moved since: what was pressed may move with the pointer, as a slider's thumb does, and the mirror
+ * shows it there a moment late. Pixel pointers carry the node-less sentinel and use their
+ * negotiated viewport coordinates directly.
  */
 import { Mod, NODE_IN_FRAME_ERROR, type RectResult, type Up } from "@mirror/protocol";
 import { resolveNode, type FrameHop, type ResolveNodeDeps } from "../browser/resolvenode";
@@ -15,8 +16,6 @@ import type { AgentLink, CdpSend } from "../types";
 import { describeKey } from "./keymap";
 
 const DEFAULT_RECT_TIMEOUT_MS = 100;
-/** A release this soon after its press, on the same node, lands where the press did. */
-const PRESS_RECT_REUSE_MS = 1_000;
 /**
  * Scrolls carry the absolute position, so a later one replaces an earlier one. Waiting longer for
  * a busy page only holds up the input queued behind it.
@@ -100,7 +99,8 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     deps.onValueStatus?.(tab, failed);
   };
   const rectCache = new Map<string, { at: number; value: ResolvedRect }>();
-  const pressRects = new Map<string, { nodeId: number; at: number; value: ResolvedRect }>();
+  /** Where the held button was pressed, in the page and in the viewer. */
+  const presses = new Map<string, { x: number; y: number; vx: number; vy: number }>();
   const resolverDeps: ResolveNodeDeps = {
     agentLink: deps.agentLink,
     send: deps.send,
@@ -162,7 +162,7 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     generations.set(tabId, (generations.get(tabId) ?? 0) + 1);
     tabTails.delete(tabId);
     for (const key of rectCache.keys()) if (key.startsWith(`${tabId}:`)) rectCache.delete(key);
-    pressRects.delete(tabId);
+    presses.delete(tabId);
   };
   relay.rectFallbacksFor = (tabId) => rectFallbacks.get(tabId) ?? 0;
   return relay;
@@ -306,23 +306,21 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     // Pixel input has no recorder node. Avoid a doomed resolve/rect bridge round-trip while
     // retaining the same coordinate sanitation and dispatch authorization as DOM input.
     if (msg.nodeId === -1) return fallback;
+    const press = presses.get(msg.tab);
+    if (msg.kind === "down" || msg.kind === "up") presses.delete(msg.tab);
+    const vx = finiteOr(msg.vx, 0);
+    const vy = finiteOr(msg.vy, 0);
+    if (press !== undefined && (msg.kind === "up" || (msg.kind === "move" && msg.buttons !== 0)))
+      return clampToViewport(msg.tab, press.x + vx - press.vx, press.y + vy - press.vy);
+    const point = await nodePoint(msg, fallback);
+    if (msg.kind === "down") presses.set(msg.tab, { ...point, vx, vy });
+    return point;
+  }
+
+  async function nodePoint(msg: Extract<InputMsg, { t: "ptr" }>, fallback: Point): Promise<Point> {
     let resolvedRect: ResolvedRect;
-    const press = pressRects.get(msg.tab);
-    // After a drag, what was pressed may have moved with the pointer, such as a slider's thumb.
-    if (msg.kind === "down" || msg.kind === "up" || (msg.kind === "move" && msg.buttons !== 0))
-      pressRects.delete(msg.tab);
     try {
-      if (
-        msg.kind === "up" &&
-        press?.nodeId === msg.nodeId &&
-        Date.now() - press.at < PRESS_RECT_REUSE_MS
-      ) {
-        resolvedRect = press.value;
-      } else {
-        resolvedRect = await resolveRect(msg.tab, msg.nodeId, msg.kind === "move");
-        if (msg.kind === "down")
-          pressRects.set(msg.tab, { nodeId: msg.nodeId, at: Date.now(), value: resolvedRect });
-      }
+      resolvedRect = await resolveRect(msg.tab, msg.nodeId, msg.kind === "move");
     } catch (error) {
       rectFallbacks.set(msg.tab, (rectFallbacks.get(msg.tab) ?? 0) + 1);
       reportFailure("pointer fell back to viewport coordinates", error);

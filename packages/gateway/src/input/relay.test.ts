@@ -293,7 +293,8 @@ describe("InputRelay", () => {
     ]);
   });
 
-  it("looks again on release after a drag, which may have moved what was pressed", async () => {
+  it("drags from where the press landed by how far the pointer moved, as a slider's thumb follows", async () => {
+    // The thumb moves with the pointer in the page before the mirror shows it there.
     const h = harness({
       rect: async (call) => ({
         reqId: call,
@@ -302,10 +303,20 @@ describe("InputRelay", () => {
       }),
     });
     await h.relay("driver", pointer("down"));
-    await h.relay("driver", { ...pointer("move"), buttons: 1 });
-    await h.relay("driver", pointer("up"));
-    expect(h.rectCalls()).toBe(3);
-    expect(h.cdp.at(-1)?.params).toMatchObject({ type: "mouseReleased", x: 260 });
+    await h.relay("driver", { ...pointer("move"), vx: 730, vy: 505 });
+    await h.relay("driver", { ...pointer("move"), vx: 790, vy: 503 });
+    await h.relay("driver", { ...pointer("up"), vx: 800, vy: 500 });
+    await h.relay("driver", { ...pointer("move"), buttons: 0 });
+
+    expect(h.rectCalls()).toBe(2);
+    expect(h.cdp.map(({ params }) => [params?.type, params?.x, params?.y])).toEqual([
+      ["mousePressed", 60, 40],
+      ["mouseMoved", 90, 45],
+      ["mouseMoved", 150, 43],
+      ["mouseReleased", 160, 40],
+      // Hover asks the page again.
+      ["mouseMoved", 160, 40],
+    ]);
   });
 
   it("does not resolve through frames a node the top document says is gone", async () => {

@@ -1050,7 +1050,11 @@ export function App() {
   }, [clientPhase, clientSession?.sid, fixturePath]);
 
   useEffect(() => {
-    const report = () => socketRef.current?.send({ t: "visibility", visible: !document.hidden });
+    const report = () => {
+      socketRef.current?.send({ t: "visibility", visible: !document.hidden });
+      // A phone in the background may have lost the connection without the page hearing of it.
+      if (!document.hidden) socketRef.current?.probe();
+    };
     document.addEventListener("visibilitychange", report);
     return () => document.removeEventListener("visibilitychange", report);
   }, []);

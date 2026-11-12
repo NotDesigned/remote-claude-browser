@@ -26,9 +26,11 @@ export interface TouchCaptureOptions {
 }
 
 const TOUCH_SLOP_PX = 10;
+/** A swipe this many times wider than tall is sideways. */
+const SIDEWAYS_RATIO = 2;
 
 interface TouchGesture {
-  mode: "pending" | "scroll-pan" | "hijack-wheel";
+  mode: "pending" | "scroll-pan" | "hijack-wheel" | "drag";
   startX: number;
   startY: number;
   lastX: number;
@@ -114,9 +116,51 @@ export function attachTouchCapture(options: TouchCaptureOptions): () => void {
     });
   };
 
+  /**
+   * Presses at the start of the swipe and moves with the finger, as a mouse drag would. The
+   * gateway places each move from where the press landed, so the node pressed is all it needs.
+   */
+  const dragPointer = (
+    current: TouchGesture,
+    point: Pick<Touch, "clientX" | "clientY">,
+    event: TouchEvent,
+    kind: "move" | "down" | "up",
+    buttons: number,
+  ) => {
+    const target = resolveClickTarget(current.target, options.getNodeId);
+    options.send({
+      t: "ptr",
+      tab: options.tab,
+      kind,
+      ...pointerPosition(point, target, options.doc, options.rootDoc),
+      ...(kind === "move" ? {} : { button: 0, clicks: 1 }),
+      buttons,
+      mods: eventMods(event),
+    });
+    current.lastX = point.clientX;
+    current.lastY = point.clientY;
+  };
+
+  const startDrag = (current: TouchGesture, touch: Touch, event: TouchEvent) => {
+    current.mode = "drag";
+    event.preventDefault();
+    options.beforePointerDown?.();
+    const start = { clientX: current.startX, clientY: current.startY };
+    dragPointer(current, start, event, "move", 0);
+    dragPointer(current, start, event, "down", 1);
+    dragPointer(current, touch, event, "move", 1);
+  };
+
+  /** A drag the browser took away, or a second finger joined, still lets go of the button. */
+  const releaseDrag = (event: TouchEvent) => {
+    if (gesture?.mode === "drag")
+      dragPointer(gesture, { clientX: gesture.lastX, clientY: gesture.lastY }, event, "up", 0);
+  };
+
   const onTouchStart = (event: TouchEvent) => {
     if (!event.isTrusted) return;
     if (event.touches.length !== 1) {
+      releaseDrag(event);
       gesture = null;
       return;
     }
@@ -139,6 +183,7 @@ export function attachTouchCapture(options: TouchCaptureOptions): () => void {
     if (!event.isTrusted) return;
     if (gesture === null) return;
     if (event.touches.length !== 1) {
+      releaseDrag(event);
       gesture = null;
       return;
     }
@@ -150,6 +195,14 @@ export function attachTouchCapture(options: TouchCaptureOptions): () => void {
 
       const deltaX = -(touch.clientX - gesture.startX);
       const deltaY = -(touch.clientY - gesture.startY);
+      // Sideways over something that cannot scroll that way, such as a slider: drag it.
+      if (
+        Math.abs(deltaX) > SIDEWAYS_RATIO * Math.abs(deltaY) &&
+        scrollCandidates(gesture.target, options.doc, deltaX, 0).length === 0
+      ) {
+        startDrag(gesture, touch, event);
+        return;
+      }
       const candidates = scrollCandidates(gesture.target, options.doc, deltaX, deltaY);
       if (candidates.length > 0) {
         gesture.mode = "scroll-pan";
@@ -202,6 +255,12 @@ export function attachTouchCapture(options: TouchCaptureOptions): () => void {
       gesture.mode = "hijack-wheel";
     }
 
+    if (gesture.mode === "drag") {
+      event.preventDefault();
+      dragPointer(gesture, touch, event, "move", 1);
+      return;
+    }
+
     if (gesture.mode === "scroll-pan") {
       gesture.latestEvent = event;
       gesture.latestTouch = touch;
@@ -225,7 +284,17 @@ export function attachTouchCapture(options: TouchCaptureOptions): () => void {
     if (!event.isTrusted) return;
     const current = gesture;
     const touch = event.changedTouches[0];
-    if (
+    if (current?.mode === "drag") {
+      // No click follows a drag.
+      event.preventDefault();
+      dragPointer(
+        current,
+        touch ?? { clientX: current.lastX, clientY: current.lastY },
+        event,
+        "up",
+        0,
+      );
+    } else if (
       current?.mode === "pending" &&
       touch !== undefined &&
       Math.hypot(touch.clientX - current.startX, touch.clientY - current.startY) <= TOUCH_SLOP_PX
@@ -238,6 +307,7 @@ export function attachTouchCapture(options: TouchCaptureOptions): () => void {
   const cancelGesture = (event: TouchEvent) => {
     if (!event.isTrusted) return;
     if (event.changedTouches[0]) options.mouseFilter?.touch(event.changedTouches[0]);
+    releaseDrag(event);
     gesture = null;
   };
 
