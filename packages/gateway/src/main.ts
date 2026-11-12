@@ -283,7 +283,8 @@ async function main(): Promise<void> {
 
   const publish = (down: Down): void => {
     if (down.t === "snapshot") {
-      viewport.noteSnapshot(down);
+      const reason = viewport.noteSnapshot(down);
+      if (reason !== undefined) down.reason = reason;
     }
     ws.fanout.publish(down);
   };

@@ -1,4 +1,4 @@
-import type { Down } from "@mirror/protocol";
+import { EventType, type Down } from "@mirror/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { createViewportAgreement, ViewportInputGate, type ViewportHub } from "./viewport";
 
@@ -70,6 +70,66 @@ describe("ViewportInputGate", () => {
 });
 
 describe("ViewportAgreement", () => {
+  it.each(["viewport", "nav", "resync"] as const)(
+    "recovers an old-size snapshot with matching %s geometry",
+    async (reason) => {
+      vi.useFakeTimers();
+      let agreement: ReturnType<typeof createViewportAgreement> | undefined;
+      try {
+        const recordedSnapshot = (epoch: number, width: number) => ({
+          ...snapshot(epoch, "viewport"),
+          data: [
+            {
+              type: EventType.Meta as const,
+              timestamp: 1,
+              data: { href: "about:blank", width, height: 911 },
+            },
+          ],
+        });
+        const requestSnapshot = vi.fn();
+        const hub: ViewportHub = {
+          viewport: null,
+          requestSnapshot,
+          // The hub's cache is not the snapshot that the viewer is about to apply.
+          hasGeometry: () => true,
+        };
+        agreement = createViewportAgreement({
+          send: async () => ({}),
+          sessionFor: () => "session-1",
+          hubFor: () => hub,
+          isDriver: () => true,
+          debounceMs: 5,
+          snapshotRetryMs: 50,
+        });
+
+        agreement.handle("driver", { t: "view", tab: "t1", w: 1360, h: 911, dpr: 1 });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(requestSnapshot).toHaveBeenCalledTimes(1);
+        agreement.noteSnapshot(recordedSnapshot(1, 1050));
+        expect(agreement.handle("driver", { t: "view-ack", tab: "t1", epoch: 1 })).toBe(false);
+        expect(agreement.gate.allowsInput("driver", "t1")).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(5);
+        expect(requestSnapshot).toHaveBeenCalledTimes(2);
+        agreement.noteSnapshot(recordedSnapshot(2, 1050));
+        // A persistently mismatched page falls back to normal retries, rather than a tight loop.
+        await vi.advanceTimersByTimeAsync(49);
+        expect(requestSnapshot).toHaveBeenCalledTimes(2);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(requestSnapshot).toHaveBeenCalledTimes(3);
+
+        expect(agreement.noteSnapshot({ ...recordedSnapshot(3, 1360), reason })).toBe("viewport");
+        expect(agreement.handle("driver", { t: "view-ack", tab: "t1", epoch: 3 })).toBe(true);
+        expect(agreement.gate.allowsInput("driver", "t1")).toBe(true);
+        await vi.advanceTimersByTimeAsync(100);
+        expect(requestSnapshot).toHaveBeenCalledTimes(3);
+      } finally {
+        agreement?.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it.each(["resolve", "reject"] as const)(
     "replaces a hung negotiation after reset and ignores its late %s",
     async (outcome) => {

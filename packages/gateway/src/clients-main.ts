@@ -411,7 +411,10 @@ export async function startClientGateway(
   };
   function publish(sid: string, message: Down) {
     if (stopping || closing.has(sid)) return;
-    if (message.t === "snapshot") runtimes.get(sid)?.viewport.noteSnapshot(message);
+    if (message.t === "snapshot") {
+      const reason = runtimes.get(sid)?.viewport.noteSnapshot(message);
+      if (reason !== undefined) message.reason = reason;
+    }
     ws.fanout.publishToSession(sid, message);
   }
   const grabSlots = createGrabSlots();

@@ -5,7 +5,7 @@
  * metrics, and force a viewport snapshot. Only an acknowledgement of the final viewport epoch
  * unlocks that viewer. Nav/trim/resync epochs never perturb the geometry gate (H3).
  */
-import type { Down, SnapshotReason, TabId, Up } from "@mirror/protocol";
+import { EventType, type Down, type SnapshotReason, type TabId, type Up } from "@mirror/protocol";
 import type { CdpSend } from "../types";
 
 const DEFAULT_DEBOUNCE_MS = 300;
@@ -14,6 +14,8 @@ const MAX_VIEWPORT_DIMENSION = 10_000;
 const MAX_DPR = 10;
 
 type SnapshotDown = Extract<Down, { t: "snapshot" }>;
+type ViewportSnapshot = Pick<SnapshotDown, "tab" | "epoch" | "reason"> &
+  Partial<Pick<SnapshotDown, "data">>;
 export type ViewportMsg = Extract<Up, { t: "view" } | { t: "view-ack" }>;
 
 export interface ViewportHub {
@@ -48,8 +50,11 @@ export interface ViewportAgreement {
   readonly gate: ViewportInputGate;
   /** True when a valid message was accepted into the negotiation/gate. */
   handle(viewerId: string, msg: ViewportMsg): boolean;
-  /** Call before broadcasting each hub snapshot so a same-turn ack sees the new gate state. */
-  noteSnapshot(snapshot: Pick<SnapshotDown, "tab" | "epoch" | "reason">): void;
+  /**
+   * Call before broadcasting so a same-turn ack sees the new gate state. Returns a replacement
+   * reason when a navigation/resync snapshot also completes the pending viewport agreement.
+   */
+  noteSnapshot(snapshot: ViewportSnapshot): "viewport" | undefined;
   viewportFor(tabId: TabId): { w: number; h: number; dpr: number } | undefined;
   /** Abandon a crashed document's negotiation and require a new viewport agreement. */
   resetTab(tabId: TabId): void;
@@ -135,6 +140,7 @@ interface TabNegotiation {
   appliedRevision: number;
   applying: boolean;
   inFlight: boolean;
+  geometryRetryUsed: boolean;
   debounceTimer?: ReturnType<typeof setTimeout>;
   snapshotRetryTimer?: ReturnType<typeof setTimeout>;
 }
@@ -182,6 +188,7 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
         appliedRevision: 0,
         applying: false,
         inFlight: false,
+        geometryRetryUsed: false,
       };
       state.desired = desired;
       state.lastViewAt = now();
@@ -193,24 +200,51 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
       return true;
     },
     noteSnapshot(snapshot) {
-      if (disposed || resetTabs.has(snapshot.tab) || !isViewportReason(snapshot.reason)) return;
+      if (disposed || resetTabs.has(snapshot.tab)) return;
+      const viewportSnapshot = isViewportReason(snapshot.reason);
       const state = tabs.get(snapshot.tab);
       if (state === undefined) {
-        gate.noteSnapshot(snapshot);
+        if (viewportSnapshot) gate.noteSnapshot(snapshot);
         return;
       }
+      if (!viewportSnapshot && !state.inFlight) return;
 
+      if (state.desired.revision > state.appliedRevision || state.applying) {
+        // This snapshot belongs to an older override. Keep the pending lock and negotiate the
+        // newest requested dimensions; acknowledging this epoch must not unlock stale geometry.
+        if (viewportSnapshot) {
+          state.inFlight = false;
+          clearSnapshotRetry(state);
+          scheduleApply(snapshot.tab, state);
+        }
+        return;
+      }
+      const meta = snapshot.data?.find((event) => event.type === EventType.Meta);
+      const matchesGeometry =
+        snapshot.data === undefined
+          ? deps.hubFor(snapshot.tab)?.hasGeometry?.(state.desired.w, state.desired.h)
+          : meta?.type === EventType.Meta &&
+            meta.data.width === state.desired.w &&
+            meta.data.height === state.desired.h;
+      if (matchesGeometry === false) {
+        // Chromium can acknowledge the override before the recorder sees its new dimensions.
+        // The viewer cannot ack this snapshot. Keep recovery alive instead of leaving it inert
+        // forever, with one quick retry before returning to the normal retry interval.
+        if (viewportSnapshot && state.inFlight && !state.geometryRetryUsed) {
+          state.geometryRetryUsed = true;
+          scheduleSnapshotRetry(snapshot.tab, state, Math.min(debounceMs, snapshotRetryMs));
+        }
+        return;
+      }
+      if (!viewportSnapshot && (snapshot.data === undefined || matchesGeometry !== true)) return;
       if (state.inFlight) {
         state.inFlight = false;
         clearSnapshotRetry(state);
       }
-      if (state.desired.revision > state.appliedRevision || state.applying) {
-        // This snapshot belongs to an older override. Keep the pending lock and negotiate the
-        // newest requested dimensions; acknowledging this epoch must not unlock stale geometry.
-        scheduleApply(snapshot.tab, state);
-        return;
-      }
-      gate.noteSnapshot(snapshot);
+      // A matching full snapshot already proves the geometry. Reuse it even when it arrived
+      // for navigation/resync, rather than waiting on another command in a loading renderer.
+      gate.noteSnapshot({ ...snapshot, reason: "viewport" });
+      return "viewport";
     },
     viewportFor(tabId) {
       const viewport = deps.hubFor(tabId)?.viewport;
@@ -299,6 +333,7 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
       hub.viewport = { w: desired.w, h: desired.h, dpr: desired.dpr };
       state.appliedRevision = desired.revision;
       state.inFlight = true;
+      state.geometryRetryUsed = false;
       scheduleSnapshotRetry(tabId, state);
       hub.requestSnapshot("viewport");
     } catch {
@@ -314,7 +349,11 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
     }
   }
 
-  function scheduleSnapshotRetry(tabId: TabId, state: TabNegotiation): void {
+  function scheduleSnapshotRetry(
+    tabId: TabId,
+    state: TabNegotiation,
+    delayMs = snapshotRetryMs,
+  ): void {
     if (!current(tabId, state)) return;
     clearSnapshotRetry(state);
     state.snapshotRetryTimer = setTimeout(() => {
@@ -323,7 +362,7 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
       if (!state.inFlight) return;
       deps.hubFor(tabId)?.requestSnapshot("viewport");
       scheduleSnapshotRetry(tabId, state);
-    }, snapshotRetryMs);
+    }, delayMs);
     state.snapshotRetryTimer.unref?.();
   }
 }

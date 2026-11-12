@@ -134,7 +134,8 @@ async function main(): Promise<void> {
         for await (const msg of link.msgs(page.targetId)) {
           for (const down of hub.ingest(msg)) {
             if (down.t !== "snapshot") continue;
-            agreement.noteSnapshot(down);
+            const reason = agreement.noteSnapshot(down);
+            if (reason !== undefined) down.reason = reason;
             snapshots.push(down);
           }
         }
