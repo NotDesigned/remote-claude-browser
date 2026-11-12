@@ -4,6 +4,8 @@ Notable changes to Remote Browser are recorded here.
 
 ## [Unreleased]
 
+- Replace sing-box egress with checksum-pinned Xray, including VLESS Encryption, REALITY ML-DSA-65 verification and XHTTP. Browser-only TUN routing and fail-closed DNS/UDP forwarding remain enabled. Existing sing-box outbound JSON must be migrated to Xray JSON.
+
 - The server is one container holding Xvfb, Chromium and the gateway, with its own firewall.
 - `client/` deploys an entry host with HTTPS and an SSH tunnel; `compose.https.yml` does HTTPS on one machine.
 

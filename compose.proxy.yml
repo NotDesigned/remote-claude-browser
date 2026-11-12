@@ -1,6 +1,6 @@
 # Optional: send everything the browser opens, its DNS lookups and WebRTC included, through one
 # outside proxy. Set EGRESS_PROXY in .env to the proxy's share link (socks5://, http://, https://,
-# ss://, vless://, vmess://, trojan://, hy2://) or to a sing-box outbound in JSON, then add this file:
+# ss://, vless://, vmess://, trojan://, hy2://) or to an Xray outbound in JSON, then add this file:
 #   docker compose -f compose.yml [-f compose.hostnet.yml] -f compose.proxy.yml up -d
 # If the proxy is down, pages get no connection rather than one from this host's address.
 services:
@@ -11,6 +11,6 @@ services:
       EGRESS_BOOTSTRAP_DNS: ${EGRESS_BOOTSTRAP_DNS:-}
     devices:
       - /dev/net/tun:/dev/net/tun
-    # The tunnel answers DNS here, by way of the proxy.
+    # Xray answers DNS here, using DoH through the proxy.
     dns:
       - 198.18.0.2

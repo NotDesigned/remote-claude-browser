@@ -68,3 +68,15 @@ jobs:
           SMOKE_VIDEO: "1"
           SMOKE_CANVAS: "1"
           MIRROR_CANVAS_SITES: "*"
+
+      - name: Validate proxy settings with the packaged Xray binary
+        run: |
+          docker run --rm --read-only --tmpfs /tmp --entrypoint node \
+            -e XRAY_PATH=/usr/local/bin/xray -v "$PWD/deploy:/checks:ro" \
+            remote-claude-browser-server:local --test /checks/egress-proxy.test.mjs
+      - name: Test Xray TUN, interface-bound UDP, outage blocking and restart
+        run: bash scripts/proxy-smoke.sh
+      - name: Test Xray routing and cleanup on the host network
+        run: bash scripts/proxy-smoke.sh
+        env:
+          PROXY_SMOKE_HOSTNET: "1"

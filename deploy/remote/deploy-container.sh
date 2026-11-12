@@ -46,7 +46,7 @@ ssh_server() { ssh "${ssh_options[@]}" "$remote_host" "$@"; }
 
 for checked_file in packages/gateway/dist/main.mjs packages/viewer/dist/index.html \
   deploy/server-entrypoint.sh deploy/server-egress.sh deploy/egress-tunnel.sh \
-  deploy/egress-proxy.mjs deploy/fetch-sing-box.mjs deploy/timezone.mjs compose.proxy.yml; do
+  deploy/egress-proxy.mjs deploy/fetch-xray.mjs deploy/timezone.mjs compose.proxy.yml; do
   test -s "$checked_file"
 done
 stage=$(mktemp -d /tmp/claude-container-publish.XXXXXX)
@@ -58,24 +58,24 @@ cp -a packages/viewer/dist/. "$stage/rootfs/app/viewer/"
 install -m 755 deploy/server-entrypoint.sh deploy/server-egress.sh deploy/egress-tunnel.sh \
   "$stage/rootfs/opt/remote-browser/"
 install -m 644 deploy/egress-proxy.mjs deploy/timezone.mjs "$stage/rootfs/opt/remote-browser/"
-# sing-box is large, so it goes over only when the running image lacks this very binary.
+# xray is large, so it goes over only when the running image lacks this very binary.
 case $(ssh_server uname -m) in
-  x86_64) sing_box_arch=amd64 ;;
-  aarch64) sing_box_arch=arm64 ;;
+  x86_64) xray_arch=amd64 ;;
+  aarch64) xray_arch=arm64 ;;
   *) echo 'The browser host is neither x86_64 nor aarch64.' >&2; exit 1 ;;
 esac
-sing_box_cache=${XDG_CACHE_HOME:-${HOME:-/var/tmp}/.cache}/remote-claude-browser
-mkdir -p "$sing_box_cache"
-node deploy/fetch-sing-box.mjs "$sing_box_arch" "$stage/sing-box" \
-  "$sing_box_cache/sing-box-$sing_box_arch.tar.gz"
-mkdir -p "$stage/rootfs/usr/share/doc/sing-box"
-install -m 644 "$stage/sing-box/LICENSE" "$stage/rootfs/usr/share/doc/sing-box/LICENSE"
-running_sing_box=$(ssh_server "cd '$server_dir' && docker exec \"\$(docker compose ps --quiet server)\" sha256sum /usr/local/bin/sing-box 2>/dev/null" | cut -d' ' -f1 || true)
-if [[ $running_sing_box != "$(sha256sum "$stage/sing-box/sing-box" | cut -d' ' -f1)" ]]; then
+xray_cache=${XDG_CACHE_HOME:-${HOME:-/var/tmp}/.cache}/remote-claude-browser
+mkdir -p "$xray_cache"
+node deploy/fetch-xray.mjs "$xray_arch" "$stage/xray" \
+  "$xray_cache/xray-$xray_arch.zip"
+mkdir -p "$stage/rootfs/usr/share/doc/xray"
+install -m 644 "$stage/xray/LICENSE" "$stage/rootfs/usr/share/doc/xray/LICENSE"
+running_xray=$(ssh_server "cd '$server_dir' && docker exec \"\$(docker compose ps --quiet server)\" sha256sum /usr/local/bin/xray 2>/dev/null" | cut -d' ' -f1 || true)
+if [[ $running_xray != "$(sha256sum "$stage/xray/xray" | cut -d' ' -f1)" ]]; then
   mkdir -p "$stage/rootfs/usr/local/bin"
-  install -m 755 "$stage/sing-box/sing-box" "$stage/rootfs/usr/local/bin/sing-box"
+  install -m 755 "$stage/xray/xray" "$stage/rootfs/usr/local/bin/xray"
 fi
-rm -rf -- "$stage/sing-box"
+rm -rf -- "$stage/xray"
 install -m 644 LICENSE NOTICE THIRD_PARTY_NOTICES.md UPSTREAM_COMMIT "$stage/rootfs/app/"
 ln -s /data/timezone/localtime "$stage/rootfs/etc/localtime"
 ln -s /data/timezone/name "$stage/rootfs/etc/timezone"
@@ -151,7 +151,7 @@ DOCKER_BUILDKIT=0 docker build --quiet --network none --memory=128m --memory-swa
 # A tiny process checks the image without running Xvfb, a gateway or another Chrome.
 docker run --rm --network none --read-only --memory=64m --memory-swap=64m --pids-limit=32 \
   --entrypoint sh "$image" -c \
-  'test "$(readlink /etc/localtime)" = /data/timezone/localtime && test "$(readlink /etc/timezone)" = /data/timezone/name && test -x /opt/remote-browser/server-entrypoint.sh && test -x /opt/remote-browser/egress-tunnel.sh && node --check /opt/remote-browser/timezone.mjs && node --check /opt/remote-browser/egress-proxy.mjs && sing-box version >/dev/null'
+  'test "$(readlink /etc/localtime)" = /data/timezone/localtime && test "$(readlink /etc/timezone)" = /data/timezone/name && test -x /opt/remote-browser/server-entrypoint.sh && test -x /opt/remote-browser/egress-tunnel.sh && node --check /opt/remote-browser/timezone.mjs && node --check /opt/remote-browser/egress-proxy.mjs && xray version >/dev/null'
 echo "Prepared checked image: $image"
 
 compose=(docker compose --project-name "$project" --project-directory "$server_dir" --env-file "$server_dir/.env" -f "$server_dir/compose.yml")

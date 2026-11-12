@@ -19,6 +19,8 @@ services:
     cap_add:
       # For the entrypoint, as root: the firewall, handing over /data, and becoming the browser user.
       - CHOWN
+      # PID 1 forwards shutdown to the gateway, browser and tunnel after they change UID.
+      - KILL
       - NET_ADMIN
       - SETGID
       - SETUID
@@ -27,6 +29,7 @@ services:
       - SYS_ADMIN
       - SYS_CHROOT
     environment:
+      TINI_KILL_PROCESS_GROUP: "1"
       MIRROR_ACCESS_PASSWORD: ${MIRROR_ACCESS_PASSWORD:?Set MIRROR_ACCESS_PASSWORD in .env}
       MIRROR_ADMIN_USERNAME: ${MIRROR_ADMIN_USERNAME:-admin}
       MIRROR_ACCESS_SECRET: ${MIRROR_ACCESS_SECRET:?Set MIRROR_ACCESS_SECRET in .env}

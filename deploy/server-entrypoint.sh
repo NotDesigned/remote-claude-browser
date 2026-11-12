@@ -1,6 +1,6 @@
 #!/bin/sh
-# Runs twice: as root to set the firewall, start the tunnel to an outside proxy if there is one and
-# hand over the data directory, then as the browser user.
+# Root supervises shutdown and network cleanup. The gateway, display and Chromium
+# run in a second invocation as the unprivileged browser user.
 set -eu
 
 if [ "$(id -u)" = 0 ]; then
@@ -10,6 +10,8 @@ if [ "$(id -u)" = 0 ]; then
       exit 1
     fi
     export EGRESS_TUNNEL=egress0
+  else
+    /opt/remote-browser/egress-tunnel.sh "$(id -u browser)" cleanup
   fi
   case ${EGRESS_POLICY:-on} in
     on)
@@ -34,7 +36,39 @@ if [ "$(id -u)" = 0 ]; then
   # The browser and the gateway have no use for the proxy's address or password.
   unset EGRESS_PROXY EGRESS_BOOTSTRAP_DNS EGRESS_TUNNEL
   chown browser:browser /data
-  exec setpriv --reuid=browser --regid=browser --clear-groups --inh-caps=-all "$0" "$@"
+  # Keep the supervisor alive until Chromium and the routing helper have shut down.
+  # Otherwise PID 1 can exit and kill the helper before it cleans the host's policy rules.
+  gateway_pid=
+  terminate_gateway() {
+    trap '' TERM INT
+    if [ -n "$gateway_pid" ]; then kill -TERM "$gateway_pid" 2>/dev/null || true; fi
+  }
+  trap terminate_gateway TERM INT
+  setpriv --reuid=browser --regid=browser --clear-groups --inh-caps=-all "$0" "$@" &
+  gateway_pid=$!
+  gateway_exit=0
+  while :; do
+    gateway_exit=0
+    wait "$gateway_pid" || gateway_exit=$?
+    if ! kill -0 "$gateway_pid" 2>/dev/null; then break; fi
+  done
+  pkill -TERM -u 10001 2>/dev/null || true
+  tries=0
+  while pgrep -u 10001 >/dev/null && [ "$tries" -lt 50 ]; do
+    tries=$((tries + 1)); sleep 0.1
+  done
+  pkill -KILL -u 10001 2>/dev/null || true
+  if [ -r /tmp/egress-supervisor.pid ]; then
+    tunnel_supervisor=$(cat /tmp/egress-supervisor.pid)
+    kill -TERM "$tunnel_supervisor" 2>/dev/null || true
+    tries=0
+    while kill -0 "$tunnel_supervisor" 2>/dev/null && [ "$tries" -lt 60 ]; do
+      tries=$((tries + 1)); sleep 0.1
+    done
+    /opt/remote-browser/egress-tunnel.sh "$(id -u browser)" cleanup
+    echo 'Xray policy routing cleaned up.' >&2
+  fi
+  exit "$gateway_exit"
 fi
 
 umask 0077

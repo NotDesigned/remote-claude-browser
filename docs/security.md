@@ -24,11 +24,11 @@ The default server container sets these egress rules in its own network namespac
 firewall alone. With `compose.hostnet.yml`, rules instead live in the host namespace and target the
 browser UID. Add the host's public IP to `EGRESS_BLOCK`.
 
-With `EGRESS_PROXY` and `compose.proxy.yml`, sing-box carries the browser UID's traffic to that
+With `EGRESS_PROXY` and `compose.proxy.yml`, Xray carries the browser UID's traffic to that
 proxy over a TUN interface, and the firewall rejects anything the browser UID sends elsewhere, so a
-proxy outage leaves pages offline rather than on the host's address. sing-box runs as UID 10002
+proxy outage leaves pages offline rather than on the host's address. Xray runs as UID 10002
 holding only `CAP_NET_ADMIN`; the proxy's credentials stay out of the browser's and gateway's
-environment. The private-network rules above still apply to what goes through the proxy.
+environment. The private-network rules above still apply to what goes through the proxy. A root supervisor forwards shutdown signals and waits for browser processes before removing policy routes; neither it nor the tunnel exposes a control port.
 
 ### Viewers are trusted with page content
 

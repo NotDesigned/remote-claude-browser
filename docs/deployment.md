@@ -72,11 +72,14 @@ EGRESS_PROXY=vless://uuid@proxy.example.com:443?security=reality&sni=...&pbk=...
 
 再在 compose 文件列表里加上 `compose.proxy.yml`（比如 `COMPOSE_FILE=compose.yml:compose.hostnet.yml:compose.proxy.yml`）。`deploy-container.sh` 看到 `.env` 里有 `EGRESS_PROXY` 会自动加上，部署完会打印网页的出口 IP。
 
-- 支持 `socks5://`、`http://`、`https://`、`ss://`、`vless://`（含 REALITY）、`vmess://`、`trojan://`、`hy2://` 分享链接；其他协议可以直接写一段 sing-box outbound JSON，比如 `EGRESS_PROXY={"type":"tuic",...}`。
-- 容器里的 sing-box 建一个 TUN，只接管浏览器用户（uid 10001，Chrome 和网关都是它）的流量，宿主机和其他程序不受影响，`compose.hostnet.yml` 下也一样。网页的 DNS 经代理走 DoH，WebRTC 的 UDP 也走代理，这需要代理支持 UDP（SOCKS5 UDP、Shadowsocks、VLESS、VMess、Trojan、Hysteria2 都可以；HTTP 代理不行，此时网页里的 WebRTC 连不上）。
-- 代理断了或连不上时，网页直接没有网络，不会改用这台机器自己的 IP。sing-box 意外退出会在两秒后重启。
+- 支持 `socks5://`、`http://`、`https://`、`ss://`、`vless://`（含 REALITY）、`vmess://`、`trojan://`、`hy2://` 分享链接；其他协议可以直接写一段 Xray outbound JSON（使用 `protocol`、`settings` 和 `streamSettings`）。
+- 容器里的 Xray 建一个 TUN，只接管浏览器用户（uid 10001，Chrome 和网关都是它）的流量，宿主机和其他程序不受影响，`compose.hostnet.yml` 下也一样。网页的 DNS 经代理走 DoH，WebRTC 的 UDP 也走代理，这需要代理支持 UDP（SOCKS5 UDP、Shadowsocks、VLESS、VMess、Trojan、Hysteria2 都可以；HTTP 代理不行，此时网页里的 WebRTC 连不上）。
+- 代理断了或连不上时，网页直接没有网络，不会改用这台机器自己的 IP。Xray 意外退出会在两秒后重启。
 - 代理的服务器名用 `EGRESS_BOOTSTRAP_DNS`（默认 `1.1.1.1`）解析，这一次查询不经过代理。
-- 代理地址和密码只交给 sing-box，浏览器和网关进程的环境里没有它们。
+- 代理地址和密码只交给 Xray，浏览器和网关进程的环境里没有它们。
+- VLESS 分享链接完整保留 `encryption`（含 `mlkem768x25519plus`）、`flow`、REALITY 的 `pbk`/`sid`/`sni`、`pqv`（ML-DSA-65 验证公钥）和 `spx`；支持 RAW/TCP、WebSocket、gRPC、HTTPUpgrade 和 XHTTP。`support-x25519mlkem768` 是分享链接的能力提示，Xray 的 Chrome 指纹自动协商密钥交换，无需额外开关。
+- 从旧版本升级：常见分享链接继续使用；原 sing-box JSON 必须转为 Xray JSON，否则启动会明确报错。SOCKS4、Shadowsocks 插件、旧 VMess `aid != 0`、HTTP/2 transport 和 `allowInsecure=1` 不再支持（TLS 自签证书请使用 `pcs` 固定证书 SHA256 或 `vcn` 指定验证名），不会静默降级。
+- Linux 策略路由保留 priority `10010`–`10012` 和 table `20231`。规则按浏览器 UID 选择连接（包括 WebRTC 绑定网卡的 UDP），网关 HTTP 监听端口的回复使用主路由；DNS 地址 `198.18.0.2` 单独路由进 TUN，兼容 Docker 内置解析器。主机网络部署应避免与这些标识冲突。
 - 链接或 JSON 里有 `$` 时，用单引号把整个值括起来，否则 compose 会把它当成变量。
 
 ### 使用预构建镜像
