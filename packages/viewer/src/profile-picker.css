@@ -116,11 +116,57 @@
   gap: 10px;
 }
 
+.profile-entry {
+  position: relative;
+}
+.profile-entry[data-menu-open="true"] {
+  z-index: 1;
+}
+.profile-entry > .profile-card {
+  padding-right: 64px;
+}
+.profile-menu-toggle {
+  position: absolute;
+  right: 8px;
+  top: 14px;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.profile-menu-toggle:hover,
+.profile-menu-toggle[aria-expanded="true"] {
+  background: var(--hover);
+  color: var(--ink);
+}
+.profile-menu-toggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.profile-menu-toggle:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
 .profile-actions {
+  position: absolute;
+  right: 8px;
+  top: 60px;
+  z-index: 1;
   display: flex;
+  flex-direction: column;
   gap: 4px;
-  justify-content: flex-end;
-  padding: 0 4px;
+  min-width: 152px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 14%);
 }
 .profile-actions button {
   min-height: 44px;
@@ -131,6 +177,7 @@
   color: var(--muted);
   font: inherit;
   font-size: 12px;
+  text-align: left;
   cursor: pointer;
 }
 .profile-actions button:hover {

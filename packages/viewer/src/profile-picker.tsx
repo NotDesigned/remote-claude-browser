@@ -2,7 +2,7 @@
  * The first thing a new tab shows after signing in: which browser configuration to open. Each is a
  * Chrome of its own, so the card says who it is signed in to Claude as.
  */
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 
 import {
   createAccount,
@@ -57,8 +57,33 @@ function ProfileCard(props: {
 }) {
   const { account } = props;
   const signedIn = account.signedIn === true;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const entry = useRef<HTMLDivElement>(null);
+  const toggle = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (!menuOpen) return;
+    const outside = (event: PointerEvent) => {
+      if (!entry.current!.contains(event.target as Node)) setMenuOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+        toggle.current!.focus();
+      }
+    };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [menuOpen]);
+  const action = (run: () => void) => {
+    setMenuOpen(false);
+    run();
+  };
   return (
-    <div class="profile-entry">
+    <div class="profile-entry" ref={entry} data-menu-open={menuOpen}>
       <button
         type="button"
         class="profile-card"
@@ -103,42 +128,56 @@ function ProfileCard(props: {
             props.last && <span class="profile-badge">上次使用</span>
           )}
           {account.sessions > 0 && <span class="profile-badge">{account.sessions} 个会话</span>}
-          <span class="profile-arrow" aria-hidden="true">
-            →
-          </span>
         </span>
       </button>
-      <div class="profile-actions">
-        <button
-          type="button"
-          aria-label={`重命名「${account.name}」`}
-          disabled={props.disabled}
-          onClick={props.onRename}
-        >
-          重命名
-        </button>
-        {!props.isDefault && (
-          <>
-            <button
-              type="button"
-              aria-label={`设「${account.name}」为默认`}
-              disabled={props.disabled}
-              onClick={props.onDefault}
-            >
-              设为默认
-            </button>
-            <button
-              type="button"
-              class="profile-delete"
-              aria-label={`删除「${account.name}」`}
-              disabled={props.disabled}
-              onClick={props.onDelete}
-            >
-              删除
-            </button>
-          </>
-        )}
-      </div>
+      <button
+        type="button"
+        class="profile-menu-toggle"
+        ref={toggle}
+        aria-label={`管理「${account.name}」`}
+        aria-expanded={menuOpen}
+        disabled={props.disabled}
+        onClick={() => setMenuOpen(!menuOpen)}
+      >
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+          <circle cx="5" cy="12" r="1.6" />
+          <circle cx="12" cy="12" r="1.6" />
+          <circle cx="19" cy="12" r="1.6" />
+        </svg>
+      </button>
+      {menuOpen && (
+        <div class="profile-actions" role="group" aria-label="配置操作">
+          <button
+            type="button"
+            aria-label={`重命名「${account.name}」`}
+            disabled={props.disabled}
+            onClick={() => action(props.onRename)}
+          >
+            重命名
+          </button>
+          {!props.isDefault && (
+            <>
+              <button
+                type="button"
+                aria-label={`设「${account.name}」为默认`}
+                disabled={props.disabled}
+                onClick={() => action(props.onDefault)}
+              >
+                设为默认
+              </button>
+              <button
+                type="button"
+                class="profile-delete"
+                aria-label={`删除「${account.name}」`}
+                disabled={props.disabled}
+                onClick={() => action(props.onDelete)}
+              >
+                删除
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

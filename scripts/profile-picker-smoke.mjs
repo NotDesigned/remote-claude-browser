@@ -131,6 +131,12 @@ const server = createServer(async (req, res) => {
 });
 server.on("upgrade", (_request, socket) => socket.destroy());
 
+async function openCardMenu(page, name, touch = false) {
+  const trigger = page.getByRole("button", { name: `管理「${name}」`, exact: true });
+  if (touch) await trigger.tap();
+  else await trigger.click();
+}
+
 const watchdog = setTimeout(() => process.exit(124), 120_000);
 let browser;
 try {
@@ -142,32 +148,47 @@ try {
       : await chromium.launch({ executablePath: process.env.CHROME_PATH, headless: true });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const page = await context.newPage();
-  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("pageerror", (error) =>
+    errors.push({ url: page.url(), message: error.message, stack: error.stack }),
+  );
   await page.goto(origin);
   await page.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
   assert.equal(admissions.length, 0, "choosing a configuration must not allocate a session");
   assert.equal(await page.locator("#shell-bar").isVisible(), false);
+  await openCardMenu(page, "默认配置");
+  await page.getByRole("button", { name: "重命名「默认配置」", exact: true }).waitFor();
+  assert.equal(admissions.length, 0);
+  assert.equal(switches.length, 0);
+  await page.keyboard.press("Escape");
+  await page.locator(".profile-actions").waitFor({ state: "hidden" });
+  await openCardMenu(page, "默认配置");
+  await page.getByRole("heading", { name: "选择浏览器配置" }).click();
+  await page.locator(".profile-actions").waitFor({ state: "hidden" });
+  await openCardMenu(page, "默认配置");
   await page.getByRole("button", { name: "重命名「默认配置」", exact: true }).click();
   const rename = page.locator("form.profile-rename-form");
   const newName = page.getByLabel("配置新名称", { exact: true });
   assert.equal(await newName.inputValue(), "默认配置");
   await newName.fill("不保存的名字");
   await rename.getByRole("button", { name: "取消", exact: true }).click();
+  await openCardMenu(page, "默认配置");
   await page.getByRole("button", { name: "重命名「默认配置」", exact: true }).click();
   await newName.fill("Escape 取消");
   await newName.press("Escape");
   await rename.waitFor({ state: "hidden" });
   assert.equal(renames.length, 0);
+  await openCardMenu(page, "默认配置");
   await page.getByRole("button", { name: "重命名「默认配置」", exact: true }).click();
   assert.equal(await newName.getAttribute("maxlength"), "40");
   await newName.fill("   ");
   assert.equal(await rename.getByRole("button", { name: "保存", exact: true }).isEnabled(), false);
   await newName.fill("  研究   配置  ");
   await rename.getByRole("button", { name: "保存", exact: true }).click();
-  await page.getByRole("button", { name: "重命名「研究 配置」", exact: true }).waitFor();
+  await page.getByRole("button", { name: "管理「研究 配置」", exact: true }).waitFor();
   assert.deepEqual(renames.at(-1), { id: "default", name: "研究 配置" });
   await page.reload();
-  await page.getByRole("button", { name: "重命名「研究 配置」", exact: true }).waitFor();
+  await page.getByRole("button", { name: "管理「研究 配置」", exact: true }).waitFor();
+  await openCardMenu(page, "研究 配置");
   await page.getByRole("button", { name: "重命名「研究 配置」", exact: true }).click();
   await newName.fill("失败后重试");
   await page.route("**/api/accounts/default", (route) =>
@@ -184,20 +205,30 @@ try {
   await page.unroute("**/api/accounts/default");
   await newName.fill("默认配置");
   await rename.getByRole("button", { name: "保存", exact: true }).click();
-  await page.getByRole("button", { name: "重命名「默认配置」", exact: true }).waitFor();
+  await page.getByRole("button", { name: "管理「默认配置」", exact: true }).waitFor();
   assert.equal(admissions.length, 0, "renaming before selection must not allocate a session");
   assert.equal(switches.length, 0, "renaming must not switch configurations");
+  await openCardMenu(page, "工作");
   await page.getByRole("button", { name: "设「工作」为默认", exact: true }).click();
   await page.waitForFunction(
     () => document.querySelector("button.profile-card .profile-name")?.textContent === "工作",
   );
   assert.equal(defaultChanges.at(-1), "p-0123456789");
+  await openCardMenu(page, "工作");
+  await page.getByRole("button", { name: "重命名「工作」", exact: true }).waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "设「工作」为默认", exact: true }).count(),
+    0,
+  );
   assert.equal(await page.getByRole("button", { name: "删除「工作」", exact: true }).count(), 0);
+  await page.keyboard.press("Escape");
+  await page.locator(".profile-actions").waitFor({ state: "hidden" });
   await page.reload();
   await page.waitForFunction(
     () => document.querySelector("button.profile-card .profile-name")?.textContent === "工作",
   );
   assert.equal(defaultAccount, "p-0123456789");
+  await openCardMenu(page, "默认配置");
   await page.getByRole("button", { name: "设「默认配置」为默认", exact: true }).click();
   await page.waitForFunction(
     () => document.querySelector("button.profile-card .profile-name")?.textContent === "默认配置",
@@ -211,19 +242,21 @@ try {
     email: null,
   });
   await page
-    .getByRole("button", { name: "删除「可删除配置」", exact: true })
+    .getByRole("button", { name: "管理「可删除配置」", exact: true })
     .waitFor({ timeout: 10_000 });
   page.once("dialog", (dialog) => dialog.dismiss());
+  await openCardMenu(page, "可删除配置");
   await page.getByRole("button", { name: "删除「可删除配置」", exact: true }).click();
   assert.equal(deletions.length, 0);
   page.once("dialog", (dialog) => dialog.accept());
+  await openCardMenu(page, "可删除配置");
   await page.getByRole("button", { name: "删除「可删除配置」", exact: true }).click();
   await page
-    .getByRole("button", { name: "删除「可删除配置」", exact: true })
+    .getByRole("button", { name: "管理「可删除配置」", exact: true })
     .waitFor({ state: "hidden" });
   assert.deepEqual(deletions, ["p-2222222222"]);
   await page.reload();
-  await page.getByRole("button", { name: "重命名「默认配置」", exact: true }).waitFor();
+  await page.getByRole("button", { name: "管理「默认配置」", exact: true }).waitFor();
   assert.equal(await page.getByText("可删除配置", { exact: true }).count(), 0);
   assert.equal(admissions.length, 0);
   assert.equal(switches.length, 0);
@@ -261,18 +294,20 @@ try {
   await page.getByRole("button", { name: "选择浏览器配置…", exact: true }).click();
   await page.getByText("当前使用", { exact: true }).waitFor();
   const beforeBack = admissions.length;
+  await openCardMenu(page, "工作");
   await page.getByRole("button", { name: "重命名「工作」", exact: true }).click();
   await newName.fill("当前工作配置");
   await rename.getByRole("button", { name: "保存", exact: true }).click();
-  await page.getByRole("button", { name: "重命名「当前工作配置」", exact: true }).waitFor();
+  await page.getByRole("button", { name: "管理「当前工作配置」", exact: true }).waitFor();
   await page.getByText("当前使用", { exact: true }).waitFor();
   assert.equal(current, "p-0123456789");
   assert.equal(admissions.length, beforeBack);
   assert.equal(switches.length, 0);
+  await openCardMenu(page, "当前工作配置");
   await page.getByRole("button", { name: "重命名「当前工作配置」", exact: true }).click();
   await newName.fill("工作");
   await rename.getByRole("button", { name: "保存", exact: true }).click();
-  await page.getByRole("button", { name: "重命名「工作」", exact: true }).waitFor();
+  await page.getByRole("button", { name: "管理「工作」", exact: true }).waitFor();
   await page.getByRole("button", { name: "返回会话", exact: true }).click();
   assert.equal(admissions.length, beforeBack);
   await page.getByRole("button", { name: "更多", exact: true }).click();
@@ -325,7 +360,9 @@ try {
     hasTouch: true,
   });
   const phone = await mobile.newPage();
-  phone.on("pageerror", (error) => errors.push(error.message));
+  phone.on("pageerror", (error) =>
+    errors.push({ url: phone.url(), message: error.message, stack: error.stack }),
+  );
   await phone.route("**/api/accounts", (route) =>
     route.fulfill({
       status: 503,
@@ -363,6 +400,7 @@ try {
   await phone.setViewportSize({ width: 320, height: 568 });
   await phone.getByText("配置 8", { exact: true }).waitFor({ timeout: 10_000 });
   const beforePhoneRename = { admissions: admissions.length, switches: switches.length };
+  await openCardMenu(phone, "默认配置", true);
   await phone.getByRole("button", { name: "重命名「默认配置」", exact: true }).tap();
   const phoneRename = phone.locator("form.profile-rename-form");
   const phoneName = phone.getByLabel("配置新名称", { exact: true });
@@ -382,37 +420,63 @@ try {
   assert.ok(renameLayout.left >= 0 && renameLayout.right <= renameLayout.viewport + 1);
   assert.ok(renameLayout.scrollWidth <= renameLayout.clientWidth + 1);
   await phoneRename.getByRole("button", { name: "保存", exact: true }).tap();
-  await phone.getByRole("button", { name: "重命名「手机配置」", exact: true }).waitFor();
+  await phone.getByRole("button", { name: "管理「手机配置」", exact: true }).waitFor();
   await phone.reload();
-  await phone.getByRole("button", { name: "重命名「手机配置」", exact: true }).waitFor();
+  await phone.getByRole("button", { name: "管理「手机配置」", exact: true }).waitFor();
+  await openCardMenu(phone, "手机配置", true);
   await phone.getByRole("button", { name: "重命名「手机配置」", exact: true }).tap();
   await phoneName.fill("默认配置");
   await phoneRename.getByRole("button", { name: "保存", exact: true }).tap();
-  await phone.getByRole("button", { name: "重命名「默认配置」", exact: true }).waitFor();
+  await phone.getByRole("button", { name: "管理「默认配置」", exact: true }).waitFor();
   assert.equal(admissions.length, beforePhoneRename.admissions);
   assert.equal(switches.length, beforePhoneRename.switches);
+  await openCardMenu(phone, "新工作", true);
+  const menuLayout = await phone.locator(".profile-actions").evaluate((menu) => ({
+    left: menu.getBoundingClientRect().left,
+    right: menu.getBoundingClientRect().right,
+    viewport: innerWidth,
+    scrollWidth: menu.scrollWidth,
+    clientWidth: menu.clientWidth,
+    targets: [...menu.querySelectorAll("button")].map(
+      (button) => button.getBoundingClientRect().height,
+    ),
+  }));
+  assert.ok(menuLayout.left >= 0 && menuLayout.right <= menuLayout.viewport + 1);
+  assert.ok(menuLayout.scrollWidth <= menuLayout.clientWidth + 1);
+  assert.ok(menuLayout.targets.every((height) => height >= 44));
   await phone.getByRole("button", { name: "设「新工作」为默认", exact: true }).tap();
   await phone.waitForFunction(
     () => document.querySelector("button.profile-card .profile-name")?.textContent === "新工作",
   );
   assert.equal(defaultAccount, "p-9876543210");
+  await openCardMenu(phone, "新工作", true);
+  await phone.getByRole("button", { name: "重命名「新工作」", exact: true }).waitFor();
+  assert.equal(
+    await phone.getByRole("button", { name: "设「新工作」为默认", exact: true }).count(),
+    0,
+  );
   assert.equal(await phone.getByRole("button", { name: "删除「新工作」", exact: true }).count(), 0);
+  await phone.keyboard.press("Escape");
+  await phone.locator(".profile-actions").waitFor({ state: "hidden" });
   await phone.reload();
   await phone.waitForFunction(
     () => document.querySelector("button.profile-card .profile-name")?.textContent === "新工作",
   );
+  await openCardMenu(phone, "默认配置", true);
   await phone.getByRole("button", { name: "设「默认配置」为默认", exact: true }).tap();
   await phone.waitForFunction(
     () => document.querySelector("button.profile-card .profile-name")?.textContent === "默认配置",
   );
   const beforePhoneDelete = deletions.length;
   phone.once("dialog", (dialog) => dialog.dismiss());
+  await openCardMenu(phone, "配置 7", true);
   await phone.getByRole("button", { name: "删除「配置 7」", exact: true }).tap();
   assert.equal(deletions.length, beforePhoneDelete);
   phone.once("dialog", (dialog) => dialog.accept());
+  await openCardMenu(phone, "配置 7", true);
   await phone.getByRole("button", { name: "删除「配置 7」", exact: true }).tap();
   await phone
-    .getByRole("button", { name: "删除「配置 7」", exact: true })
+    .getByRole("button", { name: "管理「配置 7」", exact: true })
     .waitFor({ state: "hidden" });
   assert.equal(deletions.at(-1), "p-fixture-3");
   assert.equal(admissions.length, beforePhoneRename.admissions);
@@ -481,6 +545,8 @@ try {
       renamePersistsAfterReload: true,
       renameCurrentWithoutSwitching: true,
       phoneRenameLayout: renameLayout,
+      phoneMenuLayout: menuLayout,
+      cardMenuEscapeAndOutsideClose: true,
       defaultConfigPersistsAndSortsFirst: true,
       nonDefaultDeleteCancelAndConfirm: true,
       phoneDefaultAndDeleteWithoutSwitching: true,
