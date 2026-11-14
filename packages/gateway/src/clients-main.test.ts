@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { Readable } from "node:stream";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,8 @@ import { ClientSessionError } from "./session/clients";
 import { createProfileStore } from "./session/profiles";
 
 const hooks = vi.hoisted(() => ({
+  cpaStop: vi.fn(async (_instance: unknown) => {}),
+  stopEgress: vi.fn(async (_scope: string) => {}),
   beforeCreate: undefined as ((name: unknown) => Promise<void>) | undefined,
   beforeRemove: undefined as ((id: unknown) => Promise<void>) | undefined,
   beforeUserUpdate: undefined as
@@ -22,6 +25,36 @@ const hooks = vi.hoisted(() => ({
   }),
   brokerLaunch: vi.fn(async (..._args: unknown[]) => {
     throw new Error("management and forbidden-session requests must never start a broker browser");
+  }),
+}));
+
+vi.mock("./cpa/broker-client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./cpa/broker-client")>()),
+  createCpaBrokerDriver: () => ({
+    ensure: async () => {},
+    stop: hooks.cpaStop,
+    status: async () => "running",
+    request: async () =>
+      Object.assign(
+        Readable.from([
+          JSON.stringify({
+            status: "ok",
+            state: "fixture-state",
+            url: "https://claude.ai/oauth",
+            files: [],
+          }),
+        ]),
+        { statusCode: 200, headers: { "content-type": "application/json" } },
+      ),
+  }),
+}));
+vi.mock("./egress/runtime-client", () => ({
+  createRuntimeClient: () => ({
+    startEgress: async (scope: string) => ({
+      proxyUrl: "http://fixture.invalid",
+      externalProxyUrl: `http://${scope}:x@fixture.invalid`,
+    }),
+    stopEgress: hooks.stopEgress,
   }),
 }));
 
@@ -215,6 +248,66 @@ async function bindExit(app: FastifyInstance, cookie: string, profileId: string)
 }
 
 describe("multi-user management routes", () => {
+  it("binds remote OAuth opening to the owning session and exit, and suspends CPA with its owner", async () => {
+    hooks.cpaStop.mockClear();
+    hooks.stopEgress.mockClear();
+    const { app } = await fixture(async (paths) => {
+      vi.stubEnv("CPA_BROKER_SOCKET", "/fixture-cpa.sock");
+      vi.stubEnv("MIRROR_RUNTIME_SOCKET", "/fixture-runtime.sock");
+      await writeFile(
+        paths.sessions,
+        JSON.stringify([
+          { sid: "client-7", owner: "device-oauth", clientKey: "oauth", createdAt: 1 },
+        ]),
+      );
+    });
+    const admin = withDevice(await login(app), "device-oauth");
+    const instance = (await api(app, admin, "POST", "/api/cpa/instances", { scope: "user" })).json()
+      .instance;
+    expect(
+      (await api(app, admin, "POST", `/api/cpa/instances/${instance.id}/start`)).statusCode,
+    ).toBe(200);
+    await bindExit(app, admin, "default");
+    const source = await api(app, admin, "POST", "/api/proxy-sources", {
+      name: "另一个出口",
+      visibility: "private",
+      content: "http://fixture-user:fixture-secret@second-exit.invalid:8080",
+    });
+    expect(source.statusCode).toBe(200);
+    const nodes = (await api(app, admin, "GET", "/api/proxies")).json().proxies;
+    const second = nodes.find(
+      (node: { sourceId: string }) => node.sourceId === source.json().source.id,
+    );
+    expect(
+      (
+        await api(app, admin, "POST", `/api/cpa/instances/${instance.id}/oauth`, {
+          provider: "claude",
+          proxyId: second.id,
+        })
+      ).statusCode,
+    ).toBe(200);
+    const payload = { instanceId: instance.id, state: "fixture-state" };
+    const path = "/api/client/session/client-7/cpa/oauth";
+    expect(
+      (await api(app, withDevice(admin, "device-another"), "POST", path, payload)).statusCode,
+    ).toBe(403);
+    const mismatch = await api(app, admin, "POST", path, payload);
+    expect(mismatch.statusCode).toBe(409);
+    expect(mismatch.json().error).toBe("CPA_BROWSER_EXIT");
+    expect(hooks.launch).not.toHaveBeenCalled();
+    expect(hooks.brokerLaunch).not.toHaveBeenCalled();
+    const bob = await createBob(app, admin, "admin");
+    const bobCookie = await login(app, "bob", BOB_PASSWORD);
+    expect((await api(app, bobCookie, "POST", path, payload)).statusCode).toBe(403);
+    const user = (await api(app, admin, "GET", "/api/me")).json().user;
+    expect(
+      (await api(app, bobCookie, "PATCH", `/api/users/${user.id}`, { enabled: false })).statusCode,
+    ).toBe(200);
+    expect(hooks.cpaStop).toHaveBeenCalledWith(expect.objectContaining({ id: instance.id }));
+    expect(hooks.stopEgress).toHaveBeenCalledWith(expect.stringMatching(/^scope-/));
+    expect(bob.id).not.toBe(user.id);
+  });
+
   it("persists each session's actual city independently of its timezone and owner", async () => {
     vi.stubEnv("TZ", "Europe/Berlin");
     const kaohsiung = { timeZone: "Asia/Taipei", exitCity: "高雄", exitCountry: "台湾" };

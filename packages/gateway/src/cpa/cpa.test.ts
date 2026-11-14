@@ -120,6 +120,7 @@ describe("CPA instance and key boundaries", () => {
     for (const value of [a, b, shared]) store.setDesiredState(value.id, "running");
     store.setCredentialProxy(a.id, "a.json", "node-a");
     store.setCredentialProxy(a.id, "removed.json", "removed");
+    store.recordOAuth(a.id, "removed-pending", "claude", "removed");
     store.setCredentialProxy(b.id, "b.json", "bobs-proxy");
     store.setCredentialProxy(shared.id, "shared.json", "deployment-default");
     let sharedAdmin = admin;
@@ -128,6 +129,7 @@ describe("CPA instance and key boundaries", () => {
     const result = await runtime.restore(lookup);
     expect(result.restored.sort()).toEqual([a.id, b.id, shared.id].sort());
     expect(result.failures).toEqual([
+      { instanceId: a.id, proxyId: "removed", code: "CPA_OAUTH_PROXY_RESTORE" },
       { instanceId: a.id, proxyId: "removed", code: "CPA_PROXY_RESTORE" },
     ]);
     expect(states.get(a.id)).toBe("running");
@@ -154,7 +156,7 @@ describe("CPA instance and key boundaries", () => {
     proxies.length = 0;
     const started = await runtime.start(alice, a.id);
     expect(proxies).toContainEqual({ userId: alice.id, proxyId: "node-a" });
-    expect(started.proxyFailures).toHaveLength(1);
+    expect(started.proxyFailures).toHaveLength(2);
     users.set(bob.id, { ...bob, enabled: false });
     states.delete(b.id);
     const disabled = await runtime.restore(lookup);
@@ -208,6 +210,96 @@ describe("CPA instance and key boundaries", () => {
     expect(runtime.inference(key.token).id).toBe(value.id);
     store.revokeUserKeys(alice.id);
     expect(() => runtime.inference(key.token)).toThrow();
+  });
+});
+
+describe("CPA authorization lifecycle", () => {
+  it("saves completed authorization without any browser status request", async () => {
+    const { store, runtime, setUpstream } = await fixture();
+    const value = store.create(alice);
+    store.setDesiredState(value.id, "running");
+    let finished = false;
+    setUpstream((_instance, input) => {
+      if (input.path.endsWith("/oauth/auth-url"))
+        return response({ state: "background-state", url: "https://claude.ai/oauth" });
+      if (input.path.endsWith("/oauth/callback")) {
+        finished = true;
+        return response({ status: "ok" });
+      }
+      if (input.path.includes("/oauth/status?"))
+        return response(finished ? { status: "ok", auth_id: "auth-a" } : { status: "wait" });
+      if (input.path.includes("/credentials/download?"))
+        return response({
+          proxy_url: "http://alice:x@runtime-egress:8781",
+          access_token: "never-return-this",
+        });
+      return response({ files: finished ? [{ id: "auth-a", name: "a.json" }] : [] });
+    });
+    await runtime.startOAuth(alice, value.id, "node-a");
+    expect(runtime.oauthPage(alice, value.id, "background-state")).toEqual({
+      url: "https://claude.ai/oauth",
+      proxyId: "node-a",
+    });
+    await runtime.oauthCallback(alice, value.id, {
+      state: "background-state",
+      code: "fixture-code",
+    });
+    expect(store.credentialBindings(value.id)).toEqual([]);
+    expect((await runtime.reconcileOAuth(() => alice)).failures).toEqual([]);
+    expect(store.credentialBindings(value.id)).toEqual([{ name: "a.json", proxyId: "node-a" }]);
+    expect(store.pendingOAuth(value.id)).toEqual([]);
+    expect(() => runtime.oauthPage(alice, value.id, "background-state")).toThrow(
+      "请重新生成授权链接",
+    );
+    await runtime.credentialProxy(alice, value.id, "a.json", "node-b");
+    await runtime.oauthStatus(alice, value.id, "background-state");
+    expect(store.credentialProxy(value.id, "a.json")).toBe("node-b");
+  });
+  it.each(["restore", "status"])(
+    "recovers reauthorization after CPA loses OAuth state via %s",
+    async (mode) => {
+      const { store, runtime, proxies, setUpstream } = await fixture();
+      const value = store.create(alice);
+      store.setDesiredState(value.id, "running");
+      store.recordOAuth(value.id, "lost-state", "claude", "node-a", "https://claude.ai/oauth");
+      store.setCredentialProxy(value.id, "a.json", "old-node");
+      setUpstream((_instance, input) => {
+        if (input.path.includes("/oauth/status?"))
+          return response({ status: "error", error: "unknown or expired state" });
+        if (input.path.includes("/credentials/download?name=legacy.json"))
+          return response({ proxy_url: "http://legacy.invalid:8782" });
+        if (input.path.includes("/credentials/download?"))
+          return response({ proxy_url: "http://alice:x@runtime-egress:8781" });
+        return response({ files: [{ name: "a.json" }, { name: "legacy.json" }] });
+      });
+      if (mode === "restore") expect((await runtime.restore(() => alice)).failures).toEqual([]);
+      else await runtime.oauthStatus(alice, value.id, "lost-state");
+      expect(proxies).toContainEqual({ userId: alice.id, proxyId: "node-a" });
+      expect(store.credentialBindings(value.id)).toEqual([{ name: "a.json", proxyId: "node-a" }]);
+      await runtime.reconcileOAuth(() => alice);
+      expect(store.pendingOAuth(value.id)).toEqual([]);
+    },
+  );
+  it("stops a suspended user's CPA, preserving credentials and other instances", async () => {
+    const { store, runtime, users, states } = await fixture();
+    const own = store.create(alice),
+      other = store.create(bob),
+      shared = store.create(admin, "shared");
+    for (const [user, value] of [
+      [alice, own],
+      [bob, other],
+      [admin, shared],
+    ] as const)
+      await runtime.start(user, value.id);
+    store.setCredentialProxy(own.id, "saved.json", "node-a");
+    users.set(alice.id, { ...alice, enabled: false });
+    await runtime.suspendUser(alice.id);
+    expect(states.get(own.id)).toBe("stopped");
+    expect(store.get(own.id)?.desiredState).toBe("stopped");
+    expect(store.credentialBindings(own.id)).toEqual([{ name: "saved.json", proxyId: "node-a" }]);
+    expect(states.get(other.id)).toBe("running");
+    expect(states.get(shared.id)).toBe("running");
+    await expect(runtime.start(alice, own.id)).rejects.toMatchObject({ code: "USER_DISABLED" });
   });
 });
 

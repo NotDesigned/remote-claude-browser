@@ -97,6 +97,11 @@ export const proxyApi = {
 };
 
 export const cpaApi = {
+  openOAuth: (sid: string, instanceId: string, state: string) =>
+    request<{ ok: true }>(`/api/client/session/${encodeURIComponent(sid)}/cpa/oauth`, "POST", {
+      instanceId,
+      state,
+    }),
   instances: () => request<{ instances: CpaInstance[] }>("/api/cpa/instances"),
   create: (scope: CpaInstance["scope"]) =>
     request<{ instance: CpaInstance }>("/api/cpa/instances", "POST", { scope }),

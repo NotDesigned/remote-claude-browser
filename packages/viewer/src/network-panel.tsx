@@ -7,10 +7,16 @@ import "./network-panel.css";
 export function NetworkPanel({
   user,
   browserProxyId,
+  browserSessionId,
+  open,
+  onOpenBrowser,
   onClose,
 }: {
   user: FrontendUser;
   browserProxyId?: string | null;
+  browserSessionId?: string;
+  open: boolean;
+  onOpenBrowser(): void;
   onClose(): void;
 }) {
   const [tab, setTab] = useState<"proxies" | "cpa">("proxies");
@@ -19,6 +25,7 @@ export function NetworkPanel({
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useLayoutEffect(() => {
+    if (!open) return;
     const previous = document.activeElement;
     close.current!.focus();
     const onKey = (event: KeyboardEvent) => {
@@ -50,10 +57,11 @@ export function NetworkPanel({
       document.removeEventListener("keydown", onKey, true);
       if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
     };
-  }, []);
+  }, [open]);
   return (
     <div
       class="network-panel-backdrop"
+      style={{ display: open ? undefined : "none" }}
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -107,7 +115,12 @@ export function NetworkPanel({
           {tab === "proxies" ? (
             <ProxyPanel user={user} />
           ) : (
-            <CpaPanel user={user} browserProxyId={browserProxyId} />
+            <CpaPanel
+              user={user}
+              browserProxyId={browserProxyId}
+              browserSessionId={browserSessionId}
+              onOpenBrowser={onOpenBrowser}
+            />
           )}
         </div>
       </section>

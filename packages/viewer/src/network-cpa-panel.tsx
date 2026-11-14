@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { FrontendUser } from "./users";
 import {
   cpaApi,
@@ -49,9 +49,13 @@ function ProxySelect({
 export function CpaPanel({
   user,
   browserProxyId,
+  browserSessionId,
+  onOpenBrowser,
 }: {
   user: FrontendUser;
   browserProxyId?: string | null;
+  browserSessionId?: string;
+  onOpenBrowser(): void;
 }) {
   const [instances, setInstances] = useState<CpaInstance[]>([]);
   const [selected, setSelected] = useState("");
@@ -62,12 +66,15 @@ export function CpaPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [oauth, setOAuth] = useState<CpaOAuth | null>(null);
+  const [oauth, setOAuth] = useState<(CpaOAuth & { proxyId: string }) | null>(null);
   const [oauthProxy, setOAuthProxy] = useState<string | null>(null);
   const [callback, setCallback] = useState("");
   const [keyName, setKeyName] = useState("");
   const [issuedKey, setIssuedKey] = useState<(CpaKey & { token: string }) | null>(null);
   const instance = instances.find((item) => item.id === selected);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const detailRequest = useRef(0);
   const preferredOAuthProxy = oauthProxy ?? browserProxyId ?? "";
   const selectedOAuthProxy = proxies.some((proxy) => proxy.id === preferredOAuthProxy)
     ? preferredOAuthProxy
@@ -85,14 +92,17 @@ export function CpaPanel({
     return result.instances;
   };
   const reloadDetails = async (item: CpaInstance) => {
+    const request = ++detailRequest.current;
     const [savedKeys, savedCredentials] = await Promise.all([
       cpaApi.keys(item.id),
       item.status === "running"
         ? cpaApi.credentials(item.id)
         : Promise.resolve({ credentials: [] }),
     ]);
-    setKeys(savedKeys.keys);
-    setCredentials(savedCredentials.credentials);
+    if (selectedRef.current === item.id && detailRequest.current === request) {
+      setKeys(savedKeys.keys);
+      setCredentials(savedCredentials.credentials);
+    }
   };
   useEffect(() => {
     void Promise.all([
@@ -102,7 +112,7 @@ export function CpaPanel({
       .catch((reason: Error) => setError(reason.message))
       .finally(() => setLoading(false));
   }, []);
-  useEffect(() => {
+  useLayoutEffect(() => {
     setCredentials([]);
     setKeys([]);
     setOAuth(null);
@@ -111,8 +121,17 @@ export function CpaPanel({
     setError(null);
     setNotice(null);
     if (instance?.canManage)
-      void reloadDetails(instance).catch((reason: Error) => setError(reason.message));
+      void reloadDetails(instance).catch((reason: Error) => {
+        if (selectedRef.current === instance.id) setError(reason.message);
+      });
+    return () => {
+      detailRequest.current++;
+    };
   }, [selected, instance?.status]);
+  useEffect(() => {
+    setOAuth(null);
+    setCallback("");
+  }, [selectedOAuthProxy]);
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
     setError(null);
@@ -327,7 +346,10 @@ export function CpaPanel({
                     disabled={busy || instance.status !== "running" || !selectedOAuthProxy}
                     onClick={() =>
                       void run(async () => {
-                        setOAuth(await cpaApi.oauth(instance.id, selectedOAuthProxy));
+                        setOAuth({
+                          ...(await cpaApi.oauth(instance.id, selectedOAuthProxy)),
+                          proxyId: selectedOAuthProxy,
+                        });
                         setCallback("");
                       })
                     }
@@ -335,16 +357,25 @@ export function CpaPanel({
                     生成 Claude 授权链接
                   </button>
                 </div>
-                {oauth && (
+                {oauth && oauth.proxyId === selectedOAuthProxy && (
                   <>
-                    <a
-                      class="network-link"
-                      href={oauth.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <button
+                      type="button"
+                      disabled={busy || !browserSessionId || browserProxyId !== oauth.proxyId}
+                      onClick={() =>
+                        void run(async () => {
+                          await cpaApi.openOAuth(browserSessionId!, instance.id, oauth.state);
+                          onOpenBrowser();
+                        })
+                      }
                     >
-                      打开 Claude 授权页 ↗
-                    </a>
+                      在远程浏览器中打开授权页
+                    </button>
+                    {(!browserSessionId || browserProxyId !== oauth.proxyId) && (
+                      <p class="network-muted">
+                        请先打开与授权节点出口一致的浏览器配置，再打开授权页。
+                      </p>
+                    )}
                     <p class="network-muted">
                       在授权页完成操作后，可提交浏览器跳转的完整回调 URL 或授权码。
                     </p>

@@ -1245,15 +1245,22 @@ export function App() {
       {userPanelOpen && user?.role === "admin" && (
         <UserPanel current={user} onClose={() => setUserPanelOpen(false)} onChanged={refreshUser} />
       )}
-      {networkPanelOpen && user && (
+      {user && (
         <NetworkPanel
+          key={user.id}
+          open={networkPanelOpen}
           user={user}
+          browserSessionId={clientPhase === "ready" ? clientSession?.sid : undefined}
           browserProxyId={
             clientPhase === "ready"
               ? accountList?.accounts.find((account) => account.id === accountList.current)?.proxyId
               : undefined
           }
           onClose={() => setNetworkPanelOpen(false)}
+          onOpenBrowser={() => {
+            setNetworkPanelOpen(false);
+            setProfilePickerOpen(false);
+          }}
         />
       )}
       <UrlBar

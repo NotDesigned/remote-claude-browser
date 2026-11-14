@@ -47,6 +47,7 @@ test("broker allowlist includes verified v8 paths and excludes arbitrary managem
   assert.ok(allowedUpstream("POST", "/v8/management/oauth/auth-url"));
   assert.ok(allowedUpstream("GET", "/v8/management/oauth/status?state=one"));
   assert.ok(allowedUpstream("PATCH", "/v8/management/credentials/fields"));
+  assert.ok(allowedUpstream("GET", "/v8/management/credentials/download?name=one.json"));
   assert.ok(allowedUpstream("POST", "/v1/messages"));
   assert.ok(!allowedUpstream("GET", "/v8/management/config.yaml"));
   assert.ok(!allowedUpstream("POST", "/containers/create"));

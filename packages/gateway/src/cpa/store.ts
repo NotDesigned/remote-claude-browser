@@ -96,6 +96,11 @@ export async function createCpaStore(options: { file: string; now?: () => number
       state TEXT PRIMARY KEY, instance_id TEXT NOT NULL REFERENCES cpa_instances(id) ON DELETE CASCADE,
       provider TEXT NOT NULL, proxy_id TEXT, created_at INTEGER NOT NULL
     );`);
+  const oauthColumns = db.prepare("PRAGMA table_info(cpa_oauth_sessions)").all();
+  if (!oauthColumns.some((column) => column.name === "url"))
+    db.exec("ALTER TABLE cpa_oauth_sessions ADD COLUMN url TEXT");
+  if (!oauthColumns.some((column) => column.name === "completed"))
+    db.exec("ALTER TABLE cpa_oauth_sessions ADD COLUMN completed INTEGER NOT NULL DEFAULT 0");
   if (options.file !== ":memory:") {
     await chmod(options.file + "-wal", 0o600);
     await chmod(options.file + "-shm", 0o600);
@@ -129,6 +134,12 @@ export async function createCpaStore(options: { file: string; now?: () => number
   };
   return {
     get,
+    ownedBy(userId: string): CpaInstance | undefined {
+      const row = db
+        .prepare("SELECT * FROM cpa_instances WHERE owner_id=?")
+        .get(userId) as unknown as InstanceRow | undefined;
+      return row && instance(row);
+    },
     runningInstances(): CpaInstance[] {
       return (
         db
@@ -247,17 +258,44 @@ export async function createCpaStore(options: { file: string; now?: () => number
         name,
       );
     },
-    recordOAuth(instanceId: string, state: string, provider: string, proxyId: string | null) {
+    recordOAuth(
+      instanceId: string,
+      state: string,
+      provider: string,
+      proxyId: string | null,
+      url?: string,
+    ) {
       db.prepare("DELETE FROM cpa_oauth_sessions WHERE created_at<?").run(
         now() - 24 * 60 * 60 * 1000,
       );
-      db.prepare("INSERT INTO cpa_oauth_sessions VALUES(?,?,?,?,?)").run(
-        state,
+      db.prepare(
+        "INSERT INTO cpa_oauth_sessions(state,instance_id,provider,proxy_id,created_at,url) VALUES(?,?,?,?,?,?)",
+      ).run(state, instanceId, provider, proxyId, now(), url ?? null);
+    },
+    pendingOAuth(instanceId: string) {
+      return db
+        .prepare(
+          "SELECT state,proxy_id FROM cpa_oauth_sessions WHERE instance_id=? AND completed=0 AND created_at>=?",
+        )
+        .all(instanceId, now() - 24 * 60 * 60 * 1000)
+        .map((row) => ({
+          state: String(row.state),
+          proxyId: row.proxy_id === null ? null : String(row.proxy_id),
+        }));
+    },
+    completeOAuth(instanceId: string, state: string) {
+      db.prepare("UPDATE cpa_oauth_sessions SET completed=1 WHERE instance_id=? AND state=?").run(
         instanceId,
-        provider,
-        proxyId,
-        now(),
+        state,
       );
+    },
+    oauthUrl(instanceId: string, state: string): string | undefined {
+      const row = db
+        .prepare(
+          "SELECT url FROM cpa_oauth_sessions WHERE instance_id=? AND state=? AND completed=0 AND created_at>=?",
+        )
+        .get(instanceId, state, now() - 24 * 60 * 60 * 1000);
+      return typeof row?.url === "string" ? row.url : undefined;
     },
     oauth(
       instanceId: string,

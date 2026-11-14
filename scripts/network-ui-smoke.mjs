@@ -115,6 +115,11 @@ const server = createServer(async (request, response) => {
         sharedAccount: true,
       });
     }
+    if (/^\/api\/client\/session\/[^/]+\/cpa\/oauth$/.test(url.pathname)) {
+      const input = await body(request);
+      operations.push({ type: "oauth-open-remote", input });
+      return json(response, { ok: true });
+    }
     if (url.pathname.endsWith("/theme")) return json(response, { theme: "auto", applied: true });
     if (url.pathname.endsWith("/downloads")) return json(response, []);
     if (url.pathname === "/api/proxies")
@@ -506,7 +511,7 @@ try {
     await panel.getByText("legacy@example.com", { exact: true }).waitFor({ state: "hidden" });
     await oauthProxy.selectOption("proxy-private");
     await click(panel.getByRole("button", { name: "生成 Claude 授权链接", exact: true }));
-    await panel.getByRole("link", { name: "打开 Claude 授权页 ↗", exact: true }).waitFor();
+    await panel.getByRole("button", { name: "在远程浏览器中打开授权页", exact: true }).waitFor();
     assert.deepEqual(operations.at(-1), {
       type: "cpa-oauth",
       id: ownInstance.id,
@@ -640,13 +645,34 @@ try {
       "a rerender must preserve the manual override",
     );
     await click(panel.getByRole("button", { name: "生成 Claude 授权链接", exact: true }));
-    await panel.getByRole("link", { name: "打开 Claude 授权页 ↗", exact: true }).waitFor();
+    await panel.getByRole("button", { name: "在远程浏览器中打开授权页", exact: true }).waitFor();
     assert.deepEqual(operations.filter((item) => item.type === "cpa-oauth").at(-1).input, {
       provider: "claude",
       proxyId: "proxy-shared",
     });
+    const remoteOpen = panel.getByRole("button", { name: "在远程浏览器中打开授权页", exact: true });
+    assert.equal(await remoteOpen.isDisabled(), true, "different browser exit must block opening");
+    await inheritedOAuthProxy.selectOption("proxy-private");
+    await remoteOpen.waitFor({ state: "hidden" });
+    await click(panel.getByRole("button", { name: "生成 Claude 授权链接", exact: true }));
+    await remoteOpen.waitFor();
+    assert.equal(await remoteOpen.isDisabled(), false);
+    const popupEvents = [];
+    page.on("popup", (popup) => popupEvents.push(popup));
+    await click(remoteOpen);
+    await panel.waitFor({ state: "hidden" });
+    assert.equal(operations.at(-1).type, "oauth-open-remote");
+    assert.equal(popupEvents.length, 0, "OAuth must not open a local external browser tab");
+    assert.equal(
+      await page.getByRole("button", { name: "返回会话", exact: true }).count(),
+      0,
+      "remote OAuth must dismiss the profile picker",
+    );
+    await click(page.getByRole("button", { name: /^更多/ }));
+    await click(page.getByRole("button", { name: "代理与 API", exact: true }));
+    await remoteOpen.waitFor();
+    await panel.getByLabel("授权回调 URL 或授权码").waitFor();
     await click(panel.getByRole("button", { name: "关闭代理与 API 管理", exact: true }));
-    await click(page.getByRole("button", { name: "返回会话", exact: true }));
     checks.push({
       mobile,
       privateImportEditSubscriptionRefreshDelete: true,
@@ -668,6 +694,59 @@ try {
       pickerToolbarWithBackAndNetwork: toolbarLayout,
       layout,
     });
+    await context.close();
+  }
+  // A delayed response for the private instance must never populate the shared instance.
+  {
+    const own = instances.find((item) => item.ownerId === "admin" && item.scope === "user");
+    own.status = "running";
+    instances.find((item) => item.scope === "shared").status = "running";
+    credentials.set(own.id, [
+      {
+        name: "same.json",
+        email: "private-race@example.test",
+        provider: "claude",
+        proxyId: "proxy-admin",
+      },
+    ]);
+    credentials.set("cpa-shared", [
+      {
+        name: "same.json",
+        email: "shared-race@example.test",
+        provider: "claude",
+        proxyId: "proxy-shared",
+      },
+    ]);
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    let release, seen;
+    const held = new Promise((resolve) => (release = resolve));
+    const requested = new Promise((resolve) => (seen = resolve));
+    await page.route(`**/api/cpa/instances/${own.id}/credentials`, async (route) => {
+      seen();
+      await held;
+      await route.continue();
+    });
+    await page.goto(origin);
+    await page.getByRole("button", { name: "代理与 API", exact: true }).click();
+    await page.getByRole("tab", { name: "CPA 授权与 Key", exact: true }).click();
+    await requested;
+    await page.getByRole("button", { name: /共享实例/ }).click();
+    await page.getByText("shared-race@example.test", { exact: true }).waitFor();
+    const returned = page.waitForResponse((response) =>
+      response.url().endsWith(`/api/cpa/instances/${own.id}/credentials`),
+    );
+    release();
+    await returned;
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    );
+    assert.equal(await page.getByText("private-race@example.test", { exact: true }).count(), 0);
+    assert.equal(
+      await page.getByText("shared-race@example.test", { exact: true }).isVisible(),
+      true,
+    );
+    checks.push({ lateInstanceResponseDiscarded: true });
     await context.close();
   }
   assert.deepEqual(errors, []);

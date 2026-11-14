@@ -31,7 +31,7 @@ import { createProxyCatalog, ProxyCatalogError } from "./egress/catalog";
 import { registerProxyRoutes } from "./egress/routes";
 import { createRuntimeClient } from "./egress/runtime-client";
 import type { ExitMetadata } from "./egress/timezone";
-import { createCpaStore } from "./cpa/store";
+import { CpaError, createCpaStore } from "./cpa/store";
 import { createCpaRuntime } from "./cpa/runtime";
 import { createCpaBrokerDriver } from "./cpa/broker-client";
 import { registerCpaRoutes, registerCpaInferenceRoutes } from "./cpa/routes";
@@ -1713,6 +1713,57 @@ export async function startClientGateway(
           .catch(() => null)) ?? null,
     }),
   );
+  app.post<{ Params: { sid: string }; Body: { instanceId: string; state: string } }>(
+    "/api/client/session/:sid/cpa/oauth",
+    {
+      preHandler: requireSession(),
+      bodyLimit: 4096,
+      schema: {
+        body: {
+          type: "object",
+          required: ["instanceId", "state"],
+          additionalProperties: false,
+          properties: {
+            instanceId: { type: "string", minLength: 1 },
+            state: { type: "string", minLength: 1 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        return await accountLifecycle.run(async () => {
+          const owner = currentOwner(request.raw);
+          if (!owner || !ownsSession(request.raw, request.params.sid))
+            throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个会话不属于当前客户端");
+          const user = requireLiveOwner(request.raw, owner);
+          if (!cpaRuntime) throw new CpaError(503, "CPA_DISABLED", "CPA 未启用");
+          const oauth = cpaRuntime.oauthPage(user, request.body.instanceId, request.body.state);
+          const profileId = clientSessions.profileOf(request.params.sid);
+          requireBrowserExit(profileId);
+          if (accountStore.get(profileId)?.proxyId !== oauth.proxyId)
+            throw new CpaError(
+              409,
+              "CPA_BROWSER_EXIT",
+              "当前浏览器出口与授权节点不同，请选择出口一致的浏览器配置",
+            );
+          const runtime = await ensureRuntimeLocked(request.params.sid);
+          requireLiveOwner(request.raw, owner);
+          await runtime.tabs.handle({
+            t: "nav",
+            tab: runtime.tabs.activeTabId ?? "",
+            action: "newtab",
+            url: oauth.url,
+          });
+          return { ok: true };
+        });
+      } catch (error) {
+        if (error instanceof CpaError)
+          return reply.code(error.statusCode).send({ error: error.code, message: error.message });
+        return clientError(reply, error);
+      }
+    },
+  );
   app.post<{ Params: { sid: string }; Body: { theme?: unknown; systemDark?: unknown } }>(
     "/s/:sid/theme",
     { preHandler: requireSession(), bodyLimit: 1024 },
@@ -1734,6 +1785,11 @@ export async function startClientGateway(
   /** Revocation must finish cleaning every Chrome even if one renderer refuses to close. */
   async function closeUserWorkspacesLocked(userId: string, profiles: string[]) {
     const failures: unknown[] = [];
+    try {
+      await cpaRuntime?.suspendUser(userId);
+    } catch (error) {
+      failures.push(error);
+    }
     for (const record of clientSessions.all()) {
       if (userIdForOwner(record.owner) !== userId) continue;
       closing.add(record.sid);
@@ -1755,6 +1811,28 @@ export async function startClientGateway(
     for (const id of profiles) {
       const account = accounts.get(id);
       if (account) await closeAccount(account);
+    }
+    for (const [nodeId, scopes] of scopedExits) {
+      const scope = `scope-${createHash("sha256").update(`${userId}/${nodeId}`).digest("hex").slice(0, 32)}`;
+      if (!scopes.has(scope)) continue;
+      const sharedUsesNode = cpaStore
+        ?.runningInstances()
+        .some(
+          (instance) =>
+            instance.scope === "shared" &&
+            [
+              ...cpaStore.credentialBindings(instance.id),
+              ...cpaStore.pendingOAuth(instance.id),
+            ].some((binding) => binding.proxyId === nodeId),
+        );
+      if (sharedUsesNode) continue;
+      try {
+        await networkRuntime.stopEgress(scope);
+        scopes.delete(scope);
+        if (!scopes.size) scopedExits.delete(nodeId);
+      } catch (error) {
+        failures.push(error);
+      }
     }
     broadcastStatus();
     if (failures.length) throw new AggregateError(failures, "Could not persist revoked workspaces");
@@ -1994,6 +2072,21 @@ export async function startClientGateway(
     e2e ? 200 : 3000,
   );
   idleTimer.unref?.();
+  let oauthSync: Promise<unknown> | undefined;
+  const oauthTimer = cpaRuntime
+    ? setInterval(() => {
+        if (oauthSync) return;
+        oauthSync = cpaRuntime
+          .reconcileOAuth((instance) =>
+            instance.ownerId ? userStore.getUser(instance.ownerId) : userStore.bootstrapAdmin,
+          )
+          .catch((error) => report("CPA authorization sync failed", error))
+          .finally(() => {
+            oauthSync = undefined;
+          });
+      }, 3000)
+    : undefined;
+  oauthTimer?.unref();
   let stopPromise: Promise<void> | undefined;
   const signalHandlers = new Map<NodeJS.Signals, () => void>();
   const stop = (): Promise<void> => {
@@ -2002,12 +2095,15 @@ export async function startClientGateway(
     clearInterval(healthTimer);
     clearInterval(statusTimer);
     clearInterval(idleTimer);
+    clearInterval(oauthTimer);
     idleReaper.dispose();
     for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
     stopPromise = (async () => {
       await ws.close().catch(() => {});
       await assetFetcher.close().catch((error) => report("asset shutdown failed", error));
       await app.close().catch(() => {});
+      await oauthSync;
+      await cpaRuntime?.drain();
       await accountLifecycle.run(async () => {
         for (const runtime of runtimes.values()) {
           await runtime.stop().catch((error) => report("client shutdown failed", error));
