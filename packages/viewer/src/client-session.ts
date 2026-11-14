@@ -17,6 +17,8 @@ export interface ClientSession extends OwnedClientSession {
 export interface ClientSessionRequest {
   clientKey: string;
   sid?: string;
+  /** The browser configuration a new session starts with. */
+  account?: string;
 }
 
 export class ClientSessionError extends Error {
@@ -34,6 +36,21 @@ export class ClientSessionError extends Error {
 export function clientPageMode(url: URL): "fixture" | "closed" | "session" {
   if (url.searchParams.get("closed") === "1") return "closed";
   return url.searchParams.has("fixture") ? "fixture" : "session";
+}
+
+/**
+ * Whether this tab is coming back to a session it already had: a reload, or a link to one. A fresh
+ * tab, or a new-session link, chooses its browser configuration first.
+ */
+export function resumesClientSession(url: URL, storage: Pick<Storage, "getItem">): boolean {
+  if (url.searchParams.get("new") === "1") return false;
+  if (url.searchParams.get("sid")) return true;
+  try {
+    const stored = storage.getItem(CLIENT_KEY_STORAGE_KEY);
+    return stored !== null && isUuid(stored);
+  } catch {
+    return false;
+  }
 }
 
 /** A reload reuses this tab's key; an explicit new-session link rotates it exactly once. */
@@ -93,7 +110,10 @@ export async function requestClientSession(
       error.status === 403 &&
       error.code === "CLIENT_FORBIDDEN"
     ) {
-      return requestClientSession({ clientKey: request.clientKey }, options);
+      return requestClientSession(
+        { clientKey: request.clientKey, ...(request.account ? { account: request.account } : {}) },
+        options,
+      );
     }
     throw error;
   }

@@ -46,8 +46,10 @@ import {
   endClientSession,
   prepareClientSession,
   requestClientSession,
+  resumesClientSession,
   type ClientSession,
 } from "./client-session";
+import { ProfilePicker } from "./profile-picker";
 import "@rrweb/replay/dist/style.css";
 import "./app.css";
 import "./shell.css";
@@ -132,8 +134,10 @@ export function App() {
   const [userPanelOpen, setUserPanelOpen] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
   const [userError, setUserError] = useState<string | null>(null);
+  /** The configuration this tab's picker chose; a reload resumes without one. */
+  const [pickedAccount, setPickedAccount] = useState<string | null>(null);
   const [clientPhase, setClientPhase] = useState<
-    "starting" | "ready" | "error" | "ending" | "closed" | "replaced"
+    "picking" | "starting" | "ready" | "error" | "ending" | "closed" | "replaced"
   >(() => {
     const mode = clientPageMode(new URL(window.location.href));
     return mode === "closed" ? "closed" : mode === "fixture" ? "ready" : "starting";
@@ -366,6 +370,16 @@ export function App() {
       return;
     }
     if (pageMode === "fixture") return;
+    let resuming = false;
+    try {
+      resuming = resumesClientSession(url, window.sessionStorage);
+    } catch {
+      // The picker is still usable when accessing sessionStorage itself is blocked.
+    }
+    if (pickedAccount === null && !resuming) {
+      setClientPhase("picking");
+      return;
+    }
     let active = true;
     const controller = new AbortController();
     setClientPhase("starting");
@@ -376,7 +390,10 @@ export function App() {
         const request = prepareClientSession(url, window.sessionStorage, (nextUrl) => {
           window.history.replaceState(window.history.state, "", nextUrl);
         });
-        const session = await requestClientSession(request, { signal: controller.signal });
+        const session = await requestClientSession(
+          pickedAccount === null ? request : { ...request, account: pickedAccount },
+          { signal: controller.signal },
+        );
         if (!active || !mountedRef.current || controller.signal.aborted) return;
         const currentUrl = new URL(window.location.href);
         currentUrl.searchParams.set("sid", session.sid);
@@ -401,7 +418,7 @@ export function App() {
       active = false;
       controller.abort();
     };
-  }, [bootstrapAttempt]);
+  }, [bootstrapAttempt, pickedAccount]);
 
   useEffect(() => {
     const timer = setInterval(() => setStatusNow(Date.now()), 1_000);
@@ -1139,7 +1156,12 @@ export function App() {
   };
 
   return (
-    <div id="shell" data-theme={theme} data-connection={connection}>
+    <div
+      id="shell"
+      data-theme={theme}
+      data-connection={connection}
+      data-picking={clientPhase === "picking"}
+    >
       <ShellBar
         viewMode={(activeTab !== null && modeByTab[activeTab]) || viewMode}
         onViewMode={changeView}
@@ -1252,7 +1274,18 @@ export function App() {
           </button>
         </section>
       )}
-      {clientPhase !== "ready" && (
+      {clientPhase === "picking" && (
+        <ProfilePicker
+          onPick={setPickedAccount}
+          username={user?.username}
+          dark={theme === "dark"}
+          onTheme={() => setThemePreference(theme === "dark" ? "light" : "dark")}
+          onLogout={() => void signOut()}
+          logoutPending={logoutPending}
+          logoutError={userError}
+        />
+      )}
+      {clientPhase !== "ready" && clientPhase !== "picking" && (
         <section
           id="client-session-overlay"
           class="client-session-overlay"
@@ -1334,6 +1367,9 @@ export function App() {
               )}
               {clientPhase === "error" && clientError?.status === 401 && (
                 <a href="/gate">重新登录</a>
+              )}
+              {clientPhase === "error" && !endFailure && pickedAccount !== null && (
+                <a href="/?new=1">重新选择配置</a>
               )}
               {clientPhase === "error" && endFailure && clientSession !== null && (
                 <a href={clientReturnUrl(clientSession.sid)}>返回当前会话</a>

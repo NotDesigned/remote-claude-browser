@@ -10,6 +10,12 @@ export interface AccountInfo {
   running: boolean;
   /** How many sessions, on any device, use it. */
   sessions: number;
+  /** Whether it is signed in to Claude. */
+  signedIn?: boolean;
+  /** The Claude account it is signed in as, once seen. */
+  email?: string | null;
+  /** Claude explicitly rejected the account, for example because it was disabled. */
+  unavailable?: boolean;
 }
 
 export interface AccountList {
@@ -68,7 +74,14 @@ export async function createAccount(name: string, fetcher?: typeof fetch): Promi
     fetcher,
   );
   const made = (await response.json()) as { id: string; name: string };
-  return { id: made.id, name: made.name, running: false, sessions: 0 };
+  return {
+    id: made.id,
+    name: made.name,
+    running: false,
+    sessions: 0,
+    signedIn: false,
+    email: null,
+  };
 }
 
 export async function renameAccount(

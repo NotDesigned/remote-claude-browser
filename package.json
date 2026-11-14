@@ -33,6 +33,7 @@
     "test": "bash scripts/limited-run.sh bash -c 'pnpm -r --workspace-concurrency=1 --if-present run test && pnpm run test:deployment'",
     "test:deployment": "bash scripts/limited-run.sh node --test deploy/timezone.test.mjs deploy/egress-proxy.test.mjs deploy/fetch-xray.test.mjs deploy/cpa.test.mjs scripts/probe-session.test.mjs",
     "test:users-ui": "bash scripts/limited-run.sh node scripts/user-ui-smoke.mjs",
+    "test:profiles-ui": "bash scripts/limited-run.sh node scripts/profile-picker-smoke.mjs",
     "test:remote": "bash scripts/limited-run.sh node scripts/remote-smoke.mjs",
     "format": "bash scripts/limited-run.sh bash -c 'prettier --write .'",
     "format:check": "bash scripts/limited-run.sh bash -c 'prettier --check .'",

@@ -16,6 +16,11 @@ export interface ProfileRecord {
   id: string;
   name: string;
   createdAt: number;
+  /** The Claude account it was last seen signed in to; null once seen signed out. */
+  email?: string | null;
+  signedIn?: boolean;
+  /** The site explicitly rejected this account, rather than just failing to respond. */
+  unavailable?: boolean;
 }
 
 export function isProfileId(value: unknown): value is string {
@@ -55,6 +60,11 @@ export async function createProfileStore(
           id: record.id,
           name: cleanName(record.name),
           createdAt: record.createdAt!,
+          ...(typeof record.email === "string" || record.email === null
+            ? { email: record.email }
+            : {}),
+          ...(record.unavailable === true ? { unavailable: true } : {}),
+          ...(typeof record.signedIn === "boolean" ? { signedIn: record.signedIn } : {}),
         });
       }
     } catch (error) {
@@ -118,6 +128,24 @@ export async function createProfileStore(
         throw error;
       }
       return record;
+    },
+    /** Remembers who it is signed in as. Unchanged values are not written again. */
+    async setLogin(
+      id: string,
+      login: { email: string | null; signedIn: boolean; unavailable?: boolean },
+    ): Promise<void> {
+      const record = records.get(id);
+      if (
+        !record ||
+        (record.email === login.email &&
+          record.signedIn === login.signedIn &&
+          !!record.unavailable === !!login.unavailable)
+      )
+        return;
+      record.email = login.email;
+      record.signedIn = login.signedIn;
+      record.unavailable = !!login.unavailable;
+      await persist();
     },
     async remove(id: unknown): Promise<void> {
       const record = known(id);

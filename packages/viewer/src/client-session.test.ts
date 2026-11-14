@@ -277,6 +277,23 @@ describe("client session bootstrap", () => {
     expect(forbidden).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps the chosen browser configuration when a stale session link is retried", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: "CLIENT_FORBIDDEN" }), { status: 403 }),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify(SESSION), { status: 200 }));
+    await requestClientSession(
+      { clientKey: FIRST_KEY, sid: "client-5", account: "p-0123456789" },
+      { fetcher },
+    );
+    expect(JSON.parse(fetcher.mock.calls[1]![1]?.body as string)).toEqual({
+      clientKey: FIRST_KEY,
+      account: "p-0123456789",
+    });
+  });
+
   it("keeps independent sessions in WebSocket and return URLs", () => {
     expect(clientGatewayUrl("https://viewer.test/?new=1", "client-2")).toBe(
       "wss://viewer.test/ws?sid=client-2",
@@ -302,5 +319,20 @@ describe("client session bootstrap", () => {
       },
     };
     expect(preferredViewMode(blocked)).toBe("dom");
+  });
+});
+
+describe("choosing a configuration first", () => {
+  const storage = (value: string | null) => ({ getItem: () => value });
+  const key = "6f1c2b0e-8a4d-4c1e-9f2a-3b5d7e9a1c4f";
+  it("asks a fresh tab, and a new-session link, to choose", async () => {
+    const { resumesClientSession } = await import("./client-session");
+    expect(resumesClientSession(new URL("https://x/"), storage(null))).toBe(false);
+    expect(resumesClientSession(new URL("https://x/?new=1"), storage(key))).toBe(false);
+  });
+  it("resumes a reload or a link to a session", async () => {
+    const { resumesClientSession } = await import("./client-session");
+    expect(resumesClientSession(new URL("https://x/"), storage(key))).toBe(true);
+    expect(resumesClientSession(new URL("https://x/?sid=client-2"), storage(null))).toBe(true);
   });
 });

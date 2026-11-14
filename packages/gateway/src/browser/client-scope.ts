@@ -48,6 +48,8 @@ const WINDOW_OFFSETS = 24;
 export interface ClientBrowserPoolOptions {
   /** Someone signed in, so pages waiting on a sign-in screen can leave it. */
   onSignedIn?(): void;
+  /** Each check of the login cookie: whether it is signed in, and whether the login changed. */
+  onLoginState?(signedIn: boolean, changed: boolean): void;
   /** New windows open this size, as a maximised window on the account's screen would be. */
   windowSize?: { width: number; height: number };
 }
@@ -170,19 +172,25 @@ export function createClientBrowserPool(
 
   let login: string | undefined;
   let loginRead = false;
-  const loginTimer = options.onSignedIn
-    ? setInterval(() => {
-        void poolSend("Storage.getCookies")
-          .then((saved) => {
-            const current = loginValue((saved as { cookies?: Record<string, unknown>[] }).cookies);
-            const signedIn = loginRead && current !== undefined && current !== login;
-            login = current;
-            loginRead = true;
-            if (signedIn && !disposed) options.onSignedIn!();
-          })
-          .catch(() => undefined);
-      }, LOGIN_CHECK_MS)
-    : undefined;
+  const loginTimer =
+    options.onSignedIn || options.onLoginState
+      ? setInterval(() => {
+          void poolSend("Storage.getCookies")
+            .then((saved) => {
+              const current = loginValue(
+                (saved as { cookies?: Record<string, unknown>[] }).cookies,
+              );
+              const changed = current !== login;
+              const signedIn = loginRead && current !== undefined && changed;
+              login = current;
+              loginRead = true;
+              if (disposed) return;
+              if (signedIn) options.onSignedIn?.();
+              options.onLoginState?.(current !== undefined, changed);
+            })
+            .catch(() => undefined);
+        }, LOGIN_CHECK_MS)
+      : undefined;
   loginTimer?.unref?.();
 
   function scope(sid: string): ClientBrowserScope {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import {
   createUser,
   deleteUser,
@@ -48,7 +48,7 @@ export function UserPanel({
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previous = document.activeElement;
     close.current?.focus();
     const onKey = (event: KeyboardEvent) => {

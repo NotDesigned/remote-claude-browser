@@ -27,6 +27,7 @@ import {
 } from "./browser/client-scope";
 import { launchBrowser, type BrowserHandle, type BrowserTargetInfo } from "./browser/launch";
 import { createAccountDisplay, type AccountDisplay } from "./browser/display";
+import { createClaudeLoginTracker, profileSignedIn } from "./claude/signed-in";
 import { browserIdentity, identityEnvironment, type BrowserIdentity } from "./browser/identity";
 import { connectRemoteBrowser } from "./browser/remote";
 import { createNavigationController } from "./browser/nav";
@@ -70,6 +71,7 @@ interface Account {
   display?: AccountDisplay;
   identity: BrowserIdentity;
   pool: ReturnType<typeof createClientBrowserPool>;
+  login: ReturnType<typeof createClaudeLoginTracker>;
   agent: ReturnType<typeof createAgentLink>;
   themeCopies: ReturnType<typeof createThemeCopies>;
   downloads: Awaited<ReturnType<typeof createDownloadManager>>;
@@ -643,6 +645,14 @@ export async function startClientGateway(
         return false;
       },
     );
+    const frameOwners = new Map<string, string>();
+    const sessionTargets = new Map<string, string>();
+    const login = createClaudeLoginTracker(browser, sessionTargets, {
+      email: accountStore.get(id)?.email,
+      signedIn: accountStore.get(id)?.signedIn,
+      unavailable: accountStore.get(id)?.unavailable,
+      save: (login) => accountStore.setLogin(id, login),
+    });
     const pool = createClientBrowserPool(browser, {
       windowSize: identity.screen,
       onSignedIn: () => {
@@ -658,9 +668,8 @@ export async function startClientGateway(
           }
         }
       },
+      onLoginState: login.observe,
     });
-    const frameOwners = new Map<string, string>();
-    const sessionTargets = new Map<string, string>();
     browser.onAttached((target) => sessionTargets.set(target.sessionId, target.targetId));
     browser.onDetached((target) => {
       if (sessionTargets.get(target.sessionId) === target.targetId)
@@ -731,6 +740,7 @@ export async function startClientGateway(
       identity,
       display,
       pool,
+      login,
       agent,
       themeCopies,
       downloads,
@@ -808,6 +818,7 @@ export async function startClientGateway(
 
   async function closeAccount(account: Account): Promise<void> {
     if (accounts.get(account.id) === account) accounts.delete(account.id);
+    account.login.dispose();
     account.downloads.close();
     account.pool.dispose();
     await account.browser.close().catch(() => {});
@@ -1154,7 +1165,7 @@ export async function startClientGateway(
       .code(503)
       .send({ error: "远程会话暂不可用，请稍后重试", code: "CLIENT_UNAVAILABLE" });
   };
-  app.post<{ Body: { clientKey?: unknown; sid?: unknown } }>(
+  app.post<{ Body: { clientKey?: unknown; sid?: unknown; account?: unknown } }>(
     "/api/client/session",
     async (request, reply) => {
       const owner = currentOwner(request.raw);
@@ -1162,6 +1173,14 @@ export async function startClientGateway(
       try {
         return await accountLifecycle.run(async () => {
           const user = requireLiveOwner(request.raw, owner);
+          const chosen = request.body?.account;
+          if (
+            chosen !== undefined &&
+            (typeof chosen !== "string" ||
+              !accountStore.has(chosen) ||
+              userStore.profileOwner(chosen) !== user.id)
+          )
+            throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
           const existing = clientSessions
             .all()
             .some(
@@ -1191,7 +1210,7 @@ export async function startClientGateway(
               await clientSessions.setProfile(
                 owner,
                 record.sid,
-                await defaultProfileFor(user, record.sid),
+                typeof chosen === "string" ? chosen : await defaultProfileFor(user, record.sid),
               );
             }
             idleReaper.touch(record.sid);
@@ -1325,14 +1344,24 @@ export async function startClientGateway(
     accountStore
       .all()
       .filter((record) => userStore.profileOwner(record.id) === user.id)
-      .map((record) => ({
-        id: record.id,
-        name: record.name,
-        running: accounts.has(record.id),
-        sessions: clientSessions
-          .all()
-          .filter((session) => (session.profile ?? DEFAULT_PROFILE) === record.id).length,
-      }));
+      .map((record) => {
+        const live = accounts.get(record.id)?.login.current();
+        const hasCookie = live ? live.signedIn : profileSignedIn(accountDir(record.id));
+        const unavailable = live ? !!live.unavailable : hasCookie && !!record.unavailable;
+        const signedIn =
+          hasCookie && !unavailable && (live ? live.signedIn : record.signedIn !== false);
+        return {
+          id: record.id,
+          name: record.name,
+          running: accounts.has(record.id),
+          signedIn,
+          unavailable,
+          email: signedIn ? (live ? live.email : (record.email ?? null)) : null,
+          sessions: clientSessions
+            .all()
+            .filter((session) => (session.profile ?? DEFAULT_PROFILE) === record.id).length,
+        };
+      });
   app.get<{ Querystring: { sid?: string } }>("/api/accounts", async (request, reply) => {
     const owner = currentOwner(request.raw);
     const user = currentUser(request.raw);

@@ -52,4 +52,25 @@ describe("accounts", () => {
       code: "PROFILE_UNKNOWN",
     });
   });
+
+  it("remembers a signed-in email and an unavailable account across restarts, and clears them on logout", async () => {
+    dir = await mkdtemp(join(tmpdir(), "profile-login-"));
+    const file = join(dir, "accounts.json");
+    const store = await createProfileStore({ file });
+    await store.setLogin(DEFAULT_PROFILE, { email: "work@example.com", signedIn: true });
+    expect((await createProfileStore({ file })).get(DEFAULT_PROFILE)?.email).toBe(
+      "work@example.com",
+    );
+    await store.setLogin(DEFAULT_PROFILE, { email: null, signedIn: false, unavailable: true });
+    expect((await createProfileStore({ file })).get(DEFAULT_PROFILE)).toMatchObject({
+      email: null,
+      unavailable: true,
+    });
+    await store.setLogin(DEFAULT_PROFILE, { email: null, signedIn: false });
+    expect((await createProfileStore({ file })).get(DEFAULT_PROFILE)).toMatchObject({
+      email: null,
+      signedIn: false,
+    });
+    expect((await createProfileStore({ file })).get(DEFAULT_PROFILE)?.unavailable).not.toBe(true);
+  });
 });

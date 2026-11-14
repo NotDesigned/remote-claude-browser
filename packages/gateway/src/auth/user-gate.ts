@@ -126,7 +126,7 @@ export function createUserGate(options: {
             return reply
               .code(303)
               .header("cache-control", "no-store")
-              .header("location", "/")
+              .header("location", "/?new=1")
               .send();
           } finally {
             attempt.pending = false;

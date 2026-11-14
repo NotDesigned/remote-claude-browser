@@ -133,6 +133,7 @@ try {
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("dialog", (dialog) => dialog.accept());
   await page.goto(origin);
+  await page.getByRole("button", { name: /默认配置.*未登录/ }).click();
   await page.getByRole("button", { name: "更多", exact: true }).click();
   await page.getByRole("button", { name: "用户管理", exact: true }).click();
   const panel = page.getByRole("dialog", { name: "用户管理", exact: true });
@@ -191,6 +192,9 @@ try {
   checks.passwordNotPersisted = true;
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "hidden" });
+  await page.waitForFunction(
+    () => document.querySelector("#shell-menu-toggle") === document.activeElement,
+  );
   assert.equal(
     await page
       .locator("#shell-menu-toggle")
@@ -207,6 +211,7 @@ try {
   const phone = await mobile.newPage();
   phone.on("pageerror", (error) => pageErrors.push(error.message));
   await phone.goto(origin);
+  await phone.getByRole("button", { name: /默认配置.*未登录/ }).tap();
   await phone.getByRole("button", { name: "更多", exact: true }).tap();
   await phone.getByRole("button", { name: "用户管理", exact: true }).tap();
   const phonePanel = phone.getByRole("dialog", { name: "用户管理", exact: true });
@@ -233,6 +238,7 @@ try {
   const reader = await ordinary.newPage();
   reader.on("pageerror", (error) => pageErrors.push(error.message));
   await reader.goto(origin);
+  await reader.getByRole("button", { name: /默认配置.*未登录/ }).click();
   await reader.getByRole("button", { name: "更多", exact: true }).click();
   await reader
     .getByRole("group", { name: "当前用户", exact: true })

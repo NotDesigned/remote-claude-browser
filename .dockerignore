@@ -15,4 +15,5 @@ artifacts
 requirement.md
 *.log
 .cache
+local
 .vite

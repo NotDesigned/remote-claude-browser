@@ -315,6 +315,8 @@ describe("multi-user management routes", () => {
       ["POST", "/api/client/session/client-1/account", { account: bobProfile }],
       ["POST", "/api/client/session/client-2/account", { account: "default" }],
       ["POST", "/api/client/session", { clientKey: "bob-key", sid: "client-1" }],
+      ["POST", "/api/client/session", { clientKey: "new-bob-key", account: "default" }],
+      ["POST", "/api/client/session", { clientKey: "new-bob-key", account: "p-0000000000" }],
     ] as const) {
       const response = await api(app, bobCookie, method, url, payload);
       expect(response.statusCode, `${method} ${url}`).toBe(403);

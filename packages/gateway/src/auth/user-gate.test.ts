@@ -99,7 +99,7 @@ describe("persisted front-end user gate", () => {
     });
     const response = await login("ADMIN");
     expect(response.statusCode).toBe(303);
-    expect(response.headers.location).toBe("/");
+    expect(response.headers.location).toBe("/?new=1");
     expect(response.headers["cache-control"]).toBe("no-store");
     const cookies = cookieHeaders(response.headers["set-cookie"]);
     expect(cookies).toHaveLength(2);
