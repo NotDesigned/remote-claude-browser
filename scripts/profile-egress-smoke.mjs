@@ -569,7 +569,11 @@ async function inside() {
     const pids = (await command("ip", ["netns", "pids", name])).split(/\s+/).filter(Boolean);
     let killed = false;
     for (const pid of pids) {
-      if ((await readFile(`/proc/${pid}/comm`, "utf8")).trim() === "mihomo") {
+      const name = await readFile(`/proc/${pid}/comm`, "utf8").catch((error) => {
+        if (error.code === "ENOENT") return "";
+        throw error;
+      });
+      if (name.trim() === "mihomo") {
         process.kill(Number(pid), "SIGKILL");
         killed = true;
       }
