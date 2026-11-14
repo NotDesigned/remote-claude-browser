@@ -17,16 +17,17 @@ export interface BrowserIdentity {
   rendering: { hintstyle: string; antialias: boolean; autohint: boolean };
 }
 
-/** Common desktop screens, in CSS pixels. */
+/**
+ * Common desktop screens, in CSS pixels. A window fills its screen and must stay larger than the
+ * viewer's page, so smaller screens are left out.
+ */
 const SCREENS = [
   [1920, 1080],
   [2560, 1440],
-  [1536, 864],
   [1680, 1050],
-  [1440, 900],
   [1920, 1200],
-  [1600, 900],
   [2560, 1600],
+  [2048, 1152],
 ] as const;
 
 /** Installed families an ordinary Linux desktop may or may not have. Core families stay. */

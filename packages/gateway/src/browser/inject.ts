@@ -34,17 +34,6 @@ export function canvasSites(value: string | undefined): string[] {
     .filter((site) => site !== "");
 }
 
-export const WEBDRIVER_NORMALIZER = `(() => {
-  const prototype = Navigator.prototype;
-  const descriptor = Object.getOwnPropertyDescriptor(prototype, "webdriver");
-  if (navigator.webdriver === false || navigator.webdriver === undefined) return;
-  Object.defineProperty(prototype, "webdriver", {
-    configurable: descriptor?.configurable ?? true,
-    enumerable: descriptor?.enumerable ?? true,
-    get: () => false,
-  });
-})()`;
-
 /**
  * Chromium's page for an address that failed to load lives in a process that may show nothing else,
  * and kills it if a frame there commits anything. The recorder makes a blank iframe to get clean
@@ -178,10 +167,6 @@ export function injectAgent(
     };
     send("Page.enable");
     await prepare?.(target);
-    send("Page.addScriptToEvaluateOnNewDocument", {
-      source: WEBDRIVER_NORMALIZER,
-      runImmediately: true,
-    });
     send("Page.addScriptToEvaluateOnNewDocument", {
       source: isolatedAgentBridgeSource(channel),
       worldName: channel.worldName,

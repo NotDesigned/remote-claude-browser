@@ -644,6 +644,7 @@ export async function startClientGateway(
       },
     );
     const pool = createClientBrowserPool(browser, {
+      windowSize: identity.screen,
       onSignedIn: () => {
         for (const runtime of runtimes.values()) {
           if (runtime.account.id !== id) continue;

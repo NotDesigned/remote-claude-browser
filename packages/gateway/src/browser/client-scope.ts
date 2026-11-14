@@ -48,6 +48,8 @@ const WINDOW_OFFSETS = 24;
 export interface ClientBrowserPoolOptions {
   /** Someone signed in, so pages waiting on a sign-in screen can leave it. */
   onSignedIn?(): void;
+  /** New windows open this size, as a maximised window on the account's screen would be. */
+  windowSize?: { width: number; height: number };
 }
 
 export function createClientBrowserPool(
@@ -258,8 +260,8 @@ export function createClientBrowserPool(
         // Each keeps an edge showing, as Chromium stops drawing a window that is fully covered.
         left: offset,
         top: offset,
-        width: 1050,
-        height: 980,
+        width: options.windowSize?.width ?? 1050,
+        height: options.windowSize?.height ?? 980,
       })) as {
         targetId?: string;
       };

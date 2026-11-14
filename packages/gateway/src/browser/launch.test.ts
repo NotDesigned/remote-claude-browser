@@ -18,6 +18,7 @@ describe("Chromium launch arguments", () => {
     expect(args).toContain("--user-data-dir=/tmp/mirror-launch-test");
     expect(args).toContain("--enable-unsafe-swiftshader");
     // Puppeteer's defaults disable MediaRouter, which detectors read as automation.
-    expect(args.join(" ")).not.toMatch(/MediaRouter|enable-automation|AutomationControlled/);
+    expect(args.join(" ")).not.toMatch(/MediaRouter|enable-automation/);
+    expect(args).toContain("--disable-blink-features=AutomationControlled");
   });
 });

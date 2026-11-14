@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { TargetRef } from "../types";
 import type { BrowserHandle, FlatSessionEventMap } from "./launch";
 import { agentBridgeChannel, isolatedAgentBridgeSource } from "./bridge";
-import { injectAgent, WEBDRIVER_NORMALIZER, skipOnErrorPage } from "./inject";
+import { injectAgent, skipOnErrorPage } from "./inject";
 
 class RecordingBrowser implements BrowserHandle {
   readonly calls: { sessionId: string; method: string; params?: Record<string, unknown> }[] = [];
@@ -68,8 +68,8 @@ describe("injectAgent", () => {
     await injectAgent(browser, target);
     const channel = agentBridgeChannel(browser, target.sessionId);
     expect(channel).toBeDefined();
-    const isolatedSource = browser.calls[2]?.params?.source;
-    const agentSource = browser.calls[3]?.params?.source;
+    const isolatedSource = browser.calls[1]?.params?.source;
+    const agentSource = browser.calls[2]?.params?.source;
     expect(isolatedSource).toBe(isolatedAgentBridgeSource(channel!));
     expect(agentSource).toEqual(expect.any(String));
     expect(agentSource).toContain(JSON.stringify(channel!.bindingName));
@@ -78,11 +78,6 @@ describe("injectAgent", () => {
 
     expect(browser.calls).toEqual([
       { sessionId: "session-1", method: "Page.enable" },
-      {
-        sessionId: "session-1",
-        method: "Page.addScriptToEvaluateOnNewDocument",
-        params: { source: WEBDRIVER_NORMALIZER, runImmediately: true },
-      },
       {
         sessionId: "session-1",
         method: "Page.addScriptToEvaluateOnNewDocument",
@@ -173,7 +168,7 @@ describe("injectAgent", () => {
 
     await Promise.all([injectAgent(browser, target), injectAgent(browser, target)]);
 
-    expect(browser.calls).toHaveLength(9);
+    expect(browser.calls).toHaveLength(8);
     expect(vi.isMockFunction(browser.send)).toBe(false);
   });
 
@@ -185,7 +180,7 @@ describe("injectAgent", () => {
     browser.detach(target);
     await injectAgent(browser, target);
 
-    expect(browser.calls).toHaveLength(18);
+    expect(browser.calls).toHaveLength(16);
   });
 
   it("recreates only the isolated binding world after a hard navigation", async () => {

@@ -481,6 +481,8 @@ export function chromiumLaunchArgs(
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
     "--disable-breakpad",
+    // Over a debugging pipe Chromium otherwise reports navigator.webdriver as true.
+    "--disable-blink-features=AutomationControlled",
   ];
   for (const arg of additional) {
     if (!arg.startsWith("--disable-features=")) args.push(arg);
