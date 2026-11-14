@@ -13,21 +13,13 @@
  * P3-SESSIONS keeps this pipe launcher as the default local BrowserHost and reuses the same
  * BrowserHandle adapter for Docker's private-network websocket transport.
  */
-import {
-  connect,
-  defaultArgs as puppeteerDefaultArgs,
-  launch,
-  type Browser,
-  type CDPSession,
-  type Protocol,
-} from "puppeteer-core";
+import { connect, launch, type Browser, type CDPSession, type Protocol } from "puppeteer-core";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { CdpSend, TargetEvents, TargetRef } from "../types";
 import { TargetRegistry } from "./targets";
-import type { DisplayEnvironment } from "./display";
 
 export interface LaunchOpts {
   userDataDir: string;
@@ -37,8 +29,8 @@ export interface LaunchOpts {
   args?: readonly string[];
   /** Leaves Chromium able to load an extension, which it otherwise refuses by default. */
   enableExtensions?: boolean;
-  /** Override only this child browser's X server, leaving other account processes untouched. */
-  display?: DisplayEnvironment;
+  /** Extra environment for this browser only: its X display, its fontconfig. */
+  env?: Record<string, string>;
 }
 
 interface ChromiumLaunchArgOptions {
@@ -46,12 +38,6 @@ interface ChromiumLaunchArgOptions {
   userDataDir?: string;
   enableExtensions?: boolean;
 }
-
-const DISABLE_FEATURES_PREFIX = "--disable-features=";
-const REQUIRED_DISABLED_FEATURE = "BackForwardCache";
-const DISABLE_BLINK_FEATURES_PREFIX = "--disable-blink-features=";
-const REQUIRED_DISABLED_BLINK_FEATURE = "AutomationControlled";
-const SOFTWARE_GPU_ARG = "--enable-unsafe-swiftshader";
 
 export interface BrowserTargetInfo {
   targetId: string;
@@ -441,7 +427,7 @@ export async function launchBrowser(opts: LaunchOpts): Promise<BrowserHandle> {
   }
 
   const headful = opts.headful ?? true;
-  const args = await chromiumLaunchArgs(opts.args, {
+  const args = chromiumLaunchArgs(opts.args, {
     headful,
     userDataDir: opts.userDataDir,
     ...(opts.enableExtensions ? { enableExtensions: true } : {}),
@@ -456,12 +442,10 @@ export async function launchBrowser(opts: LaunchOpts): Promise<BrowserHandle> {
     ...(opts.executablePath === undefined ? {} : { executablePath: opts.executablePath }),
     args,
     headless: !headful,
-    // chromiumLaunchArgs starts from this Puppeteer version's complete default argument set.
-    // Re-applying defaults here would produce another --disable-features switch.
     ignoreDefaultArgs: true,
     pipe: true,
     userDataDir: opts.userDataDir,
-    ...(opts.display ? { env: { ...process.env, ...opts.display } } : {}),
+    ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
   });
   // Retain only Chromium crash diagnostics, never renderer console output or page content.
   let diagnosticTail = "";
@@ -479,65 +463,35 @@ export async function launchBrowser(opts: LaunchOpts): Promise<BrowserHandle> {
 }
 
 /**
- * Compose the complete Chromium argv once so FeatureList sees one merged --disable-features.
- * Puppeteer's public API supplies its version-specific defaults; passing BackForwardCache as a
- * caller feature asks that API to merge it with those defaults instead of replacing them.
+ * The complete Chromium argv. Deliberately not Puppeteer's defaults: those disable features a real
+ * Chrome has (MediaRouter alone gets a browser classed as automation) and tune it for test runs.
  */
-export async function chromiumLaunchArgs(
+export function chromiumLaunchArgs(
   additional: readonly string[] = [],
   options: ChromiumLaunchArgOptions = {},
-): Promise<string[]> {
-  const callerArgs = [...additional, `${DISABLE_FEATURES_PREFIX}${REQUIRED_DISABLED_FEATURE}`];
-  const args = await puppeteerDefaultArgs({
-    args: callerArgs,
-    headless: !(options.headful ?? true),
-    ...(options.userDataDir === undefined ? {} : { userDataDir: options.userDataDir }),
-    ...(options.enableExtensions ? { enableExtensions: true } : {}),
-  });
-
-  // Keep these launcher invariants even if a future Puppeteer release changes its defaults.
-  if (!args.includes(SOFTWARE_GPU_ARG)) args.unshift(SOFTWARE_GPU_ARG);
-  if (!args.includes("--password-store=basic")) args.unshift("--password-store=basic");
-  if (!args.includes("--no-first-run")) args.unshift("--no-first-run");
-
-  // Puppeteer's automation switch is a launcher convenience, not a requirement for our raw CDP
-  // transport. The browser is driven by a person and must not opt Blink into webdriver automation
-  // semantics merely because the mirror uses a debugging pipe.
-  const ordinaryChromeArgs = args.filter(
-    (arg) => arg !== "--enable-automation" && !arg.startsWith("--enable-automation="),
-  );
-  return mergeCommaSeparatedSwitch(
-    mergeCommaSeparatedSwitch(ordinaryChromeArgs, DISABLE_FEATURES_PREFIX, [
-      REQUIRED_DISABLED_FEATURE,
-    ]),
-    DISABLE_BLINK_FEATURES_PREFIX,
-    [REQUIRED_DISABLED_BLINK_FEATURE],
-  );
-}
-
-function mergeCommaSeparatedSwitch(
-  args: readonly string[],
-  prefix: string,
-  requiredValues: readonly string[],
 ): string[] {
-  const mergedValues = new Set<string>();
-  const result: string[] = [];
-  let switchIndex: number | undefined;
-
-  for (const arg of args) {
-    if (!arg.startsWith(prefix)) {
-      result.push(arg);
-      continue;
-    }
-    switchIndex ??= result.length;
-    for (const value of arg.slice(prefix.length).split(",")) {
-      if (value !== "") mergedValues.add(value);
-    }
+  const disabled = new Set(["BackForwardCache"]);
+  const args = [
+    "--no-first-run",
+    "--password-store=basic",
+    // Software WebGL; without it Chromium blocklists WebGL on this GPU-less host.
+    "--enable-unsafe-swiftshader",
+    // Windows sit unseen on the X display; the mirror still needs their pages to run.
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-breakpad",
+  ];
+  for (const arg of additional) {
+    if (!arg.startsWith("--disable-features=")) args.push(arg);
+    else for (const name of arg.slice("--disable-features=".length).split(",")) disabled.add(name);
   }
-
-  for (const value of requiredValues) mergedValues.add(value);
-  result.splice(switchIndex ?? result.length, 0, `${prefix}${[...mergedValues].join(",")}`);
-  return result;
+  disabled.delete("");
+  args.push(`--disable-features=${[...disabled].join(",")}`);
+  if (!(options.headful ?? true)) args.push("--headless=new");
+  if (!options.enableExtensions) args.push("--disable-extensions");
+  if (options.userDataDir !== undefined) args.push(`--user-data-dir=${options.userDataDir}`);
+  return args;
 }
 
 /** Connect the same raw-CDP BrowserHandle to a remote endpoint (used only by DockerBrowserHost). */
