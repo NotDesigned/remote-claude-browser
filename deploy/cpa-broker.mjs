@@ -157,6 +157,7 @@ export function allowedUpstream(method, path) {
     return false;
   if (url.pathname.startsWith("/v1/")) return true;
   const permitted = {
+    "/v8/management/config/requests/proxy-url": ["PUT"],
     "/v8/management/credentials": ["GET", "POST", "DELETE"],
     "/v8/management/credentials/download": ["GET"],
     "/v8/management/credentials/status": ["PATCH"],

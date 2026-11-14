@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import { ExitHealthDetails } from "./exit-health";
 import type { FrontendUser } from "./users";
 import {
   cpaApi,
@@ -162,7 +163,10 @@ export function CpaPanel({
       else await cpaApi.start(instance!.id);
       await reloadInstances();
     });
-  const credentialsChanged = async () => reloadDetails(instance!);
+  const credentialsChanged = async () => {
+    await reloadInstances();
+    await reloadDetails(instance!);
+  };
 
   return (
     <div class="network-section" aria-busy={busy || loading}>
@@ -247,10 +251,62 @@ export function CpaPanel({
               )}
             </div>
             <p class="network-muted">
-              {instance.status === "running"
-                ? "实例正在运行，可使用 API Key 调用。"
-                : "实例未运行，API 调用暂不可用。"}
+              进程：{instance.status === "running" ? "运行中" : "未运行"} · 授权：
+              {
+                {
+                  ready: "已就绪",
+                  empty: "尚未添加",
+                  "needs-binding": "需要绑定出口",
+                  unavailable: "不可用或已停用",
+                  unknown: "未检查",
+                }[instance.authorization ?? "unknown"]
+              }
+              {" · 出口："}
+              {
+                { healthy: "可用", error: "检查失败", checking: "检查中", unchecked: "未检查" }[
+                  instance.egress ?? "unchecked"
+                ]
+              }
             </p>
+            {instance.authorizing && (
+              <p class="network-muted">正在添加授权，推理调用暂停。完成或取消授权后恢复。</p>
+            )}
+            {instance.canManage && instance.status === "running" && (
+              <div class="network-actions">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    void run(async () => {
+                      await cpaApi.check(instance.id);
+                      await credentialsChanged();
+                      setNotice(
+                        "出口检查已完成，不会发起模型生成。授权额度与上游账号状态仍以实际调用为准。",
+                      );
+                    })
+                  }
+                >
+                  检查出口
+                </button>
+                {instance.authorizing && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() =>
+                      void run(async () => {
+                        await cpaApi.cancelOAuth(instance.id);
+                        setOAuth(null);
+                        setCallback("");
+                        await credentialsChanged();
+                        setNotice("待完成授权已取消。");
+                      })
+                    }
+                  >
+                    取消待完成授权
+                  </button>
+                )}
+              </div>
+            )}
             <p class="network-muted">
               {instance.scope === "shared"
                 ? "共享账号池由管理员维护。每个用户管理自己的调用 Key；管理员可查看归属并撤销。"
@@ -277,12 +333,21 @@ export function CpaPanel({
                         <span class="network-badge">{credential.provider}</span>
                       </div>
                       <p class="network-muted">
-                        {credential.disabled
-                          ? "已停用"
-                          : credential.unavailable
-                            ? "凭据不可用"
-                            : credential.status || "已启用"}
+                        {credential.needsBinding
+                          ? "需要绑定出口，暂不可调用"
+                          : credential.disabled
+                            ? "已停用"
+                            : credential.unavailable
+                              ? "凭据不可用"
+                              : credential.status || "已启用"}
                       </p>
+                      <ExitHealthDetails health={credential.exitHealth} />
+                      {credential.timeZone && (
+                        <p class="network-muted">
+                          授权时区：{credential.timeZone} · 当地时间：
+                          {new Date().toLocaleString("zh-CN", { timeZone: credential.timeZone })}
+                        </p>
+                      )}
                       <div class="network-form">
                         <ProxySelect
                           proxies={proxies}
@@ -290,26 +355,38 @@ export function CpaPanel({
                           disabled={busy || instance.status !== "running"}
                           label={`凭据「${credential.name}」的代理`}
                           placeholder={
-                            credential.proxyId
-                              ? "当前节点不可用，请重新选择"
-                              : "未绑定节点（沿用当前出口）"
+                            credential.proxyId ? "当前节点不可用，请重新选择" : "请选择出口节点"
                           }
-                          onChange={(proxyId) =>
+                          onChange={(proxyId) => {
+                            if (
+                              credential.proxyId &&
+                              credential.proxyId !== proxyId &&
+                              !window.confirm(
+                                "频繁更换账号出口可能触发平台风控。确认理解影响并切换？",
+                              )
+                            )
+                              return;
                             void run(async () => {
                               await cpaApi.credentialProxy(instance.id, credential.name, proxyId);
                               await credentialsChanged();
-                              setNotice("凭据代理已更新。");
-                            })
-                          }
+                              setNotice("凭据出口和时区已更新。");
+                            });
+                          }}
                         />
                         {!credential.proxyId && (
-                          <p class="network-muted">现有凭据沿用部署出口；选择节点后才会更换。</p>
+                          <p class="network-muted">
+                            此凭据不会使用部署默认出口。选择节点后，再启用凭据。
+                          </p>
                         )}
                       </div>
                       <div class="network-actions">
                         <button
                           type="button"
-                          disabled={busy || instance.status !== "running"}
+                          disabled={
+                            busy ||
+                            instance.status !== "running" ||
+                            (credential.disabled && credential.needsBinding)
+                          }
                           onClick={() =>
                             void run(async () => {
                               await cpaApi.credentialStatus(
@@ -371,6 +448,7 @@ export function CpaPanel({
                           proxyId: selectedOAuthProxy,
                         });
                         setCallback("");
+                        await reloadInstances();
                       })
                     }
                   >

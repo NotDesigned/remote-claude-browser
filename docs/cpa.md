@@ -8,7 +8,7 @@
 
 1. 打开「工作台 → API」。配置选择页和浏览器内均可进入，无需先启动浏览器。
 2. 创建自己的 CPA 实例并启动。每个用户最多一个专用实例；管理员还可以建立一个共享实例。共享实例的启动和授权凭据由管理员管理；所有启用的工作台用户都能生成、查看和撤销自己的共享调用 Key。管理员可以查看共享 Key 的所有者并撤销任意共享 Key。
-3. 在「添加 Claude 授权」中，代理默认选中当前浏览器配置绑定的出口，也可手动选择其他可用节点，不能使用部署默认出口。生成链接后，在出口一致的远程浏览器中打开授权页；修改所选代理会清除旧授权流程。把完整回调 URL 或授权码粘贴回面板，后台会独立确认结果并保存绑定，关闭面板不会中断确认。
+3. 在「添加 Claude 授权」中，代理默认选中当前浏览器配置绑定的出口，也可手动选择其他可用节点，不能使用部署默认出口。生成链接后，在出口一致的远程浏览器中打开授权页；修改所选代理会清除面板中的旧链接；已有待完成授权可在实例卡片取消。把完整回调 URL 或授权码粘贴回面板，后台会独立确认结果并保存绑定，关闭面板不会中断确认。
 4. 授权成功后，在凭据列表中分别选择代理节点，或停用、启用、删除该凭据。新授权会保存本次所选节点；后续每个凭据的代理与浏览器配置独立设置，不会因浏览器切换出口自动改变。
 5. 生成外部 API Key。新 Key 归当前工作台用户所有，调用对应实例的账号池。完整 Key 只显示这一次，保存后再关闭面板；列表只显示前缀和所有者，可随时撤销。使用共享池不需要查看或管理其中的授权凭据。
 
@@ -33,7 +33,7 @@
 docker compose -f compose.yml -f compose.runtime.yml up -d --build
 ```
 
-长期使用时把相同文件列表保存到 `.env` 的 `COMPOSE_FILE`。已有部署应在现有文件列表后追加 `compose.runtime.yml`，保留已有的出站、入口和私有覆盖文件。浏览器配置必须明确绑定节点，未分配时不能打开；CPA 新增授权和修改凭据出口同样要求明确的节点；实例内部启动和既有未绑定凭据仍保留原部署出站配置，不自动迁移已有绑定。已有 `EGRESS_PROXY`/`compose.proxy.yml` 不需要迁走。
+长期使用时把相同文件列表保存到 `.env` 的 `COMPOSE_FILE`。已有部署应在现有文件列表后追加 `compose.runtime.yml`，保留已有的出站、入口和私有覆盖文件。浏览器配置必须明确绑定节点，未分配时不能打开；CPA 新增授权和修改凭据出口同样要求明确的节点；空实例可直接启动，但没有默认互联网出口。历史未绑定凭据会停用，选择节点后再启用；已有明确绑定保持不变。已有 `EGRESS_PROXY`/`compose.proxy.yml` 不需要迁走。
 
 用户 CPA 模块需要 Docker bridge 网络，不兼容 `compose.hostnet.yml`。已有主机网络部署应先由部署者移除该覆盖文件、确认 bridge 下的端口和媒体连接，再追加运行时模块；公网入口仍可由同机或独立 VPS 管理。
 
@@ -65,6 +65,7 @@ GET    /api/cpa/instances
 POST   /api/cpa/instances                         {scope: "user" | "shared"}
 POST   /api/cpa/instances/:id/start
 POST   /api/cpa/instances/:id/stop
+POST   /api/cpa/instances/:id/check
 GET    /api/cpa/instances/:id/credentials
 PATCH  /api/cpa/instances/:id/credentials/status   {name, disabled}
 PATCH  /api/cpa/instances/:id/credentials/proxy    {name, proxyId: string}
@@ -72,12 +73,21 @@ DELETE /api/cpa/instances/:id/credentials?name=…
 POST   /api/cpa/instances/:id/oauth                {provider: "claude", proxyId: string}
 GET    /api/cpa/instances/:id/oauth/status?state=…
 POST   /api/cpa/instances/:id/oauth/callback       {state, code? | redirectUrl?}
+POST   /api/cpa/instances/:id/oauth/cancel
 GET    /api/cpa/instances/:id/keys
 POST   /api/cpa/instances/:id/keys                 {name}
 DELETE /api/cpa/instances/:id/keys/:keyId
 ```
 
-实例列表只返回状态与可管理标识；可管理标识控制实例与凭据操作，不限制用户领取共享调用 Key。Key 列表包含 `userId` 与 `username`，普通用户只收到本人条目。生成 Key 的响应含一次性 `token`，后续列表不再返回完整值。已有凭据返回 `proxyId: null` 表示尚未绑定目录节点，可能仍使用迁移前的部署出口；新增授权和修改凭据出口不再接受空值或 `deployment-default`。
+实例列表分别返回容器进程状态、授权就绪状态、出口状态和待完成授权标识；可管理标识控制实例与凭据操作，不限制用户领取共享调用 Key。Key 列表包含 `userId` 与 `username`，普通用户只收到本人条目。生成 Key 的响应含一次性 `token`，后续列表不再返回完整值。凭据返回 `proxyId: null` / `needsBinding: true` 表示需要绑定出口，不能启用；新增授权和修改凭据出口不再接受空值或 `deployment-default`。
+
+## 出口与当地时间
+
+每份 Claude 凭据保存明确的 `proxy_url` 和 IANA `timezone`。授权完成、修改节点、启动恢复及手动检查出口时，网关按该节点的实际出口元数据同步这两项。出口进程自动恢复后，后台循环读取已缓存的健康信息；检测到时区变化时只更新对应凭据的时区。CPA 8.0.68 原生使用凭据 `timezone` 生成当地 `currentDate`；这不是一个自定义 HTTP 头，也不会重写用户自行提交的日期或对话内容。已有对话的日期还可能由 CPA 的会话日期固定逻辑保留。
+
+面板中的「检查出口」只检查节点联网与出口地址，不发起模型生成，不验证订阅余额或证明 Claude 账号一定可调用。列表读取当前出口进程状态，不会自动启动节点；只有管理者能查看凭据、出口 IP 和时区，普通共享池使用者只看到汇总状态。
+
+CPA 注册 OAuth 凭据与网关同步时区之间存在短暂间隔，所以有待完成授权时，模型调用返回 `CPA_AUTHORIZING`；完成同步、取消或后台确认过期后恢复。`GET /v1/models` 仍可读取。启动恢复只把全局 `requests.proxy-url` 改为无法使用的内部出口，保留其他配置、实例 ID、授权文件及外部 Key；未绑定凭据不会回退到部署出口或第一个节点。
 
 ## 持久化与验收
 
@@ -92,7 +102,7 @@ docker build -f deploy/Dockerfile.cpa --target cpa -t remote-claude-browser-cpa:
 bash scripts/limited-run.sh env CPA_TENANCY_SMOKE=1 node scripts/cpa-tenancy-smoke.mjs
 ```
 
-该测试创建自己的两个临时 CPA 实例、独立卷及 internal 网络，检查凭据/Key 隔离、每凭据代理修改和 OAuth 路由，结束后清理自己的容器与卷。它不使用正式订阅账号，也不能证明真实上游推理成功。设置 `CPA_BROKER_ENGINE_IMAGE` 可选择测试引擎镜像。
+该测试创建自己的两个临时 CPA 实例、独立卷及 internal 网络，检查凭据/Key 隔离、每凭据代理与时区修改、OAuth 路由，以及两个相反时区下真正发往本地模拟 HTTPS 上游的日期，结束后清理自己的容器与卷。它不使用正式订阅账号，也不能证明真实上游推理成功。设置 `CPA_BROKER_ENGINE_IMAGE` 可选择测试引擎镜像。
 
 前端使用 `bash scripts/limited-run.sh node scripts/network-ui-smoke.mjs` 验收本地模拟接口下的来源管理、CPA 授权和 Key 操作、320px 手机布局；不会访问真实订阅。
 

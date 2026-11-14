@@ -55,6 +55,9 @@ const instances = [
     scope: "shared",
     desiredState: "running",
     status: "running",
+    authorization: "empty",
+    egress: "unchecked",
+    authorizing: false,
     createdAt: 1,
   },
 ];
@@ -209,6 +212,9 @@ const server = createServer(async (request, response) => {
         scope: input.scope,
         desiredState: "stopped",
         status: "stopped",
+        authorization: "needs-binding",
+        egress: "unchecked",
+        authorizing: false,
         createdAt: Date.now(),
       };
       instances.push(instance);
@@ -217,7 +223,8 @@ const server = createServer(async (request, response) => {
           name: "legacy-claude.json",
           provider: "claude",
           email: "legacy@example.com",
-          disabled: false,
+          disabled: true,
+          needsBinding: true,
           unavailable: false,
           proxyId: null,
         },
@@ -238,6 +245,19 @@ const server = createServer(async (request, response) => {
         instance.desiredState = instance.status;
         return json(response, { instance: { ...instance, canManage: true } });
       }
+      if (action === "check") {
+        const health = {
+          status: "healthy",
+          exitIp: "203.0.113.40",
+          timeZone: "Asia/Tokyo",
+          checkedAt: Date.now(),
+        };
+        for (const credential of credentials.get(id) ?? [])
+          if (credential.proxyId)
+            Object.assign(credential, { timeZone: health.timeZone, exitHealth: health });
+        instance.egress = "healthy";
+        return json(response, { instance: { ...instance, canManage: true } });
+      }
       if (action === "credentials") {
         const saved = credentials.get(id) ?? [];
         if (request.method === "GET") return json(response, { credentials: saved });
@@ -252,11 +272,17 @@ const server = createServer(async (request, response) => {
           return json(response, { error: "CPA_EXIT_REQUIRED", message: "请选择代理节点" }, 400);
         Object.assign(
           saved.find((item) => item.name === input.name),
-          detail === "status" ? { disabled: input.disabled } : { proxyId: input.proxyId },
+          detail === "status"
+            ? { disabled: input.disabled }
+            : { proxyId: input.proxyId, needsBinding: false, timeZone: "Asia/Tokyo" },
         );
         return json(response, { ok: true });
       }
       if (action === "oauth") {
+        if (detail === "cancel") {
+          instance.authorizing = false;
+          return json(response, { instance: { ...instance, canManage: true } });
+        }
         if (detail === "callback") {
           credentials.set(id, [
             {
@@ -266,14 +292,21 @@ const server = createServer(async (request, response) => {
               disabled: false,
               unavailable: false,
               proxyId: oauthProxies.get(id),
+              needsBinding: false,
+              timeZone: "Asia/Tokyo",
             },
           ]);
           return json(response, { ok: true });
         }
-        if (detail === "status") return json(response, { status: "ok" });
+        if (detail === "status") {
+          instance.authorizing = false;
+          instance.authorization = "ready";
+          return json(response, { status: "ok" });
+        }
         if (!visibleProxy(input.proxyId))
           return json(response, { error: "CPA_EXIT_REQUIRED", message: "请选择代理节点" }, 400);
         oauthProxies.set(id, input.proxyId);
+        instance.authorizing = true;
         return json(response, {
           url: "https://example.com/fixture-oauth",
           state: "fixture-state",
@@ -527,9 +560,10 @@ try {
       await legacyProxy.locator('option[value=""]').evaluate((option) => option.disabled),
       true,
     );
+    assert.equal(await legacyProxy.locator('option[value=""]').textContent(), "请选择出口节点");
     assert.equal(
-      await legacyProxy.locator('option[value=""]').textContent(),
-      "未绑定节点（沿用当前出口）",
+      await panel.getByRole("button", { name: "启用凭据", exact: true }).isDisabled(),
+      true,
     );
     const proxyUpdates = operations.filter((item) => item.type === "cpa-credentials-proxy").length;
     await click(panel.getByRole("button", { name: "刷新实例", exact: true }));
@@ -565,7 +599,14 @@ try {
       path: `artifacts/cpa-explicit-proxy-${engine}-${mobile ? "phone" : "desktop"}.png`,
     });
     await legacyProxy.selectOption("proxy-shared");
-    await panel.getByText("凭据代理已更新。", { exact: true }).waitFor();
+    await panel.getByText("凭据出口和时区已更新。", { exact: true }).waitFor();
+    assert.equal(
+      await panel.getByRole("button", { name: "启用凭据", exact: true }).isDisabled(),
+      false,
+    );
+    await click(panel.getByRole("button", { name: "检查出口", exact: true }));
+    await panel.getByText("203.0.113.40", { exact: true }).waitFor();
+    await panel.getByText(/授权时区：Asia\/Tokyo/).waitFor();
     await click(panel.getByRole("button", { name: "删除凭据", exact: true }));
     await panel.getByText("legacy@example.com", { exact: true }).waitFor({ state: "hidden" });
     await oauthProxy.selectOption("proxy-private");
@@ -588,7 +629,7 @@ try {
       "proxy-private",
     );
     await panel.getByLabel("凭据「fixture-claude.json」的代理").selectOption("proxy-shared");
-    await panel.getByText("凭据代理已更新。", { exact: true }).waitFor();
+    await panel.getByText("凭据出口和时区已更新。", { exact: true }).waitFor();
     await click(panel.getByRole("button", { name: "停用凭据", exact: true }));
     await panel.getByRole("button", { name: "启用凭据", exact: true }).waitFor();
     await panel.getByLabel("新 Key 名称", { exact: true }).fill("测试客户端");
@@ -752,7 +793,8 @@ try {
       oauthInheritsCurrentBrowserExit: true,
       oauthManualOverridePreserved: true,
       noCurrentBrowserRequiresExplicitNode: true,
-      legacyCredentialUnchangedUntilExplicitSelection: true,
+      legacyCredentialDisabledUntilExplicitBinding: true,
+      cpaExitCheckAndLocalTimezone: true,
       noDeploymentDefaultOption: true,
       credentialProxyStatusDelete: true,
       keyOnceAndRevoke: true,

@@ -64,6 +64,9 @@ export function registerCpaRoutes(app: FastifyInstance, options: RouteOptions) {
   route("POST", "/:id/stop", async (user, req) => ({
     instance: await runtime.stop(user, id(req)),
   }));
+  route("POST", "/:id/check", async (user, req) => ({
+    instance: await runtime.check(user, id(req)),
+  }));
   route("GET", "/:id/credentials", async (user, req) => ({
     credentials: await runtime.credentials(user, id(req)),
   }));
@@ -99,6 +102,9 @@ export function registerCpaRoutes(app: FastifyInstance, options: RouteOptions) {
     (user, req) => runtime.startOAuth(user, id(req), (req.body as { proxyId: string }).proxyId),
     bodySchema({ provider: { const: "claude" }, proxyId: proxyNodeField }, ["provider", "proxyId"]),
   );
+  route("POST", "/:id/oauth/cancel", async (user, req) => ({
+    instance: await runtime.cancelOAuth(user, id(req)),
+  }));
   route("GET", "/:id/oauth/status", (user, req) => {
     const state = (req.query as { state?: string }).state;
     if (!state) throw new CpaError(400, "CPA_OAUTH_STATE", "需要登录会话标识");
@@ -160,7 +166,10 @@ export function registerCpaInferenceRoutes(app: FastifyInstance, runtime: CpaRun
           typeof auth === "string" && auth.startsWith("Bearer ")
             ? auth.slice(7)
             : request.headers["x-api-key"];
-        const instance = runtime.inference(typeof token === "string" ? token : "");
+        const instance = runtime.inference(
+          typeof token === "string" ? token : "",
+          request.method === "GET" && request.url.split("?")[0] === "/v1/models",
+        );
         const headers: IncomingHttpHeaders = {
           ...request.headers,
           authorization: `Bearer ${instance.apiKey}`,

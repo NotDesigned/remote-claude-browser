@@ -1,17 +1,28 @@
+import type { ExitHealth as CpaExitHealth } from "../egress/timezone";
 import type { FrontendUser } from "../auth/users";
 import { createLifecycleLock } from "../session/lifecycle-lock";
 import { responseJson, type CpaDriver } from "./broker-client";
 import { CpaError, publicCpaInstance, type CpaInstance, type CpaStore } from "./store";
 
+const UNBOUND_PROXY = "http://cpa-unbound:x@runtime-egress:8781";
+
 export interface CpaProxy {
   id: string;
   name: string;
   url: string;
+  timeZone: string;
+  health: CpaExitHealth;
 }
 export interface CpaRuntimeOptions {
   store: CpaStore;
   driver: CpaDriver;
-  resolveProxyForUser(user: FrontendUser, proxyId?: string): Promise<CpaProxy>;
+  resolveProxyForUser(
+    user: FrontendUser,
+    proxyId: string | undefined,
+    instance: CpaInstance,
+  ): Promise<CpaProxy>;
+  checkProxyForUser(user: FrontendUser, proxyId: string, instance: CpaInstance): Promise<CpaProxy>;
+  proxyStatusForInstance(instance: CpaInstance, proxyId: string): Promise<CpaExitHealth>;
   userEnabled(id: string): boolean;
   userName(id: string): string | undefined;
 }
@@ -30,6 +41,12 @@ const proxyNode = (proxyId: string): string => {
 export function createCpaRuntime(options: CpaRuntimeOptions) {
   const { store, driver } = options;
   const lifecycle = createLifecycleLock();
+  const proxyStates = new Map<string, { health: CpaExitHealth }>();
+  const credentialTimeZones = new Map<string, string>();
+  const binding = (id: string, name: string) => {
+    const proxyId = store.credentialProxy(id, name);
+    return proxyId && proxyId !== "deployment-default" ? proxyId : null;
+  };
   const managed = (user: FrontendUser, id: string) => {
     if (!options.userEnabled(user.id)) throw new CpaError(403, "USER_DISABLED", "这个用户已停用");
     return store.requireManaged(user, id);
@@ -67,10 +84,95 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
     const result = await management(value, "GET", "/credentials");
     return result.files as Record<string, unknown>[];
   };
-  const publicInstance = async (value: CpaInstance, user: FrontendUser) => ({
-    ...publicCpaInstance(value, user),
-    status: await driver.status(value),
-  });
+  const prepare = async (value: CpaInstance) => {
+    await driver.ensure(value, UNBOUND_PROXY);
+    // Update this one persisted setting; preserve keys, routing and every explicit credential exit.
+    await management(
+      { ...value, desiredState: "running" },
+      "PUT",
+      "/config/requests/proxy-url",
+      UNBOUND_PROXY,
+    );
+  };
+  const applyProxy = async (value: CpaInstance, name: string, proxy: CpaProxy) => {
+    await management(value, "PATCH", "/credentials/fields", {
+      name,
+      proxy_url: proxy.url,
+      timezone: proxy.timeZone,
+    });
+    proxyStates.set(`${value.id}:${proxy.id}`, proxy);
+    credentialTimeZones.set(`${value.id}:${name}`, proxy.timeZone);
+  };
+  const disableUnbound = async (value: CpaInstance) => {
+    for (const entry of await credentials(value))
+      if (!binding(value.id, String(entry.name)) && entry.disabled !== true)
+        await management(value, "PATCH", "/credentials/status", {
+          name: entry.name,
+          disabled: true,
+        });
+  };
+  const refreshHealth = async (value: CpaInstance) => {
+    for (const proxyId of new Set(
+      store.credentialBindings(value.id).map((entry) => entry.proxyId),
+    )) {
+      if (proxyId === "deployment-default") continue;
+      const key = `${value.id}:${proxyId}`;
+      let health: CpaExitHealth;
+      try {
+        health = await options.proxyStatusForInstance(value, proxyId);
+      } catch {
+        health = { status: "error", error: "出口状态暂不可用，请稍后检查" };
+      }
+      proxyStates.set(key, { ...proxyStates.get(key), health });
+    }
+  };
+  const publicInstance = async (value: CpaInstance, user: FrontendUser) => {
+    const status = await driver.status(value);
+    let authorization: "unknown" | "empty" | "needs-binding" | "unavailable" | "ready" = "unknown";
+    let egress: CpaExitHealth["status"] = "unchecked";
+    if (status === "running" && value.desiredState === "running") {
+      try {
+        const entries = await credentials(value);
+        await refreshHealth(value);
+        const enabled = entries.filter(
+          (entry) =>
+            entry.disabled !== true &&
+            entry.unavailable !== true &&
+            binding(value.id, String(entry.name)),
+        );
+        authorization = enabled.length
+          ? "ready"
+          : !entries.length
+            ? "empty"
+            : entries.some((entry) => !binding(value.id, String(entry.name)))
+              ? "needs-binding"
+              : "unavailable";
+        const exits = entries
+          .filter((entry) => binding(value.id, String(entry.name)))
+          .map(
+            (entry) =>
+              proxyStates.get(`${value.id}:${binding(value.id, String(entry.name))}`)?.health
+                .status ?? "unchecked",
+          );
+        egress = exits.includes("error")
+          ? "error"
+          : exits.includes("checking")
+            ? "checking"
+            : exits.length && exits.every((status) => status === "healthy")
+              ? "healthy"
+              : "unchecked";
+      } catch {
+        /* A running container can still have an unavailable management API. */
+      }
+    }
+    return {
+      ...publicCpaInstance(value, user),
+      status,
+      authorization,
+      egress,
+      authorizing: store.pendingOAuth(value.id).length > 0,
+    };
+  };
   const syncOAuth = async (value: CpaInstance, state: string, user: FrontendUser) => {
     const session = store.oauth(value.id, state);
     if (!session) throw new CpaError(404, "CPA_OAUTH_UNKNOWN", "没有这个登录会话");
@@ -89,6 +191,8 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
         (entry) => entry.id === result.auth_id || entry.name === result.auth_id,
       );
       if (entry) {
+        const proxy = await options.resolveProxyForUser(user, session.proxyId, value);
+        await applyProxy(value, String(entry.name), proxy);
         store.setCredentialProxy(value.id, String(entry.name), session.proxyId);
         store.completeOAuth(value.id, state);
       }
@@ -97,18 +201,21 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
       if (!failures.length) store.completeOAuth(value.id, state);
     }
     return {
-      status: result.status,
+      status:
+        result.status === "ok" && store.pendingOAuth(value.id).some((item) => item.state === state)
+          ? "wait"
+          : result.status,
       ...(result.status === "error" ? { error: "登录失败或已过期，请重新登录" } : {}),
     };
   };
   const restorePendingOAuth = async (value: CpaInstance, user: FrontendUser) => {
-    const proxyIds = new Map<string, string>();
+    const proxyIds = new Map<string, CpaProxy>();
     const failures: RestoreFailure[] = [];
     for (const { proxyId } of store.pendingOAuth(value.id))
       if (proxyId) {
         try {
-          const proxy = await options.resolveProxyForUser(user, proxyId);
-          proxyIds.set(proxy.url, proxyId);
+          const proxy = await options.resolveProxyForUser(user, proxyId, value);
+          proxyIds.set(proxy.url, proxy);
         } catch {
           failures.push({ instanceId: value.id, proxyId, code: "CPA_OAUTH_PROXY_RESTORE" });
         }
@@ -122,8 +229,11 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
         "GET",
         `/credentials/download?name=${encodeURIComponent(name)}`,
       );
-      const proxyId = typeof file.proxy_url === "string" ? proxyIds.get(file.proxy_url) : undefined;
-      if (proxyId) store.setCredentialProxy(value.id, name, proxyId);
+      const proxy = typeof file.proxy_url === "string" ? proxyIds.get(file.proxy_url) : undefined;
+      if (proxy) {
+        await applyProxy(value, name, proxy);
+        store.setCredentialProxy(value.id, name, proxy.id);
+      }
     }
     return failures;
   };
@@ -141,18 +251,19 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
       }
       const resolved = new Map<string, CpaProxy>();
       for (const { name, proxyId } of store.credentialBindings(value.id)) {
-        if (ids && !ids.includes(proxyId)) continue;
+        if (proxyId === "deployment-default" || (ids && !ids.includes(proxyId))) continue;
         try {
           let proxy = resolved.get(proxyId);
           if (!proxy) {
-            proxy = await options.resolveProxyForUser(
-              user,
-              proxyId === "deployment-default" ? undefined : proxyId,
-            );
+            proxy = await options.resolveProxyForUser(user, proxyId, value);
             resolved.set(proxyId, proxy);
           }
-          await management(value, "PATCH", "/credentials/fields", { name, proxy_url: proxy.url });
+          await applyProxy(value, name, proxy);
         } catch (error) {
+          proxyStates.set(`${value.id}:${proxyId}`, {
+            ...proxyStates.get(`${value.id}:${proxyId}`),
+            health: { status: "error", error: "出口恢复失败，请检查节点后重试" },
+          });
           failures.push({
             instanceId: value.id,
             proxyId,
@@ -160,6 +271,7 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
           });
         }
       }
+      await disableUnbound(value);
     }
     return failures;
   };
@@ -175,6 +287,24 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
               await syncOAuth(value, state, user);
             } catch {
               failures.push({ instanceId: value.id, code: "CPA_OAUTH_SYNC" });
+            }
+          }
+          await refreshHealth(value);
+          for (const { name, proxyId } of store.credentialBindings(value.id)) {
+            const health = proxyStates.get(`${value.id}:${proxyId}`)?.health;
+            const key = `${value.id}:${name}`;
+            const timeZone = health?.timeZone;
+            if (
+              health?.status !== "healthy" ||
+              !timeZone ||
+              credentialTimeZones.get(key) === timeZone
+            )
+              continue;
+            try {
+              await management(value, "PATCH", "/credentials/fields", { name, timezone: timeZone });
+              credentialTimeZones.set(key, timeZone);
+            } catch {
+              failures.push({ instanceId: value.id, proxyId, code: "CPA_TIMEZONE_SYNC" });
             }
           }
         }
@@ -210,8 +340,7 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
             continue;
           }
           try {
-            const proxy = await options.resolveProxyForUser(user);
-            await driver.ensure(value, proxy.url);
+            await prepare(value);
             failures.push(...(await restorePendingOAuth(value, user)));
             failures.push(...(await restoreBindings(undefined, resolveUser, [value])));
             restored.push(value.id);
@@ -237,8 +366,7 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
             continue;
           }
           try {
-            const proxy = await options.resolveProxyForUser(user);
-            await driver.ensure(value, proxy.url);
+            await prepare(value);
             failures.push(...(await restoreBindings(ids, resolveUser, [value])));
           } catch (error) {
             failures.push({
@@ -259,8 +387,7 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
     start(user: FrontendUser, id: string) {
       return lifecycle.run(async () => {
         const value = managed(user, id);
-        const proxy = await options.resolveProxyForUser(user);
-        await driver.ensure(value, proxy.url);
+        await prepare(value);
         store.setDesiredState(id, "running");
         const proxyFailures = await restorePendingOAuth(store.get(id)!, user);
         proxyFailures.push(...(await restoreBindings(undefined, () => user, [store.get(id)!])));
@@ -276,7 +403,9 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
       });
     },
     async credentials(user: FrontendUser, id: string) {
-      return (await credentials(managed(user, id))).map((entry) => ({
+      const value = managed(user, id);
+      await refreshHealth(value);
+      return (await credentials(value)).map((entry) => ({
         name: entry.name,
         provider: entry.provider,
         email: entry.email,
@@ -286,21 +415,53 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
         unavailable: entry.unavailable === true,
         createdAt: entry.created_at,
         updatedAt: entry.updated_at,
-        proxyId:
-          store.credentialProxy(id, String(entry.name)) === "deployment-default"
-            ? null
-            : store.credentialProxy(id, String(entry.name)),
+        proxyId: binding(id, String(entry.name)),
+        needsBinding: !binding(id, String(entry.name)),
+        timeZone: credentialTimeZones.get(`${id}:${String(entry.name)}`),
+        exitHealth: proxyStates.get(`${id}:${binding(id, String(entry.name))}`)?.health ?? {
+          status: "unchecked" as const,
+        },
       }));
     },
     async credentialStatus(user: FrontendUser, id: string, name: string, disabled: boolean) {
-      await management(managed(user, id), "PATCH", "/credentials/status", { name, disabled });
+      const value = managed(user, id);
+      if (!disabled) {
+        const proxyId = binding(id, name);
+        if (!proxyId) throw new CpaError(409, "CPA_PROXY_REQUIRED", "先绑定出口节点，再启用凭据");
+        await applyProxy(value, name, await options.resolveProxyForUser(user, proxyId, value));
+      }
+      await management(value, "PATCH", "/credentials/status", { name, disabled });
     },
     credentialProxy(user: FrontendUser, id: string, name: string, proxyId: string) {
       return lifecycle.run(async () => {
         const value = managed(user, id);
-        const proxy = await options.resolveProxyForUser(user, proxyNode(proxyId));
-        await management(value, "PATCH", "/credentials/fields", { name, proxy_url: proxy.url });
+        const proxy = await options.resolveProxyForUser(user, proxyNode(proxyId), value);
+        await applyProxy(value, name, proxy);
         store.setCredentialProxy(id, name, proxy.id);
+      });
+    },
+    check(user: FrontendUser, id: string) {
+      return lifecycle.run(async () => {
+        const value = running(managed(user, id));
+        const bindings = store
+          .credentialBindings(id)
+          .filter((entry) => entry.proxyId !== "deployment-default");
+        for (const proxyId of new Set(bindings.map((entry) => entry.proxyId))) {
+          try {
+            const proxy = await options.checkProxyForUser(user, proxyId, value);
+            for (const entry of bindings.filter((entry) => entry.proxyId === proxyId))
+              await applyProxy(value, entry.name, proxy);
+          } catch {
+            proxyStates.set(`${id}:${proxyId}`, {
+              health: {
+                status: "error",
+                checkedAt: Date.now(),
+                error: "出口检查失败，请检查节点或订阅后重试",
+              },
+            });
+          }
+        }
+        return publicInstance(value, user);
       });
     },
     deleteCredential(user: FrontendUser, id: string, name: string) {
@@ -311,12 +472,13 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
           `/credentials?name=${encodeURIComponent(name)}`,
         );
         store.removeCredential(id, name);
+        credentialTimeZones.delete(`${id}:${name}`);
       });
     },
     startOAuth(user: FrontendUser, id: string, proxyId: string) {
       return lifecycle.run(async () => {
         const value = managed(user, id);
-        const proxy = await options.resolveProxyForUser(user, proxyNode(proxyId));
+        const proxy = await options.resolveProxyForUser(user, proxyNode(proxyId), value);
         const result = await management(value, "POST", "/oauth/auth-url", {
           provider: "claude",
           proxy_url: proxy.url,
@@ -325,6 +487,26 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
           throw new CpaError(502, "CPA_OAUTH", "CPA 没有返回登录链接");
         store.recordOAuth(id, result.state, "claude", proxy.id, result.url);
         return { status: "ok", url: result.url, state: result.state };
+      });
+    },
+    cancelOAuth(user: FrontendUser, id: string) {
+      return lifecycle.run(async () => {
+        const value = managed(user, id);
+        for (const { state } of store.pendingOAuth(id)) {
+          const result = await management(
+            value,
+            "DELETE",
+            `/oauth/session?state=${encodeURIComponent(state)}`,
+          );
+          if (result.cancelled === true) store.completeOAuth(id, state);
+          else {
+            await syncOAuth(value, state, user);
+            if (store.pendingOAuth(id).some((entry) => entry.state === state))
+              throw new CpaError(409, "CPA_AUTHORIZING", "授权仍在保存，请稍后再检查或取消");
+          }
+        }
+        await disableUnbound(value);
+        return publicInstance(value, user);
       });
     },
     async oauthStatus(user: FrontendUser, id: string, state: string) {
@@ -361,7 +543,7 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
         throw new CpaError(403, "CPA_KEY_FORBIDDEN", "无权撤销这个调用密钥");
       store.revokeKey(id, keyId);
     },
-    inference(token: string) {
+    inference(token: string, allowPending = false) {
       const resolved = store.resolveKey(token);
       if (!resolved || !options.userEnabled(resolved.userId))
         throw new CpaError(401, "CPA_API_KEY", "调用密钥无效");
@@ -370,6 +552,8 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
         throw new CpaError(401, "CPA_API_KEY", "调用密钥无效");
       if (value.desiredState !== "running")
         throw new CpaError(503, "CPA_STOPPED", "CPA 实例已停止");
+      if (!allowPending && store.pendingOAuth(value.id).length)
+        throw new CpaError(409, "CPA_AUTHORIZING", "授权处理中，请完成或取消授权后再调用");
       return value;
     },
     driver,

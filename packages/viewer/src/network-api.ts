@@ -38,6 +38,9 @@ export interface CpaInstance {
   status: "running" | "stopped" | "missing";
   createdAt: number;
   canManage: boolean;
+  authorization: "unknown" | "empty" | "needs-binding" | "unavailable" | "ready";
+  egress: ExitHealth["status"];
+  authorizing: boolean;
 }
 
 export interface CpaCredential {
@@ -51,6 +54,9 @@ export interface CpaCredential {
   createdAt?: number;
   updatedAt?: number;
   proxyId: string | null;
+  needsBinding: boolean;
+  timeZone?: string;
+  exitHealth?: ExitHealth;
 }
 
 export interface CpaKey {
@@ -125,6 +131,9 @@ export const cpaApi = {
     request<{ instance: CpaInstance }>("/api/cpa/instances", "POST", { scope }),
   start: (id: string) => request<{ instance: CpaInstance }>(`${instancePath(id)}/start`, "POST"),
   stop: (id: string) => request<{ instance: CpaInstance }>(`${instancePath(id)}/stop`, "POST"),
+  check: (id: string) => request<{ instance: CpaInstance }>(`${instancePath(id)}/check`, "POST"),
+  cancelOAuth: (id: string) =>
+    request<{ instance: CpaInstance }>(`${instancePath(id)}/oauth/cancel`, "POST"),
   credentials: (id: string) =>
     request<{ credentials: CpaCredential[] }>(`${instancePath(id)}/credentials`),
   credentialStatus: (id: string, name: string, disabled: boolean) =>

@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { FrontendUser } from "../auth/users";
 import { createCpaStore, type CpaInstance, type CpaStore } from "./store";
 import { createCpaRuntime } from "./runtime";
+import type { ExitHealth as CpaExitHealth } from "../egress/timezone";
 import type { CpaDriver, CpaRequest } from "./broker-client";
 import { registerCpaInferenceRoutes, registerCpaRoutes } from "./routes";
 
@@ -36,8 +37,14 @@ async function fixture() {
   const states = new Map<string, "running" | "stopped" | "missing">();
   const proxies: { userId: string; proxyId: string | undefined }[] = [];
   const users = new Map([alice, bob, admin].map((user) => [user.id, user]));
+  let health: CpaExitHealth = {
+    status: "healthy",
+    timeZone: "Asia/Tokyo",
+    exitIp: "203.0.113.1",
+    checkedAt: 1,
+  };
   let upstream: (instance: CpaInstance, input: CpaRequest) => IncomingMessage = () =>
-    response({ status: "ok" });
+    response({ status: "ok", files: [] });
   const driver: CpaDriver = {
     async ensure(value) {
       states.set(value.id, "running");
@@ -58,6 +65,24 @@ async function fixture() {
     driver,
     userEnabled: (id) => users.get(id)?.enabled === true,
     userName: (id) => users.get(id)?.username,
+    async proxyStatusForInstance() {
+      return health;
+    },
+    async checkProxyForUser(user, proxyId) {
+      health = {
+        status: "healthy",
+        timeZone: "Pacific/Honolulu",
+        exitIp: "203.0.113.2",
+        checkedAt: 2,
+      };
+      return {
+        id: proxyId,
+        name: "Private node",
+        url: `http://${user.id}:x@runtime-egress:8781`,
+        timeZone: "Pacific/Honolulu",
+        health,
+      };
+    },
     async resolveProxyForUser(user, proxyId) {
       proxies.push({ userId: user.id, proxyId });
       if (proxyId === "bobs-proxy" && user.id !== bob.id) throw new Error("not owned");
@@ -65,6 +90,8 @@ async function fixture() {
       return {
         id: proxyId ?? "deployment-default",
         name: "Private node",
+        timeZone: "Asia/Tokyo",
+        health: { status: "healthy", timeZone: "Asia/Tokyo", exitIp: "203.0.113.1", checkedAt: 1 },
         url: `http://${user.id}:x@runtime-egress:8781`,
       };
     },
@@ -76,6 +103,9 @@ async function fixture() {
     users,
     states,
     proxies,
+    setHealth(value: CpaExitHealth) {
+      health = value;
+    },
     setUpstream(value: typeof upstream) {
       upstream = value;
     },
@@ -135,24 +165,14 @@ describe("CPA instance and key boundaries", () => {
     ]);
     expect(states.get(a.id)).toBe("running");
     expect(proxies).toContainEqual({ userId: bob.id, proxyId: "bobs-proxy" });
-    expect(proxies).toContainEqual({ userId: admin.id, proxyId: undefined });
+    expect(proxies.some((entry) => entry.proxyId === undefined)).toBe(false);
     sharedAdmin = { ...admin, id: "another-admin" };
     calls.length = 0;
     await runtime.restoreBindings(["deployment-default"], lookup);
-    expect(
-      calls
-        .filter((call) => call.instance.id === shared.id)
-        .map((call) => JSON.parse(String(call.input.body))),
-    ).toContainEqual({
-      name: "shared.json",
-      proxy_url: "http://another-admin:x@runtime-egress:8781",
-    });
+    expect(calls.some((call) => call.input.path.endsWith("/credentials/fields"))).toBe(false);
     proxies.length = 0;
     await runtime.restoreBindings(["node-a"], lookup);
-    expect(proxies).toEqual([
-      { userId: alice.id, proxyId: undefined },
-      { userId: alice.id, proxyId: "node-a" },
-    ]);
+    expect(proxies).toEqual([{ userId: alice.id, proxyId: "node-a" }]);
     await runtime.stop(alice, a.id);
     proxies.length = 0;
     const started = await runtime.start(alice, a.id);
@@ -413,7 +433,7 @@ describe("CPA v8 contract", () => {
     expect(calls).toEqual([]);
   });
 
-  it("retains existing unbound credentials when starting and restoring the internal instance exit", async () => {
+  it("disables unbound credentials and starts without selecting an implicit exit", async () => {
     const { store, runtime, calls, proxies, setUpstream } = await fixture();
     const value = store.create(admin);
     setUpstream(() => response({ files: [{ name: "migrated-claude.json", provider: "claude" }] }));
@@ -423,12 +443,27 @@ describe("CPA v8 contract", () => {
       proxyId: null,
     });
     expect(await runtime.restore(() => admin)).toEqual({ restored: [value.id], failures: [] });
-    expect(proxies).toEqual([
-      { userId: admin.id, proxyId: undefined },
-      { userId: admin.id, proxyId: undefined },
-    ]);
+    expect(proxies).toEqual([]);
     expect(store.credentialBindings(value.id)).toEqual([]);
-    expect(calls.filter((call) => call.input.method === "PATCH")).toEqual([]);
+    expect(
+      calls
+        .filter((call) => call.input.method === "PATCH")
+        .map((call) => JSON.parse(String(call.input.body))),
+    ).toEqual([
+      { name: "migrated-claude.json", disabled: true },
+      { name: "migrated-claude.json", disabled: true },
+    ]);
+    expect(
+      calls
+        .filter((call) => call.input.method === "PUT")
+        .every(
+          (call) =>
+            JSON.parse(String(call.input.body)) === "http://cpa-unbound:x@runtime-egress:8781",
+        ),
+    ).toBe(true);
+    await expect(
+      runtime.credentialStatus(admin, value.id, "migrated-claude.json", false),
+    ).rejects.toMatchObject({ code: "CPA_PROXY_REQUIRED" });
   });
 
   it("requires explicit node IDs on public OAuth and credential proxy routes", async () => {
@@ -561,6 +596,7 @@ describe("CPA v8 contract", () => {
     expect(JSON.parse(String(calls.at(-1)?.input.body))).toEqual({
       name: "claude.json",
       proxy_url: "http://alice:x@runtime-egress:8781",
+      timezone: "Asia/Tokyo",
     });
     const items = await runtime.credentials(alice, value.id);
     expect(items[0]?.proxyId).toBe("my-proxy");
@@ -596,6 +632,84 @@ describe("CPA v8 contract", () => {
     ).rejects.toThrow();
     expect(calls).toHaveLength(count);
   });
+  it("refreshes a credential timezone from a free exit check without exposing shared-pool details", async () => {
+    const { store, runtime, calls, setUpstream } = await fixture();
+    const shared = store.create(admin, "shared");
+    await runtime.start(admin, shared.id);
+    setUpstream((_value, input) =>
+      input.path.endsWith("/credentials")
+        ? response({
+            files: [{ name: "shared.json", email: "private@example.test", provider: "claude" }],
+          })
+        : response({ status: "ok" }),
+    );
+    await runtime.credentialProxy(admin, shared.id, "shared.json", "node-a");
+    expect((await runtime.credentials(admin, shared.id))[0]?.timeZone).toBe("Asia/Tokyo");
+    const checked = await runtime.check(admin, shared.id);
+    expect(checked).toMatchObject({ authorization: "ready", egress: "healthy" });
+    expect((await runtime.credentials(admin, shared.id))[0]).toMatchObject({
+      timeZone: "Pacific/Honolulu",
+      exitHealth: { exitIp: "203.0.113.2" },
+    });
+    const patch = calls.filter((call) => call.input.path.endsWith("/credentials/fields")).at(-1);
+    expect(JSON.parse(String(patch?.input.body))).toMatchObject({ timezone: "Pacific/Honolulu" });
+    expect(calls.some((call) => call.input.path.startsWith("/v1/"))).toBe(false);
+    await expect(runtime.check(alice, shared.id)).rejects.toMatchObject({ statusCode: 403 });
+    expect(JSON.stringify(await runtime.list(alice))).not.toMatch(
+      /private@example|203\.0\.113|Honolulu|node-a/,
+    );
+  });
+
+  it("reports a dead exit immediately and synchronizes recovered timezone without changing its proxy", async () => {
+    const { store, runtime, calls, proxies, setHealth, setUpstream } = await fixture();
+    const value = store.create(alice);
+    await runtime.start(alice, value.id);
+    setUpstream((_value, input) =>
+      input.path.endsWith("/credentials")
+        ? response({ files: [{ name: "a.json", provider: "claude" }] })
+        : response({ status: "ok" }),
+    );
+    await runtime.credentialProxy(alice, value.id, "a.json", "node-a");
+    setHealth({ status: "error", error: "Exit process stopped" });
+    const resolved = proxies.length;
+    expect((await runtime.list(alice))[0]?.egress).toBe("error");
+    expect((await runtime.credentials(alice, value.id))[0]?.exitHealth.status).toBe("error");
+    setHealth({ status: "healthy", timeZone: "Pacific/Honolulu", exitIp: "203.0.113.2" });
+    calls.length = 0;
+    expect((await runtime.reconcileOAuth(() => alice)).failures).toEqual([]);
+    expect(calls.map((call) => JSON.parse(String(call.input.body)))).toEqual([
+      { name: "a.json", timezone: "Pacific/Honolulu" },
+    ]);
+    calls.length = 0;
+    await runtime.reconcileOAuth(() => alice);
+    expect(calls).toEqual([]);
+    expect(proxies.length).toBe(resolved);
+  });
+
+  it("pauses inference while OAuth is pending and restores it after cancellation or expiry reconciliation", async () => {
+    const { store, runtime, setUpstream } = await fixture();
+    const value = store.create(alice);
+    await runtime.start(alice, value.id);
+    const key = runtime.issueKey(alice, value.id, "client");
+    let expired = false;
+    setUpstream((_value, input) => {
+      if (input.path.endsWith("/oauth/auth-url"))
+        return response({ state: expired ? "expired" : "pending", url: "https://claude.ai/oauth" });
+      if (input.path.includes("/oauth/status?")) return response({ status: "error" });
+      if (input.path.endsWith("/credentials")) return response({ files: [] });
+      return response({ status: "ok" });
+    });
+    await runtime.startOAuth(alice, value.id, "node-a");
+    expect(() => runtime.inference(key.token)).toThrow("授权处理中");
+    expect(runtime.inference(key.token, true).id).toBe(value.id);
+    await runtime.cancelOAuth(alice, value.id);
+    expect(runtime.inference(key.token).id).toBe(value.id);
+    expired = true;
+    await runtime.startOAuth(alice, value.id, "node-a");
+    await runtime.reconcileOAuth(() => alice);
+    expect(runtime.inference(key.token).id).toBe(value.id);
+  });
+
   it("cookie-protected management and API-key inference enforce separate authorization", async () => {
     const { store, runtime, calls, setUpstream } = await fixture();
     const value = store.create(alice);
