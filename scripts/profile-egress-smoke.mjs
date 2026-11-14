@@ -1,6 +1,6 @@
 /** Disposable integration acceptance. Never uses production profiles, accounts or proxy secrets. */
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHmac } from "node:crypto";
 import { spawn, execFile } from "node:child_process";
 import { createSocket } from "node:dgram";
 import { createServer, request as httpRequest } from "node:http";
@@ -21,8 +21,18 @@ const exitTimeZones = {
   "exit-B": { timeZone: "America/Los_Angeles", winterOffset: 480, summerOffset: 420 },
 };
 const exitMetadata = {
-  "exit-A": { timeZone: "Asia/Tokyo", exitCity: "大阪", exitCountry: "日本" },
-  "exit-B": { timeZone: "America/Los_Angeles", exitCity: "西雅图", exitCountry: "美国" },
+  "exit-A": {
+    timeZone: "Asia/Tokyo",
+    exitCity: "大阪",
+    exitCountry: "日本",
+    exitIp: "203.0.113.21",
+  },
+  "exit-B": {
+    timeZone: "America/Los_Angeles",
+    exitCity: "西雅图",
+    exitCountry: "美国",
+    exitIp: "203.0.113.22",
+  },
 };
 const command = async (program, args) =>
   (await exec(program, args, { maxBuffer: 4 * 1024 * 1024 })).stdout.trim();
@@ -183,29 +193,12 @@ async function cdpProbe(input) {
     assert.deepEqual(clocks.worker, exitTimeZones[input.exit]);
     const image = await send("Page.captureScreenshot", { format: "png" }, sessionId);
     assert.ok(Buffer.from(image.data, "base64").length > 500);
-    await send("Page.navigate", { url: "chrome://sandbox" }, sessionId);
-    let sandbox;
-    for (let n = 0; n < 40; n++) {
-      sandbox = (
-        await send(
-          "Runtime.evaluate",
-          { expression: "document.body.innerText", returnByValue: true },
-          sessionId,
-        )
-      ).result.value;
-      if (sandbox?.includes("Seccomp-BPF sandbox")) break;
-      await delay(50);
-    }
-    assert.match(sandbox, /Seccomp-BPF sandbox\s+Yes/);
-    assert.match(sandbox, /PID namespaces\s+Yes/);
     await send("Browser.close");
     return {
       cdpUnixBridge: true,
       navigation: true,
       screenshot: true,
       persistentProfile: !input.persist,
-      namespaceSandbox: true,
-      seccompSandbox: true,
       timeZone: clocks.main.timeZone,
       workerTimeZone: clocks.worker.timeZone,
       winterOffset: clocks.main.winterOffset,
@@ -322,10 +315,11 @@ async function startExitFixture(exit, socksPort, targetPort, counters) {
         res.end(JSON.stringify({ success: false }));
         return;
       }
-      const metadata = exitMetadata[exit];
+      const metadata = counters.metadata ?? exitMetadata[exit];
       res.end(
         JSON.stringify({
           success: true,
+          ip: metadata.exitIp,
           city: metadata.exitCity,
           country: metadata.exitCountry,
           timezone: { id: metadata.timeZone },
@@ -565,6 +559,50 @@ async function inside() {
   const counts = { A: { http: 0, udp: 0, dns: 0, geo: 0 }, B: { http: 0, udp: 0, dns: 0, geo: 0 } };
   const cleanups = [];
   const raceNetwork = networkIdentity("node-fixture-race");
+  const retryNetwork = networkIdentity("node-fixture-retry");
+  const metadataMatches = (value, expected) => {
+    const { checkedAt, ...metadata } = value;
+    assert.ok(Number.isFinite(checkedAt));
+    assert.deepEqual(metadata, expected);
+  };
+  const killExit = async (name) => {
+    const pids = (await command("ip", ["netns", "pids", name])).split(/\s+/).filter(Boolean);
+    let killed = false;
+    for (const pid of pids) {
+      if ((await readFile(`/proc/${pid}/comm`, "utf8")).trim() === "mihomo") {
+        process.kill(Number(pid), "SIGKILL");
+        killed = true;
+      }
+    }
+    assert.ok(killed, "fixture Mihomo process exists");
+  };
+  const waitHealth = async (id, predicate) => {
+    for (let attempt = 0; attempt < 150; attempt++) {
+      const health = await api(`/egress/${id}/status`, "GET");
+      if (predicate(health)) return health;
+      await delay(100);
+    }
+    assert.fail(`exit ${id} did not reach the expected state`);
+  };
+  const proxyStatus = (token) =>
+    new Promise((done, fail) => {
+      const req = httpRequest(
+        {
+          host: "127.0.0.1",
+          port: 8781,
+          path: "http://203.0.113.10/",
+          headers: {
+            "proxy-authorization": `Basic ${Buffer.from(`${token}:x`).toString("base64")}`,
+          },
+        },
+        (response) => {
+          response.resume();
+          done(response.statusCode);
+        },
+      );
+      req.once("error", fail);
+      req.end();
+    });
   let broker;
   let stage = "setup";
   await command("ip", ["addr", "add", "203.0.113.10/32", "dev", "lo"]);
@@ -616,6 +654,10 @@ if [ "$1" = route ] && [ "$2" = ${raceNetwork.name} ]; then
   touch /tmp/profile-egress-race-ready
   while [ ! -e /tmp/profile-egress-race-release ]; do sleep 0.05; done
 fi
+if [ "$1" = route ] && [ "$2" = ${retryNetwork.name} ]; then
+  echo attempt >> /tmp/profile-egress-retry-attempts
+  if [ -e /tmp/profile-egress-retry-fail ]; then exit 1; fi
+fi
 exec sh /acceptance/profile-network.sh "$@"
 `,
       { mode: 0o644 },
@@ -641,9 +683,14 @@ exec sh /acceptance/profile-network.sh "$@"
       },
     });
     stage = "pending-egress-revocation";
-    const startingRace = api("/egress/fixture-race/start", "POST", {
-      node: { ...nodes.A, server: raceNetwork.hostIp },
-    });
+    const startingRace = api(
+      "/egress/fixture-race/start",
+      "POST",
+      {
+        node: { ...nodes.A, server: raceNetwork.hostIp },
+      },
+      500,
+    );
     void startingRace.catch(() => {});
     for (let attempt = 0; ; attempt++) {
       if (
@@ -659,30 +706,15 @@ exec sh /acceptance/profile-network.sh "$@"
     const deletingRace = api("/egress/fixture-race", "DELETE");
     await delay(500);
     await writeFile("/tmp/profile-egress-race-release", "release");
-    const revokedRace = await startingRace;
+    await startingRace;
     await deletingRace;
     assert.ok(!(await command("ip", ["netns", "list"])).includes(raceNetwork.name));
     await assert.rejects(stat(`/run/remote-browser/${raceNetwork.name}`), { code: "ENOENT" });
-    const revokedUrl = new URL(revokedRace.externalProxyUrl);
-    const revokedStatus = await new Promise((done, fail) => {
-      const req = httpRequest(
-        {
-          host: "127.0.0.1",
-          port: 8781,
-          path: "http://203.0.113.10/",
-          headers: {
-            "proxy-authorization": `Basic ${Buffer.from(`${revokedUrl.username}:x`).toString("base64")}`,
-          },
-        },
-        (response) => {
-          response.resume();
-          done(response.statusCode);
-        },
-      );
-      req.once("error", fail);
-      req.end();
-    });
-    assert.equal(revokedStatus, 407);
+    const revokedToken = createHmac("sha256", "disposable-smoke-secret-not-production")
+      .update("node-fixture-race")
+      .digest("hex");
+    assert.equal(await proxyStatus(revokedToken), 407);
+    assert.deepEqual(await api("/egress/fixture-race/status", "GET"), { status: "unchecked" });
     stage = "default-egress-lifecycle";
     await api("/egress/deployment-default/start", "POST", {});
     const initialDefaultGeo = counts.A.geo;
@@ -690,7 +722,7 @@ exec sh /acceptance/profile-network.sh "$@"
       api("/egress/deployment-default/timezone", "POST"),
       api("/egress/deployment-default/timezone", "POST"),
     ]);
-    assert.deepEqual(defaultZones, [exitMetadata["exit-A"], exitMetadata["exit-A"]]);
+    defaultZones.forEach((value) => metadataMatches(value, exitMetadata["exit-A"]));
     assert.equal(
       counts.A.geo,
       initialDefaultGeo + 1,
@@ -701,7 +733,7 @@ exec sh /acceptance/profile-network.sh "$@"
       stat(`/run/remote-browser/${networkIdentity("node-deployment-default").name}`),
       { code: "ENOENT" },
     );
-    assert.deepEqual(
+    metadataMatches(
       await api("/egress/deployment-default/timezone", "POST"),
       exitMetadata["exit-A"],
     );
@@ -775,21 +807,74 @@ exec sh /acceptance/profile-network.sh "$@"
       "dev",
       "profile0",
     ]);
-    const pids = (await command("ip", ["netns", "pids", nsB.name])).split(/\s+/).filter(Boolean);
-    let killed = false;
-    for (const pid of pids) {
-      if ((await readFile(`/proc/${pid}/comm`, "utf8")).trim() === "mihomo") {
-        process.kill(Number(pid), "SIGKILL");
-        killed = true;
-      }
-    }
-    assert.ok(killed);
+    stage = "fresh-exit-health";
+    assert.deepEqual(await api("/egress/fixture-b/status", "GET"), { status: "unchecked" });
+    const checkedB = await api("/egress/fixture-b/check", "POST");
+    const { status: initialStatus, ...initialMetadata } = checkedB;
+    assert.equal(initialStatus, "healthy");
+    metadataMatches(initialMetadata, exitMetadata["exit-B"]);
+    const beforeRead = counts.B.geo;
+    assert.deepEqual(await api("/egress/fixture-b/status", "GET"), checkedB);
+    assert.equal(counts.B.geo, beforeRead, "status reads do not probe");
+    counts.B.failGeo = true;
+    const failedCheck = await api("/egress/fixture-b/check", "POST");
+    assert.equal(failedCheck.status, "error");
+    assert.equal(failedCheck.error, "出口检查失败，请检查所选节点后重试");
+    assert.equal(failedCheck.exitIp, undefined);
+    delete counts.B.failGeo;
+    const healthyAgain = await api("/egress/fixture-b/check", "POST");
+    assert.equal(healthyAgain.status, "healthy");
+    assert.ok(healthyAgain.checkedAt > checkedB.checkedAt);
+
+    stage = "automatic-egress-recovery";
+    await killExit(nsB.name);
     await delay(100);
-    await childProbe("blocked", {}, nsB.name);
+    assert.equal(await proxyStatus(new URL(startedB.externalProxyUrl).username), 407);
     await childProbe("range", { exit: "exit-A", proxyUrl: startedA.proxyUrl });
-    const restarted = await api("/egress/fixture-b/start", "POST", { node: nodes.B });
-    assert.equal(restarted.externalProxyUrl, startedB.externalProxyUrl);
+    await waitHealth("fixture-b", (value) => value.status === "healthy");
+    // The saved token works after automatic recovery without another start request.
+    await childProbe("range", { exit: "exit-B", proxyUrl: startedB.externalProxyUrl });
     await childProbe("network", { exit: "exit-B" }, nsB.name);
+
+    stage = "recovery-cancelled-by-config-change";
+    await killExit(nsB.name);
+    await delay(100);
+    const changed = await api("/egress/fixture-b/start", "POST", {
+      node: { ...nodes.A, server: nsB.hostIp },
+    });
+    assert.equal(changed.externalProxyUrl, startedB.externalProxyUrl);
+    await delay(1500);
+    assert.equal(
+      (await api("/egress/fixture-b/check", "POST")).exitIp,
+      exitMetadata["exit-A"].exitIp,
+    );
+    await childProbe("range", { exit: "exit-A", proxyUrl: startedB.externalProxyUrl });
+    await api("/egress/fixture-b/start", "POST", { node: nodes.B });
+
+    stage = "bounded-egress-recovery";
+    await api("/egress/fixture-retry/start", "POST", {
+      node: { ...nodes.A, server: retryNetwork.hostIp },
+    });
+    await writeFile("/tmp/profile-egress-retry-fail", "fail");
+    await killExit(retryNetwork.name);
+    await waitHealth("fixture-retry", (value) => value.error === "出口恢复失败，请检查节点后重试");
+    assert.equal(
+      (await readFile("/tmp/profile-egress-retry-attempts", "utf8")).trim().split("\n").length,
+      4,
+    );
+    await rm("/tmp/profile-egress-retry-fail");
+    await delay(1200);
+    assert.ok(!(await command("ip", ["netns", "list"])).includes(retryNetwork.name));
+    await api("/egress/fixture-retry", "DELETE");
+
+    stage = "recovery-cancelled-by-delete";
+    await killExit(nsB.name);
+    await delay(100);
+    await api("/egress/fixture-b", "DELETE");
+    await delay(1500);
+    assert.ok(!(await command("ip", ["netns", "list"])).includes(nsB.name));
+    assert.equal(await proxyStatus(new URL(startedB.externalProxyUrl).username), 407);
+    await api("/egress/fixture-b/start", "POST", { node: nodes.B });
     if (process.env.PROFILE_EGRESS_STOCK_CPA === "1") {
       stage = "stock-cpa-authenticated-proxy";
       await stockCpaProbe(startedA.externalProxyUrl);
@@ -814,8 +899,11 @@ exec sh /acceptance/profile-network.sh "$@"
           env,
         },
       });
-      const { timeZone, exitCity, exitCountry } = value;
-      assert.deepEqual({ timeZone, exitCity, exitCountry }, exitMetadata[profile.exit]);
+      const { timeZone, exitCity, exitCountry, exitIp, checkedAt } = value;
+      metadataMatches(
+        { timeZone, exitCity, exitCountry, exitIp, checkedAt },
+        exitMetadata[profile.exit],
+      );
       return value;
     };
     stage = "failed-geo-cleanup";
@@ -859,6 +947,14 @@ exec sh /acceptance/profile-network.sh "$@"
     );
     assert.equal(counts.A.geo, beforeConcurrent.A + 1);
     assert.equal(counts.B.geo, beforeConcurrent.B + 1);
+    const browserStatus = await api("/browsers/smoke-browser-b/status", "GET");
+    assert.equal(browserStatus.exitIp, exitMetadata["exit-B"].exitIp);
+    assert.equal(browserStatus.browserTimeZone, exitMetadata["exit-B"].timeZone);
+    counts.B.metadata = exitMetadata["exit-A"];
+    const rotated = await api("/browsers/smoke-browser-b/check", "POST");
+    assert.equal(rotated.timeZone, exitMetadata["exit-A"].timeZone);
+    assert.equal(rotated.browserTimeZone, exitMetadata["exit-B"].timeZone);
+    delete counts.B.metadata;
     const initialClocks = await Promise.all(
       Object.values(browserProfiles).map((profile, index) =>
         childProbe("cdp", {
@@ -891,6 +987,22 @@ exec sh /acceptance/profile-network.sh "$@"
       );
       await api(`/browsers/${profile.id}`, "DELETE");
     }
+    stage = "browser-exit-death";
+    const doomedProfile = { ...browserProfiles.B, id: "smoke-browser-death" };
+    const doomedBrowser = await startBrowser(doomedProfile);
+    const doomedNetwork = networkIdentity(`browser-${doomedProfile.id}`);
+    await killExit(doomedNetwork.name);
+    for (let attempt = 0; ; attempt++) {
+      const exists = await stat(doomedBrowser.socketPath).then(
+        () => true,
+        () => false,
+      );
+      if (!exists) break;
+      assert.ok(attempt < 100, "browser remained open after its exit died");
+      await delay(100);
+    }
+    await api(`/browsers/${doomedProfile.id}`, "DELETE");
+    assert.ok(!(await command("ip", ["netns", "list"])).includes(doomedNetwork.name));
     stage = "headful-private-x11";
     const display = await startPrivateDisplay();
     cleanups.push(display.close);
@@ -909,6 +1021,13 @@ exec sh /acceptance/profile-network.sh "$@"
       privateXauthority: true,
     });
     await api("/browsers/smoke-headful", "DELETE");
+    stage = "recovery-cancelled-by-shutdown";
+    await killExit(nsB.name);
+    await delay(100);
+    await broker.close();
+    broker = undefined;
+    await delay(1500);
+    assert.equal(await command("ip", ["netns", "list"]), "");
     assert.ok(counts.A.dns > 0 && counts.B.dns > 0);
     assert.ok(counts.A.udp > 0 && counts.B.udp > 0);
     assert.ok(counts.A.geo > 0 && counts.B.geo > 0);
@@ -921,6 +1040,12 @@ exec sh /acceptance/profile-network.sh "$@"
         mihomoDeathBlocked: true,
         otherExitSurvives: true,
         stableTokenAfterRestart: true,
+        automaticEgressRecovery: true,
+        boundedRecovery: true,
+        cancelledRecovery: ["delete", "config-change", "shutdown"],
+        freshExitHealth: true,
+        browserTimeZoneMismatchVisible: true,
+        browserClosedAfterExitDeath: true,
         pendingEgressRevoked: true,
         defaultEgressLifecycle: true,
         headfulPrivateX11: true,

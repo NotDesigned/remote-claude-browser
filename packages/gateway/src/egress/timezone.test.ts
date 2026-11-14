@@ -22,7 +22,7 @@ async function withProxy(
   const proxy = createServer((request, response) => {
     expect(request.url).toBe(url);
     response.writeHead(status, { "content-type": "application/json", connection: "close" });
-    response.end(JSON.stringify(value));
+    response.end(JSON.stringify({ ip: "203.0.113.7", ...(value as object) }));
   });
   const proxyUrl = await listen(proxy);
   try {
@@ -43,6 +43,8 @@ describe("exit time zone", () => {
         { city: ` ${city} `, country: " 台湾 ", timezone: { id: "Asia/Taipei" } },
         async (proxyUrl, url, requests) => {
           expect(await detectExitMetadata({ proxyUrl, url })).toEqual({
+            exitIp: "203.0.113.7",
+            checkedAt: expect.any(Number),
             timeZone: "Asia/Taipei",
             exitCity: city,
             exitCountry: "台湾",
@@ -57,7 +59,11 @@ describe("exit time zone", () => {
     "keeps valid timezone metadata without inventing missing geography: %j",
     async (geography) => {
       await withProxy({ ...geography, timezone: { id: "Asia/Taipei" } }, async (proxyUrl, url) => {
-        expect(await detectExitMetadata({ proxyUrl, url })).toEqual({ timeZone: "Asia/Taipei" });
+        expect(await detectExitMetadata({ proxyUrl, url })).toEqual({
+          exitIp: "203.0.113.7",
+          checkedAt: expect.any(Number),
+          timeZone: "Asia/Taipei",
+        });
       });
     },
   );
@@ -67,6 +73,8 @@ describe("exit time zone", () => {
       { country: " 台湾 ", timezone: { id: "Asia/Taipei" } },
       async (proxyUrl, url) => {
         expect(await detectExitMetadata({ proxyUrl, url })).toEqual({
+          exitIp: "203.0.113.7",
+          checkedAt: expect.any(Number),
           timeZone: "Asia/Taipei",
           exitCountry: "台湾",
         });
@@ -89,6 +97,8 @@ describe("exit time zone", () => {
     { timezone: "Asia/Tokyo" },
     { timezone: { id: "Not/AZone" } },
     { timezone: { id: "+09:00" } },
+    { ip: "not-an-ip", timezone: { id: "Asia/Tokyo" } },
+    { ip: undefined, timezone: { id: "Asia/Tokyo" } },
   ])("fails for an invalid provider result instead of using the host zone: %j", async (value) => {
     await withProxy(value, async (proxyUrl, url, requests) => {
       await expect(detectExitTimeZone({ proxyUrl, url })).rejects.toBeInstanceOf(ExitTimeZoneError);
@@ -121,7 +131,7 @@ describe("exit time zone", () => {
   it("uses the process route for deployments without a broker proxy", async () => {
     const origin = createServer((_request, response) => {
       response.setHeader("connection", "close");
-      response.end(JSON.stringify({ timezone: { id: "Europe/Berlin" } }));
+      response.end(JSON.stringify({ ip: "2001:db8::1", timezone: { id: "Europe/Berlin" } }));
     });
     const url = await listen(origin);
     try {

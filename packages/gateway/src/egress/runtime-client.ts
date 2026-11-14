@@ -1,6 +1,6 @@
 import { request } from "node:http";
 import type { MihomoProxy } from "./mihomo";
-import type { ExitMetadata } from "./timezone";
+import type { ExitHealth, ExitMetadata } from "./timezone";
 
 export interface RuntimeEgress {
   proxyUrl: string;
@@ -53,5 +53,13 @@ export function createRuntimeClient(options: { socketPath?: string } = {}) {
     stopEgress: (id: string) => call<void>("DELETE", `/egress/${encodeURIComponent(id)}`),
     timeZoneForEgress: (id = "deployment-default") =>
       call<ExitMetadata>("POST", `/egress/${encodeURIComponent(id)}/timezone`),
+    egressStatus: (id: string) =>
+      call<ExitHealth>("GET", `/egress/${encodeURIComponent(id)}/status`),
+    checkEgress: (id: string) =>
+      call<ExitHealth>("POST", `/egress/${encodeURIComponent(id)}/check`),
+    browserStatus: (id: string) =>
+      call<ExitHealth>("GET", `/browsers/${encodeURIComponent(id)}/status`),
+    checkBrowser: (id: string) =>
+      call<ExitHealth>("POST", `/browsers/${encodeURIComponent(id)}/check`),
   };
 }

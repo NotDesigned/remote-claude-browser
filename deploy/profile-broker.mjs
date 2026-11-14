@@ -130,9 +130,21 @@ export async function startProfileBroker({
   const networks = new Map();
   const reservations = new Map();
   const pending = new Map();
+  const desired = new Map();
   const browsers = new Map();
   const closingBrowsers = new Map();
   const tokens = new Map();
+  let stopping = false;
+  // Serialize start/change/delete per ID. Cleanup must never wait on its own operation.
+  const enqueue = (id, operation) => {
+    const next = (pending.get(id) ?? Promise.resolve()).catch(() => {}).then(operation);
+    pending.set(id, next);
+    const finished = () => {
+      if (pending.get(id) === next) pending.delete(id);
+    };
+    void next.then(finished, finished);
+    return next;
+  };
   const network = (action, info) =>
     exec("sh", [
       networkScript,
@@ -143,9 +155,7 @@ export async function startProfileBroker({
       info.peerIp,
       info.subnet,
     ]);
-  const removeNetwork = async (id) => {
-    const starting = pending.get(id);
-    if (starting) await starting.catch(() => {});
+  const destroyNetwork = async (id) => {
     const item = networks.get(id);
     if (!item) return;
     networks.delete(id);
@@ -155,10 +165,58 @@ export async function startProfileBroker({
     reservations.delete(item.info.subnet);
     await rm(item.dir, { recursive: true, force: true });
   };
-  const ensureNetwork = async (id, node) => {
+  const removeNetwork = (id) => {
+    clearTimeout(desired.get(id)?.timer);
+    desired.delete(id);
+    const item = networks.get(id);
+    if (item) tokens.delete(item.token);
+    return enqueue(id, () => destroyNetwork(id));
+  };
+  const scheduleRecovery = (id, target) => {
+    if (stopping || desired.get(id) !== target || target.timer) return;
+    if (target.attempts >= 3) {
+      target.health = {
+        status: "error",
+        checkedAt: Date.now(),
+        error: "出口恢复失败，请检查节点后重试",
+      };
+      return;
+    }
+    target.health = { status: "error", checkedAt: Date.now(), error: "出口进程已停止，正在重试" };
+    const delay = 1000 * 2 ** target.attempts++;
+    target.timer = setTimeout(() => {
+      target.timer = undefined;
+      if (stopping || desired.get(id) !== target) return;
+      void enqueue(id, () => startNetwork(id, target)).then(
+        (item) => metadataForNetwork(item).catch(() => {}),
+        () => scheduleRecovery(id, target),
+      );
+    }, delay);
+    target.timer.unref();
+  };
+  const ensureNetwork = (id, node) => {
+    if (stopping) throw new Error("Runtime is stopping");
     const local = id === "node-deployment-default";
     node = local ? defaultNode : validateNode(node);
     const configHash = createHash("sha256").update(JSON.stringify(node)).digest("hex");
+    let target = desired.get(id);
+    if (!target || target.configHash !== configHash) {
+      clearTimeout(target?.timer);
+      target = { node, configHash, attempts: 0, health: { status: "unchecked" } };
+      desired.set(id, target);
+      const old = networks.get(id);
+      if (old) tokens.delete(old.token);
+    } else {
+      clearTimeout(target.timer);
+      target.timer = undefined;
+      target.attempts = 0;
+    }
+    return enqueue(id, () => startNetwork(id, target));
+  };
+  const startNetwork = async (id, target) => {
+    if (stopping || desired.get(id) !== target) throw new Error("Egress start cancelled");
+    const local = id === "node-deployment-default";
+    const { node, configHash } = target;
     const existing = networks.get(id);
     if (
       existing &&
@@ -167,106 +225,111 @@ export async function startProfileBroker({
       existing.child.signalCode === null
     )
       return existing;
-    if (pending.has(id)) return pending.get(id);
-    const start = (async () => {
-      if (existing) await removeNetwork(id);
-      let info = local ? { ...networkIdentity(id), peerIp: "127.0.0.1" } : networkIdentity(id);
-      const port = local ? 8782 : 8780;
-      if (!local) {
-        let offset = 0;
-        while (reservations.has(info.subnet)) {
-          if (++offset >= 16382) throw new Error("Profile network capacity reached");
-          info = networkIdentity(id, offset);
-        }
-        reservations.set(info.subnet, id);
+    if (existing) await destroyNetwork(id);
+    let info = local ? { ...networkIdentity(id), peerIp: "127.0.0.1" } : networkIdentity(id);
+    const port = local ? 8782 : 8780;
+    if (!local) {
+      let offset = 0;
+      while (reservations.has(info.subnet)) {
+        if (++offset >= 16382) throw new Error("Profile network capacity reached");
+        info = networkIdentity(id, offset);
       }
-      const dir = join(runtimeRoot, info.name);
-      await mkdir(dir, { recursive: true, mode: 0o700 });
-      let child;
-      try {
-        if (!local) await network("start", info);
-        const config = createConfig(node, {
-          tun: !local,
-          listenAddress: info.peerIp,
-          port,
-          dnsPort: local ? 1054 : 1053,
-          device: "profile0",
-          bootstrapDns: process.env.EGRESS_BOOTSTRAP_DNS || undefined,
-          block: (process.env.EGRESS_BLOCK ?? "")
-            .split(",")
-            .map((address) => address.trim())
-            .filter(Boolean),
-        });
-        await writeFile(join(dir, "config.json"), JSON.stringify(config), { mode: 0o600 });
-        // Mihomo owns the TUN. Only browser UID10001 is policy-routed into it.
-        let command = "ip";
-        let args = [
-          "netns",
-          "exec",
-          info.name,
+      reservations.set(info.subnet, id);
+    }
+    const dir = join(runtimeRoot, info.name);
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    let child;
+    try {
+      if (!local) await network("start", info);
+      const config = createConfig(node, {
+        tun: !local,
+        listenAddress: info.peerIp,
+        port,
+        dnsPort: local ? 1054 : 1053,
+        device: "profile0",
+        bootstrapDns: process.env.EGRESS_BOOTSTRAP_DNS || undefined,
+        block: (process.env.EGRESS_BLOCK ?? "")
+          .split(",")
+          .map((address) => address.trim())
+          .filter(Boolean),
+      });
+      await writeFile(join(dir, "config.json"), JSON.stringify(config), { mode: 0o600 });
+      // Mihomo owns the TUN. Only browser UID10001 is policy-routed into it.
+      let command = "ip";
+      let args = [
+        "netns",
+        "exec",
+        info.name,
+        mihomoPath,
+        "-d",
+        dir,
+        "-f",
+        join(dir, "config.json"),
+      ];
+      if (local) {
+        // Preserve the deployment's existing UID10001 egress, including legacy Xray options.
+        await chown(join(dir, "config.json"), UID, UID);
+        await chown(dir, 0, UID);
+        await chmod(dir, 0o770);
+        command = "setpriv";
+        args = [
+          "--reuid=10001",
+          "--regid=10001",
+          "--clear-groups",
+          "--inh-caps=-all",
           mihomoPath,
           "-d",
           dir,
           "-f",
           join(dir, "config.json"),
         ];
-        if (local) {
-          // Preserve the deployment's existing UID10001 egress, including legacy Xray options.
-          await chown(join(dir, "config.json"), UID, UID);
-          await chown(dir, 0, UID);
-          await chmod(dir, 0o770);
-          command = "setpriv";
-          args = [
-            "--reuid=10001",
-            "--regid=10001",
-            "--clear-groups",
-            "--inh-caps=-all",
-            mihomoPath,
-            "-d",
-            dir,
-            "-f",
-            join(dir, "config.json"),
-          ];
-        }
-        child = spawn(command, args, { detached: true, stdio: "ignore" });
-        await waitPort(info.peerIp, port, child);
-        if (!local) await network("route", info);
-        const token = createHmac("sha256", secret).update(id).digest("hex");
-        const result = {
-          id,
-          info,
-          dir,
-          child,
-          configHash,
-          token,
-          local,
-          port,
-          proxyUrl: `http://${info.peerIp}:${port}`,
-          externalProxyUrl: `http://${token}:x@${proxyHost}:${proxyPort}`,
-        };
-        networks.set(id, result);
-        tokens.set(token, result);
-        child.once("exit", () => {
-          if (networks.get(id) === result && id.startsWith("browser-")) {
-            // Reuse the gateway's Chrome health recovery; a dead exit must not leave a live,
-            // permanently disconnected browser with no way to reopen its network runtime.
-            void closeBrowser(id.slice("browser-".length));
-          }
-        });
-        return result;
-      } catch (error) {
-        await stopProcess(child);
-        if (!local) await network("stop", info);
-        reservations.delete(info.subnet);
-        await rm(dir, { recursive: true, force: true });
-        throw error;
       }
-    })();
-    pending.set(id, start);
-    try {
-      return await start;
-    } finally {
-      pending.delete(id);
+      child = spawn(command, args, { detached: true, stdio: "ignore" });
+      await waitPort(info.peerIp, port, child);
+      if (!local) await network("route", info);
+      if (stopping || desired.get(id) !== target) throw new Error("Egress start cancelled");
+      if (child.exitCode !== null || child.signalCode !== null)
+        throw new Error("Mihomo exited during startup");
+      const token = createHmac("sha256", secret).update(id).digest("hex");
+      const result = {
+        id,
+        info,
+        dir,
+        child,
+        configHash,
+        token,
+        local,
+        port,
+        target,
+        proxyUrl: `http://${info.peerIp}:${port}`,
+        externalProxyUrl: `http://${token}:x@${proxyHost}:${proxyPort}`,
+      };
+      networks.set(id, result);
+      tokens.set(token, result);
+      target.health = { status: "unchecked" };
+      const startedAt = Date.now();
+      child.once("exit", () => {
+        if (networks.get(id) !== result || desired.get(id) !== target) return;
+        tokens.delete(token);
+        result.exitMetadata = undefined;
+        target.health = { status: "error", checkedAt: Date.now(), error: "出口进程已停止" };
+        if (id.startsWith("browser-")) {
+          // Reuse the gateway's Chrome health recovery; a dead exit must not leave a live,
+          // permanently disconnected browser with no way to reopen its network runtime.
+          void closeBrowser(id.slice("browser-".length));
+        } else {
+          // A stable run earns a new retry budget; repeated short-lived crashes are bounded.
+          if (Date.now() - startedAt >= 60_000) target.attempts = 0;
+          scheduleRecovery(id, target);
+        }
+      });
+      return result;
+    } catch (error) {
+      await stopProcess(child);
+      if (!local) await network("stop", info);
+      reservations.delete(info.subnet);
+      await rm(dir, { recursive: true, force: true });
+      throw error;
     }
   };
   const closeBrowser = async (id) => {
@@ -289,13 +352,44 @@ export async function startProfileBroker({
       closingBrowsers.delete(id);
     }
   };
-  const metadataForNetwork = (item) => {
-    item.exitMetadata ??= detectExitMetadata({ proxyUrl: item.proxyUrl, url: geoUrl }).catch(
-      (error) => {
-        item.exitMetadata = undefined;
-        throw error;
-      },
-    );
+  const metadataForNetwork = (item, fresh = false) => {
+    if (item.child.exitCode !== null || item.child.signalCode !== null)
+      return Promise.reject(new ExitTimeZoneError());
+    if (fresh && !item.checking) item.exitMetadata = undefined;
+    if (!item.exitMetadata) {
+      item.target.health = { status: "checking" };
+      item.checking = detectExitMetadata({ proxyUrl: item.proxyUrl, url: geoUrl })
+        .then((metadata) => {
+          if (
+            networks.get(item.id) !== item ||
+            desired.get(item.id) !== item.target ||
+            item.child.exitCode !== null ||
+            item.child.signalCode !== null
+          )
+            throw new ExitTimeZoneError();
+          item.target.health = { status: "healthy", ...metadata };
+          return metadata;
+        })
+        .catch((error) => {
+          item.exitMetadata = undefined;
+          // A failing probe must not overwrite an in-progress recovery or a new configuration.
+          if (
+            networks.get(item.id) === item &&
+            item.child.exitCode === null &&
+            item.child.signalCode === null
+          )
+            item.target.health = {
+              status: "error",
+              checkedAt: Date.now(),
+              error: "出口检查失败，请检查所选节点后重试",
+            };
+          throw error;
+        })
+        .finally(() => {
+          item.checking = undefined;
+        });
+      item.exitMetadata = item.checking;
+    }
     return item.exitMetadata;
   };
   const startBrowser = async (id, body) => {
@@ -340,7 +434,13 @@ export async function startProfileBroker({
         stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"],
       },
     );
-    const item = { child, socketPath: cdpPath, connection: undefined, server: undefined };
+    const item = {
+      child,
+      socketPath: cdpPath,
+      connection: undefined,
+      server: undefined,
+      timeZone: exitMetadata.timeZone,
+    };
     const server = socketServer((connection) => {
       if (item.connection) return connection.destroy();
       item.connection = connection;
@@ -413,9 +513,10 @@ export async function startProfileBroker({
   await rm(socketPath, { force: true });
   const api = httpServer(async (request, response) => {
     try {
-      const match = /^\/(egress|browsers)\/([a-zA-Z0-9-]{1,64})(\/(?:start|timezone))?$/.exec(
-        request.url,
-      );
+      const match =
+        /^\/(egress|browsers)\/([a-zA-Z0-9-]{1,64})(\/(?:start|timezone|status|check))?$/.exec(
+          request.url,
+        );
       if (!match) {
         response.writeHead(404);
         response.end();
@@ -443,6 +544,24 @@ export async function startProfileBroker({
             : networks.get(`node-${id}`);
         if (!item) throw new Error("Egress network is not running");
         result = await metadataForNetwork(item);
+      } else if (
+        (request.method === "GET" && action === "/status") ||
+        (request.method === "POST" && action === "/check")
+      ) {
+        const networkId = `${type === "egress" ? "node" : "browser"}-${id}`;
+        const item = networks.get(networkId);
+        if (action === "/check") {
+          if (!item) {
+            result = {
+              status: "error",
+              checkedAt: Date.now(),
+              error: "出口未运行，请重新打开后重试",
+            };
+          } else await metadataForNetwork(item, true).catch(() => {});
+        }
+        result ??= desired.get(networkId)?.health ?? { status: "unchecked" };
+        const browser = type === "browsers" && browsers.get(id);
+        if (browser) result = { ...result, browserTimeZone: browser.timeZone };
       } else if (request.method === "DELETE" && !action) {
         if (type === "egress") await removeNetwork(`node-${id}`);
         else await closeBrowser(id);
@@ -473,6 +592,10 @@ export async function startProfileBroker({
   await chown(socketPath, UID, UID);
   return {
     async close() {
+      stopping = true;
+      for (const target of desired.values()) clearTimeout(target.timer);
+      desired.clear();
+      tokens.clear();
       api.close();
       proxy.close();
       for (const id of [...browsers.keys()]) await closeBrowser(id);

@@ -1,9 +1,18 @@
 import { ProxyAgent, request } from "undici";
+import { isIP } from "node:net";
 
 export interface ExitMetadata {
   timeZone: string;
   exitCity?: string;
   exitCountry?: string;
+  exitIp?: string;
+  checkedAt?: number;
+}
+
+export interface ExitHealth extends Partial<ExitMetadata> {
+  status: "unchecked" | "checking" | "healthy" | "error";
+  error?: string;
+  browserTimeZone?: string;
 }
 
 export class ExitTimeZoneError extends Error {
@@ -33,16 +42,21 @@ export async function detectExitMetadata({
         throw new Error("Exit timezone lookup failed");
       }
       const data = (await response.body.json()) as {
+        ip?: unknown;
         timezone?: { id?: unknown };
         city?: unknown;
         country?: unknown;
       };
       const timeZone = data.timezone?.id;
+      if (typeof data.ip !== "string" || !isIP(data.ip))
+        throw new Error("Exit lookup returned an invalid IP address");
       if (typeof timeZone !== "string" || !timeZone || /^[+-]/.test(timeZone))
         throw new Error("Exit timezone lookup returned an invalid IANA zone");
       const exitCity = typeof data.city === "string" ? data.city.trim() : "";
       const exitCountry = typeof data.country === "string" ? data.country.trim() : "";
       return {
+        exitIp: data.ip,
+        checkedAt: Date.now(),
         timeZone: new Intl.DateTimeFormat("en", { timeZone }).resolvedOptions().timeZone,
         ...(exitCity ? { exitCity } : {}),
         ...(exitCountry ? { exitCountry } : {}),
