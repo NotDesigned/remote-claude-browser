@@ -537,6 +537,22 @@ async function replacementHarness(
 }
 
 describe("replacing a workspace viewer", () => {
+  it("notifies an intentionally ended session without closing other sessions", async () => {
+    const test = await replacementHarness();
+    try {
+      const ended = await test.connect("a", "ended-page");
+      const other = await test.connect("b", "other-page");
+      test.wsServer.closeSession("a", 4010);
+      expect(await ended.closed).toEqual({ code: 4010, reason: "session ended" });
+      expect(other.socket.readyState).toBe(WebSocket.OPEN);
+      test.wsServer.fanout.publishToSession("b", { t: "clip", text: "still active" });
+      await vi.waitFor(() =>
+        expect(other.messages.some((message) => message.t === "clip")).toBe(true),
+      );
+    } finally {
+      await test.close();
+    }
+  });
   it("prevents keyless old bundles repeatedly reconnecting from displacing a valid driver", async () => {
     const test = await replacementHarness(() => true, true, true);
     try {

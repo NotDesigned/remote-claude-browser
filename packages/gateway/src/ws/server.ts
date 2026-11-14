@@ -268,7 +268,7 @@ export interface WsServer {
   /** Available during onConnection and cleared on revocation or disconnect. */
   sessionForViewer(viewer: ViewerConn): string | undefined;
   /** Revoke subscriptions synchronously before a released SID can be assigned to a new owner. */
-  closeSession(sessionId: string): void;
+  closeSession(sessionId: string, code?: number): void;
   /** Revoke input/fanout and notify disconnection synchronously before closing the transport. */
   closeViewer(viewer: ViewerConn, code?: number, reason?: string): boolean;
   /** Keep this viewer and revoke the others of its session. Other SIDs are never affected. */
@@ -521,7 +521,7 @@ export function createWsServer(opts: WsServerOpts): WsServer {
     sessionForViewer: (viewer) => viewerSessions.get(viewer),
     closeViewer,
     replaceSession,
-    closeSession(sessionId) {
+    closeSession(sessionId, code) {
       assertSessionId(sessionId);
       if (opts.replaceSessionOnConnect) {
         latestUpgrade.set(sessionId, ++nextUpgrade);
@@ -540,7 +540,10 @@ export function createWsServer(opts: WsServerOpts): WsServer {
       }
       // No subscriber remains in this SID, so old pending deltas can be discarded immediately.
       fanout.flushSession(sessionId);
-      for (const [, socket] of closing) socket.terminate();
+      for (const [, socket] of closing) {
+        if (code === undefined) socket.terminate();
+        else socket.close(code, "session ended");
+      }
     },
     close: async () => {
       opts.server.off("upgrade", onUpgrade);

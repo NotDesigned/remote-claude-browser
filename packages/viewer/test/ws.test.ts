@@ -134,7 +134,10 @@ describe("connectGateway", () => {
     gateway.close();
   });
 
-  it("stops permanently after replacement, clearing input and RTT without reconnecting", () => {
+  it.each([
+    [4009, "replaced"],
+    [4010, "ended"],
+  ] as const)("stops on close code %s without reconnecting", (code, state) => {
     const sockets: FakeSocket[] = [],
       states: string[] = [];
     const gateway = connectGateway("ws://example.test/ws?sid=client-1", () => {}, {
@@ -150,12 +153,12 @@ describe("connectGateway", () => {
     sockets[0]!.open();
     vi.advanceTimersByTime(100);
     expect(sockets[0]!.sent).toHaveLength(1);
-    sockets[0]!.close(4009);
+    sockets[0]!.close(code);
     gateway.send({ t: "text", tab: "T1", insert: "stale page input" });
     vi.advanceTimersByTime(10000);
     expect(sockets).toHaveLength(1);
     expect(sockets[0]!.sent).toHaveLength(1);
-    expect(states).toEqual(["connecting", "open", "replaced"]);
+    expect(states).toEqual(["connecting", "open", state]);
     gateway.close();
   });
 

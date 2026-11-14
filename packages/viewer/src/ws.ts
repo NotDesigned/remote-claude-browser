@@ -50,7 +50,7 @@ export interface GatewaySocket {
   probe(): void;
 }
 
-export type GatewayConnectionState = "connecting" | "open" | "closed" | "replaced";
+export type GatewayConnectionState = "connecting" | "open" | "closed" | "replaced" | "ended";
 
 export interface WebSocketLike {
   readonly readyState: number;
@@ -93,6 +93,7 @@ export const STALL_MS = 20_000;
 export const PROBE_MS = 4_000;
 const STALL_MEMORY_MS = 120_000;
 export const VIEWER_REPLACED_CODE = 4009;
+export const SESSION_ENDED_CODE = 4010;
 
 export function connectGateway(
   url: string,
@@ -253,14 +254,17 @@ export function connectGateway(
 
     current.onclose = (event) => {
       if (current !== socket) return;
-      if (event?.code === VIEWER_REPLACED_CODE && !disposed) {
+      if (
+        (event?.code === VIEWER_REPLACED_CODE || event?.code === SESSION_ENDED_CODE) &&
+        !disposed
+      ) {
         socket = null;
         stopRtt();
         disposed = true;
         if (reconnectTimer !== null) clearTimeout(reconnectTimer);
         reconnectTimer = null;
         pending.length = 0;
-        notify("replaced");
+        notify(event.code === SESSION_ENDED_CODE ? "ended" : "replaced");
         return;
       }
       lost();

@@ -58,6 +58,7 @@ import { gatewayHost, registerViewerStatic, trustedProxies } from "./serving";
 import { createTabLifecycle } from "./session/tabs";
 import { isClientSlot, ClientSessionError, createClientSessions } from "./session/clients";
 import { createLifecycleLock } from "./session/lifecycle-lock";
+import { registerAccountRoutes } from "./auth/account-routes";
 import { createIdleReaper, PAGE_GENERATING_EXPRESSION } from "./session/idle-reaper";
 import {
   createPageSleep,
@@ -198,6 +199,13 @@ export async function startClientGateway(
   };
   const proxyCatalog = await createProxyCatalog({
     file: join(profile, "proxy-sources.json"),
+    usernameFor: (id) => userStore.getUser(id)?.username,
+    usageForNodes: (ids) => ({
+      profiles: accountStore
+        .all()
+        .filter((record) => record.proxyId && ids.includes(record.proxyId)).length,
+      credentials: cpaStore?.countCredentialBindings(ids) ?? 0,
+    }),
     endpointForNode: async (id, node, user) => {
       if (!process.env.MIRROR_RUNTIME_SOCKET)
         throw new ProxyCatalogError(503, "PROXY_RUNTIME_DISABLED", "请在部署中启用独立出口运行时");
@@ -216,7 +224,10 @@ export async function startClientGateway(
     },
   });
   const cpaStore = process.env.CPA_BROKER_SOCKET
-    ? await createCpaStore({ file: join(profile, "cpa.sqlite") })
+    ? await createCpaStore({
+        file: join(profile, "cpa.sqlite"),
+        legacySharedKeyOwnerId: userStore.bootstrapAdmin.id,
+      })
     : undefined;
   const cpaRuntime = cpaStore
     ? createCpaRuntime({
@@ -231,6 +242,7 @@ export async function startClientGateway(
                 url: (await networkRuntime.startEgress("deployment-default")).externalProxyUrl,
               },
         userEnabled: (id) => userStore.getUser(id)?.enabled === true,
+        userName: (id) => userStore.getUser(id)?.username,
       })
     : undefined;
   if (cpaRuntime) {
@@ -1382,8 +1394,8 @@ export async function startClientGateway(
     },
   );
   /** Closes a session's windows and forgets its runtime. The caller marks it closing. */
-  async function stopRuntime(sid: string): Promise<void> {
-    ws.closeSession(sid);
+  async function stopRuntime(sid: string, ended = false): Promise<void> {
+    ws.closeSession(sid, ended ? 4010 : undefined);
     await assetFetcher.closeSession(sid);
     for (const [id, connection] of viewers)
       if (connection.sid === sid) {
@@ -1417,7 +1429,7 @@ export async function startClientGateway(
     if (closing.has(sid)) throw new ClientSessionError(409, "CLIENT_CLOSING", "会话正在结束");
     closing.add(sid);
     try {
-      await stopRuntime(sid);
+      await stopRuntime(sid, true);
       await clientSessions.release(owner, sid);
     } finally {
       runtimes.delete(sid);
@@ -1837,11 +1849,19 @@ export async function startClientGateway(
     broadcastStatus();
     if (failures.length) throw new AggregateError(failures, "Could not persist revoked workspaces");
   }
-  app.get("/api/me", async (request, reply) => {
-    const user = currentUser(request.raw);
-    return user
-      ? reply.header("cache-control", "no-store").send({ user })
-      : reply.code(401).send({ error: "请重新登录" });
+  registerAccountRoutes(app, {
+    store: userStore,
+    sessions: clientSessions,
+    lifecycle: accountLifecycle,
+    currentUser,
+    currentOwner,
+    userIdForOwner,
+    profileName: (id) => accountStore.all().find((record) => record.id === id)?.name ?? id,
+    stopSession: releaseClientLocked,
+    onPasswordChanged: (userId) => {
+      for (const connection of viewers.values())
+        if (connection.userId === userId) ws.closeSession(connection.sid);
+    },
   });
   app.get("/api/users", async (request, reply) => {
     try {

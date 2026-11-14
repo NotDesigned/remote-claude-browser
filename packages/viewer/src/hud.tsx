@@ -75,7 +75,9 @@ export function Hud({
         ? "连接中…"
         : connection === "replaced"
           ? "已由另一页面接管"
-          : "正在重新连接…";
+          : connection === "ended"
+            ? "会话已结束"
+            : "正在重新连接…";
 
   return (
     <details
