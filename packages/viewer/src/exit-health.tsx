@@ -32,7 +32,7 @@ export function ExitHealthDetails({ health }: { health?: ExitHealth }) {
         health.timeZone !== health.browserTimeZone && (
           <p class="network-error">
             出口时区已变化，浏览器仍使用 {health.browserTimeZone}
-            。请结束该配置的会话后重新打开，使本地时间与出口一致。
+            。请结束该配置的所有会话，等待约两分钟至「运行中」消失后再打开，使本地时间与出口一致。
           </p>
         )}
     </div>

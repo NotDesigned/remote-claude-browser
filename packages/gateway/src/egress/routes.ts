@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { IncomingMessage } from "node:http";
 import type { FrontendUser } from "../auth/users";
-import type { ExitHealth } from "./runtime-client";
+import type { ExitHealth } from "./timezone";
 import {
   ProxyCatalogError,
   type ProxyCatalog,

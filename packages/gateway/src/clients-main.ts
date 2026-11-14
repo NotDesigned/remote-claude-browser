@@ -226,10 +226,15 @@ export async function startClientGateway(
     },
   });
   const checkProxy = async (user: FrontendUser, id: string) => {
-    proxyCatalog.getNodeConfig(user, id);
+    const node = proxyCatalog.getNodeConfig(user, id);
+    const probeId = `probe-${randomBytes(16).toString("hex")}`;
     try {
-      await proxyCatalog.resolveProxyForUser(user, id);
-      return await networkRuntime.checkEgress(egressScope(user.id, id));
+      try {
+        await networkRuntime.startEgress(probeId, node);
+        return await networkRuntime.checkEgress(probeId);
+      } finally {
+        await networkRuntime.stopEgress(probeId);
+      }
     } catch {
       return {
         status: "error" as const,
@@ -248,7 +253,8 @@ export async function startClientGateway(
     ? createCpaRuntime({
         store: cpaStore,
         driver: createCpaBrokerDriver(process.env.CPA_BROKER_SOCKET!),
-        resolveProxyForUser: async (user, proxyId) => {
+        resolveProxyForUser: async (user, proxyId, instance) => {
+          if (instance.scope === "shared") user = userStore.bootstrapAdmin;
           if (!proxyId) throw new CpaError(409, "CPA_PROXY_REQUIRED", "请为授权选择出口节点");
           const proxy = await proxyCatalog.resolveProxyForUser(user, proxyId);
           const scope = egressScope(user.id, proxyId);
@@ -259,7 +265,8 @@ export async function startClientGateway(
             health: await networkRuntime.egressStatus(scope),
           };
         },
-        checkProxyForUser: async (user, proxyId) => {
+        checkProxyForUser: async (user, proxyId, instance) => {
+          if (instance.scope === "shared") user = userStore.bootstrapAdmin;
           const proxy = await proxyCatalog.resolveProxyForUser(user, proxyId);
           const health = await networkRuntime.checkEgress(egressScope(user.id, proxyId));
           if (health.status !== "healthy" || !health.timeZone)
@@ -1635,7 +1642,7 @@ export async function startClientGateway(
     const owner = currentOwner(request.raw);
     if (!owner) return reply.code(401).send({ error: "请重新登录" });
     try {
-      return await accountLifecycle.run(async () => {
+      const snapshot = await accountLifecycle.run(() => {
         const user = requireLiveOwner(request.raw, owner);
         const id = request.params.id;
         if (userStore.profileOwner(id) !== user.id)
@@ -1644,12 +1651,20 @@ export async function startClientGateway(
         if (!record.proxyId)
           throw new ClientSessionError(409, "PROXY_REQUIRED", "请先为浏览器配置选择出口");
         proxyCatalog.getNodeConfig(user, record.proxyId);
-        const running = accounts.has(id);
-        const health = running
-          ? await networkRuntime.checkBrowser(id)
-          : await checkProxy(user, record.proxyId);
+        return { user, id, proxyId: record.proxyId, account: accounts.get(id) };
+      });
+      const health = snapshot.account
+        ? await networkRuntime.checkBrowser(snapshot.id)
+        : await checkProxy(snapshot.user, snapshot.proxyId);
+      return await accountLifecycle.run(() => {
+        requireLiveOwner(request.raw, owner);
+        if (
+          accountStore.get(snapshot.id)?.proxyId !== snapshot.proxyId ||
+          accounts.get(snapshot.id) !== snapshot.account
+        )
+          throw new ClientSessionError(409, "EXIT_CHANGED", "配置在检测期间已变化，请重新检查");
         return reply.header("cache-control", "no-store").send({
-          scope: running ? "browser" : "node",
+          scope: snapshot.account ? "browser" : "node",
           health,
         });
       });

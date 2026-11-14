@@ -89,7 +89,9 @@ docker compose -f compose.yml -f compose.runtime.yml up -d --build
 
 1. 导入节点链接、Mihomo YAML 或 HTTP/HTTPS 订阅。普通用户可以管理自己的私有来源，管理员还可以维护共享来源；订阅可以手动刷新。
 2. 在浏览器配置卡片的 ⋯ 菜单选择「设置出口」。列表显示可用的共享和私有节点，空选项表示「未分配」。未分配节点时，新建会话、恢复会话和切换到该配置都会返回 `409 EXIT_REQUIRED`；不会分配新会话或启动 Chrome。已绑定配置更换或清除出口前会提示频繁更换账号 IP 的风控风险，取消不提交修改；保存相同节点不触发警告。更换正在运行的配置还会关闭它在所有设备上的页面，再按新出口启动。
-3. 每个绑定节点的浏览器配置使用独立网络命名空间和 Mihomo 出口；网页、DNS 与 WebRTC 一起走所选节点。移除绑定后配置保留网站登录资料，但在重新选择节点前不能打开。添加 CPA 授权时默认选中当前浏览器的节点，允许单独更改；没有当前可用节点时必须先选择。CPA 内部实例启动和既有未绑定凭据保留原部署出站设置，包括已有 Xray 配置。
+3. 每个绑定节点的浏览器配置使用独立网络命名空间和 Mihomo 出口；网页、DNS 与 WebRTC 一起走所选节点。移除绑定后配置保留网站登录资料，但在重新选择节点前不能打开。添加 CPA 授权时默认选中当前浏览器的节点，允许单独更改；没有当前可用节点时必须先选择。CPA 未绑定授权停用并保留资料，实例可以空启动，但没有部署默认出口回退。
+
+节点列表和配置卡片提供「检查出口」，显示实测 IP、地区、时区、检查时间和失败状态。运行中的浏览器从自己的网络检测；尚未打开的配置只检查绑定节点，不分配会话。CPA 出口进程异常退出后按 1、2、4 秒有限重试，恢复后保留内部代理地址；故障期间不会直连，更换或删除节点会取消旧恢复任务。重试耗尽后修复节点并手动检查即可重试。浏览器出口进程退出会关闭相应 Chrome，由现有会话恢复流程重新打开。
 
 订阅只提供节点，不接管运行时的规则、端口或管理接口。公开列表仅返回来源与节点的元数据，不返回订阅 URL、节点密码和服务端连接配置。来源与节点保存在 `data` 卷的 `/data/profile/proxy-sources.json`，同样需要按密钥保护。
 
@@ -102,7 +104,9 @@ PATCH  /api/proxy-sources/:id             {name?, visibility?, content?}
 POST   /api/proxy-sources/:id/refresh
 DELETE /api/proxy-sources/:id
 GET    /api/proxies
+POST   /api/proxies/:id/check
 PATCH  /api/accounts/:id/proxy            {proxyId: string | null}
+POST   /api/accounts/:id/exit/check
 ```
 
 `PATCH /api/accounts/:id/proxy` 的 `proxyId: null` 表示清除绑定，而不是选择部署默认出口。这些接口使用工作台登录 Cookie，并检查来源和浏览器配置的归属。每个专用 CPA 实例的数据、授权和 Key 也按工作台用户管理。

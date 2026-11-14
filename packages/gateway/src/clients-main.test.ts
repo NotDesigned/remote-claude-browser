@@ -550,6 +550,44 @@ describe("multi-user management routes", () => {
     const failedCheck = await api(gateway.app, bob, "POST", `/api/proxies/${privateNode.id}/check`);
     expect(failedCheck.json().health.status).toBe("error");
     expect(failedCheck.body).not.toContain("fixture-secret");
+    expect(hooks.stopEgress).toHaveBeenCalledWith(expect.stringMatching(/^probe-/));
+    let finishProbe!: (value: Awaited<ReturnType<typeof hooks.checkEgress>>) => void;
+    hooks.checkEgress.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishProbe = resolve;
+        }),
+    );
+    const checking = api(gateway.app, bob, "POST", `/api/accounts/${profileId}/exit/check`).then(
+      (result) => result,
+    );
+    await vi.waitFor(() => expect(finishProbe).toBeTypeOf("function"));
+    try {
+      const unbind = api(gateway.app, bob, "PATCH", `/api/accounts/${profileId}/proxy`, {
+        proxyId: null,
+      }).then((result) => result.statusCode);
+      expect(
+        await Promise.race([
+          unbind,
+          new Promise((resolve) => setTimeout(() => resolve("blocked"), 1000)),
+        ]),
+      ).toBe(200);
+    } finally {
+      finishProbe({
+        status: "healthy",
+        timeZone: "Asia/Tokyo",
+        exitIp: "203.0.113.20",
+        checkedAt: 1000,
+      });
+    }
+    expect((await checking).statusCode).toBe(409);
+    expect(
+      (
+        await api(gateway.app, bob, "PATCH", `/api/accounts/${profileId}/proxy`, {
+          proxyId: privateNode.id,
+        })
+      ).statusCode,
+    ).toBe(200);
     await gateway.stop();
     const restarted = await startClientGateway({ listen: false, signals: false });
     gateways.push(restarted);

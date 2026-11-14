@@ -168,6 +168,7 @@ function ProfileCard(props: {
             props.last && <span class="profile-badge">上次使用</span>
           )}
           {account.sessions > 0 && <span class="profile-badge">{account.sessions} 个会话</span>}
+          {account.running && <span class="profile-badge">运行中</span>}
         </span>
       </button>
       {exitCheck && (
