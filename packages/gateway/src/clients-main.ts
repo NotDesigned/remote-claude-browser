@@ -270,6 +270,10 @@ export async function startClientGateway(
             );
           return { ...proxy, timeZone: health.timeZone, health };
         },
+        proxyStatusForInstance: async (instance, proxyId) => {
+          const ownerId = instance.ownerId ?? userStore.bootstrapAdmin.id;
+          return networkRuntime.egressStatus(egressScope(ownerId, proxyId));
+        },
         userEnabled: (id) => userStore.getUser(id)?.enabled === true,
         userName: (id) => userStore.getUser(id)?.username,
       })
