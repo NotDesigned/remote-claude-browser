@@ -144,8 +144,6 @@ function renderVideoNotice(video: HTMLVideoElement): HTMLElement | null {
   const document = video.ownerDocument;
   const parent = video.parentElement;
   if (parent === null) return null;
-  const existing = parent.querySelector<HTMLElement>("[data-mirror-video-blocked='true']");
-  if (existing !== null) return existing;
   const notice = document.createElement("div");
   notice.dataset.mirrorVideoBlocked = "true";
   notice.setAttribute("role", "alert");
@@ -173,10 +171,17 @@ function renderVideoNotice(video: HTMLVideoElement): HTMLElement | null {
 
 export function createVideoCompositor(options: VideoCompositorOptions = {}): VideoCompositor {
   const videos = new Map<number, HTMLVideoElement>();
-  const blockedIds = new Set<number>();
-  const renderedNotices = new Set<HTMLElement>();
+  const blockedIds = new Set<number | undefined>();
+  const renderedNotices = new Map<number, HTMLElement>();
+  const playbackListeners = new Map<number, () => void>();
   let hudNotice: HTMLElement | null = null;
   let disposed = false;
+  const clearHud = () => {
+    const host = hudNotice?.parentElement;
+    hudNotice?.remove();
+    hudNotice = null;
+    if (host) delete host.dataset.mediaNotice;
+  };
 
   const showBlocked = (
     id?: number,
@@ -184,7 +189,7 @@ export function createVideoCompositor(options: VideoCompositorOptions = {}): Vid
     noticeKind: VideoNotice["notice"] = "unavailable",
   ) => {
     if (disposed) return;
-    if (id !== undefined) blockedIds.add(id);
+    blockedIds.add(id);
     const notice: VideoNotice = {
       notice: noticeKind,
       message: MEDIA_UNAVAILABLE_NOTICE,
@@ -196,9 +201,10 @@ export function createVideoCompositor(options: VideoCompositorOptions = {}): Vid
     if (id !== undefined) {
       const video = videos.get(id);
       if (video !== undefined) {
-        video.pause();
-        const rendered = renderVideoNotice(video);
-        if (rendered !== null) renderedNotices.add(rendered);
+        if (!renderedNotices.has(id)) {
+          const rendered = renderVideoNotice(video);
+          if (rendered !== null) renderedNotices.set(id, rendered);
+        }
       }
     }
   };
@@ -206,7 +212,21 @@ export function createVideoCompositor(options: VideoCompositorOptions = {}): Vid
   return {
     onBuild(video, id) {
       if (disposed) return "direct";
+      playbackListeners.get(id)?.();
+      renderedNotices.get(id)?.remove();
+      renderedNotices.delete(id);
       videos.set(id, video);
+      const playing = () => {
+        // A replaced node can still finish an earlier play request.
+        if (videos.get(id) !== video) return;
+        blockedIds.delete(id);
+        blockedIds.delete(undefined);
+        renderedNotices.get(id)?.remove();
+        renderedNotices.delete(id);
+        if (blockedIds.size === 0) clearHud();
+      };
+      video.addEventListener("playing", playing);
+      playbackListeners.set(id, () => video.removeEventListener("playing", playing));
       prepareAutoplay(video);
       if (blockedIds.has(id)) showBlocked(id);
       const tier = videoTier(video);
@@ -243,10 +263,11 @@ export function createVideoCompositor(options: VideoCompositorOptions = {}): Vid
     dispose() {
       if (disposed) return;
       disposed = true;
-      for (const notice of renderedNotices) notice.remove();
+      for (const stop of playbackListeners.values()) stop();
+      playbackListeners.clear();
+      for (const notice of renderedNotices.values()) notice.remove();
       renderedNotices.clear();
-      hudNotice?.remove();
-      hudNotice = null;
+      clearHud();
       videos.clear();
       blockedIds.clear();
     },

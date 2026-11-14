@@ -211,7 +211,11 @@ export function createCanvasRtc(options: CanvasRtcOptions): CanvasRtc {
     const id = context.id;
     if (!Number.isSafeInteger(id) || id < 0) return;
     videoIds.set(target, id);
-    if (video.onBuild(target, id) === "rtc" && !disposed) options.send({ type: "video", id });
+    // rrweb appends the video before its <source> children. Classify the assembled element.
+    queueMicrotask(() => {
+      if (disposed) return;
+      if (video.onBuild(target, id) === "rtc") options.send({ type: "video", id });
+    });
   };
 
   const downgrade = (id: number, stream: MediaStream, error?: unknown) => {

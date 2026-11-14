@@ -33,6 +33,67 @@ function fakeVideo(src: string | null) {
   } as unknown as HTMLVideoElement;
 }
 
+function noticeFixture() {
+  class Element {
+    dataset: Record<string, string> = {};
+    style = {};
+    textContent = "";
+    parentElement: Element | null = null;
+    children: Element[] = [];
+    setAttribute() {}
+    appendChild(child: Element) {
+      child.parentElement = this;
+      this.children.push(child);
+    }
+    remove() {
+      const parent = this.parentElement;
+      if (parent) parent.children.splice(parent.children.indexOf(this), 1);
+      this.parentElement = null;
+    }
+  }
+  const body = new Element();
+  const hud = new Element();
+  body.appendChild(hud);
+  const document = {
+    body,
+    getElementById: () => hud,
+    querySelector: () => hud.children[0] ?? null,
+    createElement: () => new Element(),
+    addEventListener() {},
+    removeEventListener() {},
+  } as unknown as Document;
+  const makeVideo = (src: string | null) => {
+    const listeners = new Map<string, Set<() => void>>();
+    const video = fakeVideo(src);
+    Object.assign(video, {
+      ownerDocument: document,
+      parentElement: body,
+      getBoundingClientRect: () => ({ left: 10, top: 20, width: 320, height: 180 }),
+      addEventListener: vi.fn((type: string, listener: () => void) => {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type)!.add(listener);
+      }),
+      removeEventListener: vi.fn((type: string, listener: () => void) => {
+        listeners.get(type)?.delete(listener);
+      }),
+    });
+    return {
+      video,
+      listeners,
+      playing: () => {
+        for (const listener of listeners.get("playing") ?? []) listener();
+      },
+    };
+  };
+  return {
+    document,
+    body,
+    hud,
+    makeVideo,
+    overlays: () => body.children.filter((node) => node !== hud),
+  };
+}
+
 describe("viewer video tiers", () => {
   it("starts a proxied direct MP4 muted with native unmute/seek controls and keeps its Range URL", () => {
     const proxied = "/s/session-a/a/sealed-video-token";
@@ -88,6 +149,82 @@ describe("viewer video tiers", () => {
       expect.objectContaining({ notice: "drm", id: 12, message: DRM_VIDEO_NOTICE }),
     );
     expect(DRM_VIDEO_NOTICE).toBe("Media unavailable in DOM view — use pixel view");
+  });
+
+  it("shows no notice merely for discovering a direct or not-yet-loaded video", () => {
+    const f = noticeFixture();
+    const compositor = createVideoCompositor({ document: f.document });
+    compositor.onBuild(f.makeVideo("/video.mp4").video, 1);
+    compositor.onBuild(f.makeVideo(null).video, 2);
+    expect(f.hud.children).toHaveLength(0);
+    expect(f.overlays()).toHaveLength(0);
+    compositor.dispose();
+  });
+
+  it("clears a reported block only when that video's playback actually starts", () => {
+    const f = noticeFixture();
+    const target = f.makeVideo("/video.mp4");
+    const compositor = createVideoCompositor({ document: f.document });
+    compositor.onBuild(target.video, 1);
+    compositor.showBlocked(1, undefined, "drm");
+    expect(target.video.pause).not.toHaveBeenCalled();
+    expect(f.hud.children[0]?.textContent).toBe(DRM_VIDEO_NOTICE);
+    expect(f.overlays()).toHaveLength(1);
+    target.playing();
+    expect(f.hud.children).toHaveLength(0);
+    expect(f.hud.dataset.mediaNotice).toBeUndefined();
+    expect(f.overlays()).toHaveLength(0);
+    compositor.dispose();
+  });
+
+  it("keeps the HUD until all failed videos recover, including a resumed RTC stream", () => {
+    const f = noticeFixture();
+    const first = f.makeVideo("/video.mp4");
+    const second = f.makeVideo("blob:https://example.test/video");
+    const compositor = createVideoCompositor({
+      document: f.document,
+      hasUserActivation: () => false,
+    });
+    compositor.onBuild(first.video, 1);
+    compositor.onBuild(second.video, 2);
+    compositor.showBlocked(1);
+    compositor.showBlocked(2);
+    expect(f.overlays()).toHaveLength(2);
+    first.playing();
+    expect(f.overlays()).toHaveLength(1);
+    expect(f.hud.children).toHaveLength(1);
+    const track = fakeTrack("video");
+    const stream = { getVideoTracks: () => [track] } as unknown as MediaStream;
+    const stop = compositor.startStream(second.video, stream, vi.fn());
+    expect(f.hud.children).toHaveLength(1);
+    second.playing();
+    expect(f.overlays()).toHaveLength(0);
+    expect(f.hud.children).toHaveLength(0);
+    stop();
+    compositor.dispose();
+  });
+
+  it("ignores a stale playing event from a replaced node and removes its notices on teardown", () => {
+    const f = noticeFixture();
+    const old = f.makeVideo("/old.mp4");
+    const current = f.makeVideo("/new.mp4");
+    const compositor = createVideoCompositor({ document: f.document });
+    compositor.onBuild(old.video, 7);
+    const stalePlaying = [...old.listeners.get("playing")!][0]!;
+    compositor.showBlocked(7);
+    compositor.onBuild(current.video, 7);
+    expect(old.listeners.get("playing")?.size).toBe(0);
+    stalePlaying();
+    expect(f.hud.children).toHaveLength(1);
+    expect(f.overlays()).toHaveLength(1);
+    current.playing();
+    expect(f.hud.children).toHaveLength(0);
+    compositor.showBlocked(7);
+    compositor.dispose();
+    expect(f.hud.children).toHaveLength(0);
+    expect(f.hud.dataset.mediaNotice).toBeUndefined();
+    expect(f.overlays()).toHaveLength(0);
+    expect(current.listeners.get("playing")?.size).toBe(0);
   });
 
   describe("sound from a stream", () => {

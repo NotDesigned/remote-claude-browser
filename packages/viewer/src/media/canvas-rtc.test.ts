@@ -132,7 +132,7 @@ describe("canvas WebRTC upgrade lane", () => {
     h.rtc.dispose();
   });
 
-  it("discovers an MSE video, requests it on the canvas RTC lane, and renders the full A/V stream", () => {
+  it("discovers an MSE video, requests it on the canvas RTC lane, and renders the full A/V stream", async () => {
     const sent: CanvasRtcMessage[] = [];
     const fakePlugin = {
       peer: null,
@@ -163,6 +163,7 @@ describe("canvas WebRTC upgrade lane", () => {
     };
 
     replayPlugin.onBuild(video, { id: 51 });
+    await Promise.resolve();
     expect(sent).toEqual([{ type: "video", id: 51 }]);
     fakePlugin.startStream(video, stream);
 
@@ -175,6 +176,41 @@ describe("canvas WebRTC upgrade lane", () => {
     rtc.dispose();
     expect(cleanup).toHaveBeenCalledOnce();
     expect(videoCompositor.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("waits for source children appended in the same build before choosing direct playback", async () => {
+    const h = setup();
+    const sources: { getAttribute(name: string): string | null }[] = [];
+    const video = {
+      nodeType: 1,
+      nodeName: "VIDEO",
+      getAttribute: () => null,
+      querySelectorAll: () => sources,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      play: vi.fn(async () => undefined),
+    } as unknown as HTMLVideoElement;
+    const replayPlugin = h.rtc.replayPlugin as unknown as {
+      onBuild(node: Node, context: { id: number }): void;
+    };
+    replayPlugin.onBuild(video, { id: 52 });
+    sources.push({ getAttribute: () => "/s/client-1/a/login-hero.mp4" });
+    await Promise.resolve();
+    expect(h.sent).toEqual([]);
+    expect(video.play).toHaveBeenCalledOnce();
+    h.rtc.dispose();
+  });
+
+  it("does not request a discovered video after its replay generation is disposed", async () => {
+    const h = setup();
+    const video = { nodeType: 1, nodeName: "VIDEO" } as unknown as HTMLVideoElement;
+    const replayPlugin = h.rtc.replayPlugin as unknown as {
+      onBuild(node: Node, context: { id: number }): void;
+    };
+    replayPlugin.onBuild(video, { id: 53 });
+    h.rtc.dispose();
+    await Promise.resolve();
+    expect(h.sent).toEqual([]);
   });
 
   it("asks for nothing when a canvas appears, if told to ask only for videos", () => {
