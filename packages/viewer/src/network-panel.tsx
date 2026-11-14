@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "preact/hooks";
+import { useLayoutEffect, useRef } from "preact/hooks";
 import type { FrontendUser } from "./users";
 import { ProxyPanel } from "./network-proxy-panel";
 import { CpaPanel } from "./network-cpa-panel";
@@ -9,6 +9,8 @@ export function NetworkPanel({
   browserProxyId,
   browserSessionId,
   open,
+  tab,
+  onTabChange,
   onOpenBrowser,
   onClose,
 }: {
@@ -16,10 +18,11 @@ export function NetworkPanel({
   browserProxyId?: string | null;
   browserSessionId?: string;
   open: boolean;
+  tab: "proxies" | "cpa";
+  onTabChange(tab: "proxies" | "cpa"): void;
   onOpenBrowser(): void;
   onClose(): void;
 }) {
-  const [tab, setTab] = useState<"proxies" | "cpa">("proxies");
   const panel = useRef<HTMLElement>(null);
   const close = useRef<HTMLButtonElement>(null);
   const closeRef = useRef(onClose);
@@ -94,7 +97,7 @@ export function NetworkPanel({
             type="button"
             role="tab"
             aria-selected={tab === "proxies"}
-            onClick={() => setTab("proxies")}
+            onClick={() => onTabChange("proxies")}
           >
             代理来源
           </button>
@@ -103,7 +106,7 @@ export function NetworkPanel({
             type="button"
             role="tab"
             aria-selected={tab === "cpa"}
-            onClick={() => setTab("cpa")}
+            onClick={() => onTabChange("cpa")}
           >
             CPA 授权与 Key
           </button>

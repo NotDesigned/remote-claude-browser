@@ -122,3 +122,27 @@ export async function deleteUser(id: string, fetcher?: typeof fetch): Promise<vo
 export async function logout(fetcher?: typeof fetch): Promise<void> {
   await call("/logout", { method: "POST" }, fetcher);
 }
+
+export interface MyBrowserSession {
+  sid: string;
+  label: string;
+  profileId: string;
+  profileName: string;
+  currentDevice: boolean;
+  createdAt: number;
+}
+
+export async function myBrowserSessions(): Promise<MyBrowserSession[]> {
+  return (await (await call("/api/me/sessions")).json()).sessions;
+}
+
+export async function endMyBrowserSession(sid: string): Promise<void> {
+  await call(`/api/me/sessions/${encodeURIComponent(sid)}`, { method: "DELETE" });
+}
+
+export async function changeMyPassword(currentPassword: string, password: string): Promise<void> {
+  await call("/api/me/password", {
+    method: "POST",
+    body: JSON.stringify({ currentPassword, password }),
+  });
+}

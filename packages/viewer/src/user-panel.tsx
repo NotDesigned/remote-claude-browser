@@ -151,7 +151,9 @@ export function UserPanel({
     if (
       !fields.id ||
       pending ||
-      !window.confirm(`删除用户「${fields.username}」？该用户将无法再登录。`)
+      !window.confirm(
+        `删除用户「${fields.username}」？所有浏览器会话和私有 CPA 将停止，个人 API Key 将失效。浏览器数据及 CPA 授权凭据会保留在服务器，但该用户无法再登录。`,
+      )
     )
       return;
     setPending(true);
@@ -308,8 +310,14 @@ export function UserPanel({
                     setFields({ ...fields, enabled: event.currentTarget.checked })
                   }
                 />
-                允许登录
+                启用账号
               </label>
+            )}
+            {fields.id !== null && (
+              <p class="user-panel-muted">
+                停用会立即结束所有浏览器会话、停止私有 CPA，并使该用户的个人 API Key
+                无法调用；浏览器数据和授权凭据保留。
+              </p>
             )}
             <footer class="user-panel-actions">
               <button

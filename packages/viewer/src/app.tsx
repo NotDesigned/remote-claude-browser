@@ -1,7 +1,9 @@
 /** Viewer shell layout. */
-import { listAccounts, runAccountAction, switchAccount, type AccountList } from "./accounts";
-import { currentUser, logout, UserApiError, type FrontendUser } from "./users";
+import { listAccounts, switchAccount, type AccountList } from "./accounts";
+import { currentUser, logout, myBrowserSessions, UserApiError, type FrontendUser } from "./users";
 import { UserPanel } from "./user-panel";
+import { AccountPanel } from "./account-panel";
+import type { WorkspaceDestination, WorkspaceMenuProps } from "./workspace-menu";
 import { NetworkPanel } from "./network-panel";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import type { AgentMsg, Down, eventWithTime, TabId } from "@mirror/protocol";
@@ -134,8 +136,9 @@ export function App() {
   const [user, setUser] = useState<FrontendUser | null>(null);
   const [userPanelOpen, setUserPanelOpen] = useState(false);
   const [networkPanelOpen, setNetworkPanelOpen] = useState(false);
+  const [networkTab, setNetworkTab] = useState<"proxies" | "cpa">("proxies");
+  const [accountPanelOpen, setAccountPanelOpen] = useState(false);
   const [profilePickerOpen, setProfilePickerOpen] = useState(false);
-  const [profileCreateInitially, setProfileCreateInitially] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
   const [userError, setUserError] = useState<string | null>(null);
   /** The configuration this tab's picker chose; a reload resumes without one. */
@@ -429,32 +432,41 @@ export function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // An open page outlives its session when the service restarts. While it cannot reconnect, check
-  // whether the session still exists, and start over with a live one if it does not.
+  const finishSession = () => {
+    runtimeCleanupRef.current?.();
+    setInputReady(false);
+    setConnection("closed");
+    setActiveTab(null);
+    setTabs([]);
+    setViewers([]);
+    setViewerId(null);
+    setDriverId(null);
+    setDownloads([]);
+    setClientError(null);
+    setClientSession(null);
+    setClientPhase("closed");
+    setProfilePickerOpen(false);
+    window.history.replaceState(window.history.state, "", "/?closed=1");
+  };
+  // Observe existing sessions after a disconnect; only an explicit action opens a new one.
   const sessionUnreachable =
-    clientPhase === "ready" && clientSession !== null && connection === "closed";
+    clientPhase === "ready" && clientSession !== null && connection !== "open";
   useEffect(() => {
     if (!sessionUnreachable || clientSession === null) return;
+    let active = true;
     const sid = clientSession.sid;
     const timer = setInterval(() => {
-      let clientKey: string;
-      try {
-        clientKey = prepareClientSession(
-          new URL(window.location.href),
-          window.sessionStorage,
-          () => {},
-        ).clientKey;
-      } catch {
-        return;
-      }
-      // Asking again returns this page's live session, a new one if the old one has ended.
-      void requestClientSession({ clientKey, sid })
-        .then((session) => {
-          if (session.sid !== sid) setBootstrapAttempt((current) => current + 1);
+      void myBrowserSessions()
+        .then((sessions) => {
+          if (active && !sessions.some((session) => session.sid === sid && session.currentDevice))
+            finishSession();
         })
         .catch(() => {});
     }, SESSION_CHECK_INTERVAL_MS);
-    return () => clearInterval(timer);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   }, [sessionUnreachable, clientSession?.sid]);
 
   useEffect(() => {
@@ -1037,6 +1049,10 @@ export function App() {
             viewportBeforeDisconnect ??= presentation.currentViewport();
             presentation.resetViewport();
           }
+          if (state === "ended") {
+            finishSession();
+            return;
+          }
           if (state === "replaced") {
             cleanup();
             setActiveTab(null);
@@ -1160,6 +1176,26 @@ export function App() {
     setViewMode(mode);
   };
 
+  const navigateWorkspace = (destination: WorkspaceDestination) => {
+    setUserPanelOpen(destination === "users");
+    setAccountPanelOpen(destination === "account");
+    setNetworkPanelOpen(destination === "proxies" || destination === "cpa");
+    if (destination === "proxies" || destination === "cpa") setNetworkTab(destination);
+    if (destination === "profiles") {
+      if (clientPhase === "ready") setProfilePickerOpen(true);
+      else if (clientPhase !== "picking") window.location.assign("/?new=1");
+    }
+  };
+  const workspace: WorkspaceMenuProps | undefined = user
+    ? {
+        user,
+        onNavigate: navigateWorkspace,
+        onLogout: () => void signOut(),
+        logoutPending,
+        error: userError,
+      }
+    : undefined;
+
   return (
     <div
       id="shell"
@@ -1176,44 +1212,8 @@ export function App() {
         onTheme={setThemePreference}
         linkTarget={linkTarget}
         onLinkTarget={setLinkTarget}
-        accounts={accountList}
-        onChooseAccount={
-          clientPhase === "ready"
-            ? () => {
-                setProfileCreateInitially(false);
-                setProfilePickerOpen(true);
-              }
-            : undefined
-        }
-        currentUser={user}
-        onManageUsers={() => setUserPanelOpen(true)}
-        onManageNetwork={() => setNetworkPanelOpen(true)}
-        onLogout={() => void signOut()}
-        logoutPending={logoutPending}
-        userError={userError}
-        onMenuOpen={() => {
-          refreshAccounts();
-          refreshUser();
-        }}
-        onAccount={(action) => {
-          if (action.kind === "create") {
-            setProfileCreateInitially(true);
-            setProfilePickerOpen(true);
-            return;
-          }
-          if (themeSid === null || accountList === null) return;
-          void runAccountAction(action, {
-            sid: themeSid,
-            list: accountList,
-            refresh: refreshAccounts,
-            dialogs: {
-              confirm: (message) => window.confirm(message),
-              prompt: (message, value) => window.prompt(message, value),
-              alert: (message) => window.alert(message),
-              reload: () => window.location.reload(),
-            },
-          });
-        }}
+        workspace={workspace}
+        onMenuOpen={refreshUser}
         pxQuality={pxQuality}
         onPxQuality={(quality) => {
           setPxQuality(quality);
@@ -1245,10 +1245,23 @@ export function App() {
       {userPanelOpen && user?.role === "admin" && (
         <UserPanel current={user} onClose={() => setUserPanelOpen(false)} onChanged={refreshUser} />
       )}
+      {accountPanelOpen && user && (
+        <AccountPanel
+          user={user}
+          currentSid={clientSession?.sid}
+          onClose={() => setAccountPanelOpen(false)}
+          onSessionEnded={(sid) => {
+            refreshAccounts();
+            if (sid === clientSession?.sid) finishSession();
+          }}
+        />
+      )}
       {user && (
         <NetworkPanel
           key={user.id}
           open={networkPanelOpen}
+          tab={networkTab}
+          onTabChange={setNetworkTab}
           user={user}
           browserSessionId={clientPhase === "ready" ? clientSession?.sid : undefined}
           browserProxyId={
@@ -1313,7 +1326,6 @@ export function App() {
       )}
       {(clientPhase === "picking" || profilePickerOpen) && (
         <ProfilePicker
-          createInitially={profileCreateInitially}
           onPick={async (id, name) => {
             if (!profilePickerOpen) {
               setPickedAccount(id);
@@ -1331,12 +1343,9 @@ export function App() {
           onBack={profilePickerOpen ? () => setProfilePickerOpen(false) : undefined}
           onChanged={refreshAccounts}
           onDeleted={() => window.location.reload()}
-          username={user?.username}
+          workspace={workspace}
           dark={theme === "dark"}
           onTheme={() => setThemePreference(theme === "dark" ? "light" : "dark")}
-          onLogout={() => void signOut()}
-          onManageNetwork={() => setNetworkPanelOpen(true)}
-          logoutPending={logoutPending}
           logoutError={userError}
         />
       )}

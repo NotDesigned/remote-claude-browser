@@ -40,11 +40,48 @@ const bodyJson = async (request) => {
   for await (const chunk of request) chunks.push(chunk);
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 };
+let browserAdmissions = 0;
+let accountPasswordChanged = false;
+const browserSessions = [
+  {
+    sid: "client-1",
+    label: "当前设备会话",
+    profileId: "default",
+    profileName: "默认配置",
+    currentDevice: true,
+    createdAt: 1,
+  },
+  {
+    sid: "client-2",
+    label: "手机上的会话",
+    profileId: "work",
+    profileName: "工作配置",
+    currentDevice: false,
+    createdAt: 2,
+  },
+];
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url, "http://fixture.test");
     const current = request.headers.cookie?.includes("fixture-role=user") ? regular : admin;
     if (url.pathname === "/api/me") return json(response, 200, { user: current });
+    if (url.pathname === "/api/me/sessions")
+      return json(response, 200, { sessions: browserSessions });
+    if (url.pathname.startsWith("/api/me/sessions/") && request.method === "DELETE") {
+      const sid = url.pathname.split("/").at(-1);
+      browserSessions.splice(
+        browserSessions.findIndex((session) => session.sid === sid),
+        1,
+      );
+      return response.writeHead(204).end();
+    }
+    if (url.pathname === "/api/me/password") {
+      const value = await bodyJson(request);
+      if (value.currentPassword !== "fixture-current-password")
+        return json(response, 400, { error: "当前密码不正确" });
+      accountPasswordChanged = value.password === "fixture-personal-password";
+      return response.writeHead(204).end();
+    }
     if (url.pathname === "/logout") return response.writeHead(204).end();
     if (url.pathname === "/gate")
       return response.writeHead(200, { "content-type": "text/html" }).end("<h1>登录</h1>");
@@ -75,7 +112,8 @@ const server = createServer(async (request, response) => {
       users.set(saved.id, saved);
       return json(response, 200, { user: saved });
     }
-    if (url.pathname === "/api/client/session")
+    if (url.pathname === "/api/client/session") {
+      browserAdmissions++;
       return json(response, 200, {
         sid: "client-1",
         label: "Fixture",
@@ -83,6 +121,7 @@ const server = createServer(async (request, response) => {
         available: 7,
         sharedAccount: true,
       });
+    }
     if (url.pathname === "/api/accounts")
       return json(response, 200, {
         current: "default",
@@ -115,6 +154,7 @@ const server = createServer(async (request, response) => {
     }
   }
 });
+server.on("upgrade", (_request, socket) => socket.destroy());
 let browser;
 try {
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
@@ -134,8 +174,7 @@ try {
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("dialog", (dialog) => dialog.accept());
   await page.goto(origin);
-  await page.getByRole("button", { name: /默认配置.*未登录/ }).click();
-  await page.getByRole("button", { name: "更多", exact: true }).click();
+  await page.getByRole("button", { name: "工作台", exact: true }).click();
   await page.getByRole("button", { name: "用户管理", exact: true }).click();
   const panel = page.getByRole("dialog", { name: "用户管理", exact: true });
   await panel.getByLabel("用户名", { exact: true }).fill("fixture-reader");
@@ -162,7 +201,7 @@ try {
   assert.deepEqual(lastChangeKeys, ["password", "username"]);
   assert.equal(await panel.getByLabel("新密码（留空则保持）", { exact: true }).inputValue(), "");
   checks.adminRenameAndPasswordReset = true;
-  await panel.getByLabel("允许登录", { exact: true }).uncheck();
+  await panel.getByLabel("启用账号", { exact: true }).uncheck();
   await Promise.all([
     page.waitForResponse((response) => response.request().method() === "PATCH"),
     panel.getByRole("button", { name: "保存更改", exact: true }).click(),
@@ -194,26 +233,26 @@ try {
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "hidden" });
   await page.waitForFunction(
-    () => document.querySelector("#shell-menu-toggle") === document.activeElement,
+    () =>
+      document.querySelector(".profile-tools .workspace-menu-trigger") === document.activeElement,
   );
   assert.equal(
     await page
-      .locator("#shell-menu-toggle")
+      .locator(".profile-tools .workspace-menu-trigger")
       .evaluate((element) => element === document.activeElement),
     true,
   );
   checks.modalFocusRestored = true;
   await context.close();
   const mobile = await browser.newContext({
-    viewport: { width: 390, height: 844 },
+    viewport: { width: 320, height: 568 },
     isMobile: true,
     hasTouch: true,
   });
   const phone = await mobile.newPage();
   phone.on("pageerror", (error) => pageErrors.push(error.message));
   await phone.goto(origin);
-  await phone.getByRole("button", { name: /默认配置.*未登录/ }).tap();
-  await phone.getByRole("button", { name: "更多", exact: true }).tap();
+  await phone.getByRole("button", { name: "工作台", exact: true }).tap();
   await phone.getByRole("button", { name: "用户管理", exact: true }).tap();
   const phonePanel = phone.getByRole("dialog", { name: "用户管理", exact: true });
   await phonePanel.getByLabel("用户名", { exact: true }).tap();
@@ -233,25 +272,83 @@ try {
   assert.equal(await phonePanel.getByLabel("用户名", { exact: true }).inputValue(), "手机用户");
   await phonePanel.getByRole("button", { name: "关闭用户管理", exact: true }).tap();
   checks.phoneTouchAndLayout = true;
+  await phone.getByRole("button", { name: "工作台", exact: true }).tap();
+  await phone.getByRole("button", { name: "我的账号", exact: true }).tap();
+  const phoneAccount = phone.getByRole("dialog", { name: "我的账号", exact: true });
+  await phoneAccount.getByText("工作配置 · 其他设备", { exact: true }).waitFor();
+  assert.equal(
+    await phoneAccount.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+    true,
+  );
+  await phoneAccount.getByLabel("新密码", { exact: true }).fill("fixture-mobile-password");
+  await phoneAccount.getByRole("button", { name: "关闭我的账号", exact: true }).tap();
+  checks.phoneAccountLayout = true;
   await mobile.close();
   const ordinary = await browser.newContext();
   await ordinary.addCookies([{ name: "fixture-role", value: "user", url: origin }]);
   const reader = await ordinary.newPage();
   reader.on("pageerror", (error) => pageErrors.push(error.message));
   await reader.goto(origin);
-  await reader.getByRole("button", { name: /默认配置.*未登录/ }).click();
-  await reader.getByRole("button", { name: "更多", exact: true }).click();
+  await reader.getByRole("button", { name: "工作台", exact: true }).click();
   await reader
-    .getByRole("group", { name: "当前用户", exact: true })
-    .getByText("reader", { exact: true })
+    .getByRole("navigation", { name: "工作台导航", exact: true })
+    .getByText("reader", { exact: false })
     .waitFor();
   assert.equal(await reader.getByRole("button", { name: "用户管理", exact: true }).count(), 0);
   assert.equal(await reader.evaluate(async () => (await fetch("/api/users")).status), 403);
   checks.regularUserNoAdminEntry = true;
+  await reader.getByRole("button", { name: "我的账号", exact: true }).click();
+  const account = reader.getByRole("dialog", { name: "我的账号", exact: true });
+  await account.getByText("手机上的会话", { exact: true }).waitFor();
+  reader.on("dialog", (dialog) => dialog.accept());
+  await account.getByRole("button", { name: "结束会话「手机上的会话」", exact: true }).click();
+  await account
+    .getByRole("button", { name: "结束会话「手机上的会话」", exact: true })
+    .waitFor({ state: "hidden" });
+  assert.equal(browserSessions.length, 1);
+  assert.equal(browserSessions[0].sid, "client-1");
+  checks.otherDeviceSessionEnded = true;
+  await account.getByLabel("当前密码", { exact: true }).fill("wrong-password");
+  await account.getByLabel("新密码", { exact: true }).fill("fixture-personal-password");
+  await account.getByRole("button", { name: "修改密码并重新登录", exact: true }).click();
+  await account.getByRole("alert").filter({ hasText: "当前密码不正确" }).waitFor();
+  await account.getByLabel("当前密码", { exact: true }).fill("fixture-current-password");
+  await account.getByRole("button", { name: "修改密码并重新登录", exact: true }).click();
+  await reader.waitForURL(origin + "/gate");
+  assert.equal(accountPasswordChanged, true);
+  assert.equal(
+    await reader.evaluate(() =>
+      JSON.stringify([Object.values(localStorage), Object.values(sessionStorage)]).includes(
+        "password",
+      ),
+    ),
+    false,
+  );
+  checks.personalPasswordChange = true;
+  await reader.goto(origin);
+  await reader.getByRole("button", { name: "工作台", exact: true }).click();
   await reader.getByRole("button", { name: "退出登录", exact: true }).click();
   await reader.waitForURL(origin + "/gate");
   checks.logoutReturnsToLogin = true;
   await ordinary.close();
+  assert.deepEqual(pageErrors, []);
+  assert.equal(browserAdmissions, 0, "management is available without opening a browser");
+  checks.managementWithoutBrowser = true;
+  const recoveryContext = await browser.newContext();
+  const recovery = await recoveryContext.newPage();
+  recovery.on("pageerror", (error) => pageErrors.push(error.message));
+  await recovery.goto(origin + "/?sid=client-1");
+  await recovery.locator("#client-session-overlay").waitFor({ state: "hidden" });
+  assert.equal(browserAdmissions, 1);
+  browserSessions.length = 0;
+  await recovery
+    .locator('#client-session-overlay[data-phase="closed"]')
+    .waitFor({ timeout: 15_000 });
+  await recovery.reload();
+  await recovery.locator('#client-session-overlay[data-phase="closed"]').waitFor();
+  assert.equal(browserAdmissions, 1, "ending a session must not silently allocate another");
+  checks.endedSessionStaysClosed = true;
+  await recoveryContext.close();
   assert.deepEqual(pageErrors, []);
   await mkdir("artifacts", { recursive: true });
   const result = { localMockOnly: true, checks, phoneLayout: layout };

@@ -1,3 +1,4 @@
+import { WorkspaceMenu, type WorkspaceMenuProps } from "./workspace-menu";
 /**
  * The first thing a new tab shows after signing in: which browser configuration to open. Each is a
  * Chrome of its own, so the card says who it is signed in to Claude as.
@@ -203,19 +204,16 @@ export function ProfilePicker(props: {
   onBack?(): void;
   onChanged?(): void;
   onDeleted?(): void;
-  username?: string;
+  workspace?: WorkspaceMenuProps;
   dark: boolean;
   onTheme(): void;
-  onLogout(): void;
-  onManageNetwork?(): void;
-  logoutPending: boolean;
+
   logoutError: string | null;
-  createInitially?: boolean;
 }) {
   const [accounts, setAccounts] = useState<AccountInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(props.createInitially ?? false);
+  const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [defaultId, setDefaultId] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -408,26 +406,14 @@ export function ProfilePicker(props: {
           <span aria-hidden="true">◈</span> Remote Workspace
         </span>
         <div class="profile-tools">
-          {props.onManageNetwork && (
-            <button type="button" onClick={props.onManageNetwork}>
-              代理与 API
-            </button>
-          )}
+          {props.workspace && <WorkspaceMenu {...props.workspace} />}
           {props.onBack && (
             <button type="button" disabled={busy} onClick={props.onBack}>
               返回会话
             </button>
           )}
-          {props.username && (
-            <span class="profile-user" title={props.username}>
-              {props.username}
-            </span>
-          )}
           <button type="button" onClick={props.onTheme} aria-label="切换外观">
             {props.dark ? "浅色" : "深色"}
-          </button>
-          <button type="button" onClick={props.onLogout} disabled={props.logoutPending || busy}>
-            {props.logoutPending ? "退出中…" : "退出登录"}
           </button>
         </div>
       </div>
@@ -608,7 +594,9 @@ export function ProfilePicker(props: {
               )}
             </div>
           )}
-          <p class="profile-footnote">同一配置可以同时打开多个会话，网站登录会保留。</p>
+          <p class="profile-footnote">
+            同一配置的多个会话共享网站登录；可在「我的账号」管理各设备会话。
+          </p>
         </section>
       </div>
     </main>

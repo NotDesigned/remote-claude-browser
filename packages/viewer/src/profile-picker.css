@@ -1,4 +1,5 @@
-#shell[data-picking="true"] > :not(.profile-picker):not(.network-panel-backdrop) {
+#shell[data-picking="true"]
+  > :not(.profile-picker):not(.network-panel-backdrop):not(.user-panel-backdrop) {
   display: none !important;
 }
 
@@ -93,7 +94,8 @@
   padding: 8px 12px;
   cursor: pointer;
 }
-.profile-tools button {
+.profile-tools > button,
+.profile-tools .workspace-menu-trigger {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: transparent;
@@ -108,14 +110,6 @@
 .profile-tools button:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
-}
-.profile-user {
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted);
-  font-size: 13px;
 }
 .profile-body {
   flex: 1;
@@ -501,9 +495,6 @@ button.profile-card:hover .profile-arrow {
   }
   .profile-brand {
     font-size: 12px;
-  }
-  .profile-user {
-    display: none;
   }
   .profile-tools {
     gap: 5px;

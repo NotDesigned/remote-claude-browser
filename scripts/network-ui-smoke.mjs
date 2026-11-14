@@ -60,7 +60,22 @@ const instances = [
 ];
 const credentials = new Map();
 const oauthProxies = new Map();
-const keys = new Map();
+const keys = new Map([
+  [
+    "cpa-shared",
+    [
+      {
+        id: "shared-reader-key",
+        instanceId: "cpa-shared",
+        userId: "reader",
+        username: "reader",
+        name: "已有个人调用",
+        prefix: "rcpa_reader",
+        createdAt: 1,
+      },
+    ],
+  ],
+]);
 const operations = [];
 const errors = [];
 let profileProxyId = null;
@@ -204,7 +219,7 @@ const server = createServer(async (request, response) => {
     if (url.pathname.startsWith("/api/cpa/instances/")) {
       const [, , , , id, action, detail] = url.pathname.split("/");
       const instance = instances.find((item) => item.id === id);
-      if (!manage(instance))
+      if (!(manage(instance) || (action === "keys" && instance.scope === "shared")))
         return json(response, { error: "CPA_FORBIDDEN", message: "没有管理此实例的权限" }, 403);
       const input =
         request.method === "GET" || request.method === "DELETE" ? {} : await body(request);
@@ -258,7 +273,10 @@ const server = createServer(async (request, response) => {
       }
       if (action === "keys") {
         const saved = keys.get(id) ?? [];
-        if (request.method === "GET") return json(response, { keys: saved });
+        if (request.method === "GET")
+          return json(response, {
+            keys: saved.filter((item) => user.role === "admin" || item.userId === user.id),
+          });
         if (request.method === "DELETE") {
           keys.set(
             id,
@@ -269,6 +287,8 @@ const server = createServer(async (request, response) => {
         const key = {
           id: `key-${++serial}`,
           instanceId: id,
+          userId: user.id,
+          username: user.username,
           name: input.name,
           prefix: "rcpa_fixture",
           createdAt: Date.now(),
@@ -397,7 +417,8 @@ try {
     profileProxyId = "proxy-shared";
     await page.reload();
     await page.getByText("出口：共享出口", { exact: true }).waitFor();
-    await click(page.getByRole("button", { name: "代理与 API", exact: true }));
+    await click(page.getByRole("button", { name: "工作台", exact: true }));
+    await click(page.getByRole("button", { name: "代理", exact: true }));
     const panel = page.getByRole("dialog", { name: "代理与 API", exact: true });
     assert.equal(await page.locator('#shell[data-picking="true"]').count(), 1);
     assert.equal(await page.locator(".network-panel-backdrop").isVisible(), true);
@@ -434,12 +455,26 @@ try {
     await panel.getByText("来源已删除。", { exact: true }).waitFor();
     assert.match(dialogs.at(-1), /所有者：你.*2 个浏览器配置、1 个 CPA 授权/);
     await click(panel.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
+    if (!mobile) await panel.getByText("所有者：reader", { exact: true }).waitFor();
     if (mobile) {
-      await panel.getByText("此实例由管理员管理。", { exact: true }).waitFor();
+      await panel.getByText(/共享账号池由管理员维护/).waitFor();
       assert.equal(
         await panel.getByRole("button", { name: "生成 API Key", exact: true }).count(),
-        0,
+        1,
       );
+      assert.equal(await panel.getByRole("button", { name: "停止实例", exact: true }).count(), 0);
+      assert.equal(await panel.getByRole("heading", { name: /授权凭据/ }).count(), 0);
+      await panel.getByLabel("API Base URL", { exact: true }).waitFor();
+      await panel.getByLabel("新 Key 名称", { exact: true }).fill("共享池个人调用");
+      await click(panel.getByRole("button", { name: "生成 API Key", exact: true }));
+      await panel.getByLabel("新 API Key（仅此一次）", { exact: true }).waitFor();
+      assert.equal(keys.get("cpa-shared").at(-1).userId, "reader");
+      await click(
+        panel.getByRole("button", { name: "撤销 API Key「共享池个人调用」", exact: true }),
+      );
+      await panel
+        .getByRole("button", { name: "撤销 API Key「共享池个人调用」", exact: true })
+        .waitFor({ state: "hidden" });
     }
     await page.route("**/api/cpa/instances", (route) =>
       route.request().method() === "POST"
@@ -557,7 +592,8 @@ try {
       origin + "/v1",
     );
     await click(panel.getByRole("button", { name: "关闭代理与 API 管理", exact: true }));
-    await click(page.getByRole("button", { name: "代理与 API", exact: true }));
+    await click(page.getByRole("button", { name: "工作台", exact: true }));
+    await click(page.getByRole("button", { name: "API", exact: true }));
     await panel.waitFor();
     assert.equal(await panel.getByLabel("新 API Key（仅此一次）", { exact: true }).count(), 0);
     const closeBox = await panel
@@ -618,8 +654,8 @@ try {
     assert.equal(sessions.length, sessionsBeforeExit);
     await click(page.getByRole("button", { name: /默认配置.*未登录/ }));
     await page.waitForURL((url) => url.searchParams.has("sid"));
-    await click(page.getByRole("button", { name: /^更多/ }));
-    await click(page.getByRole("button", { name: "选择浏览器配置…", exact: true }));
+    await click(page.getByRole("button", { name: "工作台", exact: true }));
+    await click(page.getByRole("button", { name: "浏览器配置", exact: true }));
     await page.getByRole("button", { name: "返回会话", exact: true }).waitFor();
     const toolbarLayout = await page.locator(".profile-topbar").evaluate((node) => ({
       left: node.getBoundingClientRect().left,
@@ -633,7 +669,8 @@ try {
         toolbarLayout.right <= toolbarLayout.viewport + 1 &&
         toolbarLayout.scroll <= toolbarLayout.width + 1,
     );
-    await click(page.getByRole("button", { name: "代理与 API", exact: true }));
+    await click(page.getByRole("button", { name: "工作台", exact: true }));
+    await click(page.getByRole("button", { name: "API", exact: true }));
     await panel.waitFor();
     await click(panel.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
     const inheritedOAuthProxy = panel.getByLabel("授权使用的代理");
@@ -691,8 +728,8 @@ try {
       0,
       "remote OAuth must dismiss the profile picker",
     );
-    await click(page.getByRole("button", { name: /^更多/ }));
-    await click(page.getByRole("button", { name: "代理与 API", exact: true }));
+    await click(page.getByRole("button", { name: "工作台", exact: true }));
+    await click(page.getByRole("button", { name: "API", exact: true }));
     await remoteOpen.waitFor();
     await panel.getByLabel("授权回调 URL 或授权码").waitFor();
     await click(panel.getByRole("button", { name: "关闭代理与 API 管理", exact: true }));
@@ -708,7 +745,7 @@ try {
       noDeploymentDefaultOption: true,
       credentialProxyStatusDelete: true,
       keyOnceAndRevoke: true,
-      sharedAdminOnly: true,
+      sharedAdminManagementAndPersonalKeys: true,
       profileSharedPrivateAndUnassignedExit: true,
       unboundProfilesBlocked: true,
       noAutomaticFirstExit: true,
@@ -751,7 +788,8 @@ try {
       await route.continue();
     });
     await page.goto(origin);
-    await page.getByRole("button", { name: "代理与 API", exact: true }).click();
+    await page.getByRole("button", { name: "工作台", exact: true }).click();
+    await page.getByRole("button", { name: "API", exact: true }).click();
     await page.getByRole("tab", { name: "CPA 授权与 Key", exact: true }).click();
     await requested;
     await page.getByRole("button", { name: /共享实例/ }).click();

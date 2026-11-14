@@ -2,7 +2,7 @@
  * The unified page's single top bar: view switch (页面 / 画面), the browser's tabs when it is
  * showing, the time where the remote browser is, connection status and the ⋯ menu.
  */
-import { type AccountAction, type AccountList } from "./accounts";
+import { WorkspaceMenu, type WorkspaceMenuProps } from "./workspace-menu";
 import type { PxQuality } from "@mirror/protocol";
 import { formatSpeed } from "./hud";
 import type { ComponentChildren } from "preact";
@@ -10,7 +10,6 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { SERVER_STATUS_STALE_MS, type ReceivedServerStatus } from "./server-status";
 import { formatStatusClock, msToNextMinute, remoteClockNow } from "./remote-clock";
 import type { ViewMode } from "./client-session";
-import type { FrontendUser } from "./users";
 
 export type ThemePreference = "auto" | "light" | "dark";
 export type StatusTone = "ok" | "busy" | "bad";
@@ -34,17 +33,8 @@ export interface ShellBarProps {
   rttMs: number | null;
   speedBps: number | null;
   frameRate: number | null;
-  /** The accounts this session can switch between, once known. */
-  accounts: AccountList | null;
-  onAccount(action: AccountAction): void;
-  onChooseAccount?(): void;
+  workspace?: WorkspaceMenuProps;
   onMenuOpen?(): void;
-  currentUser?: FrontendUser | null;
-  onManageUsers?(): void;
-  onManageNetwork?(): void;
-  onLogout?(): void;
-  logoutPending?: boolean;
-  userError?: string | null;
 }
 
 const VIEWS: { mode: ViewMode; label: string; title: string }[] = [
@@ -114,6 +104,7 @@ export function ShellBar(props: ShellBarProps) {
       <div class="shell-bar-tabs">{props.children}</div>
 
       <div class="shell-bar-end">
+        {props.workspace && <WorkspaceMenu {...props.workspace} />}
         {clock && (
           <span id="shell-clock" title={clock.title} aria-label={`出口当地时间 ${clock.title}`}>
             {clock.label}
@@ -149,45 +140,6 @@ export function ShellBar(props: ShellBarProps) {
 
       {menuOpen && (
         <div id="shell-menu" ref={menuRef} role="dialog" aria-label="更多">
-          {props.currentUser && (
-            <div class="shell-menu-section" role="group" aria-label="当前用户">
-              <span>
-                {props.currentUser.username}
-                {props.currentUser.role === "admin" && " · 管理员"}
-              </span>
-              <div class="shell-menu-choices">
-                {props.onManageNetwork && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      props.onManageNetwork!();
-                    }}
-                  >
-                    代理与 API
-                  </button>
-                )}
-                {props.currentUser.role === "admin" && props.onManageUsers && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      toggleRef.current?.focus();
-                      props.onManageUsers?.();
-                    }}
-                  >
-                    用户管理
-                  </button>
-                )}
-                {props.onLogout && (
-                  <button type="button" disabled={props.logoutPending} onClick={props.onLogout}>
-                    {props.logoutPending ? "正在退出…" : "退出登录"}
-                  </button>
-                )}
-              </div>
-              {props.userError && <p role="alert">{props.userError}</p>}
-            </div>
-          )}
           <div class="shell-menu-section" role="group" aria-label="画面清晰度">
             <span>画面模式：越清晰，服务器负担越重</span>
             <div class="shell-menu-choices">
@@ -251,58 +203,6 @@ export function ShellBar(props: ShellBarProps) {
               ))}
             </div>
           </div>
-          {props.accounts !== null && (
-            <div class="shell-menu-section" role="group" aria-label="浏览器配置">
-              <span>浏览器配置</span>
-              {props.onChooseAccount && (
-                <div class="shell-menu-choices">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      props.onChooseAccount!();
-                    }}
-                  >
-                    选择浏览器配置…
-                  </button>
-                </div>
-              )}
-              <div class="shell-menu-choices shell-menu-accounts">
-                {props.accounts.accounts.map((account) => (
-                  <button
-                    key={account.id}
-                    type="button"
-                    aria-pressed={props.accounts?.current === account.id}
-                    disabled={!account.proxyId}
-                    title={
-                      !account.proxyId
-                        ? "未选择出口，请到选择浏览器配置页面设置出口"
-                        : account.sessions > 0
-                          ? `${account.sessions} 个会话在用`
-                          : "没有会话在用"
-                    }
-                    onClick={() => props.onAccount({ kind: "switch", id: account.id })}
-                  >
-                    {account.name}
-                  </button>
-                ))}
-              </div>
-              <div class="shell-menu-choices">
-                <button type="button" onClick={() => props.onAccount({ kind: "create" })}>
-                  新建
-                </button>
-                <button type="button" onClick={() => props.onAccount({ kind: "rename" })}>
-                  重命名
-                </button>
-                {props.accounts.current !== props.accounts.default &&
-                  props.accounts.accounts.length > 1 && (
-                    <button type="button" onClick={() => props.onAccount({ kind: "delete" })}>
-                      删除
-                    </button>
-                  )}
-              </div>
-            </div>
-          )}
           <div class="shell-menu-section" aria-label="服务状态">
             <span>服务状态</span>
             {warning && (

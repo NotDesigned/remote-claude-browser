@@ -1,0 +1,58 @@
+.account-panel {
+  width: min(640px, 100%);
+}
+.account-panel .user-panel-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+.account-sessions {
+  padding: 22px;
+  display: grid;
+  gap: 12px;
+}
+.account-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.account-session-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+.account-session-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.account-session-list li > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.account-sessions button {
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  flex: none;
+}
+.account-password {
+  border-top: 1px solid var(--line);
+}
+@media (max-width: 600px) {
+  .account-sessions {
+    padding: 16px;
+  }
+}

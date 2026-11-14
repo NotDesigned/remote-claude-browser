@@ -499,8 +499,8 @@ try {
   await page.locator("#client-session-overlay").waitFor({ state: "hidden" });
   assert.equal(await page.locator(".profile-picker").count(), 0);
   assert.equal(admissions.at(-1).clientKey, key);
-  await page.getByRole("button", { name: "更多", exact: true }).click();
-  await page.getByRole("button", { name: "选择浏览器配置…", exact: true }).click();
+  await page.getByRole("button", { name: "工作台", exact: true }).click();
+  await page.getByRole("button", { name: "浏览器配置", exact: true }).click();
   await page.getByText("当前使用", { exact: true }).waitFor();
   const beforeBack = admissions.length;
   await openCardMenu(page, "工作");
@@ -519,8 +519,8 @@ try {
   await page.getByRole("button", { name: "管理「工作」", exact: true }).waitFor();
   await page.getByRole("button", { name: "返回会话", exact: true }).click();
   assert.equal(admissions.length, beforeBack);
-  await page.getByRole("button", { name: "更多", exact: true }).click();
-  await page.getByRole("button", { name: "选择浏览器配置…", exact: true }).click();
+  await page.getByRole("button", { name: "工作台", exact: true }).click();
+  await page.getByRole("button", { name: "浏览器配置", exact: true }).click();
   page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: /默认配置.*未登录/ }).click();
   assert.equal(switches.length, 0);
@@ -583,8 +583,9 @@ try {
   );
   assert.equal(admissions.at(-1).account, "p-9876543210");
   assert.notEqual(admissions.at(-1).clientKey, key);
-  await page.getByRole("button", { name: "更多", exact: true }).click();
-  await page.getByRole("button", { name: "新建", exact: true }).click();
+  await page.getByRole("button", { name: "工作台", exact: true }).click();
+  await page.getByRole("button", { name: "浏览器配置", exact: true }).click();
+  await page.getByRole("button", { name: "新建浏览器配置", exact: true }).click();
   await page.getByLabel("浏览器配置名称", { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "创建并设置出口", exact: true }).count(), 1);
   await page.getByRole("button", { name: "取消", exact: true }).click();
@@ -759,20 +760,20 @@ try {
     .filter({ has: phone.getByText(accounts[1].email, { exact: true }) })
     .tap();
   await phoneSession;
-  await phone.getByRole("button", { name: "更多", exact: true }).tap();
-  await phone.getByRole("button", { name: "选择浏览器配置…", exact: true }).tap();
+  await phone.getByRole("button", { name: "工作台", exact: true }).tap();
+  await phone.getByRole("button", { name: "浏览器配置", exact: true }).tap();
   await phone.getByText("当前使用", { exact: true }).waitFor();
   await phone.getByRole("button", { name: "返回会话", exact: true }).tap();
-  await phone.getByRole("button", { name: "更多", exact: true }).tap();
-  await phone.getByRole("button", { name: "选择浏览器配置…", exact: true }).tap();
+  await phone.getByRole("button", { name: "工作台", exact: true }).tap();
+  await phone.getByRole("button", { name: "浏览器配置", exact: true }).tap();
   phone.once("dialog", (dialog) => dialog.accept());
   const phoneMoved = phone.waitForResponse((response) =>
     new URL(response.url()).pathname.endsWith("/account"),
   );
   await phone.getByRole("button", { name: /默认配置.*未登录/ }).tap();
   await phoneMoved;
-  await phone.getByRole("button", { name: "更多", exact: true }).tap();
-  await phone.getByRole("button", { name: "选择浏览器配置…", exact: true }).tap();
+  await phone.getByRole("button", { name: "工作台", exact: true }).tap();
+  await phone.getByRole("button", { name: "浏览器配置", exact: true }).tap();
   await phone.setViewportSize({ width: 844, height: 390 });
   assert.equal(
     await phone
@@ -783,6 +784,7 @@ try {
   await phone.screenshot({
     path: `artifacts/exit-required-profile-picker-${engine}-phone-switch.png`,
   });
+  await phone.getByRole("button", { name: "工作台", exact: true }).tap();
   await phone.getByRole("button", { name: "退出登录", exact: true }).tap();
   await phone.waitForURL(origin + "/gate");
   assert.deepEqual(errors, []);
