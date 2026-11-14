@@ -278,8 +278,17 @@ try {
   await page.getByRole("button", { name: "新建浏览器配置" }).click();
   await page.getByLabel("浏览器配置名称").fill("临时配置");
   await page.getByRole("button", { name: "取消", exact: true }).click();
+  const initialized = Promise.all([
+    page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/accounts" &&
+        new URL(response.url()).searchParams.has("sid"),
+    ),
+    page.waitForResponse((response) => new URL(response.url()).pathname === "/s/client-1/theme"),
+  ]);
   await page.getByRole("button", { name: /工作.*work@example.com/ }).click();
   await page.waitForURL(/sid=client-1/);
+  await initialized;
   assert.equal(admissions.at(-1).account, "p-0123456789");
   const key = admissions.at(-1).clientKey;
   const resumed = page.waitForResponse(
@@ -333,9 +342,18 @@ try {
   const moved = page.waitForResponse((response) =>
     new URL(response.url()).pathname.endsWith("/account"),
   );
+  const switchInitialized = Promise.all([
+    page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/accounts" &&
+        new URL(response.url()).searchParams.has("sid"),
+    ),
+    page.waitForResponse((response) => new URL(response.url()).pathname === "/s/client-1/theme"),
+  ]);
   await page.getByRole("button", { name: /默认配置.*未登录/ }).click();
   await moved;
   await page.locator(".profile-picker").waitFor({ state: "hidden" });
+  await switchInitialized;
   assert.equal(switches.at(-1).account, "default");
   await page.goto(origin + "/?new=1&sid=client-1");
   await page.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
