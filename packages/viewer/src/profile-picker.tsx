@@ -40,6 +40,7 @@ function initial(account: AccountInfo): string {
 function ProfileCard(props: {
   account: AccountInfo;
   last: boolean;
+  current: boolean;
   disabled: boolean;
   onPick(): void;
 }) {
@@ -50,6 +51,7 @@ function ProfileCard(props: {
       type="button"
       class="profile-card"
       data-last={props.last}
+      data-current={props.current}
       disabled={props.disabled}
       onClick={props.onPick}
       style={{ "--avatar-hue": hue(account.id) }}
@@ -78,7 +80,11 @@ function ProfileCard(props: {
         </span>
       </span>
       <span class="profile-meta">
-        {props.last && <span class="profile-badge">上次使用</span>}
+        {props.current ? (
+          <span class="profile-badge profile-current-badge">当前使用</span>
+        ) : (
+          props.last && <span class="profile-badge">上次使用</span>
+        )}
         {account.sessions > 0 && <span class="profile-badge">{account.sessions} 个会话</span>}
         <span class="profile-arrow" aria-hidden="true">
           →
@@ -89,7 +95,9 @@ function ProfileCard(props: {
 }
 
 export function ProfilePicker(props: {
-  onPick(id: string): void;
+  onPick(id: string, name: string): Promise<void | false>;
+  current?: string | null;
+  onBack?(): void;
   username?: string;
   dark: boolean;
   onTheme(): void;
@@ -99,6 +107,7 @@ export function ProfilePicker(props: {
 }) {
   const [accounts, setAccounts] = useState<AccountInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -116,10 +125,10 @@ export function ProfilePicker(props: {
         const list = await listAccounts(null);
         if (active) {
           setAccounts(list.accounts);
-          setError(null);
+          setLoadError(null);
         }
       } catch (reason) {
-        if (active) setError((reason as Error).message);
+        if (active) setLoadError((reason as Error).message);
       } finally {
         pending = false;
       }
@@ -137,20 +146,34 @@ export function ProfilePicker(props: {
     };
   }, [refreshAttempt]);
   useEffect(() => {
-    if (creating) input.current?.focus();
+    if (creating) {
+      input.current!.focus();
+      input.current!.scrollIntoView({ block: "nearest" });
+    }
   }, [creating]);
 
-  const pick = (id: string) => {
+  const pick = async (id: string, name: string) => {
     setBusy(true);
-    remember(id);
-    props.onPick(id);
+    setError(null);
+    try {
+      if ((await props.onPick(id, name)) !== false) remember(id);
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setBusy(false);
+    }
   };
   const create = async (event: Event) => {
     event.preventDefault();
     if (busy || name.trim() === "") return;
+    setError(null);
     setBusy(true);
     try {
-      pick((await createAccount(name.trim())).id);
+      const made = await createAccount(name.trim());
+      setRefreshAttempt((value) => value + 1);
+      setCreating(false);
+      setName("");
+      await pick(made.id, made.name);
     } catch (reason) {
       setError((reason as Error).message);
       setBusy(false);
@@ -164,6 +187,11 @@ export function ProfilePicker(props: {
           <span aria-hidden="true">◈</span> Remote Workspace
         </span>
         <div class="profile-tools">
+          {props.onBack && (
+            <button type="button" disabled={busy} onClick={props.onBack}>
+              返回会话
+            </button>
+          )}
           {props.username && (
             <span class="profile-user" title={props.username}>
               {props.username}
@@ -172,7 +200,7 @@ export function ProfilePicker(props: {
           <button type="button" onClick={props.onTheme} aria-label="切换外观">
             {props.dark ? "浅色" : "深色"}
           </button>
-          <button type="button" onClick={props.onLogout} disabled={props.logoutPending}>
+          <button type="button" onClick={props.onLogout} disabled={props.logoutPending || busy}>
             {props.logoutPending ? "退出中…" : "退出登录"}
           </button>
         </div>
@@ -193,15 +221,20 @@ export function ProfilePicker(props: {
               {props.logoutError}
             </p>
           )}
-          {error !== null && (
+          {loadError !== null && (
             <p class="profile-error" role="alert">
-              {error}
+              {loadError}
               <button type="button" onClick={() => setRefreshAttempt((value) => value + 1)}>
                 重试
               </button>
             </p>
           )}
-          {accounts === null && error === null ? (
+          {error !== null && (
+            <p class="profile-error" role="alert">
+              {error}
+            </p>
+          )}
+          {accounts === null && loadError === null ? (
             <div class="profile-list" aria-busy="true">
               <div class="profile-card profile-skeleton" />
               <div class="profile-card profile-skeleton" />
@@ -213,8 +246,9 @@ export function ProfilePicker(props: {
                   key={account.id}
                   account={account}
                   last={account.id === last}
+                  current={account.id === props.current}
                   disabled={busy}
-                  onPick={() => pick(account.id)}
+                  onPick={() => void pick(account.id, account.name)}
                 />
               ))}
               {creating ? (
@@ -230,7 +264,7 @@ export function ProfilePicker(props: {
                     onKeyDown={(event) => event.key === "Escape" && setCreating(false)}
                   />
                   <button type="submit" disabled={busy || name.trim() === ""}>
-                    {busy ? "创建中…" : "创建并打开"}
+                    {busy ? "创建中…" : props.onBack ? "创建并切换" : "创建并打开"}
                   </button>
                   <button
                     type="button"

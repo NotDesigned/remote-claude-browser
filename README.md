@@ -104,6 +104,8 @@ docker compose up -d --build cpa caddy
 
 邮箱在配置打开 Claude 后读取并保留，下次选择时直接显示；选择页会自动刷新状态。升级前从未读取过邮箱的旧配置，首次仍可能显示“已登录”，打开一次后即可更新。
 
+进入会话后，可从右上角 ⋯ →「选择浏览器配置…」回到同一选择页；选择其他配置会切换当前会话，点「返回会话」则继续原来的页面。
+
 升级旧版本时，原有浏览器配置全部归初始管理员，原设备需要重新用用户名和密码登录。已有数据库不会因为修改 `.env` 而重新设置用户密码。浏览器时区由 `.env` 的 `TZ` 决定，未设置时为 UTC；见[时区说明](docs/timezone.md)。
 
 ## 安全须知
@@ -134,6 +136,7 @@ pnpm build
 pnpm typecheck
 pnpm test
 pnpm test:profiles-ui # 配置选择、状态刷新、新建、恢复和手机布局；使用本地测试页面
+pnpm test:profiles-webkit # 使用 WebKit 再验收同一套流程，需先安装 Playwright WebKit 及运行依赖
 pnpm smoke:compose   # 构建镜像并做端到端检查，需要 Docker，设置 CHROME_PATH 后还会真实登录一次
 pnpm check:fingerprint [镜像] [账号数]   # 用临时容器开几个新浏览器配置，查看 who.1ms.dog 和 fingerprint.com 的判定
 ```

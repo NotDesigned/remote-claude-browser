@@ -1,5 +1,5 @@
 /** Viewer shell layout. */
-import { listAccounts, runAccountAction, type AccountList } from "./accounts";
+import { listAccounts, runAccountAction, switchAccount, type AccountList } from "./accounts";
 import { currentUser, logout, UserApiError, type FrontendUser } from "./users";
 import { UserPanel } from "./user-panel";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
@@ -132,6 +132,7 @@ export function App() {
   const [accountList, setAccountList] = useState<AccountList | null>(null);
   const [user, setUser] = useState<FrontendUser | null>(null);
   const [userPanelOpen, setUserPanelOpen] = useState(false);
+  const [profilePickerOpen, setProfilePickerOpen] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
   const [userError, setUserError] = useState<string | null>(null);
   /** The configuration this tab's picker chose; a reload resumes without one. */
@@ -1160,7 +1161,7 @@ export function App() {
       id="shell"
       data-theme={theme}
       data-connection={connection}
-      data-picking={clientPhase === "picking"}
+      data-picking={clientPhase === "picking" || profilePickerOpen}
     >
       <ShellBar
         viewMode={(activeTab !== null && modeByTab[activeTab]) || viewMode}
@@ -1172,6 +1173,7 @@ export function App() {
         linkTarget={linkTarget}
         onLinkTarget={setLinkTarget}
         accounts={accountList}
+        onChooseAccount={clientPhase === "ready" ? () => setProfilePickerOpen(true) : undefined}
         currentUser={user}
         onManageUsers={() => setUserPanelOpen(true)}
         onLogout={() => void signOut()}
@@ -1274,9 +1276,23 @@ export function App() {
           </button>
         </section>
       )}
-      {clientPhase === "picking" && (
+      {(clientPhase === "picking" || profilePickerOpen) && (
         <ProfilePicker
-          onPick={setPickedAccount}
+          onPick={async (id, name) => {
+            if (!profilePickerOpen) {
+              setPickedAccount(id);
+              return;
+            }
+            if (id === accountList?.current) {
+              setProfilePickerOpen(false);
+              return;
+            }
+            if (!window.confirm(`切换到「${name}」？当前会话打开的页面会关闭。`)) return false;
+            await switchAccount(clientSession!.sid, id);
+            window.location.reload();
+          }}
+          current={profilePickerOpen ? accountList?.current : null}
+          onBack={profilePickerOpen ? () => setProfilePickerOpen(false) : undefined}
           username={user?.username}
           dark={theme === "dark"}
           onTheme={() => setThemePreference(theme === "dark" ? "light" : "dark")}

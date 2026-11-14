@@ -37,6 +37,7 @@ export interface ShellBarProps {
   /** The accounts this session can switch between, once known. */
   accounts: AccountList | null;
   onAccount(action: AccountAction): void;
+  onChooseAccount?(): void;
   onMenuOpen?(): void;
   currentUser?: FrontendUser | null;
   onManageUsers?(): void;
@@ -245,6 +246,19 @@ export function ShellBar(props: ShellBarProps) {
           {props.accounts !== null && (
             <div class="shell-menu-section" role="group" aria-label="浏览器配置">
               <span>浏览器配置</span>
+              {props.onChooseAccount && (
+                <div class="shell-menu-choices">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      props.onChooseAccount!();
+                    }}
+                  >
+                    选择浏览器配置…
+                  </button>
+                </div>
+              )}
               <div class="shell-menu-choices shell-menu-accounts">
                 {props.accounts.accounts.map((account) => (
                   <button

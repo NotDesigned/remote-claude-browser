@@ -23,6 +23,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  flex-wrap: wrap;
   width: min(1000px, 100%);
 }
 
@@ -41,6 +42,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-left: auto;
 }
 .profile-tools button {
   border: 1px solid var(--line);
@@ -51,6 +53,8 @@
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+  min-width: 44px;
+  min-height: 44px;
 }
 .profile-tools button:focus-visible {
   outline: 2px solid var(--focus);
@@ -152,6 +156,9 @@ button.profile-card:focus-visible {
 
 .profile-card[data-last="true"] {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+.profile-card[data-current="true"] {
+  border-color: var(--accent);
 }
 
 .profile-avatar {
@@ -273,6 +280,8 @@ button.profile-card:hover .profile-arrow {
   background: var(--bg);
   color: inherit;
   font: inherit;
+  font-size: 16px;
+  min-height: 44px;
 }
 
 .profile-create input:focus {
@@ -291,6 +300,7 @@ button.profile-card:hover .profile-arrow {
   font: inherit;
   font-weight: 600;
   cursor: pointer;
+  min-height: 44px;
 }
 
 .profile-create button:disabled {
@@ -340,7 +350,8 @@ button.profile-card:hover .profile-arrow {
 
 @media (max-width: 480px) {
   .profile-picker {
-    padding: 16px;
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+      max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   }
   .profile-brand {
     font-size: 12px;
@@ -363,6 +374,9 @@ button.profile-card:hover .profile-arrow {
   }
   .profile-badge {
     display: none;
+  }
+  .profile-current-badge {
+    display: inline-block;
   }
 }
 
