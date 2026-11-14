@@ -7,7 +7,7 @@
  * so an account keeps its identity across restarts.
  */
 import { createHmac } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export interface BrowserIdentity {
@@ -125,12 +125,24 @@ ${rejected}
 `;
 }
 
-/** Writes this account's fontconfig into its profile and returns the environment that uses it. */
+/**
+ * Writes this account's fontconfig and GTK settings into its profile and returns the environment
+ * that uses them. GTK's setting turns off X11 middle-click paste of the primary selection, which
+ * the viewer's own system (Windows, macOS, a phone) does not have.
+ */
 export async function identityEnvironment(
   dir: string,
   identity: BrowserIdentity,
 ): Promise<Record<string, string>> {
-  const file = join(dir, "fonts.conf");
-  await writeFile(file, fontconfigFor(identity), { mode: 0o600 });
-  return { FONTCONFIG_FILE: file };
+  const fonts = join(dir, "fonts.conf");
+  const config = join(dir, "xdg-config");
+  await writeFile(fonts, fontconfigFor(identity), { mode: 0o600 });
+  for (const gtk of ["gtk-3.0", "gtk-4.0"]) {
+    await mkdir(join(config, gtk), { recursive: true });
+    await writeFile(
+      join(config, gtk, "settings.ini"),
+      "[Settings]\ngtk-enable-primary-paste=false\n",
+    );
+  }
+  return { FONTCONFIG_FILE: fonts, XDG_CONFIG_HOME: config };
 }

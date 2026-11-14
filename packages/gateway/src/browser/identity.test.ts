@@ -18,3 +18,18 @@ describe("browser account identity", () => {
       expect(conf).toContain(`<string>${family}</string>`);
   });
 });
+
+describe("browser account environment", () => {
+  it("points Chromium at the account's fonts and turns off middle-click paste", async () => {
+    const { mkdtemp, readFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { identityEnvironment } = await import("./identity");
+    const dir = await mkdtemp(join(tmpdir(), "identity-"));
+    const env = await identityEnvironment(dir, browserIdentity("secret", "p-a"));
+    expect(env.FONTCONFIG_FILE).toBe(join(dir, "fonts.conf"));
+    expect(await readFile(join(env.XDG_CONFIG_HOME!, "gtk-3.0", "settings.ini"), "utf8")).toContain(
+      "gtk-enable-primary-paste=false",
+    );
+  });
+});
