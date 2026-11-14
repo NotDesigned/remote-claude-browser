@@ -7,6 +7,7 @@
  */
 import { EventType, type Down, type SnapshotReason, type TabId, type Up } from "@mirror/protocol";
 import type { CdpSend } from "../types";
+import { screenMetrics } from "../browser/screen-metrics";
 
 const DEFAULT_DEBOUNCE_MS = 300;
 const DEFAULT_SNAPSHOT_RETRY_MS = 5_500;
@@ -328,6 +329,11 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
         height: Math.round(desired.h * zoom),
         deviceScaleFactor: zoom > 1 || hub.pixelGrabbing ? 1 : desired.dpr,
         mobile: deps.mobile === true && zoom <= 1,
+        ...screenMetrics(
+          Math.round(desired.w * zoom),
+          Math.round(desired.h * zoom),
+          deps.mobile === true && zoom <= 1,
+        ),
       });
       if (!current(tabId, state)) return;
       hub.viewport = { w: desired.w, h: desired.h, dpr: desired.dpr };

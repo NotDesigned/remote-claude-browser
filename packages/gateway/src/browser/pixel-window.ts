@@ -7,6 +7,7 @@
  * strip: ordinary windows open at its left, and each picture has its own slot to the right of them.
  */
 import { execFile } from "node:child_process";
+import type { DisplayEnvironment } from "./display";
 
 const LOCATE_TIMEOUT_MS = 1_000;
 const LOCATE_POLL_MS = 25;
@@ -85,6 +86,7 @@ const isBrowserWindow = (window: XWindow): boolean =>
   / - (?:Google Chrome|Chromium)$/.test(window.title ?? "");
 
 export interface PixelWindowDeps {
+  display?: DisplayEnvironment;
   sendBrowser(method: string, params: Record<string, unknown>): Promise<unknown>;
   listWindows?(): Promise<string>;
   raiseWindow?(id: string): Promise<void>;
@@ -99,19 +101,27 @@ export interface PixelWindow {
   restore(targetId: string): Promise<void>;
 }
 
-const run = (command: string, ...args: string[]): Promise<string> =>
+const run = (
+  display: DisplayEnvironment | undefined,
+  command: string,
+  ...args: string[]
+): Promise<string> =>
   new Promise((resolve, reject) => {
-    execFile(command, args, { timeout: 4_000 }, (error, stdout) =>
-      error ? reject(error) : resolve(stdout),
+    execFile(
+      command,
+      args,
+      { timeout: 4_000, ...(display ? { env: { ...process.env, ...display } } : {}) },
+      (error, stdout) => (error ? reject(error) : resolve(stdout)),
     );
   });
 
 export function createPixelWindow(deps: PixelWindowDeps): PixelWindow {
-  const listWindows = deps.listWindows ?? (() => run("xwininfo", "-root", "-children"));
+  const listWindows =
+    deps.listWindows ?? (() => run(deps.display, "xwininfo", "-root", "-children"));
   const raiseWindow =
     deps.raiseWindow ??
     (async (id: string) => {
-      await run("xdotool", "windowraise", String(Number(id)));
+      await run(deps.display, "xdotool", "windowraise", String(Number(id)));
     });
   const sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const placed = new Map<

@@ -21,6 +21,7 @@ excluded from Git. Do not commit a populated one. `scripts/bootstrap.sh` writes 
 | `SERVER_IMAGE` | no | local build | A prebuilt image |
 | `MIRROR_CLIENTS` | no | `8` | Total active session slots across users; any positive safe integer. Invalid values prevent startup |
 | `MIRROR_START_URL` | no | `https://claude.ai/new` | The page a new session opens |
+| `MIRROR_RECORDING_MODE` | no | `dom` | `dom` keeps semantic replay, page audio and clipboard bridges. `native` uses CDP-only pixel rendering without a MAIN-world recorder; these bridges and semantic view are unavailable. Recreate the server after changing it. Unknown values stop startup. Native sessions need an available pixel stream slot |
 | `MIRROR_ACCOUNTS_DIR` | no | `<profile>-accounts` | Where browser configurations other than the legacy default keep their Chrome profiles |
 | `EGRESS_POLICY` | no | `on` | `off` lets pages reach private networks and the host |
 | `EGRESS_BLOCK` | no | empty | More addresses to block, comma-separated. Add the host's public IP |
@@ -53,6 +54,12 @@ The server's `compose.yml` also accepts these if you add them to its `environmen
 | `MIRROR_SCREEN_GRAB` | on | `0` turns off the screen capture behind picture mode's video |
 | `MIRROR_TRUSTED_PROXIES` | `SERVER_SUBNET` | Comma-separated proxies that may set `X-Forwarded-For` |
 | `XVFB_SCREEN` | `12800x2880x24` | The virtual display's size |
+
+Managed headful browser configurations each receive a private Xvfb display and authorization file.
+`XVFB_SCREEN` applies to each one; display resources therefore grow with active configurations.
+Native clipboard selections stay within that configuration. X11 window control and video capture
+use its private display too. Outside Docker this requires `Xvfb`, `xauth` and `xdpyinfo` on `PATH`.
+Site storage and these device boundaries do not make browser fingerprints or shared egress unique.
 
 Compose passes the password and signing keys as container environment variables. Anyone who can
 inspect the container or control the Docker daemon can read them, and Docker daemon access is already

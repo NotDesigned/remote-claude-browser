@@ -40,7 +40,6 @@ function isVideoElement(value: EventTarget | null): value is HTMLVideoElement {
 export function installVideoDrmMonitor(options: VideoDrmMonitorOptions): VideoDrmMonitor {
   const scope = options.scope ?? globalThis;
   const document = options.document ?? scope.document;
-  const navigator = options.navigator ?? scope.navigator;
   let mirror: NodeMirror | null = null;
 
   const encrypted = (event: Event) => {
@@ -50,27 +49,8 @@ export function installVideoDrmMonitor(options: VideoDrmMonitorOptions): VideoDr
   };
   document.addEventListener("encrypted", encrypted, true);
 
-  const request = options.requestMediaKeySystemAccess;
-  if (request !== undefined) {
-    const hooked: RequestMediaKeySystemAccess = function (
-      this: Navigator,
-      ...args: Parameters<RequestMediaKeySystemAccess>
-    ) {
-      options.onBlocked();
-      return request.apply(this, args);
-    };
-    try {
-      Object.defineProperty(navigator, "requestMediaKeySystemAccess", {
-        configurable: true,
-        enumerable: true,
-        value: hooked,
-        writable: true,
-      });
-    } catch (error) {
-      // The encrypted event remains the standards-based fallback on locked-down Navigator objects.
-      options.onError?.(error);
-    }
-  }
+  // Observing encrypted media is sufficient. Keep the native EME method untouched: wrappers
+  // alter API identity on every page, including pages that only probe ClearKey support.
 
   return {
     plugin: {

@@ -40,6 +40,7 @@ import { createWsServer } from "./ws/server";
 import type { ViewerConn } from "./ws/viewerconn";
 import { startClientGateway } from "./clients-main";
 import { assertProductionSafe } from "./production-guard";
+import { recordingMode } from "./browser/native-agent";
 
 const SESSION_ID = "dev";
 const DEFAULT_PORT = 3000;
@@ -178,18 +179,19 @@ async function main(): Promise<void> {
   }
   await registerViewerStatic(app);
   sessionGuard.registerJoinRoutes(app);
+  const assetFetcher = createAssetFetcher({
+    send: browser.send,
+    sessionFor: (ref) => {
+      if (ref.sessionId !== SESSION_ID) return undefined;
+      if (ref.tabId === ANY_SESSION_TAB)
+        return [...targets.values()].find((target) => target.type === "page")?.sessionId;
+      return targets.get(ref.tabId)?.sessionId;
+    },
+  });
   registerAssetRoutes(app, {
     serverKey: assetTokenKey,
     cache: createAssetCache(join(userDataDir, "asset-cache")),
-    fetcher: createAssetFetcher({
-      send: browser.send,
-      sessionFor: (ref) => {
-        if (ref.sessionId !== SESSION_ID) return undefined;
-        if (ref.tabId === ANY_SESSION_TAB)
-          return [...targets.values()].find((target) => target.type === "page")?.sessionId;
-        return targets.get(ref.tabId)?.sessionId;
-      },
-    }),
+    fetcher: assetFetcher,
     preHandler: sessionGuard.preHandler,
   });
   let stopping = false;
@@ -529,6 +531,7 @@ async function main(): Promise<void> {
     screencast?.dispose();
     screencast = undefined;
     await ws.close().catch(() => undefined);
+    await assetFetcher.close().catch(() => undefined);
     await app.close().catch(() => undefined);
     await browser.close().catch(() => undefined);
     await rm(uploadDir, { force: true, recursive: true });
@@ -597,5 +600,10 @@ function isInputMsg(msg: Up): msg is InputMsg {
 assertProductionSafe();
 // Older single-browser fixtures omit MIRROR_CLIENTS deliberately. Every ordinary deployment uses
 // independent sessions, including when the capacity is left at its default.
-if (process.env.MIRROR_E2E === "1" && process.env.MIRROR_CLIENTS === undefined) await main();
+if (
+  process.env.MIRROR_E2E === "1" &&
+  process.env.MIRROR_CLIENTS === undefined &&
+  recordingMode(process.env.MIRROR_RECORDING_MODE) === "dom"
+)
+  await main();
 else await startClientGateway();

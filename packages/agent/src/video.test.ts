@@ -31,29 +31,21 @@ describe("agent video DRM monitor", () => {
     expect(onBlocked).toHaveBeenCalledWith(44);
   });
 
-  it("hooks EME with the function captured at initialization and preserves its result", async () => {
+  it("preserves the native EME method and reports only encrypted media events", async () => {
     const access = { keySystem: "org.example.keys" } as unknown as MediaKeySystemAccess;
     const original = vi.fn(async () => access);
-    const clobbered = vi.fn();
-    const navigator = {
-      requestMediaKeySystemAccess: original,
-    } as unknown as Navigator;
-    const captured = captureMediaKeySystemAccess(navigator);
-    navigator.requestMediaKeySystemAccess = clobbered;
+    const navigator = { requestMediaKeySystemAccess: original } as unknown as Navigator;
     const onBlocked = vi.fn();
-
     installVideoDrmMonitor({
       document: documentHarness().document,
       navigator,
-      requestMediaKeySystemAccess: captured,
+      requestMediaKeySystemAccess: captureMediaKeySystemAccess(navigator),
       onBlocked,
     });
-
+    expect(navigator.requestMediaKeySystemAccess).toBe(original);
     await expect(navigator.requestMediaKeySystemAccess("org.example.keys", [])).resolves.toBe(
       access,
     );
-    expect(onBlocked).toHaveBeenCalledWith();
-    expect(original).toHaveBeenCalledWith("org.example.keys", []);
-    expect(clobbered).not.toHaveBeenCalled();
+    expect(onBlocked).not.toHaveBeenCalled();
   });
 });

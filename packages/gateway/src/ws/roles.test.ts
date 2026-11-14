@@ -112,6 +112,10 @@ describe("SEC-2 roles", () => {
         height: 700,
         deviceScaleFactor: 2,
         mobile: false,
+        screenWidth: 1920,
+        screenHeight: 1080,
+        positionX: 0,
+        positionY: 0,
       });
       expect(requestSnapshot).toHaveBeenCalledWith("viewport");
 

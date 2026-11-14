@@ -11,7 +11,7 @@
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests --maxWorkers=1 --minWorkers=1",
-    "test:browser": "node test/password.acceptance.mjs && node test/shadow.acceptance.mjs && node test/trusted-types.acceptance.mjs && node test/canvas.acceptance.mjs"
+    "test:browser": "node test/password.acceptance.mjs && node test/shadow.acceptance.mjs && node test/trusted-types.acceptance.mjs && node test/canvas.acceptance.mjs && node test/voice.acceptance.mjs"
   },
   "dependencies": {
     "@mirror/protocol": "workspace:*",

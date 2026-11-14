@@ -18,6 +18,7 @@ export type LinkTarget = "inside" | "device";
 
 export interface ShellBarProps {
   viewMode: ViewMode;
+  nativePixels?: boolean;
   onViewMode(mode: ViewMode): void;
   /** False when the shared browser cannot start another pixel stream. */
   pixelAvailable: boolean;
@@ -99,12 +100,19 @@ export function ShellBar(props: ShellBarProps) {
             key={view.mode}
             type="button"
             data-view-mode={view.mode}
-            title={view.title}
+            title={
+              props.nativePixels
+                ? "原生画面保留网页行为；页面视图、网页声音和剪贴板桥接不可用"
+                : view.title
+            }
             aria-pressed={props.viewMode === view.mode}
-            disabled={view.mode === "px" && props.viewMode !== "px" && !props.pixelAvailable}
+            disabled={
+              (props.nativePixels && view.mode === "dom") ||
+              (view.mode === "px" && props.viewMode !== "px" && !props.pixelAvailable)
+            }
             onClick={() => props.onViewMode(view.mode)}
           >
-            {view.label}
+            {props.nativePixels && view.mode === "px" ? "原生画面" : view.label}
           </button>
         ))}
       </div>

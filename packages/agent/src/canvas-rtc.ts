@@ -57,6 +57,7 @@ interface RecordPluginAdapter {
   startStream?(id: number, stream: MediaStream): void;
   signalReceive(signal: RTCSessionDescriptionInit): void;
   peer?: RecordPeer | null;
+  inRootFrame?(): boolean;
   /** The streams the plugin has already put on its peer. */
   outgoingStreams?: Set<MediaStream>;
 }
@@ -226,6 +227,14 @@ function createNativePlugin(
       delete (scope as unknown as Record<string, unknown>).addEventListener;
     else Object.defineProperty(scope, "addEventListener", ownDescriptor);
   }
+  // Each instance already belongs to an authenticated gateway peer/lane. rrweb's anonymous
+  // window.postMessage protocol has neither identity and is observable/forgeable by site scripts,
+  // even when the listener runs in an isolated world. It must never be a second signaling path.
+  for (const { listener, options } of listeners) remove.call(scope, "message", listener, options);
+  listeners.length = 0;
+  // Treat this scoped instance as a standalone recorder, including in an iframe. All of its
+  // offers/candidates go to signalSendCallback rather than rrweb's public frame postMessages.
+  plugin.inRootFrame = () => true;
   return {
     plugin,
     detach() {

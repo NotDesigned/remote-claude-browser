@@ -124,11 +124,16 @@ export function ffmpegGrabArguments(crf: number, region: GrabRegion, display: st
   ];
 }
 
-const startFfmpeg = (args: string[], events: VideoEncoderEvents): VideoEncoder => {
+const startFfmpeg = (
+  args: string[],
+  events: VideoEncoderEvents,
+  env?: NodeJS.ProcessEnv,
+): VideoEncoder => {
   let closed = false;
   const process: ChildProcessWithoutNullStreams = spawn(
     globalThis.process.env.MIRROR_FFMPEG ?? "ffmpeg",
     args,
+    { ...(env ? { env: { ...globalThis.process.env, ...env } } : {}) },
   );
   const fail = (error: Error) => {
     if (closed) return;
@@ -171,3 +176,9 @@ export const createGrabEncoder: GrabEncoderFactory = (crf, region, events) => {
   if (!display) throw new Error("Grabbing the screen needs a display");
   return startFfmpeg(ffmpegGrabArguments(crf, region, display), events);
 };
+
+/** X11 capture must use the same account authorization as its browser/window controller. */
+export const grabEncoderForDisplay =
+  (env: { DISPLAY: string; XAUTHORITY: string }): GrabEncoderFactory =>
+  (crf, region, events) =>
+    startFfmpeg(ffmpegGrabArguments(crf, region, env.DISPLAY), events, env);

@@ -1,11 +1,12 @@
 /**
- * Gets Claude's phone interface for a session opened from a phone.
+ * Configures screen and touch for sessions opened from a phone.
  *
- * Claude decides this in the page's own scripts, from the user agent they read. Only that changes:
- * requests keep the browser's real user agent, because Cloudflare ties its clearance to it and every
- * session shares that clearance.
+ * Phone sessions use touch and viewport emulation, retaining the browser's native identity.
+ * A page-only Android identity disagrees with HTTP headers, workers, and the renderer.
+ * Shared profiles must keep one browser identity across desktop and phone viewers.
  */
 import type { CdpSend, TargetRef } from "../types";
+import { screenMetrics } from "./screen-metrics";
 
 const OWNER_WAIT_MS = 500;
 const OWNER_POLL_MS = 10;
@@ -14,38 +15,6 @@ const OWNER_POLL_MS = 10;
 export function isPhoneRequest(userAgent: string | undefined): boolean {
   return /\bMobi/.test(userAgent ?? "");
 }
-
-/** Keeps the browser's real version, which is what a phone running it would report. */
-export const PHONE_IDENTITY_SOURCE = `(() => {
-  const major = /Chrome\\/(\\d+)/.exec(navigator.userAgent)?.[1] ?? "0";
-  const userAgent = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + major + ".0.0.0 Mobile Safari/537.36";
-  const brands = [
-    { brand: "Chromium", version: major },
-    { brand: "Google Chrome", version: major },
-    { brand: "Not_A Brand", version: "24" },
-  ];
-  const userAgentData = {
-    brands,
-    mobile: true,
-    platform: "Android",
-    getHighEntropyValues: async () => ({
-      brands,
-      mobile: true,
-      platform: "Android",
-      platformVersion: "14.0.0",
-      model: "Pixel 8",
-      architecture: "",
-    }),
-    toJSON: () => ({ brands, mobile: true, platform: "Android" }),
-  };
-  for (const [name, value] of [
-    ["userAgent", userAgent],
-    ["appVersion", userAgent.slice(8)],
-    ["platform", "Linux armv8l"],
-    ["userAgentData", userAgentData],
-  ])
-    Object.defineProperty(Navigator.prototype, name, { configurable: true, get: () => value });
-})()`;
 
 export interface PhoneIdentityDeps {
   send: CdpSend;
@@ -73,20 +42,23 @@ export async function waitForOwner(
 export function createPhoneTargetPreparer(deps: PhoneIdentityDeps) {
   return async (target: TargetRef): Promise<void> => {
     const owner = await waitForOwner(target, deps);
-    if (owner === undefined || !deps.isPhoneSession(owner)) return;
-    void Promise.all([
-      deps.send(target.sessionId, "Page.addScriptToEvaluateOnNewDocument", {
-        source: PHONE_IDENTITY_SOURCE,
-        runImmediately: true,
+    if (owner === undefined || target.type !== "page") return;
+    const commands = [
+      deps.send(target.sessionId, "Emulation.setDeviceMetricsOverride", {
+        width: 0,
+        height: 0,
+        deviceScaleFactor: 0,
+        mobile: false,
+        ...screenMetrics(0, 0, false),
       }),
-      ...(target.type === "page"
-        ? [
-            deps.send(target.sessionId, "Emulation.setTouchEmulationEnabled", {
-              enabled: true,
-              maxTouchPoints: 5,
-            }),
-          ]
-        : []),
-    ]).catch((error: unknown) => deps.onError?.(error));
+    ];
+    if (deps.isPhoneSession(owner))
+      commands.push(
+        deps.send(target.sessionId, "Emulation.setTouchEmulationEnabled", {
+          enabled: true,
+          maxTouchPoints: 5,
+        }),
+      );
+    void Promise.all(commands).catch((error: unknown) => deps.onError?.(error));
   };
 }

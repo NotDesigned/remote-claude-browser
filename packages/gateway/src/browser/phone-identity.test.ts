@@ -1,8 +1,7 @@
-import vm from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 
 import type { TargetRef } from "../types";
-import { createPhoneTargetPreparer, isPhoneRequest, PHONE_IDENTITY_SOURCE } from "./phone-identity";
+import { createPhoneTargetPreparer, isPhoneRequest } from "./phone-identity";
 
 const page: TargetRef = { targetId: "t", sessionId: "s", type: "page" };
 
@@ -24,26 +23,6 @@ describe("phone requests", () => {
   });
 });
 
-describe("the identity a page sees", () => {
-  it("reports a phone with the browser's real version", async () => {
-    const context = vm.createContext({});
-    vm.runInContext(
-      `class Navigator { get userAgent() { return "Mozilla/5.0 (X11; Linux x86_64) Chrome/156.0.8078.79 Safari/537.36"; } }
-       var navigator = new Navigator();`,
-      context,
-    );
-    vm.runInContext(PHONE_IDENTITY_SOURCE, context);
-    const seen = vm.runInContext(
-      `({ ua: navigator.userAgent, mobile: navigator.userAgentData.mobile, platform: navigator.platform })`,
-      context,
-    ) as { ua: string; mobile: boolean; platform: string };
-    expect(seen.ua).toContain("Android 14");
-    expect(seen.ua).toContain("Chrome/156.0.0.0 Mobile");
-    expect(seen.mobile).toBe(true);
-    expect(seen.platform).toBe("Linux armv8l");
-  });
-});
-
 describe("createPhoneTargetPreparer", () => {
   const setup = (ownerOf: (targetId: string) => string | undefined, phone = true) => {
     const send = vi.fn(async (_session: string, _method: string, _params?: object) => ({}));
@@ -59,25 +38,25 @@ describe("createPhoneTargetPreparer", () => {
   const methods = (send: { mock: { calls: unknown[][] } }) =>
     send.mock.calls.map(([, method]) => method);
 
-  it("gives a phone's page the identity and touch", async () => {
+  it("sets the initial screen and touch without overriding browser identity", async () => {
     const { send, prepare } = setup(() => "client-1");
     await prepare(page);
     expect(methods(send)).toEqual([
-      "Page.addScriptToEvaluateOnNewDocument",
+      "Emulation.setDeviceMetricsOverride",
       "Emulation.setTouchEmulationEnabled",
     ]);
   });
 
-  it("gives a phone's frame only the identity, as touch belongs to the page", async () => {
+  it("leaves child frame identity untouched", async () => {
     const { send, prepare } = setup(() => "client-1");
     await prepare({ ...page, type: "iframe" });
-    expect(methods(send)).toEqual(["Page.addScriptToEvaluateOnNewDocument"]);
+    expect(methods(send)).toEqual([]);
   });
 
-  it("leaves a desktop session as it is", async () => {
+  it("sets a desktop screen before navigation without identity scripts", async () => {
     const { send, prepare } = setup(() => "client-1", false);
     await prepare(page);
-    expect(send).not.toHaveBeenCalled();
+    expect(methods(send)).toEqual(["Emulation.setDeviceMetricsOverride"]);
   });
 
   it("waits for a new window's owner to be known", async () => {

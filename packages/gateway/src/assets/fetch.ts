@@ -8,7 +8,7 @@
  * Content-Type is copied only from response headers. No URL-based inference happens here.
  */
 import { Readable } from "node:stream";
-import { request as undiciRequest } from "undici";
+import { Agent, request as undiciRequest } from "undici";
 
 import type { CdpSend } from "../types";
 import type { AssetRef } from "./token";
@@ -58,6 +58,12 @@ export interface AssetFetcher {
   fetch(request: AssetFetchRequest): Promise<AssetFetchResponse>;
 }
 
+export interface ManagedAssetFetcher extends AssetFetcher {
+  /** Revoke in-flight requests and TLS state before a workspace is released or changes profile. */
+  closeSession(sessionId: string): Promise<void>;
+  close(): Promise<void>;
+}
+
 interface LoadResourceResult {
   resource?: {
     success?: unknown;
@@ -74,15 +80,38 @@ interface IoReadResult {
   eof?: unknown;
 }
 
-export function createAssetFetcher(deps: AssetFetcherDeps): AssetFetcher {
-  const directRequest = deps.directRequest ?? defaultDirectRequest;
+export function createAssetFetcher(deps: AssetFetcherDeps): ManagedAssetFetcher {
+  const sessions = new Map<string, { closed: boolean; agent?: Agent }>();
+  let closed = false;
+  const closeSession = async (sessionId: string): Promise<void> => {
+    const state = sessions.get(sessionId);
+    if (!state) return;
+    state.closed = true;
+    sessions.delete(sessionId);
+    await state.agent?.destroy();
+  };
 
   return {
     async fetch(request) {
+      if (closed) throw new Error("Asset fetcher is closed");
+      let state = sessions.get(request.ref.sessionId);
+      if (!state) {
+        state = { closed: false };
+        sessions.set(request.ref.sessionId, state);
+      }
+      // Retain this generation across awaits. A released SID may be reused, but an old request
+      // must never acquire its replacement's connection pool or resume after revocation.
+      const generation = state;
       const cdpSessionId = await deps.sessionFor(request.ref);
-      if (cdpSessionId === undefined) {
+      if (generation.closed || cdpSessionId === undefined) {
         throw new Error(`Asset tab is not attached: ${request.ref.tabId}`);
       }
+      const directRequest: DirectRequest = (url, options) => {
+        if (generation.closed || closed) throw new Error("Asset session was closed");
+        if (deps.directRequest) return deps.directRequest(url, options);
+        generation.agent ??= new Agent();
+        return defaultDirectRequest(url, options, generation.agent);
+      };
 
       if (new URL(request.ref.url).protocol === "blob:") {
         return fetchBrowserObject(deps, request.ref, cdpSessionId);
@@ -97,6 +126,11 @@ export function createAssetFetcher(deps: AssetFetcherDeps): AssetFetcher {
       } catch {
         return fetchDirect(deps, directRequest, request, cdpSessionId);
       }
+    },
+    closeSession,
+    async close() {
+      closed = true;
+      await Promise.all([...sessions.keys()].map(closeSession));
     },
   };
 }
@@ -269,10 +303,12 @@ async function fetchDirect(
 async function defaultDirectRequest(
   url: string,
   options: { headers: Record<string, string> },
+  dispatcher: Agent,
 ): Promise<DirectResponse> {
   const response = await undiciRequest(url, {
     method: "GET",
     headers: options.headers,
+    dispatcher,
   });
   return {
     statusCode: response.statusCode,

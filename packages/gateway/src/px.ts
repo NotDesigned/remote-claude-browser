@@ -13,6 +13,7 @@
 import type { Down, PxQuality, Up } from "@mirror/protocol";
 
 import type { BrowserHandle } from "./browser/launch";
+import { screenMetrics } from "./browser/screen-metrics";
 import type { TabHub } from "./hub/tabhub";
 import type { TargetRef } from "./types";
 import { zoomLevelFor, type BrowserZoom } from "./browser/browser-zoom";
@@ -203,6 +204,11 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       deviceScaleFactor: zoom > 1 || state.hub.pixelGrabbing ? 1 : viewport.dpr,
       // Browser zoom has no effect on a mobile viewport. The layout is the same width either way.
       mobile: opts.mobile === true && zoom <= 1,
+      ...screenMetrics(
+        Math.round(viewport.w * zoom),
+        Math.round(viewport.h * zoom),
+        opts.mobile === true && zoom <= 1,
+      ),
     });
   };
   const pageDensity = async (state: TabState): Promise<number> => {

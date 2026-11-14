@@ -1,6 +1,6 @@
 /**
  * Independent workspaces over one Chrome per account. Sessions on one account share its login
- * profile; accounts share nothing, as each has a Chrome and a profile of its own.
+ * profile. Profiles separate site storage; shared infrastructure is not an unlinkability guarantee.
  */
 import { encodeMsg, type Down, type Up, type ServerStatusMsg } from "@mirror/protocol";
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
@@ -18,6 +18,8 @@ import { createAssetCache } from "./assets/cache";
 import { createAssetFetcher } from "./assets/fetch";
 import { registerAssetRoutes } from "./assets/route";
 import { createAgentLink } from "./browser/agentlink";
+import { recordingMode } from "./browser/native-agent";
+import { createNativePixelRetry } from "./browser/native-pixel-retry";
 import { createPhoneTargetPreparer, isPhoneRequest, waitForOwner } from "./browser/phone-identity";
 import { agentBridgeChannel, callAgentBridge, callFrameAgent } from "./browser/bridge";
 import {
@@ -26,6 +28,7 @@ import {
   type ClientBrowserScope,
 } from "./browser/client-scope";
 import { launchBrowser, type BrowserHandle, type BrowserTargetInfo } from "./browser/launch";
+import { createAccountDisplay, type AccountDisplay } from "./browser/display";
 import { connectRemoteBrowser } from "./browser/remote";
 import { createNavigationController } from "./browser/nav";
 import { createRendererRecovery } from "./browser/recovery";
@@ -37,6 +40,7 @@ import { createViewportAgreement } from "./hub/viewport";
 import { createInputRelay, type InputMsg } from "./input/relay";
 import { createScreencast } from "./px";
 import { createPixelCapacity } from "./px-capacity";
+import { grabEncoderForDisplay } from "./px-video";
 import { ANY_SESSION_TAB } from "./assets/token";
 import { createRtcSignalRelay } from "./rtcsig";
 import { createClaudeTheme, createThemeCopies, isClaudeTheme } from "./claude/theme";
@@ -64,6 +68,7 @@ interface Account {
   id: string;
   dir: string;
   browser: BrowserHandle;
+  display?: AccountDisplay;
   pool: ReturnType<typeof createClientBrowserPool>;
   agent: ReturnType<typeof createAgentLink>;
   themeCopies: ReturnType<typeof createThemeCopies>;
@@ -88,6 +93,7 @@ interface ClientRuntime {
   viewport: ReturnType<typeof createViewportAgreement>;
   input: ReturnType<typeof createInputRelay>;
   pixels: ReturnType<typeof createScreencast>;
+  nativePixelRetry?: ReturnType<typeof createNativePixelRetry>;
   navigation: ReturnType<typeof createNavigationController>;
   recovery: ReturnType<typeof createRendererRecovery>;
   uploads: Awaited<ReturnType<typeof createUploadManager>>;
@@ -100,8 +106,8 @@ const VIDEO_BACKLOG_BYTES = 512 * 1024;
 const PAGE_IDLE_RELEASE_MS = 60_000;
 /** An account's Chrome nobody has used for this long is closed. It starts again when needed. */
 const ACCOUNT_IDLE_CLOSE_MS = 120_000;
-/** About what another Chrome takes before its first page. */
-const ACCOUNT_MEMORY_BYTES = 400 * 1048576;
+/** Headroom for another Chrome plus its private Xvfb display before the first page. */
+const ACCOUNT_MEMORY_BYTES = 560 * 1048576;
 
 const CHROME_ARGS = [
   "--disable-dev-shm-usage",
@@ -127,6 +133,7 @@ export async function startClientGateway(
     resourceSampler?: ReturnType<typeof createResourceSampler>;
   } = {},
 ) {
+  const nativePixels = recordingMode(process.env.MIRROR_RECORDING_MODE) === "native";
   const e2e = process.env.MIRROR_E2E === "1";
   const managedProfile = !process.env.CHROME_USER_DATA_DIR;
   const profile =
@@ -342,11 +349,13 @@ export async function startClientGateway(
           t: "mode",
           tab: runtime.tabs.activeTabId ?? "",
           mode: runtime.pixels.modeFor(runtime.tabs.activeTabId ?? "") ?? "dom",
+          native: nativePixels || undefined,
         },
         encodeMsg({
           t: "mode",
           tab: runtime.tabs.activeTabId ?? "",
           mode: runtime.pixels.modeFor(runtime.tabs.activeTabId ?? "") ?? "dom",
+          native: nativePixels || undefined,
         }),
       );
       for (const message of runtime.recovery.status()) viewer.send(message, encodeMsg(message));
@@ -410,6 +419,7 @@ export async function startClientGateway(
     );
   };
   function publish(sid: string, message: Down) {
+    if (nativePixels && message.t === "mode") message = { ...message, native: true };
     if (stopping || closing.has(sid)) return;
     if (message.t === "snapshot") {
       const reason = runtimes.get(sid)?.viewport.noteSnapshot(message);
@@ -571,30 +581,29 @@ export async function startClientGateway(
     if (!currentOwner(request.raw)) return reply.code(401).send({ error: "请重新输入访问密码" });
     return reply.header("cache-control", "no-store").send(status());
   });
+  const assetFetcher = createAssetFetcher({
+    // A CDP session belongs to one Chrome, and so to one account.
+    send: (sessionId, method, params) => {
+      const owner = [...accounts.values()].find((account) => account.sessionTargets.has(sessionId));
+      return owner
+        ? owner.browser.send(sessionId, method, params)
+        : Promise.reject(new Error("Unknown browser session"));
+    },
+    sessionFor: (ref) => {
+      const runtime = runtimes.get(ref.sessionId);
+      const targets = runtime?.targets;
+      if (ref.tabId === ANY_SESSION_TAB)
+        return [...(targets?.values() ?? [])].find((target) => target.type === "page")?.sessionId;
+      return runtime?.account.pool.ownerOf(ref.tabId) === ref.sessionId
+        ? targets?.get(ref.tabId)?.sessionId
+        : undefined;
+    },
+  });
   registerAssetRoutes(app, {
     serverKey: randomBytes(32),
     serverKeyForSession: (sid) => (closing.has(sid) ? undefined : runtimes.get(sid)?.assetKey),
     cache: createAssetCache(join(profile, "asset-cache")),
-    fetcher: createAssetFetcher({
-      // A CDP session belongs to one Chrome, and so to one account.
-      send: (sessionId, method, params) => {
-        const owner = [...accounts.values()].find((account) =>
-          account.sessionTargets.has(sessionId),
-        );
-        return owner
-          ? owner.browser.send(sessionId, method, params)
-          : Promise.reject(new Error("Unknown browser session"));
-      },
-      sessionFor: (ref) => {
-        const runtime = runtimes.get(ref.sessionId);
-        const targets = runtime?.targets;
-        if (ref.tabId === ANY_SESSION_TAB)
-          return [...(targets?.values() ?? [])].find((target) => target.type === "page")?.sessionId;
-        return runtime?.account.pool.ownerOf(ref.tabId) === ref.sessionId
-          ? targets?.get(ref.tabId)?.sessionId
-          : undefined;
-      },
-    }),
+    fetcher: assetFetcher,
     preHandler: requireSession(),
   });
   registerDownloadRoutes(app, {
@@ -627,7 +636,12 @@ export async function startClientGateway(
     );
   };
 
-  async function buildAccount(id: string, dir: string, browser: BrowserHandle): Promise<Account> {
+  async function buildAccount(
+    id: string,
+    dir: string,
+    browser: BrowserHandle,
+    display?: AccountDisplay,
+  ): Promise<Account> {
     const zoomReady = await installZoomExtension(browser, join(dir, "zoom-extension")).then(
       () => true,
       (error: unknown) => {
@@ -679,8 +693,12 @@ export async function startClientGateway(
         .catch((error) => report("client theme failed", error));
     };
     const agent = createAgentLink(browser, {
+      nativePixels,
       prepareTarget: async (target) => {
-        await Promise.all([preparePhoneTarget(target), prepareThemeCopy(target)]);
+        await Promise.all([
+          preparePhoneTarget(target),
+          ...(nativePixels ? [] : [prepareThemeCopy(target)]),
+        ]);
       },
       publishClipboard(message, target) {
         const sid = pool.ownerOf(target);
@@ -718,6 +736,7 @@ export async function startClientGateway(
       id,
       dir,
       browser,
+      display,
       pool,
       agent,
       themeCopies,
@@ -754,22 +773,29 @@ export async function startClientGateway(
           );
         const dir = accountDir(id);
         await mkdir(dir, { recursive: true, mode: 0o700 });
-        const browser =
-          id === DEFAULT_PROFILE && process.env.BROWSER_CDP_URL
-            ? await connectRemoteBrowser(process.env.BROWSER_CDP_URL)
+        const external = id === DEFAULT_PROFILE && !!process.env.BROWSER_CDP_URL;
+        const display =
+          !external && process.env.CHROME_HEADFUL === "1"
+            ? await createAccountDisplay()
+            : undefined;
+        let browser: BrowserHandle | undefined;
+        try {
+          browser = external
+            ? await connectRemoteBrowser(process.env.BROWSER_CDP_URL!)
             : await launchBrowser({
                 userDataDir: dir,
                 executablePath: process.env.CHROME_PATH,
                 headful: process.env.CHROME_HEADFUL === "1",
                 enableExtensions: true,
                 args: CHROME_ARGS,
+                display: display?.env,
               });
-        try {
-          const account = await buildAccount(id, dir, browser);
+          const account = await buildAccount(id, dir, browser, display);
           accounts.set(id, account);
           return account;
         } catch (error) {
-          await browser.close().catch(() => {});
+          await browser?.close().catch(() => {});
+          await display?.close();
           throw error;
         }
       })();
@@ -787,7 +813,11 @@ export async function startClientGateway(
     if (accounts.get(account.id) === account) accounts.delete(account.id);
     account.downloads.close();
     account.pool.dispose();
-    await account.browser.close().catch(() => {});
+    try {
+      await account.browser.close().catch(() => {});
+    } finally {
+      await account.display?.close();
+    }
   }
 
   // Every user's Chrome, including the migrated administrator profile, starts on demand.
@@ -889,10 +919,19 @@ export async function startClientGateway(
       if (target.type === "page")
         void theme.applyMedia(target).catch((error) => report("client theme failed", error));
     });
+    const nativePixelRetry = nativePixels
+      ? createNativePixelRetry({
+          current: (tab) =>
+            !closing.has(sid) && runtimes.get(sid)?.tabs.activeTabId === tab && hasViewer(sid),
+          start: (tab) => pixels.handle({ t: "mode", tab, mode: "px" }),
+          publish: (message) => publish(sid, message),
+        })
+      : undefined;
     const pixels = createScreencast({
       browser: scoped,
       hubFor: (tab) => tabs.hubFor(tab),
-      publish: (message) => publish(sid, message),
+      publish: (message) =>
+        nativePixelRetry ? nativePixelRetry.observe(message) : publish(sid, message),
       acquirePixel: (tab) => pixelCapacity.acquire(sid, tab),
       releasePixel: (tab) => pixelCapacity.release(sid, tab),
       backlogged: () =>
@@ -905,7 +944,13 @@ export async function startClientGateway(
       ...(displayGrabbable && scoped.sendBrowser
         ? {
             grab: {
-              window: createPixelWindow({ sendBrowser: scoped.sendBrowser }),
+              window: createPixelWindow({
+                sendBrowser: scoped.sendBrowser,
+                display: account.display?.env,
+              }),
+              ...(account.display
+                ? { createEncoder: grabEncoderForDisplay(account.display.env) }
+                : {}),
               acquire: () => grabSlots.acquire(sid),
               release: () => grabSlots.release(sid),
               available: () => grabSlots.available(),
@@ -940,6 +985,7 @@ export async function startClientGateway(
       });
     } catch (error) {
       recovery.dispose();
+      nativePixelRetry?.dispose();
       pixels.dispose();
       navigation.dispose();
       viewport.dispose();
@@ -959,6 +1005,7 @@ export async function startClientGateway(
       viewport,
       input,
       pixels,
+      nativePixelRetry,
       navigation,
       recovery,
       uploads,
@@ -966,6 +1013,7 @@ export async function startClientGateway(
         uploads.close();
         runtime.rtc?.dispose();
         recovery!.dispose();
+        nativePixelRetry?.dispose();
         pixels.dispose();
         navigation.dispose();
         viewport.dispose();
@@ -1016,6 +1064,7 @@ export async function startClientGateway(
       uploads.close();
       runtime.rtc?.dispose();
       recovery.dispose();
+      nativePixelRetry?.dispose();
       pixels.dispose();
       navigation.dispose();
       viewport.dispose();
@@ -1080,7 +1129,8 @@ export async function startClientGateway(
       return;
     }
     if (message.t === "mode") {
-      await runtime.pixels.handle(message);
+      runtime.nativePixelRetry?.request(message.tab);
+      await runtime.pixels.handle(nativePixels ? { ...message, mode: "px" } : message);
       publish(runtime.sid, { t: "px-capacity", available: pixelCapacity.available() });
       return;
     }
@@ -1100,6 +1150,10 @@ export async function startClientGateway(
         await runtime.navigation
           .handle(message)
           .catch((error) => report("client navigation failed", error));
+        if (runtime.nativePixelRetry) {
+          runtime.nativePixelRetry.request(message.tab);
+          await runtime.pixels.handle({ t: "mode", tab: message.tab, mode: "px" });
+        }
       }
       return;
     }
@@ -1107,8 +1161,10 @@ export async function startClientGateway(
   }
   async function stopPixels(runtime: ClientRuntime, exceptTab?: string) {
     const holder = pixelCapacity.holder(runtime.sid);
-    if (holder?.sid === runtime.sid && holder.tab !== exceptTab)
+    if (holder?.sid === runtime.sid && holder.tab !== exceptTab) {
+      runtime.nativePixelRetry?.stop(holder.tab);
       await runtime.pixels.handle({ t: "mode", tab: holder.tab, mode: "dom" });
+    }
   }
   const clientError = (reply: FastifyReply, error: unknown, owner?: string) => {
     if (error instanceof ClientSessionError || error instanceof UserStoreError)
@@ -1188,6 +1244,7 @@ export async function startClientGateway(
   /** Closes a session's windows and forgets its runtime. The caller marks it closing. */
   async function stopRuntime(sid: string): Promise<void> {
     ws.closeSession(sid);
+    await assetFetcher.closeSession(sid);
     for (const [id, connection] of viewers)
       if (connection.sid === sid) {
         roles.disconnect(id);
@@ -1730,6 +1787,7 @@ export async function startClientGateway(
     for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
     stopPromise = (async () => {
       await ws.close().catch(() => {});
+      await assetFetcher.close().catch((error) => report("asset shutdown failed", error));
       await app.close().catch(() => {});
       await accountLifecycle.run(async () => {
         for (const runtime of runtimes.values()) {

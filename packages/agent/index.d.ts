@@ -47,3 +47,6 @@ export declare function createAgentBundle(config?: AgentConfig): string;
 
 /** The complete in-page agent with default config, ready for Page.addScriptToEvaluateOnNewDocument. */
 export declare const AGENT_BUNDLE: string;
+
+/** Gateway-only bundle, evaluated exclusively inside its private isolated world. */
+export declare const ISOLATED_RTC_BUNDLE: string;

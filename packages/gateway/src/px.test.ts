@@ -167,7 +167,16 @@ describe("createScreencast", () => {
       expect(pressed).toEqual([2]);
       expect(hub.pixelZoom).toBe(2);
       expect(metrics()).toEqual([
-        { width: 2880, height: 1800, deviceScaleFactor: 1, mobile: false },
+        {
+          width: 2880,
+          height: 1800,
+          deviceScaleFactor: 1,
+          mobile: false,
+          screenWidth: 2880,
+          screenHeight: 1800,
+          positionX: 0,
+          positionY: 0,
+        },
       ]);
       controller.dispose();
     });
@@ -183,6 +192,10 @@ describe("createScreencast", () => {
         height: 900,
         deviceScaleFactor: 2,
         mobile: false,
+        screenWidth: 1920,
+        screenHeight: 1080,
+        positionX: 0,
+        positionY: 0,
       });
       controller.dispose();
     });

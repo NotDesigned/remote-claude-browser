@@ -19,6 +19,7 @@ import {
 import type { AgentLink, TargetRef } from "../types";
 import { acquireAgentBridge, agentBridgeChannel, callAgentBridge, callFrameAgent } from "./bridge";
 import { injectAgent } from "./inject";
+import { createNativeAgentLink } from "./native-agent";
 import type { BrowserHandle } from "./launch";
 
 const COMMAND_TIMEOUT_MS = 3_000;
@@ -35,6 +36,8 @@ interface ClipboardAgentMsg {
 export type VoiceAgentMsg = { audio: string } | { mic: boolean };
 
 export interface AgentLinkOptions {
+  /** Use CDP-only geometry and pixel transport, without a MAIN-world recorder. */
+  nativePixels?: boolean;
   publishVoice?: (message: VoiceAgentMsg, targetId: string) => void;
   /** Relays private agent clipboard messages onto the frozen viewer Down lane. */
   publishClipboard?: (message: ClipboardDown, targetId: string) => void;
@@ -146,6 +149,7 @@ function asVoiceAgentMsg(msg: AgentMsg): VoiceAgentMsg | null {
 }
 
 export function createAgentLink(browser: BrowserHandle, options: AgentLinkOptions = {}): AgentLink {
+  if (options.nativePixels) return createNativeAgentLink(browser, options.prepareTarget);
   const statesByTarget = new Map<string, TargetState>();
   const statesBySession = new Map<string, TargetState>();
 

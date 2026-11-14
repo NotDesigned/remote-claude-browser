@@ -27,6 +27,7 @@ import { join } from "node:path";
 
 import type { CdpSend, TargetEvents, TargetRef } from "../types";
 import { TargetRegistry } from "./targets";
+import type { DisplayEnvironment } from "./display";
 
 export interface LaunchOpts {
   userDataDir: string;
@@ -36,6 +37,8 @@ export interface LaunchOpts {
   args?: readonly string[];
   /** Leaves Chromium able to load an extension, which it otherwise refuses by default. */
   enableExtensions?: boolean;
+  /** Override only this child browser's X server, leaving other account processes untouched. */
+  display?: DisplayEnvironment;
 }
 
 interface ChromiumLaunchArgOptions {
@@ -458,6 +461,7 @@ export async function launchBrowser(opts: LaunchOpts): Promise<BrowserHandle> {
     ignoreDefaultArgs: true,
     pipe: true,
     userDataDir: opts.userDataDir,
+    ...(opts.display ? { env: { ...process.env, ...opts.display } } : {}),
   });
   // Retain only Chromium crash diagnostics, never renderer console output or page content.
   let diagnosticTail = "";

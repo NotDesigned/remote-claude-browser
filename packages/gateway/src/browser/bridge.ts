@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import type { Protocol } from "puppeteer-core";
+import { ISOLATED_RTC_BUNDLE } from "@mirror/agent";
 
 import type { BrowserHandle } from "./launch";
 
@@ -97,6 +98,7 @@ export function isolatedAgentBridgeSource(channel: AgentBridgeChannel): string {
     let rtcBinding;
     let nodeResult;
     let readyTimer;
+    let media;
 
     nativeAddEventListener.call(document, outboundEventName, (event) => {
       if (typeof event.detail !== "string") return;
@@ -104,8 +106,16 @@ export function isolatedAgentBridgeSource(channel: AgentBridgeChannel): string {
       try { envelope = parse(event.detail); } catch { return; }
       if (typeof envelope !== "object" || envelope === null ||
           typeof envelope.payload !== "string") return;
-      const binding = envelope.lane === "agent" ? emitBinding :
-        envelope.lane === "rtc" ? rtcBinding : undefined;
+      if (envelope.lane === "rtc-blocked") {
+        let notice;
+        try { notice = parse(envelope.payload); } catch { return; }
+        if (typeof notice !== "object" || notice === null) return;
+        const id = notice.id;
+        if (id !== undefined && (!Number.isSafeInteger(id) || id < 0)) return;
+        media?.videoBlocked(id);
+        return;
+      }
+      const binding = envelope.lane === "agent" ? emitBinding : undefined;
       if (typeof binding !== "function") return;
       if (readyTimer !== undefined) {
         clearInterval(readyTimer);
@@ -126,9 +136,7 @@ export function isolatedAgentBridgeSource(channel: AgentBridgeChannel): string {
       return found;
     };
 
-    Object.defineProperty(globalThis, bridgeKey, {
-      configurable: true,
-      value: Object.freeze({
+    const bridge = {
         command(value) {
           nativeDispatchEvent.call(document, new NativeCustomEvent(inboundEventName, {
             detail: stringify({ method: "command", args: [value] }),
@@ -149,16 +157,22 @@ export function isolatedAgentBridgeSource(channel: AgentBridgeChannel): string {
           return nodeResult;
         },
         rtc(value) {
-          nativeDispatchEvent.call(document, new NativeCustomEvent(inboundEventName, {
-            detail: stringify({ method: "rtc", args: [value] }),
-          }));
+          return media.receive(value);
         },
         voice(value) {
           nativeDispatchEvent.call(document, new NativeCustomEvent(inboundEventName, {
             detail: stringify({ method: "voice", args: [value] }),
           }));
         },
-      }),
+    };
+    ${ISOLATED_RTC_BUNDLE}
+    media = IsolatedCanvasRtc.createIsolatedRtc({
+      nodeFor: (id) => bridge.node(id),
+      signalBinding: () => rtcBinding,
+    });
+    Object.defineProperty(globalThis, bridgeKey, {
+      configurable: true,
+      value: Object.freeze(bridge),
     });
 
     const announceReady = () => {

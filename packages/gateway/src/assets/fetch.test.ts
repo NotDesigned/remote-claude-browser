@@ -1,4 +1,6 @@
 import { Readable } from "node:stream";
+import { createServer } from "node:http";
+import type { Socket } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 
 import type { CdpSend } from "../types";
@@ -12,6 +14,76 @@ const ref: AssetRef = {
 };
 
 describe("asset fetch lanes", () => {
+  it("never reuses an upstream connection across sessions or a released session generation", async () => {
+    const ids = new WeakMap<Socket, number>();
+    let nextId = 0;
+    const server = createServer((request, response) => {
+      let id = ids.get(request.socket);
+      if (!id) ids.set(request.socket, (id = ++nextId));
+      response.end(JSON.stringify({ id, cookie: request.headers.cookie }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("No fixture address");
+    const fetcher = createAssetFetcher({
+      sessionFor: (ref) => ref.sessionId,
+      userAgentFor: () => "local fixture",
+      send: async (session, method) => {
+        if (method === "Network.getCookies")
+          return { cookies: [{ name: "profile", value: session }] };
+        throw new Error(method);
+      },
+    });
+    const request = async (sessionId: string) => {
+      const response = await fetcher.fetch({
+        ref: { url: `http://127.0.0.1:${address.port}/fixture`, sessionId, tabId: "tab" },
+        range: "bytes=0-3",
+      });
+      const result = JSON.parse(await readBody(response.body)) as { id: number; cookie: string };
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(result.cookie).toBe(`profile=${sessionId}`);
+      return result.id;
+    };
+    try {
+      const a = await request("a");
+      const b = await request("b");
+      expect(a).not.toBe(b);
+      expect(await request("a")).toBe(a);
+      expect(await request("b")).toBe(b);
+      await fetcher.closeSession("a");
+      expect(await request("a")).not.toBe(a);
+      expect(await request("b")).toBe(b);
+    } finally {
+      await fetcher.close();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("does not start a direct request when its session is revoked during credential lookup", async () => {
+    let releaseCookies!: (value: unknown) => void;
+    const cookies = new Promise((resolve) => (releaseCookies = resolve));
+    const directRequest = vi.fn<DirectRequest>();
+    const send = vi.fn<CdpSend>(async (_session, method) => {
+      if (method === "Network.getCookies") return cookies;
+      throw new Error(method);
+    });
+    const fetcher = createAssetFetcher({
+      sessionFor: () => "cdp",
+      userAgentFor: () => "fixture",
+      send,
+      directRequest,
+    });
+    const pending = fetcher.fetch({ ref, range: "bytes=0-3" });
+    const rejected = expect(pending).rejects.toThrow("Asset session was closed");
+    await vi.waitFor(() => expect(send).toHaveBeenCalled());
+    await fetcher.closeSession(ref.sessionId);
+    releaseCookies({ cookies: [] });
+    await rejected;
+    expect(directRequest).not.toHaveBeenCalled();
+    await fetcher.close();
+  });
+
   it("reads object URLs in bounded slices and releases the browser handle", async () => {
     const payload = Buffer.alloc(140000, 42);
     const send = vi.fn<CdpSend>(async (_session, method, params) => {

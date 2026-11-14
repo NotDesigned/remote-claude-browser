@@ -263,7 +263,16 @@ describe("ViewportAgreement", () => {
       expect(calls).toEqual([
         {
           method: "Emulation.setDeviceMetricsOverride",
-          params: { width: 800, height: 600, deviceScaleFactor: 2, mobile: false },
+          params: {
+            width: 800,
+            height: 600,
+            deviceScaleFactor: 2,
+            mobile: false,
+            screenWidth: 1920,
+            screenHeight: 1080,
+            positionX: 0,
+            positionY: 0,
+          },
         },
       ]);
       expect(hub.viewport).toEqual({ w: 800, h: 600, dpr: 2 });

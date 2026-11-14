@@ -51,11 +51,10 @@ const VOICE_HOSTNAME = "claude.ai";
 
 interface MainWorldBridge {
   emitBinding: RuntimeBindingHandle;
-  rtcBinding: RuntimeBindingHandle;
+  notifyVideoBlocked(id?: number): void;
   install(handlers: {
     command(value: unknown): void;
     node(nodeId: number): Node | null;
-    rtc(value: unknown): boolean;
     voice(value: unknown): void;
   }): void;
 }
@@ -73,7 +72,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   });
 
   const eventBinding =
-    (lane: "agent" | "rtc"): BindingFn =>
+    (lane: "agent" | "rtc-blocked"): BindingFn =>
     (payload) => {
       nativeDispatchEvent.call(
         document,
@@ -83,14 +82,14 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
       );
     };
   const emit = eventBinding("agent");
-  const rtc = eventBinding("rtc");
+  const blocked = eventBinding("rtc-blocked");
   const bindingHandle = (binding: BindingFn): RuntimeBindingHandle => ({
     get: () => (ready ? binding : undefined),
   });
 
   return {
     emitBinding: bindingHandle(emit),
-    rtcBinding: bindingHandle(rtc),
+    notifyVideoBlocked: (id) => blocked(stringify({ id })),
     install(handlers) {
       nativeAddEventListener.call(document, config.inboundEventName, (event) => {
         const detail = (event as CustomEvent<unknown>).detail;
@@ -107,10 +106,6 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
         if (!Array.isArray(args)) return;
         if (method === "command") {
           handlers.command(args[0]);
-          return;
-        }
-        if (method === "rtc") {
-          handlers.rtc(args[0]);
           return;
         }
         if (method === "voice") {
@@ -144,7 +139,6 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   if (legacyBridge) w[LEGACY_GUARD] = true;
   const mainWorldBridge = legacyBridge ? undefined : createMainWorldBridge(config.bridge);
   const emitBinding = mainWorldBridge?.emitBinding;
-  const rtcBinding = mainWorldBridge?.rtcBinding;
 
   // Must precede record() so rrweb's shadow observer and initial snapshot use the retained roots.
   installClosedShadowShim();
@@ -171,16 +165,20 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
       : null;
   let crossOriginIframeMirror: CrossOriginIframeMirror | null = null;
   const recordReadiness = createRecordReadiness();
-  const canvasRtc = installCanvasRtcRecord({
-    constructors: rtcConstructors,
-    ...(rtcBinding === undefined ? {} : { signalBinding: () => rtcBinding.get() }),
-    signalBindingName: config.bridge.rtcBindingName,
-    exposeReceiver: legacyBridge,
-    onError: (error) => console.warn("mirror canvas WebRTC unavailable", error),
-  });
+  const canvasRtc = legacyBridge
+    ? installCanvasRtcRecord({
+        constructors: rtcConstructors,
+        signalBindingName: config.bridge.rtcBindingName,
+        exposeReceiver: true,
+        onError: (error) => console.warn("mirror canvas WebRTC unavailable", error),
+      })
+    : null;
   const videoDrm = installVideoDrmMonitor({
     requestMediaKeySystemAccess,
-    onBlocked: (id) => canvasRtc.notifyVideoBlocked(id),
+    onBlocked: (id) => {
+      if (canvasRtc) canvasRtc.notifyVideoBlocked(id);
+      else mainWorldBridge?.notifyVideoBlocked(id);
+    },
     onError: (error) => console.warn("mirror EME detection unavailable", error),
   });
   const recordCanvas = config.canvas.enabled && canStartCanvasSnapshotWorker();
@@ -211,7 +209,6 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
         commandHandler(value as Parameters<typeof commandHandler>[0]);
       },
       node: mirrorNode,
-      rtc: canvasRtc.receiveSignal,
       voice: (value) => voice?.receive(value),
     });
   }
@@ -238,7 +235,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
       // slimming rule and is the pinned-version equivalent of the plan's `slimDOM: false`.
       slimDOMOptions: {},
       plugins: [
-        canvasRtc.plugin,
+        ...(canvasRtc ? [canvasRtc.plugin] : []),
         videoDrm.plugin,
         {
           name: "@mirror/cross-origin-iframe-mirror",

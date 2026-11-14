@@ -154,7 +154,6 @@ export function installVoiceBridge(
   // The microphone.
   let micOpen = false;
   let micTracks = 0;
-  let micPermission: PermissionState = "prompt";
   const micWaiters: ((granted: boolean) => void)[] = [];
   let nextMicAt = 0;
   const openMic = (): Promise<boolean> => {
@@ -191,7 +190,6 @@ export function installVoiceBridge(
   const devices = target.navigator.mediaDevices as MediaDevices | undefined;
   if (devices !== undefined) {
     const nativeGetUserMedia = devices.getUserMedia.bind(devices);
-    const nativeEnumerate = devices.enumerateDevices.bind(devices);
     devices.getUserMedia = async (constraints) => {
       if (!constraints?.audio) return nativeGetUserMedia(constraints);
       if (!(await openMic()))
@@ -202,35 +200,9 @@ export function installVoiceBridge(
       stream.addTrack(issueTrack());
       return stream;
     };
-    devices.enumerateDevices = async () => {
-      const listed = (await nativeEnumerate()).filter((device) => device.kind !== "audioinput");
-      const named = micPermission === "granted";
-      const input = {
-        deviceId: "default",
-        groupId: "viewer",
-        kind: "audioinput",
-        label: named ? "Microphone" : "",
-        toJSON() {
-          return this;
-        },
-      };
-      return [input as unknown as MediaDeviceInfo, ...listed];
-    };
   }
-  const permissions = target.navigator.permissions as Permissions | undefined;
-  if (permissions !== undefined) {
-    const nativeQuery = permissions.query.bind(permissions);
-    permissions.query = async (descriptor) => {
-      if (descriptor.name !== ("microphone" as PermissionName)) return nativeQuery(descriptor);
-      const status = new EventTarget() as PermissionStatus;
-      Object.defineProperties(status, {
-        name: { value: "microphone" },
-        state: { get: () => micPermission },
-      });
-      status.onchange = null;
-      return status;
-    };
-  }
+  // Device enumeration and permission state belong to Chromium. The viewer authorizes its own
+  // microphone separately; inventing devices or PermissionStatus objects changes Web API semantics.
   target.addEventListener("pagehide", () => {
     if (micOpen) send({ mic: false });
   });
@@ -240,7 +212,6 @@ export function installVoiceBridge(
       const message = value as Partial<VoiceIn & { state: boolean; pcm: string }>;
       if (typeof message.state === "boolean") {
         micOpen = message.state;
-        micPermission = message.state ? "granted" : "denied";
         for (const answer of [...micWaiters]) answer(message.state);
         return;
       }
