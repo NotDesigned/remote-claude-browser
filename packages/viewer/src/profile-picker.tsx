@@ -10,6 +10,9 @@ import {
   listAccounts,
   renameAccount,
   setDefaultAccount,
+  listProxyChoices,
+  setAccountProxy,
+  type ProxyChoice,
   type AccountInfo,
 } from "./accounts";
 import "./profile-picker.css";
@@ -54,6 +57,7 @@ function ProfileCard(props: {
   onRename(): void;
   onDefault(): void;
   onDelete(): void;
+  onProxy(): void;
 }) {
   const { account } = props;
   const signedIn = account.signedIn === true;
@@ -119,6 +123,9 @@ function ProfileCard(props: {
                   : "未登录"}
             </span>
           </span>
+          <span class="profile-exit">
+            出口：{account.proxyName ?? (account.proxyId ? "节点已移除" : "部署默认")}
+          </span>
         </span>
         <span class="profile-meta">
           {props.isDefault && <span class="profile-badge profile-default-badge">默认</span>}
@@ -147,6 +154,9 @@ function ProfileCard(props: {
       </button>
       {menuOpen && (
         <div class="profile-actions" role="group" aria-label="配置操作">
+          <button type="button" disabled={props.disabled} onClick={() => action(props.onProxy)}>
+            设置出口
+          </button>
           <button
             type="button"
             aria-label={`重命名「${account.name}」`}
@@ -192,6 +202,7 @@ export function ProfilePicker(props: {
   dark: boolean;
   onTheme(): void;
   onLogout(): void;
+  onManageNetwork?(): void;
   logoutPending: boolean;
   logoutError: string | null;
 }) {
@@ -203,6 +214,11 @@ export function ProfilePicker(props: {
   const [defaultId, setDefaultId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [proxyEditor, setProxyEditor] = useState<{
+    account: AccountInfo;
+    choices: ProxyChoice[];
+    value: string;
+  } | null>(null);
   const [refreshAttempt, setRefreshAttempt] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   const last = rememberedAccount();
@@ -303,6 +319,41 @@ export function ProfilePicker(props: {
     }
   };
 
+  const editProxy = async (account: AccountInfo) => {
+    setBusy(true);
+    setError(null);
+    try {
+      setProxyEditor({ account, choices: await listProxyChoices(), value: account.proxyId ?? "" });
+      setEditing(null);
+      setCreating(false);
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const saveProxy = async (event: Event) => {
+    event.preventDefault();
+    const { account, value } = proxyEditor!;
+    if (
+      account.running &&
+      !window.confirm(`更换「${account.name}」的出口会关闭该配置在所有设备上打开的页面。继续吗？`)
+    )
+      return;
+    setBusy(true);
+    setError(null);
+    try {
+      await setAccountProxy(account.id, value || null);
+      setProxyEditor(null);
+      changed();
+      if (props.current === account.id) window.location.reload();
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const pick = async (id: string, name: string) => {
     setBusy(true);
     setError(null);
@@ -338,6 +389,11 @@ export function ProfilePicker(props: {
           <span aria-hidden="true">◈</span> Remote Workspace
         </span>
         <div class="profile-tools">
+          {props.onManageNetwork && (
+            <button type="button" onClick={props.onManageNetwork}>
+              代理与 API
+            </button>
+          )}
           {props.onBack && (
             <button type="button" disabled={busy} onClick={props.onBack}>
               返回会话
@@ -384,6 +440,35 @@ export function ProfilePicker(props: {
             <p class="profile-error" role="alert">
               {error}
             </p>
+          )}
+          {proxyEditor && (
+            <form class="profile-proxy-editor" onSubmit={saveProxy}>
+              <label for="profile-proxy">「{proxyEditor.account.name}」的网络出口</label>
+              <select
+                id="profile-proxy"
+                disabled={busy}
+                value={proxyEditor.value}
+                onChange={(event) =>
+                  setProxyEditor({ ...proxyEditor, value: event.currentTarget.value })
+                }
+              >
+                <option value="">部署默认出口</option>
+                {proxyEditor.choices.map((node) => (
+                  <option key={node.id} value={node.id}>
+                    {node.name} · {node.visibility === "shared" ? "共享" : "私有"}
+                  </option>
+                ))}
+              </select>
+              <p>同一配置的所有会话使用这个出口。网页资源、DNS 和 WebRTC 一起切换。</p>
+              <div>
+                <button type="submit" disabled={busy}>
+                  {busy ? "保存中…" : "保存出口"}
+                </button>
+                <button type="button" disabled={busy} onClick={() => setProxyEditor(null)}>
+                  取消
+                </button>
+              </div>
+            </form>
           )}
           {accounts === null && loadError === null ? (
             <div class="profile-list" aria-busy="true">
@@ -451,6 +536,7 @@ export function ProfilePicker(props: {
                       }}
                       onDefault={() => void makeDefault(account.id)}
                       onDelete={() => void remove(account)}
+                      onProxy={() => void editProxy(account)}
                     />
                   ),
                 )}

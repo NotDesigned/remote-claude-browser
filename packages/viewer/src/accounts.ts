@@ -16,6 +16,8 @@ export interface AccountInfo {
   email?: string | null;
   /** Claude explicitly rejected the account, for example because it was disabled. */
   unavailable?: boolean;
+  proxyId?: string | null;
+  proxyName?: string | null;
 }
 
 export interface AccountList {
@@ -107,6 +109,23 @@ export async function setDefaultAccount(id: string): Promise<void> {
 
 export async function deleteAccount(id: string, fetcher?: typeof fetch): Promise<void> {
   await call(`/api/accounts/${encodeURIComponent(id)}`, { method: "DELETE" }, fetcher);
+}
+
+export interface ProxyChoice {
+  id: string;
+  name: string;
+  visibility: "shared" | "private";
+}
+
+export async function listProxyChoices(): Promise<ProxyChoice[]> {
+  return (await (await call("/api/proxies")).json()).proxies;
+}
+
+export async function setAccountProxy(id: string, proxyId: string | null): Promise<void> {
+  await call(`/api/accounts/${encodeURIComponent(id)}/proxy`, {
+    method: "PATCH",
+    body: JSON.stringify({ proxyId }),
+  });
 }
 
 export async function switchAccount(

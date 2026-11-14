@@ -1,20 +1,21 @@
 # 部署
 
-项目分成两部分，都用 Docker Compose 部署：
+核心部署只有浏览器服务：根目录的 `compose.yml` 运行 Chromium、Xvfb 和网关，保存用户及网站登录状态。它提供 HTTP 和 WebSocket，默认发布到宿主机 `127.0.0.1:3010`。
 
-- **服务端**（仓库根目录的 `compose.yml`）：运行 Chromium、Xvfb 和网关，保存网站的登录状态。
-- **客户端**（`client/compose.yml`）：对外的入口机。Caddy 负责 HTTPS，SSH 隧道把请求转发到服务端。这台机器不运行浏览器，也不保存登录状态。
+公网入口由部署者选择 Caddy、Nginx 或已有反向代理，管理域名、证书和到浏览器服务的连接。同机代理可以直接访问回环端口；独立 VPS 通过部署者准备的 SSH 隧道、VPN 或其他受保护通道访问上游。项目不要求额外运行一个“客户端”服务。
 
-如果只有一台机器，不需要客户端，用 `compose.https.yml` 即可，见[单机部署](#单机部署)。
+可从 [Caddy 入口示例](../examples/caddy/README.md) 开始。已有 `compose.https.yml`、`client/` 和双机 systemd 部署保留兼容，具体用法在后文。
 
 ## 需要准备
 
-|                | 服务端                               | 客户端                 |
-| -------------- | ------------------------------------ | ---------------------- |
-| 系统           | Linux，Docker 和 Compose v2          | 同左                   |
-| 配置           | 建议至少 2 核 4 GB，会话越多需要越多 | 1 核 512 MB 足够       |
-| 磁盘           | 约 3 GB 镜像，加上浏览器配置         | 约 100 MB              |
-| 网络           | 能访问目标网站，入口机能 SSH 进来    | 80、443 端口，一个域名 |
+| 项目 | 浏览器服务 |
+| --- | --- |
+| 系统 | Linux，Docker 和 Compose v2 |
+| 配置 | 建议至少 2 核 4 GB，会话越多需要越多 |
+| 磁盘 | 约 3 GB 镜像，加上浏览器配置 |
+| 网络 | 能访问目标网站；入口代理能通过本机或受保护通道访问网关 |
+
+需要公网访问时，另行准备入口代理、域名及 TLS 证书。它们可以与浏览器服务放在同一台机器，也可以位于独立 VPS。
 
 本地构建服务端镜像时，额外需要约 2 GB 可用内存。配置较低的机器可以使用预构建镜像。
 
@@ -42,7 +43,17 @@ docker compose up -d
 docker compose ps
 ```
 
-网关只监听服务端的 `127.0.0.1:3010`，公网无法直接访问。
+默认 Compose 只把网关端口发布到宿主机 `127.0.0.1:3010`，公网无法直接访问。容器内网关监听 `0.0.0.0:3010`，供同网络的代理使用。
+
+### 公网入口契约
+
+- 代理整个浏览器工作台，包括 `/gate`、`/api/*`、`/s/*` 和 `/ws`。WebSocket 升级和流式响应应保持畅通；Nginx 应关闭上游响应缓冲。
+- 网关的 `MIRROR_PUBLIC_ORIGIN` 必须等于用户访问的来源，例如 `https://browser.example.com`。更换入口域名时同步更新它；反向代理应保留浏览器请求的 `Origin`。
+- TLS 在入口终止。登录 Cookie 带 `Secure` 属性，公网使用 HTTPS。保持 `SERVER_BIND=127.0.0.1`，或在专网部署中由部署者限制网关端口的访问范围。
+- 独立入口机到浏览器宿主机的路由、隧道或 VPN 由部署者建立和监控。只有当这条通道已经能访问网关时，入口代理才有可用上游。
+- `/healthz` 供入口检查网关是否就绪；它不代替浏览器页面、登录和 WebSocket 的实际验收。上线后应再完成一次工作台登录、选择配置和页面连接检查。
+
+[`examples/caddy/`](../examples/caddy/README.md) 给出同机和独立 VPS 的完整入口配置。Caddy 会处理 WebSocket，示例用 `flush_interval -1` 关闭流式响应缓冲。
 
 ### 前端用户与浏览器配置
 
@@ -62,7 +73,50 @@ docker compose ps
 
 在 `.env` 里用 `TZ` 写一个 IANA 时区名，例如 `TZ=Asia/Shanghai`，未设置时为 UTC。夏令时自动处理。详见[时区说明](timezone.md)。
 
-### 出站代理
+### 可选：按浏览器配置选择出口
+
+添加 [`compose.runtime.yml`](../compose.runtime.yml) 可启用 Mihomo 网络运行时和按用户 CPA。全新部署可以运行：
+
+```bash
+docker compose -f compose.yml -f compose.runtime.yml up -d --build
+```
+
+已有部署应在原 `COMPOSE_FILE` 中追加 `compose.runtime.yml`，保留原有 `compose.proxy.yml`、入口和私有覆盖文件。这个模块不启动公网入口代理，也不改动域名或证书。
+
+该模块使用 Docker bridge 网络连接内部 CPA 实例，不能与 `compose.hostnet.yml` 组合。现有主机网络部署需要先由部署者移除该覆盖文件并确认 bridge 下的端口和媒体连接，再启用运行时；同机入口和独立 VPS 入口都可以使用 bridge。
+
+从工作台或配置选择页打开「代理与 API」：
+
+1. 导入节点链接、Mihomo YAML 或 HTTP/HTTPS 订阅。普通用户可以管理自己的私有来源，管理员还可以维护共享来源；订阅可以手动刷新。
+2. 在浏览器配置卡片的 ⋯ 菜单选择「设置出口」。列表显示可用的共享和私有节点，空选项表示部署默认出口。更换正在运行的配置会关闭它在所有设备上的页面，再按新出口启动。
+3. 每个绑定节点的浏览器配置使用独立网络命名空间和 Mihomo 出口；网页、DNS 与 WebRTC 一起走所选节点。未绑定节点的配置继续使用原部署出口，包括已有 Xray 设置。
+
+订阅只提供节点，不接管运行时的规则、端口或管理接口。公开列表仅返回来源与节点的元数据，不返回订阅 URL、节点密码和服务端连接配置。来源与节点保存在 `data` 卷的 `/data/profile/proxy-sources.json`，同样需要按密钥保护。
+
+来源内容变化、删除节点或收回访问范围会使相应绑定重新校验；节点不可用时不会把已有绑定悄悄改成其他出口。CPA 凭据可以独立选择节点，见 [CPA 部署](cpa.md)。
+
+```text
+GET    /api/proxy-sources
+POST   /api/proxy-sources                {name, visibility, content 或 url}
+PATCH  /api/proxy-sources/:id             {name?, visibility?, content?}
+POST   /api/proxy-sources/:id/refresh
+DELETE /api/proxy-sources/:id
+GET    /api/proxies
+PATCH  /api/accounts/:id/proxy            {proxyId: string | null}
+```
+
+这些接口使用工作台登录 Cookie，并检查来源和浏览器配置的归属。每个专用 CPA 实例的数据、授权和 Key 也按工作台用户管理。
+
+隔离网络验收会创建自己的临时容器和网络，不读取正式配置或账号。提供已校验版本的 Mihomo 可执行文件：
+
+```bash
+bash scripts/limited-run.sh env PROFILE_EGRESS_SMOKE=1 \
+  PROFILE_EGRESS_MIHOMO=/path/to/mihomo node scripts/profile-egress-smoke.mjs
+```
+
+默认使用当前运行的 server 镜像；`PROFILE_EGRESS_SMOKE_IMAGE` 可以指定其他候选镜像。该检查覆盖独立 HTTP/UDP/DNS 出口、Range、代理鉴权、断流阻断、启动中撤销、默认出口生命周期，以及 Chrome 重开后的本地存储和沙箱。增加 `PROFILE_EGRESS_STOCK_CPA=1` 可使用 `CPA_BROKER_ENGINE_IMAGE` 指定的 CPA 引擎镜像（默认本机 `remote-claude-browser-cpa:local`）做一次经过认证出口的模拟推理请求。
+
+### 兼容：部署级 Xray 出站代理
 
 想让远程浏览器的流量全部从另一个出口出去，在 `.env` 里写：
 
@@ -95,11 +149,15 @@ docker compose pull
 docker compose up -d
 ```
 
-### 可选 CPA 面板和 API
+### 可选 CPA 实例与旧面板
 
-单机 HTTPS 部署可以增加 `compose.cpa.yml` 和 `compose.cpa.https.yml`。浏览器工作台继续使用原入口；CPA 面板为 `/management.html`，API 为 `/v1/*`，各自使用独立管理/调用密钥。CPA 运行在独立私有网络，经专用 Xray 出站，不读取 Chrome Cookie，也不共用浏览器用户数据库。完整初始化、OAuth、Caddy 配置、备份和回退步骤见 [CPA 部署](cpa.md)。
+`compose.runtime.yml` 中的 CPA broker 为工作台用户建立独立实例，由「代理与 API」管理授权、每凭据代理和外部 Key。新调用统一使用浏览器网关的 `/v1/*`，不需要另外公开 CPA 管理端口。
 
-## 客户端（入口机）
+原 `compose.cpa.yml` 和 `compose.cpa.https.yml` 的独立服务继续保留。它使用 `/management.html` 面板和部署级 `CPA_API_KEY`，不会自动导入到新的用户实例。已有同入口部署可以增加 `compose.runtime.https.yml` 按新 Key 前缀分流，并保留旧调用方式。完整说明见 [CPA 部署](cpa.md)。
+
+## 兼容：独立入口机和 SSH 隧道
+
+`client/` 是可选的入口部署模板，适用于已有的 Caddy 加 SSH 隧道方案；它不是浏览器服务必须安装的客户端。下面的 Compose 命令只作用于 `client/`，不会运行浏览器或保存网站登录状态。
 
 把域名解析到这台机器，然后：
 
@@ -151,7 +209,9 @@ browser.example.com {
 }
 ```
 
-## 单机部署
+## 兼容：同机 Caddy Compose 模板
+
+`compose.https.yml` 继续供已有部署使用，将可选 Caddy 加入浏览器服务的 Docker 网络。已有反向代理时无需叠加它。
 
 把域名解析到这台机器，在 `.env` 里设置 `PUBLIC_HOST` 和 `MIRROR_PUBLIC_ORIGIN`，然后：
 
@@ -207,7 +267,7 @@ docker compose build --build-arg DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu
 
 ### 资源紧张的双机部署
 
-`deploy/remote/deploy-container.sh` 可从入口机发布已经构建、验收过的网关和前端产物。在运行中的服务端镜像上只增加文件层，不在服务端安装依赖或编译源码，保留现有 Chromium 与持久化浏览器资料。这要求基础镜像已提供 Node 22.23.1、`node:sqlite`、`tzdata` 和标准的 `/data/profile` 布局；依赖或运行环境变更应改用完整镜像升级。
+`deploy/remote/deploy-container.sh` 是现有双机部署的浏览器发布工具，可从入口机发布已经构建、验收过的网关和前端产物。它显式组装浏览器服务、可选主机网络及 Xray 出站的 Compose 文件，不发布入口代理、域名、证书或 CPA 服务。在运行中的服务端镜像上只增加文件层，不在服务端安装依赖或编译源码，保留现有 Chromium 与持久化浏览器资料。这要求基础镜像已提供 Node 22.23.1、`node:sqlite`、`tzdata` 和标准的 `/data/profile` 布局；依赖或运行环境变更应改用完整镜像升级。
 
 ```bash
 # 先在受限资源环境完成构建和验收，再执行发布。
@@ -224,7 +284,7 @@ bash deploy/remote/deploy-container.sh
 
 ## 备份
 
-`data` 卷保存浏览器配置、`users.sqlite` 及其 WAL、配置归属和时区状态。里面有 Cookie 和登录令牌，备份应存放在受保护位置，离机副本应加密。先停服再备份整个卷，避免 SQLite 与浏览器资料来自不同时间点：
+`data` 卷保存浏览器配置、`users.sqlite` 及其 WAL、配置归属和时区状态。启用独立出口运行时后，还包含 `/data/runtime/secret`：它用于生成稳定的内部出口令牌，目录必须保留 root:root、0700，文件保留 root:root、0600。里面有 Cookie 和登录令牌，备份应存放在受保护位置，离机副本应加密。先停服再备份整个卷，避免 SQLite 与浏览器资料来自不同时间点：
 
 ```bash
 docker compose stop server

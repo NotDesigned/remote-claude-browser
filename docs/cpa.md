@@ -1,10 +1,98 @@
-# CPA：Claude Code 订阅 API
+# CPA：按用户管理的订阅 API
 
-可选的 CLIProxyAPI（CPA）服务把单独授权的 Claude Code 账号接到兼容 API。浏览器工作台继续运行，CPA 的登录与 Chrome Cookie、工作台用户互相独立。
+可选的 CLIProxyAPI（CPA）把独立授权的 Claude Code 账号接到兼容 API。工作台内的 CPA 实例按用户隔离：每个专用实例使用自己的配置、OAuth 凭据和持久卷；浏览器 Cookie 不会自动变成 CPA 授权。
 
-参考 [ClaudeBox](https://github.com/ArmanJR/claudebox) 的独立容器和持久化凭据思路。本实现运行未修改的 CPA，不调用 ClaudeBox 的 `/prompt`，也不启动 `claude -p` 子进程；流式输出和协议转换由 CPA 完成。CPA 固定为 **8.0.68**，上游镜像摘要写在 `deploy/Dockerfile.cpa`，不跟随 `latest`。
+本实现运行未修改的 CPA，不调用 ClaudeBox 的 `/prompt`，也不启动 `claude -p` 子进程；流式输出和协议转换由 CPA 完成。CPA 固定为 **8.0.68**，上游镜像摘要写在 `deploy/Dockerfile.cpa`，不跟随 `latest`。
 
-## 地址和身份
+## 在工作台里使用
+
+1. 打开右上角或配置选择页中的「代理与 API」，切换到「CPA 授权与 Key」。
+2. 创建自己的 CPA 实例并启动。每个用户最多一个专用实例；管理员还可以建立一个共享实例。共享实例的启动、授权凭据和 Key 由管理员管理，普通用户只能查看其状态。
+3. 在「添加 Claude 授权」中选择可用代理或部署默认出口，生成授权链接，在新页面完成 Claude OAuth。回调到本机地址不可达时，把完整回调 URL 或授权码粘贴回面板，再检查授权状态。
+4. 授权成功后，在凭据列表中分别选择代理节点，或停用、启用、删除该凭据。每个凭据的代理与浏览器配置的出口独立设置。
+5. 生成外部 API Key。完整 Key 只显示这一次，保存后再关闭面板；列表只显示前缀，可随时撤销。
+
+新 Key 以 `rcpa_` 开头，由工作台网关路由到它所属的唯一 CPA 实例：
+
+| 用途 | 地址与认证 |
+| --- | --- |
+| OpenAI 兼容 Base URL | `https://browser.example.com/v1`，使用生成的 Key |
+| Anthropic Messages | `https://browser.example.com/v1/messages`，支持 Bearer 或 `x-api-key` |
+| 模型列表 | `GET https://browser.example.com/v1/models`，使用同一 Key |
+| 工作台管理 API | `/api/cpa/instances/*`，使用工作台登录 Cookie |
+
+工作台登录用于管理；外部 Key 用于模型调用。不同实例的外部 Key 不能管理凭据，也不能调用其他实例。浏览器网页登录、Claude Code OAuth 和外部调用 Key 是三种独立身份。
+
+## 启用按用户实例
+
+在浏览器服务的 Compose 文件列表中增加 [`compose.runtime.yml`](../compose.runtime.yml)。全新部署可以使用：
+
+```bash
+docker compose -f compose.yml -f compose.runtime.yml up -d --build
+```
+
+长期使用时把相同文件列表保存到 `.env` 的 `COMPOSE_FILE`。已有部署应在现有文件列表后追加 `compose.runtime.yml`，保留已有的出站、入口和私有覆盖文件。浏览器未指定节点和 CPA 的部署默认出口继续使用现有部署的出站配置；已有 `EGRESS_PROXY`/`compose.proxy.yml` 不需要迁走。
+
+用户 CPA 模块需要 Docker bridge 网络，不兼容 `compose.hostnet.yml`。已有主机网络部署应先由部署者移除该覆盖文件、确认 bridge 下的端口和媒体连接，再追加运行时模块；公网入口仍可由同机或独立 VPS 管理。
+
+这个覆盖文件增加两个运行时边界：
+
+- 浏览器服务内的 root broker 提供固定的浏览器和 Mihomo 网络操作；网关与 Chrome 仍以非 root 用户运行。配置绑定节点后，在专用网络命名空间内运行浏览器及对应 Mihomo 出口。
+- 独立 `cpa-broker` 通过固定模板建立 CPA 容器，只有它挂载 Docker socket。工作台通过 Unix socket 请求实例操作，不能提交任意 Docker 参数。CPA 实例只连接 internal 网络，经认证的运行时代理访问外网。
+
+浏览器数据仍在原 `data` 卷。运行时不会把旧单独 CPA 的 OAuth 文件自动导入某个用户；原服务可以保持运行，新的用户实例独立授权。
+
+公网入口正常转发整个浏览器服务即可，包括 `/api/cpa/instances/*` 和 `/v1/*`。不必对外发布 CPA 管理端口或 Docker socket。同机及独立 VPS 的入口示例见 [`examples/caddy/`](../examples/caddy/README.md)。
+
+### 同一入口保留旧 CPA
+
+原 `compose.cpa.yml`/`compose.cpa.https.yml` 可以继续使用。在旧 Caddy 覆盖文件之后叠加 [`compose.runtime.https.yml`](../compose.runtime.https.yml)，其中 [`deploy/Caddyfile.cpa-runtime`](../deploy/Caddyfile.cpa-runtime) 根据 `Authorization: Bearer rcpa_…` 或 `x-api-key: rcpa_…` 把新 Key 的 `/v1/*` 请求交给工作台，其他原有 API Key 和 `/management.html` 继续交给旧 CPA。
+
+已有本机证书或自定义 Caddyfile 覆盖时，应把这组路由合并进实际入口配置，并保留其证书路径和传输设置；不要让新覆盖文件意外替换现有 TLS 配置。旧 CPA 的 `.env` 密钥只用于旧服务，不是用户实例生成的 Key。
+
+## 工作台管理 API
+
+所有路径都要求工作台登录；权限由实例和代理来源的所有者决定。共享实例管理仅限管理员。客户端不会取得实例内部管理密钥、订阅地址或节点密码。
+
+```text
+GET    /api/cpa/instances
+POST   /api/cpa/instances                         {scope: "user" | "shared"}
+POST   /api/cpa/instances/:id/start
+POST   /api/cpa/instances/:id/stop
+GET    /api/cpa/instances/:id/credentials
+PATCH  /api/cpa/instances/:id/credentials/status   {name, disabled}
+PATCH  /api/cpa/instances/:id/credentials/proxy    {name, proxyId: string | null}
+DELETE /api/cpa/instances/:id/credentials?name=…
+POST   /api/cpa/instances/:id/oauth                {provider: "claude", proxyId?}
+GET    /api/cpa/instances/:id/oauth/status?state=…
+POST   /api/cpa/instances/:id/oauth/callback       {state, code? | redirectUrl?}
+GET    /api/cpa/instances/:id/keys
+POST   /api/cpa/instances/:id/keys                 {name}
+DELETE /api/cpa/instances/:id/keys/:keyId
+```
+
+实例列表只返回状态与可管理标识。生成 Key 的响应含一次性 `token`，后续列表不再返回完整值。凭据的 `proxyId: null` 表示恢复部署默认出口。
+
+## 持久化与验收
+
+`data` 卷中的 `/data/profile/cpa.sqlite` 保存实例归属、内部连接密钥、外部 Key 摘要和凭据代理绑定；`/data/runtime/secret` 保存内部出口令牌的生成密钥。这些文件与浏览器资料一起受保护备份，恢复时保留 `/data/runtime` 的 root:root、0700 和密钥文件的 root:root、0600。每个动态实例还有三个独立卷，名称形如 `remote-browser-<instanceId>-config`、`-auth`、`-static`，其中实例 ID 以 `cpa-` 开头；实际名称以 `docker volume ls` 为准。停实例保留这些卷。备份时一起保存工作台元数据与 CPA 配置、授权卷，只有一个部分不足以恢复原实例。
+
+先构建 CPA 引擎镜像，再执行不使用真实账号的隔离验收：
+
+```bash
+docker build -f deploy/Dockerfile.cpa --target cpa -t remote-claude-browser-cpa:local .
+bash scripts/limited-run.sh env CPA_TENANCY_SMOKE=1 node scripts/cpa-tenancy-smoke.mjs
+```
+
+该测试创建自己的两个临时 CPA 实例、独立卷及 internal 网络，检查凭据/Key 隔离、每凭据代理修改和 OAuth 路由，结束后清理自己的容器与卷。它不使用正式订阅账号，也不能证明真实上游推理成功。设置 `CPA_BROKER_ENGINE_IMAGE` 可选择测试引擎镜像。
+
+前端使用 `bash scripts/limited-run.sh node scripts/network-ui-smoke.mjs` 验收本地模拟接口下的来源管理、CPA 授权和 Key 操作、320px 手机布局；不会访问真实订阅。
+
+## 兼容：原来的独立 CPA 服务
+
+以下保留原 `compose.cpa.yml` 的配置和运维方式。它是单独的共享 CPA 服务，不会被工作台的用户实例接管，也不会自动迁移其中的 OAuth 资料。
+
+### 地址和身份
 
 单机 HTTPS 部署中，假设 `PUBLIC_HOST=browser.example.com`：
 
@@ -20,7 +108,7 @@ CPA 面板的服务器地址填 `https://browser.example.com`，不要加 `/v1`�
 
 纯本机部署不加 HTTPS 文件时，地址改为 `http://127.0.0.1:8317`。宿主机的 `8317` 和 OAuth 回调 `54545` 都只绑定 IPv4 回环，不直接向公网开放。
 
-## 启用
+### 启用
 
 需要已有 `.env`，并设置可用的 `EGRESS_PROXY` 分享链接或 Xray outbound JSON。CPA 不会自动继承浏览器容器中的 TUN。
 
@@ -68,7 +156,7 @@ docker compose -f compose.yml -f compose.proxy.yml -f compose.https.yml \
 
 两条反代都配置 `flush_interval -1`，支持 SSE 和 WebSocket。此覆盖文件用于单机 Caddy；双机入口需要把同样路径转发到服务端的 CPA 回环端口，并另建受保护的隧道，原有只转发 `3010` 的隧道不会自动转发 CPA。
 
-## 授权 Claude Code
+### 授权 Claude Code
 
 1. 打开面板，用 `CPA_MANAGEMENT_KEY` 登录。
 2. 在 OAuth 登录页选择 Claude，打开 CPA 生成的授权链接，用自己的 Pro/Max 账号完成官方授权。
@@ -84,7 +172,7 @@ node scripts/cpa.mjs login-status '<返回的 state>'
 
 回调 URL 包含一次性授权码，应提交给 CPA，不要放入仓库、日志或聊天记录。初次未授权时，健康检查通过、模型列表为空是正常状态；这还不能证明上游推理可用。
 
-## 客户端调用
+### 客户端调用
 
 在客户端中配置上表对应的 Base URL 和 `CPA_API_KEY`。初始配置关闭模型列表的名称伪装，避免 Anthropic 列表中的别名无法用于 OpenAI 兼容接口。模型名从 `/v1/models` 获取，不在配置里假定某个模型始终可用。常见接口包括：
 
@@ -97,7 +185,7 @@ POST /v1/responses
 
 Claude Code 订阅额度与浏览器会话容量无关。`MIRROR_CLIENTS=16` 不代表订阅允许 16 路 API 并发；限额和可用模型仍由上游决定。此部署保留 CPA 原有兼容行为，不额外注入自定义伪装参数，也不保证免风控。订阅授权是否适用于具体用途，应参考 [Anthropic 的当前说明](https://support.claude.com/en/articles/13189465-log-in-to-your-claude-account)。
 
-## 出口与资源
+### 出口与资源
 
 ```text
 客户端 → Caddy → CPA（私有网络）→ Xray SOCKS → EGRESS_PROXY → 上游
@@ -110,7 +198,7 @@ Claude Code 订阅额度与浏览器会话容量无关。`MIRROR_CLIENTS=16` 不
 - CPA 默认内存与内存加 Swap 均为 `512m`，CPU 上限 `1`；独立 Xray 的内存与总内存均为 `128m`，CPU 上限 `0.5`。这些是容器上限，不是实测占用，不占用浏览器容器原有的内存配额。
 - 请求全文日志和调试日志默认关闭。错误日志写入受保护的临时文件系统，容器重建后清除。
 
-## 配置持久化、升级和密钥
+### 配置持久化、升级和密钥
 
 三个独立命名卷：
 
@@ -140,7 +228,7 @@ docker compose up -d cpa caddy
 
 备份前停 CPA，再备份项目的 `cpa-config`、`cpa-auth` 卷；不要只备份 `.env`。命名卷带有 Compose 项目前缀，可用 `docker compose config --volumes` 与 `docker volume ls` 核对。不要在保留登录状态时使用 `docker compose down -v`。
 
-## 检查和关闭
+### 检查和关闭
 
 ```bash
 docker compose ps

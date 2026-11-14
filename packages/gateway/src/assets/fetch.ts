@@ -8,7 +8,7 @@
  * Content-Type is copied only from response headers. No URL-based inference happens here.
  */
 import { Readable } from "node:stream";
-import { Agent, request as undiciRequest } from "undici";
+import { Agent, ProxyAgent, request as undiciRequest, type Dispatcher } from "undici";
 
 import type { CdpSend } from "../types";
 import type { AssetRef } from "./token";
@@ -39,7 +39,7 @@ export interface DirectResponse {
 
 export type DirectRequest = (
   url: string,
-  options: { headers: Record<string, string>; dispatcher?: Agent },
+  options: { headers: Record<string, string>; dispatcher?: Dispatcher },
 ) => Promise<DirectResponse>;
 
 export interface AssetFetcherDeps {
@@ -50,6 +50,8 @@ export interface AssetFetcherDeps {
   frameFor?: (ref: AssetRef, cdpSessionId: string) => string | Promise<string>;
   /** Optional integration override for a session-specific UA. */
   userAgentFor?: (ref: AssetRef, cdpSessionId: string) => string | Promise<string>;
+  /** The profile's local Mihomo endpoint, shared by every direct/range request for this workspace. */
+  proxyFor?: (ref: AssetRef) => string | undefined;
   /** Test seam around undici.request. */
   directRequest?: DirectRequest;
 }
@@ -82,25 +84,35 @@ interface IoReadResult {
 
 export function createAssetFetcher(deps: AssetFetcherDeps): ManagedAssetFetcher {
   // One connection pool per workspace, so no TLS session or socket crosses between them.
-  const pools = new Map<string, Agent>();
+  const pools = new Map<string, { dispatcher: Agent | ProxyAgent; closed: boolean }>();
   const closeSession = async (sessionId: string): Promise<void> => {
     const pool = pools.get(sessionId);
     pools.delete(sessionId);
-    await pool?.destroy();
+    if (pool) {
+      pool.closed = true;
+      await pool.dispatcher.destroy();
+    }
   };
 
   return {
     async fetch(request) {
       let pool = pools.get(request.ref.sessionId);
-      if (!pool) pools.set(request.ref.sessionId, (pool = new Agent()));
+      if (!pool) {
+        const proxy = deps.proxyFor?.(request.ref);
+        pool = { dispatcher: proxy ? new ProxyAgent(proxy) : new Agent(), closed: false };
+        pools.set(request.ref.sessionId, pool);
+      }
       const cdpSessionId = await deps.sessionFor(request.ref);
-      if (pool.destroyed || cdpSessionId === undefined) {
+      if (pool.closed || cdpSessionId === undefined) {
         throw new Error(`Asset tab is not attached: ${request.ref.tabId}`);
       }
       // A request whose workspace was released while it looked up credentials must not go out.
       const directRequest: DirectRequest = (url, options) => {
-        if (pool.destroyed) throw new Error("Asset session was closed");
-        return (deps.directRequest ?? defaultDirectRequest)(url, { ...options, dispatcher: pool });
+        if (pool.closed) throw new Error("Asset session was closed");
+        return (deps.directRequest ?? defaultDirectRequest)(url, {
+          ...options,
+          dispatcher: pool.dispatcher,
+        });
       };
 
       if (new URL(request.ref.url).protocol === "blob:") {

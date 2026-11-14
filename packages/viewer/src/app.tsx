@@ -2,6 +2,7 @@
 import { listAccounts, runAccountAction, switchAccount, type AccountList } from "./accounts";
 import { currentUser, logout, UserApiError, type FrontendUser } from "./users";
 import { UserPanel } from "./user-panel";
+import { NetworkPanel } from "./network-panel";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import type { AgentMsg, Down, eventWithTime, TabId } from "@mirror/protocol";
 import { EventType, encodeResumeCursors } from "@mirror/protocol";
@@ -132,6 +133,7 @@ export function App() {
   const [accountList, setAccountList] = useState<AccountList | null>(null);
   const [user, setUser] = useState<FrontendUser | null>(null);
   const [userPanelOpen, setUserPanelOpen] = useState(false);
+  const [networkPanelOpen, setNetworkPanelOpen] = useState(false);
   const [profilePickerOpen, setProfilePickerOpen] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
   const [userError, setUserError] = useState<string | null>(null);
@@ -1176,6 +1178,7 @@ export function App() {
         onChooseAccount={clientPhase === "ready" ? () => setProfilePickerOpen(true) : undefined}
         currentUser={user}
         onManageUsers={() => setUserPanelOpen(true)}
+        onManageNetwork={() => setNetworkPanelOpen(true)}
         onLogout={() => void signOut()}
         logoutPending={logoutPending}
         userError={userError}
@@ -1227,6 +1230,9 @@ export function App() {
       </ShellBar>
       {userPanelOpen && user?.role === "admin" && (
         <UserPanel current={user} onClose={() => setUserPanelOpen(false)} onChanged={refreshUser} />
+      )}
+      {networkPanelOpen && user && (
+        <NetworkPanel user={user} onClose={() => setNetworkPanelOpen(false)} />
       )}
       <UrlBar
         tab={activeTab}
@@ -1299,6 +1305,7 @@ export function App() {
           dark={theme === "dark"}
           onTheme={() => setThemePreference(theme === "dark" ? "light" : "dark")}
           onLogout={() => void signOut()}
+          onManageNetwork={() => setNetworkPanelOpen(true)}
           logoutPending={logoutPending}
           logoutError={userError}
         />

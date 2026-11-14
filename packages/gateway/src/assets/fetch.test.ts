@@ -14,6 +14,53 @@ const ref: AssetRef = {
 };
 
 describe("asset fetch lanes", () => {
+  it("sends range and CDP fallback bytes through the profile's actual HTTP proxy", async () => {
+    const seen: string[] = [];
+    const proxy = createServer((request, response) => {
+      seen.push(request.rawHeaders.join(": "));
+      response.writeHead(206, { "content-length": "4", connection: "close" });
+      response.end("exit");
+    });
+    proxy.on("connect", (request, socket) => {
+      expect(request.url).toBe("egress-fixture.invalid:80");
+      socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      let headers = "";
+      socket.on("data", (chunk) => {
+        headers += chunk.toString();
+        if (!headers.includes("\r\n\r\n")) return;
+        seen.push(headers);
+        socket.end(
+          "HTTP/1.1 206 Partial Content\r\nContent-Length: 4\r\nConnection: close\r\n\r\nexit",
+        );
+      });
+    });
+    await new Promise<void>((done) => proxy.listen(0, "127.0.0.1", done));
+    const address = proxy.address() as import("node:net").AddressInfo;
+    const fetcher = createAssetFetcher({
+      proxyFor: () => `http://127.0.0.1:${address.port}`,
+      sessionFor: () => "cdp-fixture",
+      userAgentFor: () => "profile UA",
+      send: async (_session, method) => {
+        if (method === "Network.getCookies")
+          return { cookies: [{ name: "session", value: "own-profile" }] };
+        throw new Error("CDP resource unavailable");
+      },
+    });
+    try {
+      const asset = { ...ref, url: "http://egress-fixture.invalid/asset" };
+      expect(await readBody((await fetcher.fetch({ ref: asset, range: "bytes=0-3" })).body)).toBe(
+        "exit",
+      );
+      expect(await readBody((await fetcher.fetch({ ref: asset })).body)).toBe("exit");
+      expect(seen).toHaveLength(2);
+      expect(seen[0]).toMatch(/range: bytes=0-3/i);
+      expect(seen.every((headers) => /cookie: session=own-profile/i.test(headers))).toBe(true);
+    } finally {
+      await fetcher.close();
+      proxy.closeAllConnections();
+      await new Promise<void>((done) => proxy.close(() => done()));
+    }
+  });
   it("never reuses an upstream connection across sessions or a released session generation", async () => {
     const ids = new WeakMap<Socket, number>();
     let nextId = 0;

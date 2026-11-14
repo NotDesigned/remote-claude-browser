@@ -100,6 +100,8 @@ beforeEach(() => {
   vi.stubEnv("MIRROR_PUBLIC_ORIGIN", ORIGIN);
   vi.stubEnv("MIRROR_CLIENTS", undefined);
   vi.stubEnv("BROWSER_CDP_URL", undefined);
+  vi.stubEnv("MIRROR_RUNTIME_SOCKET", undefined);
+  vi.stubEnv("CPA_BROKER_SOCKET", undefined);
   vi.stubEnv("GATEWAY_PORT", "3000");
 });
 
@@ -184,6 +186,68 @@ async function createBob(app: FastifyInstance, admin: string, role = "user") {
 }
 
 describe("multi-user management routes", () => {
+  it("binds only visible nodes to an owned profile, redacts secrets and preserves the exit on restart", async () => {
+    const gateway = await fixture();
+    vi.stubEnv("MIRROR_RUNTIME_SOCKET", "/unused-for-management.sock");
+    const admin = await login(gateway.app);
+    await createBob(gateway.app, admin);
+    const bob = await login(gateway.app, "bob", BOB_PASSWORD);
+    const source = async (cookie: string, name: string, visibility: string) =>
+      api(gateway.app, cookie, "POST", "/api/proxy-sources", {
+        name,
+        visibility,
+        content: `http://fixture-user:fixture-secret@${name}.invalid:8080`,
+      });
+    expect((await source(bob, "forbidden", "shared")).statusCode).toBe(403);
+    expect((await source(admin, "admin-private", "private")).statusCode).toBe(200);
+    expect((await source(admin, "shared", "shared")).statusCode).toBe(200);
+    expect((await source(bob, "bob-private", "private")).statusCode).toBe(200);
+    const all = await api(gateway.app, admin, "GET", "/api/proxies");
+    expect(all.body).not.toContain("fixture-secret");
+    const nodes = all.json().proxies as { id: string; name: string }[];
+    const adminNode = nodes.find((node) => node.name === "admin-private.invalid")!;
+    const privateNode = nodes.find((node) => node.name === "bob-private.invalid")!;
+    const visible = (await api(gateway.app, bob, "GET", "/api/proxies")).json().proxies;
+    expect(visible.map((node: { id: string }) => node.id)).not.toContain(adminNode.id);
+    const profiles = (await api(gateway.app, bob, "GET", "/api/accounts")).json();
+    const profileId = profiles.default;
+    expect(
+      (
+        await api(gateway.app, bob, "PATCH", "/api/accounts/default/proxy", {
+          proxyId: privateNode.id,
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect(
+      (
+        await api(gateway.app, bob, "PATCH", `/api/accounts/${profileId}/proxy`, {
+          proxyId: adminNode.id,
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await api(gateway.app, bob, "PATCH", `/api/accounts/${profileId}/proxy`, {
+          proxyId: privateNode.id,
+        })
+      ).statusCode,
+    ).toBe(200);
+    await gateway.stop();
+    const restarted = await startClientGateway({ listen: false, signals: false });
+    gateways.push(restarted);
+    const fresh = await login(restarted.app, "bob", BOB_PASSWORD);
+    expect(
+      (await api(restarted.app, fresh, "GET", "/api/accounts")).json().accounts[0],
+    ).toMatchObject({ proxyId: privateNode.id, proxyName: privateNode.name });
+    expect(
+      (
+        await api(restarted.app, fresh, "PATCH", `/api/accounts/${profileId}/proxy`, {
+          proxyId: null,
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(hooks.launch).not.toHaveBeenCalled();
+  });
   it("persists independent user defaults and renames, and protects the selected default", async () => {
     const gateway = await fixture();
     const { app } = gateway;

@@ -21,6 +21,8 @@ export interface ProfileRecord {
   signedIn?: boolean;
   /** The site explicitly rejected this account, rather than just failing to respond. */
   unavailable?: boolean;
+  /** Stable proxy catalog node; null/absent uses the deployment's configured exit. */
+  proxyId?: string | null;
 }
 
 export function isProfileId(value: unknown): value is string {
@@ -66,6 +68,7 @@ export async function createProfileStore(
             : {}),
           ...(record.unavailable === true ? { unavailable: true } : {}),
           ...(typeof record.signedIn === "boolean" ? { signedIn: record.signedIn } : {}),
+          ...(typeof record.proxyId === "string" ? { proxyId: record.proxyId } : {}),
         });
       }
     } catch (error) {
@@ -129,6 +132,17 @@ export async function createProfileStore(
         throw error;
       }
       return record;
+    },
+    async setProxy(id: string, proxyId: string | null): Promise<void> {
+      const record = known(id);
+      const previous = record.proxyId;
+      record.proxyId = proxyId;
+      try {
+        await persist();
+      } catch (error) {
+        record.proxyId = previous;
+        throw error;
+      }
     },
     /** Remembers who it is signed in as. Unchanged values are not written again. */
     async setLogin(

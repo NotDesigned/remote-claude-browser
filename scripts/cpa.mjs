@@ -24,7 +24,7 @@ try {
   } else if (action === "login-status" && process.argv[3]) {
     console.log(
       JSON.stringify(
-        await call(`/v8/management/get-auth-status?state=${encodeURIComponent(process.argv[3])}`),
+        await call(`/v8/management/oauth/status?state=${encodeURIComponent(process.argv[3])}`),
       ),
     );
   } else if (action === "status") {

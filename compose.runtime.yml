@@ -1,0 +1,83 @@
+# Optional per-profile Mihomo exits and one stock CPA instance per workbench user.
+# Ingress remains deployer-managed. See docs/deployment.md.
+services:
+  server:
+    environment:
+      MIRROR_PROFILE_EGRESS: "1"
+      MIRROR_RUNTIME_SOCKET: /run/remote-browser/runtime.sock
+      CPA_BROKER_SOCKET: /run/cpa/cpa.sock
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    tmpfs:
+      - /run/netns:rw,nosuid,nodev,size=1m,mode=0755
+      - /run/remote-browser:rw,nosuid,nodev,size=16m,mode=0755
+    volumes:
+      - cpa-control:/run/cpa:ro
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    networks:
+      browser: {}
+      cpa-runtime:
+        aliases: [runtime-egress]
+    depends_on:
+      cpa-broker:
+        condition: service_healthy
+
+  cpa-engine-image:
+    image: ${CPA_BROKER_ENGINE_IMAGE:-remote-claude-browser-cpa:local}
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.cpa
+      target: cpa
+    command: [node, -e, "process.exit(0)"]
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+
+  cpa-broker:
+    image: ${CPA_BROKER_IMAGE:-remote-claude-browser-cpa-broker:local}
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.cpa-broker
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    security_opt: [no-new-privileges:true]
+    environment:
+      CPA_BROKER_SOCKET: /run/cpa/cpa.sock
+      CPA_BROKER_NETWORK: ${CPA_RUNTIME_NETWORK:-remote-browser-cpa-runtime}
+      CPA_BROKER_IMAGE: ${CPA_BROKER_ENGINE_IMAGE:-remote-claude-browser-cpa:local}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - cpa-control:/run/cpa
+    networks: [cpa-runtime]
+    depends_on:
+      cpa-engine-image:
+        condition: service_completed_successfully
+    mem_limit: 96m
+    cpus: 0.25
+    pids_limit: 32
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "if(!require('node:fs').statSync('/run/cpa/cpa.sock').isSocket())process.exit(1)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+networks:
+  # These CPA containers have no direct internet route; only authenticated Mihomo proxy access.
+  cpa-runtime:
+    name: ${CPA_RUNTIME_NETWORK:-remote-browser-cpa-runtime}
+    internal: true
+
+volumes:
+  cpa-control:

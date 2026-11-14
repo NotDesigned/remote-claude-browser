@@ -54,10 +54,13 @@ jobs:
           EGRESS_PROXY=socks5://127.0.0.1:1080 docker compose -f compose.yml -f compose.hostnet.yml \
             -f compose.proxy.yml config --quiet
           SERVER_SSH_HOST=example.com docker compose -f client/compose.yml config --quiet
+          docker compose -f compose.yml -f compose.runtime.yml config --quiet
           CPA_API_KEY=fixture-client-key-00000000000000000000 \
             CPA_MANAGEMENT_KEY=fixture-management-key-00000000000000000000 \
             EGRESS_PROXY=socks5://127.0.0.1:1080 docker compose -f compose.yml -f compose.https.yml \
               -f compose.cpa.yml -f compose.cpa.https.yml config --quiet
+      - name: Validate deployer-managed Caddy ingress examples
+        run: node --test examples/caddy/ingress.test.mjs
       - name: Build and test optional CPA, Caddy routes, streaming and egress isolation
         run: |
           docker build -f deploy/Dockerfile.cpa --target cpa -t remote-claude-browser-cpa:local .
@@ -69,6 +72,20 @@ jobs:
         run: pnpm smoke:compose
         env:
           CHROME_PATH: /usr/bin/google-chrome
+      - name: Test proxy and CPA management on desktop and phone
+        run: pnpm test:network-ui
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+      - name: Test per-profile Mihomo networking, private CDP and stock CPA
+        run: |
+          fixture=$(docker create remote-claude-browser-server:local)
+          docker cp "$fixture:/usr/local/bin/mihomo" "$RUNNER_TEMP/mihomo"
+          docker rm -v "$fixture"
+          PROFILE_EGRESS_MIHOMO="$RUNNER_TEMP/mihomo" pnpm smoke:profile-egress
+          pnpm smoke:cpa-tenancy
+        env:
+          PROFILE_EGRESS_SMOKE_IMAGE: remote-claude-browser-server:local
+          PROFILE_EGRESS_STOCK_CPA: "1"
       - name: Test it on the host's network, with video and sound
         run: pnpm smoke:compose
         env:

@@ -1,0 +1,6 @@
+# Only for preserving an existing compose.cpa.https.yml installation.
+# Append after the legacy Caddy files. New installations use their own normal proxy to server.
+services:
+  caddy:
+    volumes:
+      - ./deploy/Caddyfile.cpa-runtime:/etc/caddy/Caddyfile:ro

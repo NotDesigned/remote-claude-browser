@@ -33,7 +33,30 @@ if [ "$(id -u)" = 0 ]; then
       exit 1
     fi
   fi
-  # The browser and the gateway have no use for the proxy's address or password.
+  runtime_pid=
+  if [ "${MIRROR_PROFILE_EGRESS:-0}" = 1 ]; then
+    # Root has CHOWN, not DAC_OVERRIDE: create its private persistent directory while it owns
+    # the volume's top level, then immediately return the normal data directory to the gateway.
+    chown root:root /data
+    mkdir -p /data/runtime
+    chown root:root /data/runtime
+    chmod 0700 /data/runtime
+    chown browser:browser /data
+    mkdir -p /run/remote-browser
+    node /app/dist/profile-broker.mjs &
+    runtime_pid=$!
+    tries=0
+    until [ -S "${MIRROR_RUNTIME_SOCKET:-/run/remote-browser/runtime.sock}" ]; do
+      if ! kill -0 "$runtime_pid" 2>/dev/null; then
+        echo 'Profile network runtime could not start.' >&2
+        exit 1
+      fi
+      tries=$((tries + 1))
+      if [ "$tries" -gt 200 ]; then exit 1; fi
+      sleep 0.1
+    done
+  fi
+  # Only the root runtime retains upstream credentials; the gateway receives local endpoints.
   unset EGRESS_PROXY EGRESS_BOOTSTRAP_DNS EGRESS_TUNNEL
   chown browser:browser /data
   # Stay alive as PID 1 until the browser has stopped, then remove the tunnel's policy rules.
@@ -57,6 +80,10 @@ if [ "$(id -u)" = 0 ]; then
     tries=$((tries + 1)); sleep 0.1
   done
   pkill -KILL -u "$browser_uid" 2>/dev/null || true
+  if [ -n "$runtime_pid" ]; then
+    kill -TERM "$runtime_pid" 2>/dev/null || true
+    wait "$runtime_pid" 2>/dev/null || true
+  fi
   if [ -r /tmp/egress-supervisor.pid ]; then
     tunnel_supervisor=$(cat /tmp/egress-supervisor.pid)
     kill -TERM "$tunnel_supervisor" 2>/dev/null || true

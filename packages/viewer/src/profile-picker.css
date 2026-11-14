@@ -1,4 +1,4 @@
-#shell[data-picking="true"] > :not(.profile-picker) {
+#shell[data-picking="true"] > :not(.profile-picker):not(.network-panel-backdrop) {
   display: none !important;
 }
 
@@ -40,9 +40,59 @@
 }
 .profile-tools {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-left: auto;
+}
+
+.profile-exit {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profile-proxy-editor {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  margin: 16px 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.profile-proxy-editor select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  font: inherit;
+}
+.profile-proxy-editor p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.profile-proxy-editor > div {
+  display: flex;
+  gap: 8px;
+}
+.profile-proxy-editor button {
+  min-height: 44px;
+  min-width: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+  padding: 8px 12px;
+  cursor: pointer;
 }
 .profile-tools button {
   border: 1px solid var(--line);

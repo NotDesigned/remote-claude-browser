@@ -12,6 +12,18 @@ afterEach(async () => {
 });
 
 describe("accounts", () => {
+  it("keeps each profile's selected exit across restarts and can return to the deployment default", async () => {
+    dir = await mkdtemp(join(tmpdir(), "profile-proxy-"));
+    const file = join(dir, "accounts.json");
+    const store = await createProfileStore({ file });
+    const privateProfile = await store.create("私有出口");
+    await store.setProxy(privateProfile.id, "proxy-123");
+    const reopened = await createProfileStore({ file });
+    expect(reopened.get(privateProfile.id)?.proxyId).toBe("proxy-123");
+    expect(reopened.get(DEFAULT_PROFILE)?.proxyId).toBeUndefined();
+    await reopened.setProxy(privateProfile.id, null);
+    expect((await createProfileStore({ file })).get(privateProfile.id)?.proxyId ?? null).toBeNull();
+  });
   it("starts with the legacy account and normalizes its display name", async () => {
     const store = await createProfileStore();
     expect(store.all().map((record) => record.id)).toEqual([DEFAULT_PROFILE]);

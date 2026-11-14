@@ -1,0 +1,38 @@
+# Compatibility for an installation retaining its original standalone CPA.
+# New workbench keys use rcpa_; existing standalone API keys keep their original route.
+{$PUBLIC_HOST} {
+	encode zstd gzip
+
+	@workbenchBearer {
+		path /v1/*
+		header Authorization "Bearer rcpa_*"
+	}
+	handle @workbenchBearer {
+		reverse_proxy {$UPSTREAM} {
+			flush_interval -1
+		}
+	}
+	@workbenchApiKey {
+		path /v1/*
+		header X-Api-Key rcpa_*
+	}
+	handle @workbenchApiKey {
+		reverse_proxy {$UPSTREAM} {
+			flush_interval -1
+		}
+	}
+	@legacyCpa path /v1/* /management.html /v0/management/* /v8/management/*
+	handle @legacyCpa {
+		reverse_proxy cpa:8317 {
+			flush_interval -1
+		}
+	}
+	handle /cpa {
+		redir * /management.html 302
+	}
+	handle {
+		reverse_proxy {$UPSTREAM} {
+			flush_interval -1
+		}
+	}
+}

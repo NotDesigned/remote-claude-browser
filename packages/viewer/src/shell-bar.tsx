@@ -41,6 +41,7 @@ export interface ShellBarProps {
   onMenuOpen?(): void;
   currentUser?: FrontendUser | null;
   onManageUsers?(): void;
+  onManageNetwork?(): void;
   onLogout?(): void;
   logoutPending?: boolean;
   userError?: string | null;
@@ -159,6 +160,17 @@ export function ShellBar(props: ShellBarProps) {
                 {props.currentUser.role === "admin" && " · 管理员"}
               </span>
               <div class="shell-menu-choices">
+                {props.onManageNetwork && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      props.onManageNetwork!();
+                    }}
+                  >
+                    代理与 API
+                  </button>
+                )}
                 {props.currentUser.role === "admin" && props.onManageUsers && (
                   <button
                     type="button"

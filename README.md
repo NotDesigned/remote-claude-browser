@@ -20,28 +20,30 @@
 - **文件**：调起本机文件选择器上传；下载边传边存，不长期占用服务器磁盘
 - **视频和语音**：页面里的视频通过 WebRTC 播放，声音和麦克风都在你自己的设备上
 - **断线恢复**：刷新或重连后回到原来的会话，页面崩溃会自动恢复
-- **可选 CPA API**：独立授权 Claude Code 账号，提供兼容 API 和管理面板，独立保存凭据并经 Xray 出站；见 [CPA 部署](docs/cpa.md)
+- **可选代理与 API**：导入共享或私有代理来源，为浏览器配置单独选择出口；每个用户可以管理独立的 CPA 实例、Claude Code OAuth 凭据和外部 API Key，见 [CPA 部署](docs/cpa.md)
 
 ## 部署结构
 
 ```mermaid
 flowchart LR
-    U["你的设备<br/>任意浏览器"] -->|HTTPS| C
-    subgraph entry ["客户端：入口机（client/）"]
-      C["Caddy"] --> T["SSH 隧道"]
+    U["你的设备<br/>任意浏览器"] -->|HTTPS| E
+    subgraph entry ["部署者管理的公网入口"]
+      E["Caddy / Nginx / 已有反向代理"]
     end
-    T -->|SSH| S
-    subgraph host ["服务端（compose.yml）"]
+    E -->|本机或受保护的上游连接| S
+    subgraph host ["浏览器服务（compose.yml）"]
       S["网关"] --- B["Chromium + Xvfb"]
     end
     B --> W["网站"]
 ```
 
-| 部分   | 文件                 | 作用                                                                   |
-| ------ | -------------------- | ---------------------------------------------------------------------- |
-| 服务端 | `compose.yml`        | 浏览器、网关和登录状态都在这里，端口默认只绑定本机回环地址             |
-| 客户端 | `client/compose.yml` | 对外的入口：自动申请 HTTPS 证书，通过 SSH 隧道转发到服务端，不跑浏览器 |
-| 单机   | `compose.https.yml`  | 只有一台机器时用，把 Caddy 和服务端放在一起                            |
+| 部分       | 文件                                          | 作用                                                              |
+| ---------- | --------------------------------------------- | ----------------------------------------------------------------- |
+| 浏览器服务 | `compose.yml`                                 | 运行浏览器和网关，保存登录状态；HTTP 端口默认只发布到本机回环地址 |
+| 入口示例   | [`examples/caddy/`](examples/caddy/README.md) | 同机和独立 VPS 的 Caddy 配置，按部署环境选择                      |
+| 兼容模板   | `compose.https.yml`、`client/`                | 保留已有同机 Caddy、独立入口机和 SSH 隧道部署的文件路径           |
+
+核心服务提供 HTTP 和 WebSocket。公网域名、TLS 证书、反向代理和跨主机连接由部署者管理，不要求单独部署“客户端”服务。
 
 你的设备不需要安装任何东西，用浏览器打开入口地址即可。
 
@@ -59,40 +61,33 @@ cd remote-claude-browser
 
 脚本会生成 `.env`（包含随机密码和密钥）、构建并启动服务，最后打印访问地址和初始密码。用浏览器打开 `http://127.0.0.1:3010`，以用户名 `admin` 和这个密码登录。
 
-### 一台服务器，带 HTTPS
+### 配置公网入口
 
-把域名解析到这台机器，然后：
-
-```bash
-./scripts/bootstrap.sh
-docker compose down
-```
-
-编辑 `.env`，设置这两项：
+把浏览器服务接到已有 Caddy、Nginx 或其他反向代理，并在 `.env` 中设置用户实际访问的 HTTPS 来源：
 
 ```bash
-PUBLIC_HOST=browser.example.com
 MIRROR_PUBLIC_ORIGIN=https://browser.example.com
 ```
 
 ```bash
-docker compose -f compose.yml -f compose.https.yml up -d
+docker compose up -d server
 ```
 
-### 服务端和入口机分开
+反向代理需转发 WebSocket 和流式响应。可直接参考[同机或独立 VPS 的 Caddy 示例](examples/caddy/README.md)。域名、证书和上游通道在部署层配置。
 
-见 [docs/deployment.md](docs/deployment.md)。
+已有 `compose.https.yml` 或 `client/compose.yml` 的部署可以继续使用；具体用法和升级、备份见 [docs/deployment.md](docs/deployment.md)。
 
-### 同一入口增加 CPA 面板和 API
+### 可选：按配置代理和按用户 CPA
 
-已有单机 HTTPS 部署并配置 `EGRESS_PROXY` 后：
+全新部署在浏览器服务上增加运行时模块：
 
 ```bash
-node scripts/setup-cpa.mjs
-docker compose up -d --build cpa caddy
+docker compose -f compose.yml -f compose.runtime.yml up -d --build
 ```
 
-工作台地址不变，CPA 面板在 `/management.html`，OpenAI 兼容 API Base URL 为 `/v1`。面板和 API 分别使用 `.env` 中的 `CPA_MANAGEMENT_KEY`、`CPA_API_KEY`，需要在面板中单独完成 Claude Code OAuth 授权。完整地址、Caddy 路由、备份和检查命令见 [docs/cpa.md](docs/cpa.md)。
+长期使用时将 `compose.runtime.yml` 加入 `.env` 的 `COMPOSE_FILE`。已有部署保留原文件列表、数据卷和出站设置，在其后追加这个模块。
+
+打开「代理与 API」即可导入代理来源、创建自己的 CPA 实例、授权 Claude 并生成外部调用 Key。浏览器卡片的 ⋯ →「设置出口」选择节点；空选项保留部署默认出口。新的 OpenAI 兼容 Base URL 为 `/v1`，完整说明、旧独立 CPA 的兼容路由及备份见 [docs/cpa.md](docs/cpa.md)。
 
 ## 第一次使用
 
@@ -122,7 +117,8 @@ docker compose up -d --build cpa caddy
 
 ## 文档
 
-- [部署](docs/deployment.md)：服务端、入口机、升级与备份
+- [部署](docs/deployment.md)：浏览器服务、入口契约、兼容模板、升级与备份
+- [Caddy 入口示例](examples/caddy/README.md)：同机反向代理或独立 VPS 入口
 - [CPA 面板与 API](docs/cpa.md)：可选服务、OAuth、接口地址、Caddy 路由和出站隔离
 - [配置](docs/configuration.md)：环境变量
 - [架构](docs/architecture.md) · [安全](docs/security.md) · [排错](docs/troubleshooting.md)

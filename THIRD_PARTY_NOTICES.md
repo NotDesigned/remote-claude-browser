@@ -24,6 +24,12 @@ binary (version in `deploy/fetch-xray.mjs`), which carries traffic to an outside
 `EGRESS_PROXY` is set. It is a separate program, licensed MPL-2.0; its license is retained in the
 image at `/usr/share/doc/xray/LICENSE`, and its source is the matching tag of the project's repository.
 
+The server also includes the unmodified [Mihomo v1.19.34](https://github.com/MetaCubeX/mihomo/tree/v1.19.34)
+executable for optional per-profile exits. Mihomo is a separate GPL-3.0 program; its license is
+retained in `deploy/mihomo.LICENSE` and `/usr/share/doc/mihomo/LICENSE` in the image. The matching
+source is available at the linked upstream tag. The archive digests are pinned in
+`deploy/fetch-mihomo.mjs`.
+
 The Chromium container installs Debian's `chromium` package and its transitive system libraries.
 Chromium is primarily BSD-licensed and incorporates third-party components under additional
 permissive and weak-copyleft licenses; Debian package copyright files are included in the image

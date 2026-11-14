@@ -1,0 +1,8 @@
+# Caddy runs on the browser host, outside the browser service's Compose stack.
+# Change the hostname and published port for your deployment.
+browser.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:3010 {
+		flush_interval -1
+	}
+}

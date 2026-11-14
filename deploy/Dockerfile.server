@@ -28,6 +28,12 @@ ARG TARGETARCH=amd64
 COPY deploy/fetch-xray.mjs /tmp/
 RUN node /tmp/fetch-xray.mjs "$TARGETARCH" /opt/xray
 
+FROM node:22.23.1-bookworm-slim AS mihomo
+ARG TARGETARCH=amd64
+COPY deploy/fetch-mihomo.mjs /tmp/
+RUN --mount=type=cache,id=remote-browser-mihomo,target=/var/cache/mihomo \
+    MIHOMO_CACHE_DIR=/var/cache/mihomo node /tmp/fetch-mihomo.mjs "$TARGETARCH" /opt/mihomo
+
 FROM node:22.23.1-bookworm-slim AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -77,8 +83,11 @@ COPY --from=build /app/packages/viewer/dist/ /app/viewer/
 COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md UPSTREAM_COMMIT /app/
 COPY --from=xray /opt/xray/xray /usr/local/bin/xray
 COPY --from=xray /opt/xray/LICENSE /usr/share/doc/xray/LICENSE
+COPY --from=mihomo /opt/mihomo/mihomo /usr/local/bin/mihomo
+COPY deploy/mihomo.LICENSE /usr/share/doc/mihomo/LICENSE
 COPY deploy/server-entrypoint.sh deploy/server-egress.sh deploy/egress-tunnel.sh \
     deploy/egress-proxy.mjs deploy/timezone.mjs /opt/remote-browser/
+COPY deploy/profile-network.sh /opt/remote-browser/
 RUN chmod 0755 /opt/remote-browser/server-entrypoint.sh /opt/remote-browser/server-egress.sh \
     /opt/remote-browser/egress-tunnel.sh
 

@@ -13,7 +13,14 @@
  * P3-SESSIONS keeps this pipe launcher as the default local BrowserHost and reuses the same
  * BrowserHandle adapter for Docker's private-network websocket transport.
  */
-import { connect, launch, type Browser, type CDPSession, type Protocol } from "puppeteer-core";
+import {
+  connect,
+  launch,
+  type Browser,
+  type CDPSession,
+  type ConnectionTransport,
+  type Protocol,
+} from "puppeteer-core";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -500,6 +507,13 @@ export function chromiumLaunchArgs(
 export async function connectBrowser(browserWSEndpoint: string): Promise<BrowserHandle> {
   const browser = await connect({ browserWSEndpoint, defaultViewport: null });
   return browserHandle(browser);
+}
+
+/** A private pipe relayed by the root network broker; no TCP debugging endpoint exists. */
+export async function connectBrowserTransport(
+  transport: ConnectionTransport,
+): Promise<BrowserHandle> {
+  return browserHandle(await connect({ transport, defaultViewport: null }));
 }
 
 /**

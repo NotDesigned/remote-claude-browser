@@ -4,7 +4,7 @@
  */
 import { encodeMsg, type Down, type Up, type ServerStatusMsg } from "@mirror/protocol";
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -26,6 +26,14 @@ import {
   type ClientBrowserScope,
 } from "./browser/client-scope";
 import { launchBrowser, type BrowserHandle, type BrowserTargetInfo } from "./browser/launch";
+import { launchBrokerBrowser } from "./browser/broker";
+import { createProxyCatalog, ProxyCatalogError } from "./egress/catalog";
+import { registerProxyRoutes } from "./egress/routes";
+import { createRuntimeClient } from "./egress/runtime-client";
+import { createCpaStore } from "./cpa/store";
+import { createCpaRuntime } from "./cpa/runtime";
+import { createCpaBrokerDriver } from "./cpa/broker-client";
+import { registerCpaRoutes, registerCpaInferenceRoutes } from "./cpa/routes";
 import { createAccountDisplay, type AccountDisplay } from "./browser/display";
 import { createClaudeLoginTracker, profileSignedIn } from "./claude/signed-in";
 import { browserIdentity, identityEnvironment, type BrowserIdentity } from "./browser/identity";
@@ -68,6 +76,7 @@ interface Account {
   id: string;
   dir: string;
   browser: BrowserHandle;
+  proxyUrl?: string;
   display?: AccountDisplay;
   identity: BrowserIdentity;
   pool: ReturnType<typeof createClientBrowserPool>;
@@ -152,6 +161,81 @@ export async function startClientGateway(
     userStore.bootstrapAdmin.id,
   );
   const accountLifecycle = createLifecycleLock();
+  const networkRuntime = createRuntimeClient({ socketPath: process.env.MIRROR_RUNTIME_SOCKET });
+  const scopedExits = new Map<string, Set<string>>();
+  const resetProfileNetwork = async (id: string) => {
+    const sessions = clientSessions
+      .all()
+      .filter((record) => (record.profile ?? DEFAULT_PROFILE) === id);
+    for (const record of sessions) closing.add(record.sid);
+    try {
+      for (const record of sessions) await stopRuntime(record.sid);
+      const account = accounts.get(id) ?? (await openingAccounts.get(id));
+      if (account) await closeAccount(account);
+    } finally {
+      for (const record of sessions) {
+        runtimes.delete(record.sid);
+        runtimePromises.delete(record.sid);
+        closing.delete(record.sid);
+      }
+      broadcastStatus();
+    }
+  };
+  const invalidateNodes = async (ids: string[]) => {
+    if (!process.env.MIRROR_RUNTIME_SOCKET) return;
+    await accountLifecycle.run(async () => {
+      for (const record of accountStore.all())
+        if (record.proxyId && ids.includes(record.proxyId)) await resetProfileNetwork(record.id);
+      for (const id of ids) {
+        for (const scope of scopedExits.get(id) ?? []) await networkRuntime.stopEgress(scope);
+        scopedExits.delete(id);
+      }
+    });
+  };
+  const proxyCatalog = await createProxyCatalog({
+    file: join(profile, "proxy-sources.json"),
+    endpointForNode: async (id, node, user) => {
+      if (!process.env.MIRROR_RUNTIME_SOCKET)
+        throw new ProxyCatalogError(503, "PROXY_RUNTIME_DISABLED", "请在部署中启用独立出口运行时");
+      const scope = `scope-${createHash("sha256").update(`${user.id}/${id}`).digest("hex").slice(0, 32)}`;
+      const scopes = scopedExits.get(id) ?? new Set<string>();
+      scopes.add(scope);
+      scopedExits.set(id, scopes);
+      return (await networkRuntime.startEgress(scope, node)).externalProxyUrl;
+    },
+    onRemovedNodes: invalidateNodes,
+    onChangedNodes: async (ids) => {
+      await invalidateNodes(ids);
+      await cpaRuntime?.restoreBindings(ids, (instance) =>
+        instance.ownerId ? userStore.getUser(instance.ownerId) : userStore.bootstrapAdmin,
+      );
+    },
+  });
+  const cpaStore = process.env.CPA_BROKER_SOCKET
+    ? await createCpaStore({ file: join(profile, "cpa.sqlite") })
+    : undefined;
+  const cpaRuntime = cpaStore
+    ? createCpaRuntime({
+        store: cpaStore,
+        driver: createCpaBrokerDriver(process.env.CPA_BROKER_SOCKET!),
+        resolveProxyForUser: async (user, proxyId) =>
+          proxyId
+            ? proxyCatalog.resolveProxyForUser(user, proxyId)
+            : {
+                id: "deployment-default",
+                name: "部署默认出口",
+                url: (await networkRuntime.startEgress("deployment-default")).externalProxyUrl,
+              },
+        userEnabled: (id) => userStore.getUser(id)?.enabled === true,
+      })
+    : undefined;
+  if (cpaRuntime) {
+    const restored = await cpaRuntime.restore((instance) =>
+      instance.ownerId ? userStore.getUser(instance.ownerId) : userStore.bootstrapAdmin,
+    );
+    if (restored.failures.length)
+      console.error("Some CPA exits could not be restored:", restored.failures);
+  }
   const app = Fastify({ logger: false, trustProxy: trustedProxies() });
   registerSecurityHeaders(app);
   const key = process.env.MIRROR_AUTH_SECRET
@@ -224,6 +308,7 @@ export async function startClientGateway(
   app.addHook("preHandler", async (request, reply) => {
     if (stopping) return reply.code(503).send({ error: "服务正在重启，请稍后重试" });
     if (e2e) return;
+    if (cpaRuntime && request.url.startsWith("/v1/")) return;
     await gate.preHandler.call(app, request, reply);
     if (reply.sent) return;
     // Upgrade old single-workspace cookies to a stable authenticated device identity.
@@ -231,6 +316,14 @@ export async function startClientGateway(
       reply.header("set-cookie", deviceCookie(request.raw));
   });
   gate.registerRoutes(app);
+  registerProxyRoutes(app, {
+    catalog: proxyCatalog,
+    currentUser: (request) => currentUser(request) ?? null,
+  });
+  if (cpaRuntime) {
+    registerCpaRoutes(app, { runtime: cpaRuntime, currentUser });
+    registerCpaInferenceRoutes(app, cpaRuntime);
+  }
   await registerViewerStatic(app);
   const requireSession = (sid?: string) => async (request: FastifyRequest, reply: FastifyReply) => {
     const requested = sid ?? (request.params as { sid?: string })?.sid;
@@ -577,6 +670,7 @@ export async function startClientGateway(
     return reply.header("cache-control", "no-store").send(status());
   });
   const assetFetcher = createAssetFetcher({
+    proxyFor: (ref) => runtimes.get(ref.sessionId)?.account.proxyUrl,
     // A CDP session belongs to one Chrome, and so to one account.
     send: (sessionId, method, params) => {
       const owner = [...accounts.values()].find((account) => account.sessionTargets.has(sessionId));
@@ -783,21 +877,38 @@ export async function startClientGateway(
             ? await createAccountDisplay()
             : undefined;
         let browser: BrowserHandle | undefined;
+        let proxyUrl: string | undefined;
         try {
-          browser = external
-            ? await connectRemoteBrowser(process.env.BROWSER_CDP_URL!)
-            : await launchBrowser({
-                userDataDir: dir,
-                executablePath: process.env.CHROME_PATH,
-                headful: process.env.CHROME_HEADFUL === "1",
-                enableExtensions: true,
-                args: [
-                  ...CHROME_ARGS,
-                  `--window-size=${identity.screen.width},${identity.screen.height}`,
-                ],
-                env: { ...display?.env, ...(await identityEnvironment(dir, identity)) },
-              });
+          const proxyId = accountStore.get(id)!.proxyId;
+          const launchOptions = {
+            userDataDir: dir,
+            executablePath: process.env.CHROME_PATH,
+            headful: process.env.CHROME_HEADFUL === "1",
+            enableExtensions: true,
+            args: [
+              ...CHROME_ARGS,
+              `--window-size=${identity.screen.width},${identity.screen.height}`,
+            ],
+            env: { ...display?.env, ...(await identityEnvironment(dir, identity)) },
+          };
+          if (proxyId) {
+            if (!process.env.MIRROR_RUNTIME_SOCKET || external)
+              throw new ClientSessionError(
+                503,
+                "PROXY_RUNTIME_DISABLED",
+                "当前部署未启用独立浏览器出口",
+              );
+            const owner = userStore.getUser(userStore.profileOwner(id)!);
+            if (!owner?.enabled)
+              throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器所属用户已停用");
+            const node = proxyCatalog.getNodeConfig(owner, proxyId);
+            ({ browser, proxyUrl } = await launchBrokerBrowser(id, node, launchOptions));
+          } else
+            browser = external
+              ? await connectRemoteBrowser(process.env.BROWSER_CDP_URL!)
+              : await launchBrowser(launchOptions);
           const account = await buildAccount(id, dir, browser, identity, display);
+          account.proxyUrl = proxyUrl;
           accounts.set(id, account);
           return account;
         } catch (error) {
@@ -1346,6 +1457,11 @@ export async function startClientGateway(
         return {
           id: record.id,
           name: record.name,
+          proxyId: record.proxyId ?? null,
+          proxyName: record.proxyId
+            ? (proxyCatalog.listNodes(user).find((node) => node.id === record.proxyId)?.name ??
+              null)
+            : null,
           running: accounts.has(record.id),
           signedIn,
           unavailable,
@@ -1427,6 +1543,54 @@ export async function startClientGateway(
       return clientError(reply, error, owner);
     }
   });
+  app.patch<{ Params: { id: string }; Body: { proxyId: string | null } }>(
+    "/api/accounts/:id/proxy",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["proxyId"],
+          additionalProperties: false,
+          properties: {
+            proxyId: {
+              anyOf: [{ type: "null" }, { type: "string", minLength: 1, maxLength: 128 }],
+            },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const owner = currentOwner(request.raw);
+      if (!owner) return reply.code(401).send({ error: "请重新登录" });
+      try {
+        return await accountLifecycle.run(async () => {
+          const user = requireLiveOwner(request.raw, owner);
+          const id = request.params.id;
+          if (userStore.profileOwner(id) !== user.id)
+            throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
+          const proxyId = request.body.proxyId;
+          if (proxyId !== null) {
+            if (!process.env.MIRROR_RUNTIME_SOCKET)
+              throw new ClientSessionError(
+                503,
+                "PROXY_RUNTIME_DISABLED",
+                "请在部署中启用独立出口运行时",
+              );
+            proxyCatalog.getNodeConfig(user, proxyId);
+          }
+          if ((accountStore.get(id)!.proxyId ?? null) !== proxyId) {
+            await resetProfileNetwork(id);
+            await accountStore.setProxy(id, proxyId);
+          }
+          return { proxyId };
+        });
+      } catch (error) {
+        if (error instanceof ProxyCatalogError)
+          return reply.code(error.statusCode).send({ error: error.message });
+        return clientError(reply, error, owner);
+      }
+    },
+  );
   app.delete<{ Params: { id: string } }>("/api/accounts/:id", async (request, reply) => {
     const owner = currentOwner(request.raw);
     if (!owner) return reply.code(401).send({ error: "请重新输入访问密码" });
@@ -1812,6 +1976,7 @@ export async function startClientGateway(
         runtimePromises.clear();
         for (const account of [...accounts.values()]) await closeAccount(account);
         userStore.close();
+        cpaStore?.close();
         if (managedProfile) {
           await rm(profile, { recursive: true, force: true });
           if (!process.env.MIRROR_ACCOUNTS_DIR)
