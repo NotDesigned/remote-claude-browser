@@ -13,7 +13,13 @@ const accounts = [
 ];
 const admissions = [];
 const switches = [];
+const renames = [];
+const defaultChanges = [];
+const deletions = [];
+const sessionAccounts = new Map();
 let current = "default";
+let currentClientKey;
+let defaultAccount = "default";
 const engine = process.env.PROFILE_PICKER_BROWSER ?? "chromium";
 const errors = [];
 const json = (res, value, status = 200) =>
@@ -40,13 +46,46 @@ const server = createServer(async (req, res) => {
       accounts.push(account);
       return json(res, account);
     }
+    if (url.pathname.startsWith("/api/accounts/") && req.method === "PATCH") {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const { name } = JSON.parse(Buffer.concat(chunks).toString());
+      const account = accounts.find(
+        (item) => item.id === url.pathname.slice("/api/accounts/".length),
+      );
+      account.name = name.trim().replace(/\s+/g, " ");
+      renames.push({ id: account.id, name: account.name });
+      return json(res, account);
+    }
+    if (/^\/api\/accounts\/[^/]+\/default$/.test(url.pathname) && req.method === "POST") {
+      defaultAccount = url.pathname.split("/")[3];
+      defaultChanges.push(defaultAccount);
+      return json(res, { account: defaultAccount });
+    }
+    if (url.pathname.startsWith("/api/accounts/") && req.method === "DELETE") {
+      const id = url.pathname.slice("/api/accounts/".length);
+      if (id === defaultAccount) return json(res, { error: "默认配置不能删除" }, 409);
+      accounts.splice(
+        accounts.findIndex((account) => account.id === id),
+        1,
+      );
+      deletions.push(id);
+      return res.writeHead(204).end();
+    }
     if (url.pathname === "/api/accounts")
-      return json(res, { accounts, current: url.searchParams.has("sid") ? current : null });
+      return json(res, {
+        accounts: [...accounts].sort(
+          (a, b) => Number(b.id === defaultAccount) - Number(a.id === defaultAccount),
+        ),
+        current: url.searchParams.has("sid") ? current : null,
+        default: defaultAccount,
+      });
     if (url.pathname === "/api/client/session/client-1/account") {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       const body = JSON.parse(Buffer.concat(chunks).toString());
       current = body.account;
+      sessionAccounts.set(currentClientKey, current);
       switches.push(body);
       return json(res, { account: current });
     }
@@ -54,7 +93,10 @@ const server = createServer(async (req, res) => {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       admissions.push(JSON.parse(Buffer.concat(chunks).toString()));
-      current = admissions.at(-1).account ?? current;
+      const request = admissions.at(-1);
+      currentClientKey = request.clientKey;
+      current = sessionAccounts.get(currentClientKey) ?? request.account ?? defaultAccount;
+      sessionAccounts.set(currentClientKey, current);
       return json(res, {
         sid: "client-1",
         label: "Fixture",
@@ -105,6 +147,86 @@ try {
   await page.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
   assert.equal(admissions.length, 0, "choosing a configuration must not allocate a session");
   assert.equal(await page.locator("#shell-bar").isVisible(), false);
+  await page.getByRole("button", { name: "重命名「默认配置」", exact: true }).click();
+  const rename = page.locator("form.profile-rename-form");
+  const newName = page.getByLabel("配置新名称", { exact: true });
+  assert.equal(await newName.inputValue(), "默认配置");
+  await newName.fill("不保存的名字");
+  await rename.getByRole("button", { name: "取消", exact: true }).click();
+  await page.getByRole("button", { name: "重命名「默认配置」", exact: true }).click();
+  await newName.fill("Escape 取消");
+  await newName.press("Escape");
+  await rename.waitFor({ state: "hidden" });
+  assert.equal(renames.length, 0);
+  await page.getByRole("button", { name: "重命名「默认配置」", exact: true }).click();
+  assert.equal(await newName.getAttribute("maxlength"), "40");
+  await newName.fill("   ");
+  assert.equal(await rename.getByRole("button", { name: "保存", exact: true }).isEnabled(), false);
+  await newName.fill("  研究   配置  ");
+  await rename.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByRole("button", { name: "重命名「研究 配置」", exact: true }).waitFor();
+  assert.deepEqual(renames.at(-1), { id: "default", name: "研究 配置" });
+  await page.reload();
+  await page.getByRole("button", { name: "重命名「研究 配置」", exact: true }).waitFor();
+  await page.getByRole("button", { name: "重命名「研究 配置」", exact: true }).click();
+  await newName.fill("失败后重试");
+  await page.route("**/api/accounts/default", (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "重命名暂不可用" }),
+    }),
+  );
+  await rename.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "重命名暂不可用" }).waitFor();
+  assert.equal(await newName.inputValue(), "失败后重试");
+  assert.equal(accounts[0].name, "研究 配置");
+  await page.unroute("**/api/accounts/default");
+  await newName.fill("默认配置");
+  await rename.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByRole("button", { name: "重命名「默认配置」", exact: true }).waitFor();
+  assert.equal(admissions.length, 0, "renaming before selection must not allocate a session");
+  assert.equal(switches.length, 0, "renaming must not switch configurations");
+  await page.getByRole("button", { name: "设「工作」为默认", exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelector("button.profile-card .profile-name")?.textContent === "工作",
+  );
+  assert.equal(defaultChanges.at(-1), "p-0123456789");
+  assert.equal(await page.getByRole("button", { name: "删除「工作」", exact: true }).count(), 0);
+  await page.reload();
+  await page.waitForFunction(
+    () => document.querySelector("button.profile-card .profile-name")?.textContent === "工作",
+  );
+  assert.equal(defaultAccount, "p-0123456789");
+  await page.getByRole("button", { name: "设「默认配置」为默认", exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelector("button.profile-card .profile-name")?.textContent === "默认配置",
+  );
+  accounts.push({
+    id: "p-2222222222",
+    name: "可删除配置",
+    running: false,
+    sessions: 0,
+    signedIn: false,
+    email: null,
+  });
+  await page
+    .getByRole("button", { name: "删除「可删除配置」", exact: true })
+    .waitFor({ timeout: 10_000 });
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.getByRole("button", { name: "删除「可删除配置」", exact: true }).click();
+  assert.equal(deletions.length, 0);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "删除「可删除配置」", exact: true }).click();
+  await page
+    .getByRole("button", { name: "删除「可删除配置」", exact: true })
+    .waitFor({ state: "hidden" });
+  assert.deepEqual(deletions, ["p-2222222222"]);
+  await page.reload();
+  await page.getByRole("button", { name: "重命名「默认配置」", exact: true }).waitFor();
+  assert.equal(await page.getByText("可删除配置", { exact: true }).count(), 0);
+  assert.equal(admissions.length, 0);
+  assert.equal(switches.length, 0);
   accounts[1].email = "work@example.com";
   await page.getByText("work@example.com", { exact: true }).waitFor({ timeout: 10_000 });
   accounts[1].unavailable = true;
@@ -139,6 +261,18 @@ try {
   await page.getByRole("button", { name: "选择浏览器配置…", exact: true }).click();
   await page.getByText("当前使用", { exact: true }).waitFor();
   const beforeBack = admissions.length;
+  await page.getByRole("button", { name: "重命名「工作」", exact: true }).click();
+  await newName.fill("当前工作配置");
+  await rename.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByRole("button", { name: "重命名「当前工作配置」", exact: true }).waitFor();
+  await page.getByText("当前使用", { exact: true }).waitFor();
+  assert.equal(current, "p-0123456789");
+  assert.equal(admissions.length, beforeBack);
+  assert.equal(switches.length, 0);
+  await page.getByRole("button", { name: "重命名「当前工作配置」", exact: true }).click();
+  await newName.fill("工作");
+  await rename.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByRole("button", { name: "重命名「工作」", exact: true }).waitFor();
   await page.getByRole("button", { name: "返回会话", exact: true }).click();
   assert.equal(admissions.length, beforeBack);
   await page.getByRole("button", { name: "更多", exact: true }).click();
@@ -228,6 +362,61 @@ try {
   accounts[1].name = "工作配置".repeat(10);
   await phone.setViewportSize({ width: 320, height: 568 });
   await phone.getByText("配置 8", { exact: true }).waitFor({ timeout: 10_000 });
+  const beforePhoneRename = { admissions: admissions.length, switches: switches.length };
+  await phone.getByRole("button", { name: "重命名「默认配置」", exact: true }).tap();
+  const phoneRename = phone.locator("form.profile-rename-form");
+  const phoneName = phone.getByLabel("配置新名称", { exact: true });
+  await phoneName.fill("手机配置");
+  const renameLayout = await phoneRename.evaluate((form) => ({
+    font: parseFloat(getComputedStyle(form.querySelector("input")).fontSize),
+    buttons: [...form.querySelectorAll("button")].map(
+      (button) => button.getBoundingClientRect().height,
+    ),
+    left: form.getBoundingClientRect().left,
+    right: form.getBoundingClientRect().right,
+    viewport: innerWidth,
+    scrollWidth: form.scrollWidth,
+    clientWidth: form.clientWidth,
+  }));
+  assert.ok(renameLayout.font >= 16 && renameLayout.buttons.every((height) => height >= 44));
+  assert.ok(renameLayout.left >= 0 && renameLayout.right <= renameLayout.viewport + 1);
+  assert.ok(renameLayout.scrollWidth <= renameLayout.clientWidth + 1);
+  await phoneRename.getByRole("button", { name: "保存", exact: true }).tap();
+  await phone.getByRole("button", { name: "重命名「手机配置」", exact: true }).waitFor();
+  await phone.reload();
+  await phone.getByRole("button", { name: "重命名「手机配置」", exact: true }).waitFor();
+  await phone.getByRole("button", { name: "重命名「手机配置」", exact: true }).tap();
+  await phoneName.fill("默认配置");
+  await phoneRename.getByRole("button", { name: "保存", exact: true }).tap();
+  await phone.getByRole("button", { name: "重命名「默认配置」", exact: true }).waitFor();
+  assert.equal(admissions.length, beforePhoneRename.admissions);
+  assert.equal(switches.length, beforePhoneRename.switches);
+  await phone.getByRole("button", { name: "设「新工作」为默认", exact: true }).tap();
+  await phone.waitForFunction(
+    () => document.querySelector("button.profile-card .profile-name")?.textContent === "新工作",
+  );
+  assert.equal(defaultAccount, "p-9876543210");
+  assert.equal(await phone.getByRole("button", { name: "删除「新工作」", exact: true }).count(), 0);
+  await phone.reload();
+  await phone.waitForFunction(
+    () => document.querySelector("button.profile-card .profile-name")?.textContent === "新工作",
+  );
+  await phone.getByRole("button", { name: "设「默认配置」为默认", exact: true }).tap();
+  await phone.waitForFunction(
+    () => document.querySelector("button.profile-card .profile-name")?.textContent === "默认配置",
+  );
+  const beforePhoneDelete = deletions.length;
+  phone.once("dialog", (dialog) => dialog.dismiss());
+  await phone.getByRole("button", { name: "删除「配置 7」", exact: true }).tap();
+  assert.equal(deletions.length, beforePhoneDelete);
+  phone.once("dialog", (dialog) => dialog.accept());
+  await phone.getByRole("button", { name: "删除「配置 7」", exact: true }).tap();
+  await phone
+    .getByRole("button", { name: "删除「配置 7」", exact: true })
+    .waitFor({ state: "hidden" });
+  assert.equal(deletions.at(-1), "p-fixture-3");
+  assert.equal(admissions.length, beforePhoneRename.admissions);
+  assert.equal(switches.length, beforePhoneRename.switches);
   await phone.getByRole("button", { name: "新建浏览器配置", exact: true }).tap();
   await phone.getByLabel("浏览器配置名称").fill("手机新配置");
   const inputLayout = await phone.getByLabel("浏览器配置名称").evaluate((input) => ({
@@ -288,6 +477,13 @@ try {
       pickerLogout: true,
       menuPickerReturnAndSwitch: true,
       phoneSmallScreenAndLandscape: true,
+      renameCancelEscapeSaveAndRetry: true,
+      renamePersistsAfterReload: true,
+      renameCurrentWithoutSwitching: true,
+      phoneRenameLayout: renameLayout,
+      defaultConfigPersistsAndSortsFirst: true,
+      nonDefaultDeleteCancelAndConfirm: true,
+      phoneDefaultAndDeleteWithoutSwitching: true,
     }),
   );
 } finally {

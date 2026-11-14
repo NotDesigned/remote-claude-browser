@@ -1293,6 +1293,8 @@ export function App() {
           }}
           current={profilePickerOpen ? accountList?.current : null}
           onBack={profilePickerOpen ? () => setProfilePickerOpen(false) : undefined}
+          onChanged={refreshAccounts}
+          onDeleted={() => window.location.reload()}
           username={user?.username}
           dark={theme === "dark"}
           onTheme={() => setThemePreference(theme === "dark" ? "light" : "dark")}

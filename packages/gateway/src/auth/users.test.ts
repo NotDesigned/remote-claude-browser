@@ -213,6 +213,65 @@ describe("front-end users", () => {
     expect(store.listOwnedProfiles(admin.id)).toEqual(["default"]);
   });
 
+  it("keeps each user's default among their own profiles", async () => {
+    const store = await memoryStore();
+    const admin = store.bootstrapAdmin;
+    const user = await store.createUser({ username: "other", password: "other-user-password" });
+    store.claimLegacyProfiles(["p-0123456789", "default"], admin.id);
+    expect(store.defaultProfile(admin.id)).toBe("default");
+    expect(store.defaultProfile(user.id)).toBeUndefined();
+
+    store.assignProfile("p-bbbbbbbbbb", user.id);
+    store.assignProfile("p-aaaaaaaaaa", user.id);
+    expect(store.defaultProfile(user.id)).toBe("p-bbbbbbbbbb");
+    store.setDefaultProfile(user.id, "p-aaaaaaaaaa");
+    expect(store.defaultProfile(user.id)).toBe("p-aaaaaaaaaa");
+    expect(store.defaultProfile(admin.id)).toBe("default");
+    expect(() => store.setDefaultProfile(admin.id, "p-aaaaaaaaaa")).toThrowError(
+      expect.objectContaining({ statusCode: 403, code: "PROFILE_FORBIDDEN" }),
+    );
+    expect(store.defaultProfile(user.id)).toBe("p-aaaaaaaaaa");
+    expect(store.defaultProfile(admin.id)).toBe("default");
+  });
+
+  it("persists chosen defaults and migrates existing ownership without overwriting a choice", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "user-default-profiles-"));
+    directories.push(dir);
+    const file = join(dir, "users.sqlite");
+    const store = await createUserStore({ file, bootstrapPassword: PASSWORD });
+    stores.push(store);
+    const adminId = store.bootstrapAdmin.id;
+    store.claimLegacyProfiles(["default", "p-0123456789"], adminId);
+    store.setDefaultProfile(adminId, "p-0123456789");
+    store.close();
+
+    const reopened = await createUserStore({ file });
+    stores.push(reopened);
+    expect(reopened.defaultProfile(adminId)).toBe("p-0123456789");
+    reopened.close();
+
+    const legacy = new DatabaseSync(file);
+    legacy.exec("DROP TABLE user_default_profiles");
+    legacy.close();
+    const migrated = await createUserStore({ file });
+    stores.push(migrated);
+    expect(migrated.defaultProfile(adminId)).toBe("default");
+  });
+
+  it("removes defaults when their ownership or user is removed", async () => {
+    const store = await memoryStore();
+    const user = await store.createUser({ username: "other", password: "other-user-password" });
+    store.assignProfile("p-aaaaaaaaaa", user.id);
+    expect(store.defaultProfile(user.id)).toBe("p-aaaaaaaaaa");
+    store.unassignProfile("p-aaaaaaaaaa");
+    expect(store.defaultProfile(user.id)).toBeUndefined();
+    store.assignProfile("p-bbbbbbbbbb", user.id);
+    expect(store.defaultProfile(user.id)).toBe("p-bbbbbbbbbb");
+    store.deleteUser(user.id);
+    expect(store.defaultProfile(user.id)).toBeUndefined();
+    expect(store.profileOwner("p-bbbbbbbbbb")).toBeUndefined();
+  });
+
   it("validates and normalizes usernames without exposing their password hashes", async () => {
     const store = await memoryStore();
     const user = await store.createUser({

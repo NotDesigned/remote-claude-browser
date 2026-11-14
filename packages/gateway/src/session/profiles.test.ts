@@ -12,12 +12,23 @@ afterEach(async () => {
 });
 
 describe("accounts", () => {
-  it("always has the default account, which can be renamed but not removed", async () => {
+  it("starts with the legacy account and normalizes its display name", async () => {
     const store = await createProfileStore();
     expect(store.all().map((record) => record.id)).toEqual([DEFAULT_PROFILE]);
     await store.rename(DEFAULT_PROFILE, "  工作  号 ");
     expect(store.get(DEFAULT_PROFILE)?.name).toBe("工作 号");
-    await expect(store.remove(DEFAULT_PROFILE)).rejects.toMatchObject({ code: "PROFILE_DEFAULT" });
+  });
+
+  it("does not recreate a deleted legacy account when reopening an existing store", async () => {
+    dir = await mkdtemp(join(tmpdir(), "removed-legacy-profile-"));
+    const file = join(dir, "accounts.json");
+    const store = await createProfileStore({ file });
+    const replacement = await store.create("新的默认浏览器");
+    await store.remove(DEFAULT_PROFILE);
+
+    expect((await createProfileStore({ file })).all()).toEqual([replacement]);
+    await store.remove(replacement.id);
+    expect((await createProfileStore({ file })).all()).toEqual([]);
   });
 
   it("creates accounts with ids of their own, and keeps them across restarts", async () => {

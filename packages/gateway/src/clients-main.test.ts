@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -184,6 +184,158 @@ async function createBob(app: FastifyInstance, admin: string, role = "user") {
 }
 
 describe("multi-user management routes", () => {
+  it("persists independent user defaults and renames, and protects the selected default", async () => {
+    const gateway = await fixture();
+    const { app } = gateway;
+    const admin = await login(app);
+    await createBob(app, admin);
+    const bob = await login(app, "bob", BOB_PASSWORD);
+    const initialAdmin = (await api(app, admin, "GET", "/api/accounts")).json();
+    const initialBob = (await api(app, bob, "GET", "/api/accounts")).json();
+    expect(initialAdmin.default).toBe("default");
+    expect(initialBob.default).toBe(initialBob.accounts[0].id);
+
+    const adminChoice = (
+      await api(app, admin, "POST", "/api/accounts", { name: "管理工作" })
+    ).json();
+    const bobChoice = (await api(app, bob, "POST", "/api/accounts", { name: "个人工作" })).json();
+    expect(
+      (await api(app, admin, "POST", `/api/accounts/${adminChoice.id}/default`)).json(),
+    ).toEqual({ account: adminChoice.id });
+    expect((await api(app, bob, "POST", `/api/accounts/${bobChoice.id}/default`)).json()).toEqual({
+      account: bobChoice.id,
+    });
+    expect(
+      (await api(app, bob, "POST", `/api/accounts/${adminChoice.id}/default`)).statusCode,
+    ).toBe(403);
+    expect(
+      (await api(app, admin, "POST", `/api/accounts/${bobChoice.id}/default`)).statusCode,
+    ).toBe(403);
+    const protectedChoice = await api(app, admin, "DELETE", `/api/accounts/${adminChoice.id}`);
+    expect(protectedChoice.statusCode).toBe(409);
+    expect(protectedChoice.json().code).toBe("PROFILE_DEFAULT");
+    const renamed = await api(app, admin, "PATCH", `/api/accounts/${adminChoice.id}`, {
+      name: "  工作  浏览器  ",
+    });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json().name).toBe("工作 浏览器");
+    expect(
+      (await api(app, bob, "PATCH", `/api/accounts/${adminChoice.id}`, { name: "foreign" }))
+        .statusCode,
+    ).toBe(403);
+
+    await gateway.stop();
+    const restarted = await startClientGateway({ listen: false, signals: false });
+    gateways.push(restarted);
+    const freshAdmin = await login(restarted.app);
+    const freshBob = await login(restarted.app, "bob", BOB_PASSWORD);
+    const adminList = (await api(restarted.app, freshAdmin, "GET", "/api/accounts")).json();
+    const bobList = (await api(restarted.app, freshBob, "GET", "/api/accounts")).json();
+    expect(adminList.default).toBe(adminChoice.id);
+    expect(
+      adminList.accounts.find((account: { id: string }) => account.id === adminChoice.id).name,
+    ).toBe("工作 浏览器");
+    expect(bobList.default).toBe(bobChoice.id);
+    expect(hooks.launch).not.toHaveBeenCalled();
+  });
+
+  it("deletes the legacy Chrome state without deleting service metadata or recreating its account", async () => {
+    const gateway = await fixture(async (paths) => {
+      await mkdir(join(paths.profile, "Default"));
+      await writeFile(join(paths.profile, "Default", "Cookies"), "private-browser-state");
+      await writeFile(join(paths.profile, "Local State"), "private-browser-key");
+      await writeFile(paths.sessions, "[]");
+    });
+    const { app, paths } = gateway;
+    const admin = await login(app);
+    const selected = (
+      await api(app, admin, "POST", "/api/accounts", { name: "保留的配置" })
+    ).json();
+    expect((await api(app, admin, "POST", `/api/accounts/${selected.id}/default`)).statusCode).toBe(
+      200,
+    );
+    expect((await api(app, admin, "DELETE", "/api/accounts/default")).statusCode).toBe(204);
+    await expect(stat(join(paths.profile, "Default"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(paths.profile, "Local State"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect((await stat(paths.users)).isFile()).toBe(true);
+    expect(JSON.parse(await readFile(paths.sessions, "utf8"))).toEqual([]);
+    expect(
+      JSON.parse(await readFile(paths.accounts, "utf8")).map(
+        (account: { id: string }) => account.id,
+      ),
+    ).toEqual([selected.id]);
+    expect((await api(app, admin, "GET", "/api/me")).statusCode).toBe(200);
+
+    await gateway.stop();
+    const restarted = await startClientGateway({ listen: false, signals: false });
+    gateways.push(restarted);
+    const freshAdmin = await login(restarted.app);
+    const list = (await api(restarted.app, freshAdmin, "GET", "/api/accounts")).json();
+    expect(list.default).toBe(selected.id);
+    expect(list.accounts.map((account: { id: string }) => account.id)).toEqual([selected.id]);
+    expect(hooks.launch).not.toHaveBeenCalled();
+  });
+
+  it("blocks deleting a configuration used on another device, then moves this device's session to its chosen default", async () => {
+    let selectedId = "";
+    let removedId = "";
+    const { app, paths } = await fixture(async (paths) => {
+      const profiles = await createProfileStore({ file: paths.accounts });
+      selectedId = (await profiles.create("默认目的地")).id;
+      removedId = (await profiles.create("准备删除")).id;
+      const removedDir = join(paths.profile, "browsers", removedId);
+      await mkdir(removedDir, { recursive: true });
+      await writeFile(join(removedDir, "browser-state"), "must-be-removed");
+      await writeFile(
+        paths.sessions,
+        JSON.stringify([
+          {
+            sid: "client-1",
+            owner: "device-here",
+            clientKey: "here-key",
+            profile: removedId,
+            createdAt: 1,
+          },
+          {
+            sid: "client-2",
+            owner: "device-away",
+            clientKey: "away-key",
+            profile: removedId,
+            createdAt: 2,
+          },
+        ]),
+      );
+    });
+    const admin = withDevice(await login(app), "device-here");
+    const away = withDevice(await login(app), "device-away");
+    expect((await api(app, admin, "POST", `/api/accounts/${selectedId}/default`)).statusCode).toBe(
+      200,
+    );
+    const refused = await api(app, admin, "DELETE", `/api/accounts/${removedId}`);
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().code).toBe("PROFILE_IN_USE");
+    expect((await api(app, admin, "GET", "/api/accounts?sid=client-1")).json().current).toBe(
+      removedId,
+    );
+    expect((await stat(join(paths.profile, "browsers", removedId))).isDirectory()).toBe(true);
+
+    expect((await api(app, away, "DELETE", "/api/client/session/client-2")).statusCode).toBe(204);
+    expect((await api(app, admin, "DELETE", `/api/accounts/${removedId}`)).statusCode).toBe(204);
+    const sessions = JSON.parse(await readFile(paths.sessions, "utf8"));
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({ sid: "client-1", profile: selectedId });
+    const list = (await api(app, admin, "GET", "/api/accounts?sid=client-1")).json();
+    expect(list.default).toBe(selectedId);
+    expect(list.current).toBe(selectedId);
+    expect(list.accounts.some((account: { id: string }) => account.id === removedId)).toBe(false);
+    await expect(stat(join(paths.profile, "browsers", removedId))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(hooks.launch).not.toHaveBeenCalled();
+  });
+
   it("starts without Chrome and separates each user's browser configurations and administration", async () => {
     const { app } = await fixture();
     const anonymous = await app.inject({ url: "/api/accounts" });

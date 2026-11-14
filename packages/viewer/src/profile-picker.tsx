@@ -4,7 +4,14 @@
  */
 import { useEffect, useRef, useState } from "preact/hooks";
 
-import { createAccount, listAccounts, type AccountInfo } from "./accounts";
+import {
+  createAccount,
+  deleteAccount,
+  listAccounts,
+  renameAccount,
+  setDefaultAccount,
+  type AccountInfo,
+} from "./accounts";
 import "./profile-picker.css";
 
 const LAST_ACCOUNT_KEY = "mirror.last-account";
@@ -41,56 +48,98 @@ function ProfileCard(props: {
   account: AccountInfo;
   last: boolean;
   current: boolean;
+  isDefault: boolean;
   disabled: boolean;
   onPick(): void;
+  onRename(): void;
+  onDefault(): void;
+  onDelete(): void;
 }) {
   const { account } = props;
   const signedIn = account.signedIn === true;
   return (
-    <button
-      type="button"
-      class="profile-card"
-      data-last={props.last}
-      data-current={props.current}
-      disabled={props.disabled}
-      onClick={props.onPick}
-      style={{ "--avatar-hue": hue(account.id) }}
-    >
-      <span class="profile-avatar" aria-hidden="true">
-        {initial(account)}
-      </span>
-      <span class="profile-text">
-        <span class="profile-name">{account.name}</span>
-        <span
-          class="profile-login"
-          data-signed-in={signedIn}
-          data-unavailable={account.unavailable}
-        >
-          <span class="profile-dot" aria-hidden="true" />
+    <div class="profile-entry">
+      <button
+        type="button"
+        class="profile-card"
+        data-last={props.last}
+        data-current={props.current}
+        disabled={props.disabled}
+        onClick={props.onPick}
+        style={{ "--avatar-hue": hue(account.id) }}
+      >
+        <span class="profile-avatar" aria-hidden="true">
+          {initial(account)}
+        </span>
+        <span class="profile-text">
+          <span class="profile-name">{account.name}</span>
           <span
-            class="profile-login-text"
-            title={
-              account.unavailable
-                ? "Claude 已停用此账号，请登录其他账号"
-                : (account.email ?? undefined)
-            }
+            class="profile-login"
+            data-signed-in={signedIn}
+            data-unavailable={account.unavailable}
           >
-            {account.unavailable ? "账号不可用" : signedIn ? (account.email ?? "已登录") : "未登录"}
+            <span class="profile-dot" aria-hidden="true" />
+            <span
+              class="profile-login-text"
+              title={
+                account.unavailable
+                  ? "Claude 已停用此账号，请登录其他账号"
+                  : (account.email ?? undefined)
+              }
+            >
+              {account.unavailable
+                ? "账号不可用"
+                : signedIn
+                  ? (account.email ?? "已登录")
+                  : "未登录"}
+            </span>
           </span>
         </span>
-      </span>
-      <span class="profile-meta">
-        {props.current ? (
-          <span class="profile-badge profile-current-badge">当前使用</span>
-        ) : (
-          props.last && <span class="profile-badge">上次使用</span>
-        )}
-        {account.sessions > 0 && <span class="profile-badge">{account.sessions} 个会话</span>}
-        <span class="profile-arrow" aria-hidden="true">
-          →
+        <span class="profile-meta">
+          {props.isDefault && <span class="profile-badge profile-default-badge">默认</span>}
+          {props.current ? (
+            <span class="profile-badge profile-current-badge">当前使用</span>
+          ) : (
+            props.last && <span class="profile-badge">上次使用</span>
+          )}
+          {account.sessions > 0 && <span class="profile-badge">{account.sessions} 个会话</span>}
+          <span class="profile-arrow" aria-hidden="true">
+            →
+          </span>
         </span>
-      </span>
-    </button>
+      </button>
+      <div class="profile-actions">
+        <button
+          type="button"
+          aria-label={`重命名「${account.name}」`}
+          disabled={props.disabled}
+          onClick={props.onRename}
+        >
+          重命名
+        </button>
+        {!props.isDefault && (
+          <>
+            <button
+              type="button"
+              aria-label={`设「${account.name}」为默认`}
+              disabled={props.disabled}
+              onClick={props.onDefault}
+            >
+              设为默认
+            </button>
+            <button
+              type="button"
+              class="profile-delete"
+              aria-label={`删除「${account.name}」`}
+              disabled={props.disabled}
+              onClick={props.onDelete}
+            >
+              删除
+            </button>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -98,6 +147,8 @@ export function ProfilePicker(props: {
   onPick(id: string, name: string): Promise<void | false>;
   current?: string | null;
   onBack?(): void;
+  onChanged?(): void;
+  onDeleted?(): void;
   username?: string;
   dark: boolean;
   onTheme(): void;
@@ -109,6 +160,8 @@ export function ProfilePicker(props: {
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [defaultId, setDefaultId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [refreshAttempt, setRefreshAttempt] = useState(0);
@@ -125,6 +178,7 @@ export function ProfilePicker(props: {
         const list = await listAccounts(null);
         if (active) {
           setAccounts(list.accounts);
+          setDefaultId(list.default);
           setLoadError(null);
         }
       } catch (reason) {
@@ -146,11 +200,69 @@ export function ProfilePicker(props: {
     };
   }, [refreshAttempt]);
   useEffect(() => {
-    if (creating) {
+    if (creating || editing !== null) {
       input.current!.focus();
       input.current!.scrollIntoView({ block: "nearest" });
     }
-  }, [creating]);
+  }, [creating, editing]);
+
+  const changed = () => {
+    setRefreshAttempt((value) => value + 1);
+    props.onChanged?.();
+  };
+  const rename = async (event: Event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await renameAccount(editing!, name.trim());
+      setAccounts((previous) =>
+        previous!.map((account) =>
+          account.id === editing ? { ...account, name: saved.name } : account,
+        ),
+      );
+      setEditing(null);
+      setName("");
+      changed();
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const makeDefault = async (id: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await setDefaultAccount(id);
+      setDefaultId(id);
+      changed();
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (account: AccountInfo) => {
+    if (
+      !window.confirm(
+        `删除「${account.name}」？它的网站登录和浏览数据会被清除，正在使用它的本设备会话会切回默认配置。此操作不能恢复。`,
+      )
+    )
+      return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteAccount(account.id);
+      setAccounts((previous) => previous!.filter((entry) => entry.id !== account.id));
+      changed();
+      if (props.current === account.id) props.onDeleted!();
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const pick = async (id: string, name: string) => {
     setBusy(true);
@@ -241,16 +353,68 @@ export function ProfilePicker(props: {
             </div>
           ) : (
             <div class="profile-list">
-              {(accounts ?? []).map((account) => (
-                <ProfileCard
-                  key={account.id}
-                  account={account}
-                  last={account.id === last}
-                  current={account.id === props.current}
-                  disabled={busy}
-                  onPick={() => void pick(account.id, account.name)}
-                />
-              ))}
+              {[...(accounts ?? [])]
+                .sort((a, b) => Number(b.id === defaultId) - Number(a.id === defaultId))
+                .map((account) =>
+                  editing === account.id ? (
+                    <form
+                      key={account.id}
+                      class="profile-card profile-create profile-rename-form"
+                      onSubmit={rename}
+                    >
+                      <label class="profile-editor-label" for="profile-rename-name">
+                        重命名「{account.name}」
+                      </label>
+                      <input
+                        id="profile-rename-name"
+                        ref={input}
+                        aria-label="配置新名称"
+                        value={name}
+                        maxLength={40}
+                        disabled={busy}
+                        onInput={(event) => setName(event.currentTarget.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape") {
+                            setEditing(null);
+                            setError(null);
+                          }
+                        }}
+                      />
+                      <button type="submit" disabled={busy || name.trim() === ""}>
+                        {busy ? "保存中…" : "保存"}
+                      </button>
+                      <button
+                        type="button"
+                        class="profile-cancel"
+                        disabled={busy}
+                        onClick={() => {
+                          setEditing(null);
+                          setError(null);
+                        }}
+                      >
+                        取消
+                      </button>
+                    </form>
+                  ) : (
+                    <ProfileCard
+                      key={account.id}
+                      account={account}
+                      last={account.id === last}
+                      current={account.id === props.current}
+                      isDefault={account.id === defaultId}
+                      disabled={busy}
+                      onPick={() => void pick(account.id, account.name)}
+                      onRename={() => {
+                        setError(null);
+                        setCreating(false);
+                        setName(account.name);
+                        setEditing(account.id);
+                      }}
+                      onDefault={() => void makeDefault(account.id)}
+                      onDelete={() => void remove(account)}
+                    />
+                  ),
+                )}
               {creating ? (
                 <form class="profile-card profile-create" onSubmit={create}>
                   <input
@@ -281,7 +445,12 @@ export function ProfilePicker(props: {
                     type="button"
                     class="profile-card profile-new"
                     disabled={busy}
-                    onClick={() => setCreating(true)}
+                    onClick={() => {
+                      setError(null);
+                      setEditing(null);
+                      setName("");
+                      setCreating(true);
+                    }}
                   >
                     <span class="profile-avatar" aria-hidden="true">
                       +

@@ -85,6 +85,8 @@ export interface UserStore {
   deleteUser(id: string): void;
   profileOwner(profileId: string): string | undefined;
   listOwnedProfiles(userId: string): string[];
+  defaultProfile(userId: string): string | undefined;
+  setDefaultProfile(userId: string, profileId: string): void;
   assignProfile(profileId: string, userId: string): void;
   unassignProfile(profileId: string): void;
   /** Imports the complete legacy profile list once; subsequent calls cannot reclaim deleted users' data. */
@@ -131,6 +133,12 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE
       );
       CREATE INDEX IF NOT EXISTS profile_owners_user ON profile_owners(user_id);
+      CREATE TABLE IF NOT EXISTS user_default_profiles (
+        user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        profile_id TEXT NOT NULL UNIQUE REFERENCES profile_owners(profile_id) ON DELETE CASCADE
+      );
+      INSERT OR IGNORE INTO user_default_profiles (user_id, profile_id)
+        SELECT user_id, MIN(profile_id) FROM profile_owners GROUP BY user_id;
       CREATE TABLE IF NOT EXISTS user_store_meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -331,6 +339,21 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
           .all(userId)
           .map((row) => String(row.profile_id));
       },
+      defaultProfile(userId) {
+        const row = db
+          .prepare("SELECT profile_id FROM user_default_profiles WHERE user_id = ?")
+          .get(userId);
+        return typeof row?.profile_id === "string" ? row.profile_id : undefined;
+      },
+      setDefaultProfile(userId, profileId) {
+        transaction(() => {
+          if (store.profileOwner(profileId) !== userId)
+            throw new UserStoreError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
+          db.prepare(
+            "INSERT INTO user_default_profiles (user_id, profile_id) VALUES (?, ?) ON CONFLICT (user_id) DO UPDATE SET profile_id = excluded.profile_id",
+          ).run(userId, profileId);
+        });
+      },
       assignProfile(profileId, userId) {
         checkProfileId(profileId);
         transaction(() => {
@@ -341,6 +364,9 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
           db.prepare(
             "INSERT OR IGNORE INTO profile_owners (profile_id, user_id) VALUES (?, ?)",
           ).run(profileId, userId);
+          db.prepare(
+            "INSERT OR IGNORE INTO user_default_profiles (user_id, profile_id) VALUES (?, ?)",
+          ).run(userId, profileId);
         });
       },
       unassignProfile(profileId) {
@@ -362,6 +388,9 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
             "INSERT OR IGNORE INTO profile_owners (profile_id, user_id) VALUES (?, ?)",
           );
           for (const id of profileIds) insert.run(id, adminId);
+          db.prepare(
+            "INSERT OR IGNORE INTO user_default_profiles (user_id, profile_id) SELECT user_id, MIN(profile_id) FROM profile_owners WHERE user_id = ? GROUP BY user_id",
+          ).run(adminId);
           db.prepare(
             "INSERT INTO user_store_meta (key, value) VALUES ('legacy_profiles_imported_v1', ?)",
           ).run(adminId);

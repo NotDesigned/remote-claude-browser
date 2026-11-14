@@ -20,11 +20,11 @@ export interface AccountInfo {
 
 export interface AccountList {
   accounts: AccountInfo[];
+  /** This user's default configuration. */
+  default: string;
   /** The account this session uses. */
   current: string | null;
 }
-
-export const DEFAULT_ACCOUNT = "default";
 
 async function call(path: string, init: RequestInit = {}, fetcher: typeof fetch = fetch) {
   const response = await fetcher(path, {
@@ -64,7 +64,11 @@ export async function listAccounts(
   const list = (value as { accounts?: unknown })?.accounts;
   const current = (value as { current?: unknown })?.current;
   if (!Array.isArray(list) || !list.every(isAccount)) throw new Error("浏览器配置列表无法读取");
-  return { accounts: list, current: typeof current === "string" ? current : null };
+  return {
+    accounts: list,
+    default: (value as { default: string }).default,
+    current: typeof current === "string" ? current : null,
+  };
 }
 
 export async function createAccount(name: string, fetcher?: typeof fetch): Promise<AccountInfo> {
@@ -88,12 +92,17 @@ export async function renameAccount(
   id: string,
   name: string,
   fetcher?: typeof fetch,
-): Promise<void> {
-  await call(
+): Promise<{ name: string }> {
+  const response = await call(
     `/api/accounts/${encodeURIComponent(id)}`,
     { method: "PATCH", body: JSON.stringify({ name }) },
     fetcher,
   );
+  return response.json();
+}
+
+export async function setDefaultAccount(id: string): Promise<void> {
+  await call(`/api/accounts/${encodeURIComponent(id)}/default`, { method: "POST" });
 }
 
 export async function deleteAccount(id: string, fetcher?: typeof fetch): Promise<void> {
@@ -163,7 +172,7 @@ export async function runAccountAction(
       await renameAccount(current.id, name, context.fetcher);
       context.refresh();
     } else {
-      if (!current || current.id === DEFAULT_ACCOUNT) return;
+      if (!current || current.id === list.default) return;
       if (
         !dialogs.confirm(
           `删除「${current.name}」？它的登录状态和浏览数据都会被清除，不能恢复。这个会话会先切换到默认浏览器配置。`,

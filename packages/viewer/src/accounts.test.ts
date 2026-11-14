@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { listAccounts, runAccountAction, type AccountList } from "./accounts";
 
 const list: AccountList = {
+  default: "default",
   accounts: [
     { id: "default", name: "默认账号", running: true, sessions: 2 },
     { id: "p-0123456789", name: "工作", running: false, sessions: 0 },

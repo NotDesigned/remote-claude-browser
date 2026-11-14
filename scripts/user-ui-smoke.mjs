@@ -86,6 +86,7 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/api/accounts")
       return json(response, 200, {
         current: "default",
+        default: "default",
         accounts: [{ id: "default", name: "默认配置", running: true, sessions: 1 }],
       });
     if (url.pathname.endsWith("/theme"))

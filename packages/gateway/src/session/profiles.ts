@@ -48,6 +48,7 @@ export async function createProfileStore(
     try {
       const parsed: unknown = JSON.parse(await readFile(options.file, "utf8"));
       if (!Array.isArray(parsed)) throw new Error("Invalid account store");
+      records.clear();
       for (const value of parsed) {
         const record = value as Partial<ProfileRecord>;
         if (
@@ -149,8 +150,6 @@ export async function createProfileStore(
     },
     async remove(id: unknown): Promise<void> {
       const record = known(id);
-      if (record.id === DEFAULT_PROFILE)
-        throw new ClientSessionError(409, "PROFILE_DEFAULT", "默认账号不能删除");
       records.delete(record.id);
       try {
         await persist();

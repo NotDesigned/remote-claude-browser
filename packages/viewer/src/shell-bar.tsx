@@ -2,7 +2,7 @@
  * The unified page's single top bar: view switch (页面 / 画面), the browser's tabs when it is
  * showing, the time where the remote browser is, connection status and the ⋯ menu.
  */
-import { DEFAULT_ACCOUNT, type AccountAction, type AccountList } from "./accounts";
+import { type AccountAction, type AccountList } from "./accounts";
 import type { PxQuality } from "@mirror/protocol";
 import { formatSpeed } from "./hud";
 import type { ComponentChildren } from "preact";
@@ -279,7 +279,7 @@ export function ShellBar(props: ShellBarProps) {
                 <button type="button" onClick={() => props.onAccount({ kind: "rename" })}>
                   重命名
                 </button>
-                {props.accounts.current !== DEFAULT_ACCOUNT &&
+                {props.accounts.current !== props.accounts.default &&
                   props.accounts.accounts.length > 1 && (
                     <button type="button" onClick={() => props.onAccount({ kind: "delete" })}>
                       删除

@@ -1210,7 +1210,7 @@ export async function startClientGateway(
               await clientSessions.setProfile(
                 owner,
                 record.sid,
-                typeof chosen === "string" ? chosen : await defaultProfileFor(user, record.sid),
+                typeof chosen === "string" ? chosen : await defaultProfileFor(user),
               );
             }
             idleReaper.touch(record.sid);
@@ -1314,23 +1314,16 @@ export async function startClientGateway(
         ? owner.slice(0, owner.indexOf("/"))
         : undefined;
   }
-  async function defaultProfileFor(user: FrontendUser, exceptSid?: string): Promise<string> {
+  async function defaultProfileFor(user: FrontendUser): Promise<string> {
+    const preferred = userStore.defaultProfile(user.id);
+    if (preferred) return preferred;
     const owned = accountStore
       .all()
       .filter((record) => userStore.profileOwner(record.id) === user.id);
-    const recent = clientSessions
-      .all()
-      .find(
-        (record) =>
-          record.sid !== exceptSid &&
-          userIdForOwner(record.owner) === user.id &&
-          owned.some((profile) => profile.id === clientSessions.profileOf(record.sid)),
-      );
-    const first =
-      (recent && owned.find((record) => record.id === clientSessions.profileOf(recent.sid))) ??
-      owned.find((record) => record.id === DEFAULT_PROFILE) ??
-      owned[0];
-    if (first) return first.id;
+    if (owned[0]) {
+      userStore.setDefaultProfile(user.id, owned[0].id);
+      return owned[0].id;
+    }
     const created = await accountStore.create("默认浏览器");
     try {
       userStore.assignProfile(created.id, user.id);
@@ -1369,6 +1362,7 @@ export async function startClientGateway(
     const sid = request.query.sid;
     return reply.header("cache-control", "no-store").send({
       accounts: describeAccounts(user),
+      default: userStore.defaultProfile(user.id),
       current: sid && clientSessions.owns(owner, sid) ? clientSessions.profileOf(sid) : null,
     });
   });
@@ -1420,6 +1414,19 @@ export async function startClientGateway(
       }
     },
   );
+  app.post<{ Params: { id: string } }>("/api/accounts/:id/default", async (request, reply) => {
+    const owner = currentOwner(request.raw);
+    if (!owner) return reply.code(401).send({ error: "请重新登录" });
+    try {
+      return await accountLifecycle.run(() => {
+        const user = requireLiveOwner(request.raw, owner);
+        userStore.setDefaultProfile(user.id, request.params.id);
+        return { account: request.params.id };
+      });
+    } catch (error) {
+      return clientError(reply, error, owner);
+    }
+  });
   app.delete<{ Params: { id: string } }>("/api/accounts/:id", async (request, reply) => {
     const owner = currentOwner(request.raw);
     if (!owner) return reply.code(401).send({ error: "请重新输入访问密码" });
@@ -1431,27 +1438,30 @@ export async function startClientGateway(
           throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
         if (!accountStore.has(id))
           throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
-        if (id === DEFAULT_PROFILE)
+        if (userStore.listOwnedProfiles(user.id).length === 1)
+          throw new ClientSessionError(409, "PROFILE_LAST", "需要保留至少一个浏览器配置");
+        if (id === userStore.defaultProfile(user.id))
           throw new ClientSessionError(409, "PROFILE_DEFAULT", "默认账号不能删除");
-        const using = clientSessions.all().filter((record) => record.profile === id);
+        const using = clientSessions
+          .all()
+          .filter((record) => (record.profile ?? DEFAULT_PROFILE) === id);
         if (using.some((record) => record.owner !== owner))
           throw new ClientSessionError(
             409,
             "PROFILE_IN_USE",
             "别的设备正在用这个账号，请先在那边切换或结束",
           );
-        // Only configurations of this user are valid destinations, including their default.
-        const fallback = accountStore
-          .all()
-          .find((record) => record.id !== id && userStore.profileOwner(record.id) === user.id);
-        if (!fallback)
-          throw new ClientSessionError(409, "PROFILE_LAST", "需要保留至少一个浏览器配置");
-        for (const record of using) await switchAccountLocked(owner, record.sid, fallback.id);
+        const fallback = userStore.defaultProfile(user.id)!;
+        for (const record of using) await switchAccountLocked(owner, record.sid, fallback);
         const account = accounts.get(id) ?? (await openingAccounts.get(id)?.catch(() => undefined));
         if (account) await closeAccount(account);
         await accountStore.remove(id);
         userStore.unassignProfile(id);
-        await rm(accountDir(id), { recursive: true, force: true });
+        if (id === DEFAULT_PROFILE) {
+          // The legacy Chrome shares its parent with users.sqlite and the service indexes.
+          for (const entry of ["Default", "Local State"])
+            await rm(join(profile, entry), { recursive: true, force: true });
+        } else await rm(accountDir(id), { recursive: true, force: true });
         return reply.code(204).send();
       });
     } catch (error) {

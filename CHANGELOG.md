@@ -5,6 +5,7 @@ Notable changes to Remote Browser are recorded here.
 ## [Unreleased]
 
 - Choose a browser configuration before opening a new workspace, with remembered Claude emails, login status and unavailable accounts. Reopen the picker from the workspace menu to switch or return to the current session. Existing sessions still resume on reload.
+- Rename configurations, choose a default per user, and delete non-default configurations directly in the picker.
 - Give each browser account its own screen size, font subset and font rendering, so accounts no longer share one fingerprint. No canvas or audio noise is added.
 - Launch Chromium with an explicit argument list instead of Puppeteer's defaults, whose disabled MediaRouter made fingerprint.com classify the browser as automation.
 - Keep media SDP/ICE and PeerConnections in a private isolated world, removing the page-visible legacy frame signaling path.

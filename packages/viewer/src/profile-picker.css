@@ -116,7 +116,50 @@
   gap: 10px;
 }
 
+.profile-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+  padding: 0 4px;
+}
+.profile-actions button {
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.profile-actions button:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.profile-actions button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.profile-actions button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.profile-actions .profile-delete {
+  color: var(--bad);
+}
+.profile-rename-form {
+  flex-wrap: wrap;
+}
+.profile-editor-label {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .profile-card {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -376,6 +419,9 @@ button.profile-card:hover .profile-arrow {
     display: none;
   }
   .profile-current-badge {
+    display: inline-block;
+  }
+  .profile-default-badge {
     display: inline-block;
   }
 }
