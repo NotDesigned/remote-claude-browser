@@ -34,6 +34,40 @@ describe("resource warning", () => {
 });
 
 describe("server B status", () => {
+  it("keeps actual exit location metadata from a status response", async () => {
+    vi.useFakeTimers();
+    const located = { ...value, timeZone: "Asia/Taipei", exitCity: "高雄", exitCountry: "台湾" };
+    const onSample = vi.fn();
+    const stop = pollServerStatus({
+      fetcher: vi.fn(async () => response(located)),
+      onSample,
+      onReachable: vi.fn(),
+      onAuthFailure: vi.fn(),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onSample).toHaveBeenCalledWith(located);
+    stop();
+  });
+
+  it.each(["exitCity", "exitCountry"])(
+    "rejects a non-string %s in a status response",
+    async (key) => {
+      vi.useFakeTimers();
+      const onSample = vi.fn();
+      const onReachable = vi.fn();
+      const stop = pollServerStatus({
+        fetcher: vi.fn(async () => response({ ...value, [key]: 123 })),
+        onSample,
+        onReachable,
+        onAuthFailure: vi.fn(),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(onSample).not.toHaveBeenCalled();
+      expect(onReachable).toHaveBeenCalledWith(false);
+      stop();
+    },
+  );
+
   it("ignores duplicate and late sample timestamps", () => {
     const sample = receiveServerStatus(null, value, 100);
     expect(receiveServerStatus(sample, value, 9_999)).toBe(sample);

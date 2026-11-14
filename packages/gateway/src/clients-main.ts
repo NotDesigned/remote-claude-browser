@@ -30,7 +30,7 @@ import { launchBrokerBrowser } from "./browser/broker";
 import { createProxyCatalog, ProxyCatalogError } from "./egress/catalog";
 import { registerProxyRoutes } from "./egress/routes";
 import { createRuntimeClient } from "./egress/runtime-client";
-import { detectExitTimeZone } from "./egress/timezone";
+import type { ExitMetadata } from "./egress/timezone";
 import { createCpaStore } from "./cpa/store";
 import { createCpaRuntime } from "./cpa/runtime";
 import { createCpaBrokerDriver } from "./cpa/broker-client";
@@ -73,12 +73,11 @@ import { createWsServer, resumeCursorsFor } from "./ws/server";
 import type { ViewerConn } from "./ws/viewerconn";
 
 /** One account: its Chrome, and what the gateway keeps for that Chrome. */
-interface Account {
+interface Account extends ExitMetadata {
   id: string;
   dir: string;
   browser: BrowserHandle;
   proxyUrl?: string;
-  timeZone: string;
   display?: AccountDisplay;
   identity: BrowserIdentity;
   pool: ReturnType<typeof createClientBrowserPool>;
@@ -165,25 +164,6 @@ export async function startClientGateway(
   const accountLifecycle = createLifecycleLock();
   const networkRuntime = createRuntimeClient({ socketPath: process.env.MIRROR_RUNTIME_SOCKET });
   const scopedExits = new Map<string, Set<string>>();
-  let defaultZone: Promise<string> | undefined;
-  const defaultExitTimeZone = async () => {
-    if (e2e) return Intl.DateTimeFormat().resolvedOptions().timeZone;
-    try {
-      if (process.env.MIRROR_RUNTIME_SOCKET)
-        return (await networkRuntime.timeZoneForEgress()).timeZone;
-      defaultZone ??= detectExitTimeZone().catch((error) => {
-        defaultZone = undefined;
-        throw error;
-      });
-      return await defaultZone;
-    } catch {
-      throw new ClientSessionError(
-        503,
-        "EXIT_TIMEZONE",
-        "无法获取所选出口的时区，请检查代理后重试",
-      );
-    }
-  };
   const resetProfileNetwork = async (id: string) => {
     const sessions = clientSessions
       .all()
@@ -566,6 +546,9 @@ export async function startClientGateway(
   function status(sid?: string): ServerStatusMsg {
     lastStatusAt = Math.max(Date.now(), lastStatusAt + 1);
     const stale = Date.now() - resources.sampledAt > 10000;
+    const exit = sid
+      ? (runtimes.get(sid)?.account ?? accountStore.get(clientSessions.profileOf(sid)))
+      : undefined;
     return {
       ...resources,
       sampledAt: lastStatusAt,
@@ -583,12 +566,8 @@ export async function startClientGateway(
       clientsMax: clientSessions.capacity(),
       pixelsActive: pixelCapacity.count(),
       pixelsMax: null,
-      ...(sid
-        ? {
-            timeZone:
-              runtimes.get(sid)?.account.timeZone ??
-              accountStore.get(clientSessions.profileOf(sid))?.timeZone,
-          }
+      ...(exit
+        ? { timeZone: exit.timeZone, exitCity: exit.exitCity, exitCountry: exit.exitCountry }
         : {}),
     };
   }
@@ -760,7 +739,7 @@ export async function startClientGateway(
     dir: string,
     browser: BrowserHandle,
     identity: BrowserIdentity,
-    timeZone: string,
+    exit: ExitMetadata,
     display?: AccountDisplay,
   ): Promise<Account> {
     const zoomReady = await installZoomExtension(browser, join(dir, "zoom-extension")).then(
@@ -861,7 +840,7 @@ export async function startClientGateway(
     return {
       id,
       dir,
-      timeZone,
+      ...exit,
       browser,
       identity,
       display,
@@ -878,7 +857,13 @@ export async function startClientGateway(
   }
 
   /** The account's Chrome, started if it is not running. */
+  function requireBrowserExit(id: string): void {
+    if (!e2e && !accountStore.get(id)?.proxyId)
+      throw new ClientSessionError(409, "EXIT_REQUIRED", "请先为浏览器配置选择出口节点");
+  }
+
   async function openAccount(id: string): Promise<Account> {
+    requireBrowserExit(id);
     const open = accounts.get(id);
     if (open) return open;
     let pending = openingAccounts.get(id);
@@ -910,7 +895,7 @@ export async function startClientGateway(
             : undefined;
         let browser: BrowserHandle | undefined;
         let proxyUrl: string | undefined;
-        let timeZone: string;
+        let exit: ExitMetadata;
         try {
           const proxyId = accountStore.get(id)!.proxyId;
           const launchOptions = {
@@ -935,19 +920,27 @@ export async function startClientGateway(
             if (!owner?.enabled)
               throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器所属用户已停用");
             const node = proxyCatalog.getNodeConfig(owner, proxyId);
-            ({ browser, proxyUrl, timeZone } = await launchBrokerBrowser(id, node, launchOptions));
+            const {
+              browser: opened,
+              proxyUrl: endpoint,
+              ...metadata
+            } = await launchBrokerBrowser(id, node, launchOptions);
+            browser = opened;
+            proxyUrl = endpoint;
+            exit = metadata;
           } else {
-            timeZone = await defaultExitTimeZone();
+            // Local replay fixtures explicitly opt into MIRROR_E2E; production requires a node.
+            exit = { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
             browser = external
               ? await connectRemoteBrowser(process.env.BROWSER_CDP_URL!)
               : await launchBrowser({
                   ...launchOptions,
-                  env: { ...launchOptions.env, TZ: timeZone },
+                  env: { ...launchOptions.env, TZ: exit.timeZone },
                 });
           }
-          const account = await buildAccount(id, dir, browser, identity, timeZone, display);
+          const account = await buildAccount(id, dir, browser, identity, exit, display);
           account.proxyUrl = proxyUrl;
-          await accountStore.setTimeZone(id, timeZone);
+          await accountStore.setExitMetadata(id, exit);
           accounts.set(id, account);
           return account;
         } catch (error) {
@@ -1331,13 +1324,19 @@ export async function startClientGateway(
               userStore.profileOwner(chosen) !== user.id)
           )
             throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
-          const existing = clientSessions
-            .all()
-            .some(
-              (record) =>
-                record.owner === owner &&
-                (record.clientKey === request.body?.clientKey || record.sid === request.body?.sid),
-            );
+          const previous = clientSessions.findExisting(
+            owner,
+            request.body?.clientKey,
+            request.body?.sid,
+          );
+          const existing = previous !== undefined;
+          const profileId =
+            previous && userStore.profileOwner(previous.profile ?? DEFAULT_PROFILE) === user.id
+              ? (previous.profile ?? DEFAULT_PROFILE)
+              : typeof chosen === "string"
+                ? chosen
+                : await defaultProfileFor(user);
+          requireBrowserExit(profileId);
           if (!e2e && !existing && (await memoryShort()))
             throw new ClientSessionError(
               503,
@@ -1357,11 +1356,7 @@ export async function startClientGateway(
             ) {
               if (runtimes.has(record.sid))
                 throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "浏览器不属于当前用户");
-              await clientSessions.setProfile(
-                owner,
-                record.sid,
-                typeof chosen === "string" ? chosen : await defaultProfileFor(user),
-              );
+              await clientSessions.setProfile(owner, record.sid, profileId);
             }
             idleReaper.touch(record.sid);
             broadcastStatus();
@@ -1444,6 +1439,7 @@ export async function startClientGateway(
     if (!accountStore.has(id)) throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
     if (userStore.profileOwner(id) !== userIdForOwner(owner))
       throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
+    requireBrowserExit(id);
     if (closing.has(sid)) throw new ClientSessionError(409, "CLIENT_CLOSING", "会话正在结束");
     if (clientSessions.profileOf(sid) === id) return;
     closing.add(sid);
@@ -1488,7 +1484,9 @@ export async function startClientGateway(
       .all()
       .filter((record) => userStore.profileOwner(record.id) === user.id)
       .map((record) => {
-        const live = accounts.get(record.id)?.login.current();
+        const account = accounts.get(record.id);
+        const live = account?.login.current();
+        const exit = account ?? record;
         const hasCookie = live ? live.signedIn : profileSignedIn(accountDir(record.id));
         const unavailable = live ? !!live.unavailable : hasCookie && !!record.unavailable;
         const signedIn =
@@ -1501,7 +1499,9 @@ export async function startClientGateway(
             ? (proxyCatalog.listNodes(user).find((node) => node.id === record.proxyId)?.name ??
               null)
             : null,
-          timeZone: accounts.get(record.id)?.timeZone ?? record.timeZone,
+          timeZone: exit.timeZone,
+          exitCity: exit.exitCity,
+          exitCountry: exit.exitCountry,
           running: accounts.has(record.id),
           signedIn,
           unavailable,

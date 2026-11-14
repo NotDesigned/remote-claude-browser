@@ -31,7 +31,7 @@
     "build": "bash scripts/limited-run.sh pnpm -r --workspace-concurrency=1 --if-present run build",
     "typecheck": "bash scripts/limited-run.sh pnpm -r --workspace-concurrency=1 --if-present run typecheck",
     "test": "bash scripts/limited-run.sh bash -c 'pnpm -r --workspace-concurrency=1 --if-present run test && pnpm run test:deployment'",
-    "test:deployment": "bash scripts/limited-run.sh node --test deploy/timezone.test.mjs deploy/egress-proxy.test.mjs deploy/fetch-xray.test.mjs deploy/cpa.test.mjs deploy/cpa-broker.test.mjs deploy/profile-broker.test.mjs scripts/probe-session.test.mjs",
+    "test:deployment": "bash scripts/limited-run.sh node --test deploy/timezone.test.mjs deploy/egress-proxy.test.mjs deploy/fetch-xray.test.mjs deploy/cpa.test.mjs deploy/cpa-migration.test.mjs deploy/cpa-broker.test.mjs deploy/profile-broker.test.mjs scripts/probe-session.test.mjs",
     "test:users-ui": "bash scripts/limited-run.sh node scripts/user-ui-smoke.mjs",
     "test:profiles-ui": "bash scripts/limited-run.sh node scripts/profile-picker-smoke.mjs",
     "test:profiles-webkit": "bash scripts/limited-run.sh env PROFILE_PICKER_BROWSER=webkit node scripts/profile-picker-smoke.mjs",

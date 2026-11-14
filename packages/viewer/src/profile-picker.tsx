@@ -93,7 +93,8 @@ function ProfileCard(props: {
         class="profile-card"
         data-last={props.last}
         data-current={props.current}
-        disabled={props.disabled}
+        data-exit-required={!account.proxyId}
+        disabled={props.disabled || !account.proxyId}
         onClick={props.onPick}
         style={{ "--avatar-hue": hue(account.id) }}
       >
@@ -124,11 +125,12 @@ function ProfileCard(props: {
             </span>
           </span>
           <span class="profile-exit">
-            出口：{account.proxyName ?? (account.proxyId ? "节点已移除" : "部署默认")}
+            出口：{account.proxyName ?? (account.proxyId ? "节点已移除" : "未选择（禁止打开）")}
           </span>
           <span class="profile-exit" title={account.timeZone}>
             时区：{account.timeZone ?? "按出口自动确定"}
           </span>
+          {!account.proxyId && <span class="profile-exit">请通过 ⋯ 设置出口并绑定节点后打开</span>}
         </span>
         <span class="profile-meta">
           {props.isDefault && <span class="profile-badge profile-default-badge">默认</span>}
@@ -208,11 +210,12 @@ export function ProfilePicker(props: {
   onManageNetwork?(): void;
   logoutPending: boolean;
   logoutError: string | null;
+  createInitially?: boolean;
 }) {
   const [accounts, setAccounts] = useState<AccountInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(props.createInitially ?? false);
   const [editing, setEditing] = useState<string | null>(null);
   const [defaultId, setDefaultId] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -258,11 +261,11 @@ export function ProfilePicker(props: {
     };
   }, [refreshAttempt]);
   useEffect(() => {
-    if (creating || editing !== null) {
+    if (accounts !== null && (creating || editing !== null)) {
       input.current!.focus();
       input.current!.scrollIntoView({ block: "nearest" });
     }
-  }, [creating, editing]);
+  }, [creating, editing, accounts === null]);
 
   const changed = () => {
     setRefreshAttempt((value) => value + 1);
@@ -375,12 +378,14 @@ export function ProfilePicker(props: {
     setBusy(true);
     try {
       const made = await createAccount(name.trim());
-      setRefreshAttempt((value) => value + 1);
+      setAccounts((previous) => [...previous!, made]);
+      changed();
       setCreating(false);
       setName("");
-      await pick(made.id, made.name);
+      await editProxy(made);
     } catch (reason) {
       setError((reason as Error).message);
+    } finally {
       setBusy(false);
     }
   };
@@ -455,14 +460,17 @@ export function ProfilePicker(props: {
                   setProxyEditor({ ...proxyEditor, value: event.currentTarget.value })
                 }
               >
-                <option value="">部署默认出口</option>
+                <option value="">未选择出口（禁止打开）</option>
                 {proxyEditor.choices.map((node) => (
                   <option key={node.id} value={node.id}>
                     {node.name} · {node.visibility === "shared" ? "共享" : "私有"}
                   </option>
                 ))}
               </select>
-              <p>同一配置的所有会话使用这个出口。网页资源、DNS 和 WebRTC 一起切换。</p>
+              <p>
+                绑定节点后才能打开配置。同一配置的所有会话使用这个出口，网页资源、DNS 和 WebRTC
+                一起切换。
+              </p>
               <div>
                 <button type="submit" disabled={busy}>
                   {busy ? "保存中…" : "保存出口"}
@@ -556,7 +564,7 @@ export function ProfilePicker(props: {
                     onKeyDown={(event) => event.key === "Escape" && setCreating(false)}
                   />
                   <button type="submit" disabled={busy || name.trim() === ""}>
-                    {busy ? "创建中…" : props.onBack ? "创建并切换" : "创建并打开"}
+                    {busy ? "创建中…" : "创建并设置出口"}
                   </button>
                   <button
                     type="button"

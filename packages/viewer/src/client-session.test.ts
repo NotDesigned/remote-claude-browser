@@ -126,6 +126,18 @@ describe("client session bootstrap", () => {
     );
   });
 
+  it("asks the user to bind an exit when the selected or resumed profile has none", async () => {
+    const fetcher = fetchResponse({ code: "EXIT_REQUIRED" }, 409);
+    await expect(
+      requestClientSession({ clientKey: FIRST_KEY, sid: "client-1" }, { fetcher }),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "EXIT_REQUIRED",
+      message: "此浏览器配置尚未绑定出口节点，请返回选择配置并设置出口。",
+    });
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it("exposes only valid owned-session return links when capacity is full", async () => {
     const fetcher = fetchResponse(
       {

@@ -8,9 +8,32 @@ import { chromium, webkit } from "playwright";
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use scripts/limited-run.sh");
 const root = resolve("packages/viewer/dist");
 const accounts = [
-  { id: "default", name: "默认配置", running: false, sessions: 0, signedIn: false, email: null },
-  { id: "p-0123456789", name: "工作", running: true, sessions: 1, signedIn: true, email: null },
+  {
+    id: "default",
+    name: "默认配置",
+    running: false,
+    sessions: 0,
+    signedIn: false,
+    email: null,
+    proxyId: null,
+    proxyName: null,
+  },
+  {
+    id: "p-0123456789",
+    name: "工作",
+    running: true,
+    sessions: 1,
+    signedIn: true,
+    email: null,
+    proxyId: "proxy-private",
+    proxyName: "私有出口",
+  },
 ];
+const proxies = [
+  { id: "proxy-shared", name: "共享出口", visibility: "shared" },
+  { id: "proxy-private", name: "私有出口", visibility: "private" },
+];
+const proxyChanges = [];
 const admissions = [];
 const switches = [];
 const renames = [];
@@ -42,8 +65,21 @@ const server = createServer(async (req, res) => {
         sessions: 0,
         signedIn: false,
         email: null,
+        proxyId: null,
+        proxyName: null,
       };
       accounts.push(account);
+      return json(res, account);
+    }
+    if (url.pathname === "/api/proxies") return json(res, { proxies });
+    if (/^\/api\/accounts\/[^/]+\/proxy$/.test(url.pathname) && req.method === "PATCH") {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const { proxyId } = JSON.parse(Buffer.concat(chunks).toString());
+      const account = accounts.find((item) => item.id === url.pathname.split("/")[3]);
+      account.proxyId = proxyId;
+      account.proxyName = proxies.find((item) => item.id === proxyId)?.name ?? null;
+      proxyChanges.push({ id: account.id, proxyId });
       return json(res, account);
     }
     if (url.pathname.startsWith("/api/accounts/") && req.method === "PATCH") {
@@ -155,6 +191,9 @@ try {
   await page.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
   assert.equal(admissions.length, 0, "choosing a configuration must not allocate a session");
   assert.equal(await page.locator("#shell-bar").isVisible(), false);
+  assert.equal(await page.getByRole("button", { name: /默认配置.*未登录/ }).isDisabled(), true);
+  await page.getByText("请通过 ⋯ 设置出口并绑定节点后打开", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "管理「默认配置」" }).isEnabled(), true);
   await openCardMenu(page, "默认配置");
   await page.getByRole("button", { name: "重命名「默认配置」", exact: true }).waitFor();
   assert.equal(admissions.length, 0);
@@ -208,6 +247,25 @@ try {
   await page.getByRole("button", { name: "管理「默认配置」", exact: true }).waitFor();
   assert.equal(admissions.length, 0, "renaming before selection must not allocate a session");
   assert.equal(switches.length, 0, "renaming must not switch configurations");
+  await openCardMenu(page, "默认配置");
+  await page.getByRole("button", { name: "设置出口", exact: true }).click();
+  const defaultProxy = page.getByLabel("「默认配置」的网络出口", { exact: true });
+  assert.equal(
+    await defaultProxy.inputValue(),
+    "",
+    "an unbound profile must not select the first node",
+  );
+  assert.equal(
+    await defaultProxy.locator('option[value=""]').textContent(),
+    "未选择出口（禁止打开）",
+  );
+  await defaultProxy.selectOption("proxy-shared");
+  await page.getByRole("button", { name: "保存出口", exact: true }).click();
+  await page.getByRole("button", { name: /默认配置.*共享出口/ }).waitFor();
+  await page.waitForFunction(
+    () => !document.querySelector('button.profile-card[data-exit-required="true"]'),
+  );
+  assert.equal(admissions.length, 0, "binding an exit must not open the profile");
   await openCardMenu(page, "工作");
   await page.getByRole("button", { name: "设「工作」为默认", exact: true }).click();
   await page.waitForFunction(
@@ -359,18 +417,56 @@ try {
   await page.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
   await page.getByRole("button", { name: "新建浏览器配置" }).click();
   await page.getByLabel("浏览器配置名称").fill("新工作");
+  const beforeCreate = { admissions: admissions.length, switches: switches.length };
+  await page.getByRole("button", { name: "创建并设置出口" }).click();
+  const createdProxy = page.getByLabel("「新工作」的网络出口", { exact: true });
+  await createdProxy.waitFor();
+  assert.equal(await createdProxy.inputValue(), "", "a new profile must have no selected node");
+  assert.equal(await page.getByRole("button", { name: /新工作.*未登录/ }).isDisabled(), true);
+  assert.equal(admissions.length, beforeCreate.admissions);
+  assert.equal(switches.length, beforeCreate.switches);
+  await createdProxy.selectOption("proxy-private");
+  await page.getByRole("button", { name: "保存出口", exact: true }).click();
+  await page.getByRole("button", { name: /新工作.*私有出口/ }).waitFor();
+  assert.equal(admissions.length, beforeCreate.admissions, "saving the exit must not auto-open");
   const created = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === "/api/client/session" &&
       response.request().postDataJSON()?.account === "p-9876543210",
   );
-  await page.getByRole("button", { name: "创建并打开" }).click();
+  await page.getByRole("button", { name: /新工作.*私有出口/ }).click();
   await created;
   await page.waitForURL(
     (url) => url.searchParams.get("sid") === "client-1" && !url.searchParams.has("new"),
   );
   assert.equal(admissions.at(-1).account, "p-9876543210");
   assert.notEqual(admissions.at(-1).clientKey, key);
+  await page.getByRole("button", { name: "更多", exact: true }).click();
+  await page.getByRole("button", { name: "新建", exact: true }).click();
+  await page.getByLabel("浏览器配置名称", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "创建并设置出口", exact: true }).count(), 1);
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await page.getByRole("button", { name: "返回会话", exact: true }).click();
+
+  const resumeFailure = await context.newPage();
+  let rejectedResumes = 0;
+  await resumeFailure.route("**/api/client/session", (route) => {
+    rejectedResumes++;
+    return route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({ code: "EXIT_REQUIRED" }),
+    });
+  });
+  await resumeFailure.goto(origin + "/?sid=client-1");
+  await resumeFailure
+    .getByText("此浏览器配置尚未绑定出口节点，请返回选择配置并设置出口。", { exact: true })
+    .waitFor();
+  await resumeFailure.getByRole("link", { name: "重新选择配置并设置出口", exact: true }).click();
+  await resumeFailure.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
+  assert.equal(rejectedResumes, 1, "an unbound resume must not silently retry another exit");
+  await resumeFailure.close();
+  await context.close();
 
   const mobile = await browser.newContext({
     viewport: { width: 390, height: 844 },
@@ -553,7 +649,12 @@ try {
       chosenAccount: true,
       reloadResumes: true,
       newLoginChooses: true,
-      createAndOpen: true,
+      unboundCardBlockedAndMenuUsable: true,
+      noAutomaticFirstExit: true,
+      createThenBindThenExplicitOpen: true,
+      shellCreateUsesUnifiedPicker: true,
+      unboundResumeReturnsToPicker: true,
+      proxyChanges,
       phoneLayout: layout,
       loadRetry: true,
       pickerLogout: true,

@@ -18,14 +18,66 @@ describe("accounts", () => {
     const store = await createProfileStore({ file });
     const privateProfile = await store.create("私有出口");
     await store.setProxy(privateProfile.id, "proxy-123");
-    await store.setTimeZone(privateProfile.id, "Asia/Tokyo");
+    await store.setExitMetadata(privateProfile.id, {
+      timeZone: "Asia/Tokyo",
+      exitCity: "Osaka",
+      exitCountry: "Japan",
+    });
     const reopened = await createProfileStore({ file });
     expect(reopened.get(privateProfile.id)?.proxyId).toBe("proxy-123");
     expect(reopened.get(privateProfile.id)?.timeZone).toBe("Asia/Tokyo");
+    expect(reopened.get(privateProfile.id)?.exitCity).toBe("Osaka");
+    expect(reopened.get(privateProfile.id)?.exitCountry).toBe("Japan");
     expect(reopened.get(DEFAULT_PROFILE)?.proxyId).toBeUndefined();
     await reopened.setProxy(privateProfile.id, null);
     expect(reopened.get(privateProfile.id)?.timeZone).toBeUndefined();
+    expect(reopened.get(privateProfile.id)?.exitCity).toBeUndefined();
+    expect(reopened.get(privateProfile.id)?.exitCountry).toBeUndefined();
+    expect((await createProfileStore({ file })).get(privateProfile.id)?.exitCity).toBeUndefined();
     expect((await createProfileStore({ file })).get(privateProfile.id)?.proxyId ?? null).toBeNull();
+  });
+
+  it("persists distinct cities for profiles in the same zone and clears invalidated geography", async () => {
+    dir = await mkdtemp(join(tmpdir(), "profile-exit-location-"));
+    const file = join(dir, "accounts.json");
+    const store = await createProfileStore({ file });
+    const second = await store.create("第二个城市");
+    await store.setExitMetadata(DEFAULT_PROFILE, {
+      timeZone: "Asia/Taipei",
+      exitCity: "高雄",
+      exitCountry: "台湾",
+    });
+    await store.setExitMetadata(second.id, {
+      timeZone: "Asia/Taipei",
+      exitCity: "台北",
+      exitCountry: "台湾",
+    });
+
+    const reopened = await createProfileStore({ file });
+    expect(reopened.get(DEFAULT_PROFILE)).toMatchObject({
+      timeZone: "Asia/Taipei",
+      exitCity: "高雄",
+      exitCountry: "台湾",
+    });
+    expect(reopened.get(second.id)).toMatchObject({
+      timeZone: "Asia/Taipei",
+      exitCity: "台北",
+      exitCountry: "台湾",
+    });
+
+    await reopened.setExitMetadata(second.id, { timeZone: "Asia/Taipei" });
+    expect((await createProfileStore({ file })).get(second.id)).toEqual({
+      id: second.id,
+      name: "第二个城市",
+      createdAt: second.createdAt,
+      timeZone: "Asia/Taipei",
+    });
+    await reopened.setTimeZone(DEFAULT_PROFILE, undefined);
+    expect((await createProfileStore({ file })).get(DEFAULT_PROFILE)).toEqual({
+      id: DEFAULT_PROFILE,
+      name: "默认账号",
+      createdAt: 0,
+    });
   });
   it("starts with the legacy account and normalizes its display name", async () => {
     const store = await createProfileStore();

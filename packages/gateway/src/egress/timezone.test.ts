@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
-import { detectExitTimeZone, ExitTimeZoneError } from "./timezone";
+import { detectExitMetadata, detectExitTimeZone, ExitTimeZoneError } from "./timezone";
 
 async function listen(server: Server) {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -36,6 +36,44 @@ async function withProxy(
 }
 
 describe("exit time zone", () => {
+  it.each(["高雄", "台北"])(
+    "keeps the provider city %s independent of its IANA zone",
+    async (city) => {
+      await withProxy(
+        { city: ` ${city} `, country: " 台湾 ", timezone: { id: "Asia/Taipei" } },
+        async (proxyUrl, url, requests) => {
+          expect(await detectExitMetadata({ proxyUrl, url })).toEqual({
+            timeZone: "Asia/Taipei",
+            exitCity: city,
+            exitCountry: "台湾",
+          });
+          expect(requests()).toBe(0);
+        },
+      );
+    },
+  );
+
+  it.each([{}, { city: " ", country: "" }, { city: null, country: 42 }])(
+    "keeps valid timezone metadata without inventing missing geography: %j",
+    async (geography) => {
+      await withProxy({ ...geography, timezone: { id: "Asia/Taipei" } }, async (proxyUrl, url) => {
+        expect(await detectExitMetadata({ proxyUrl, url })).toEqual({ timeZone: "Asia/Taipei" });
+      });
+    },
+  );
+
+  it("keeps a provider country when the city is absent", async () => {
+    await withProxy(
+      { country: " 台湾 ", timezone: { id: "Asia/Taipei" } },
+      async (proxyUrl, url) => {
+        expect(await detectExitMetadata({ proxyUrl, url })).toEqual({
+          timeZone: "Asia/Taipei",
+          exitCountry: "台湾",
+        });
+      },
+    );
+  });
+
   it("uses the selected real HTTP proxy rather than the gateway's direct route", async () => {
     await withProxy(
       { success: true, timezone: { id: "Asia/Tokyo" } },

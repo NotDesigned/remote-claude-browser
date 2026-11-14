@@ -135,6 +135,7 @@ export function App() {
   const [userPanelOpen, setUserPanelOpen] = useState(false);
   const [networkPanelOpen, setNetworkPanelOpen] = useState(false);
   const [profilePickerOpen, setProfilePickerOpen] = useState(false);
+  const [profileCreateInitially, setProfileCreateInitially] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
   const [userError, setUserError] = useState<string | null>(null);
   /** The configuration this tab's picker chose; a reload resumes without one. */
@@ -1176,7 +1177,14 @@ export function App() {
         linkTarget={linkTarget}
         onLinkTarget={setLinkTarget}
         accounts={accountList}
-        onChooseAccount={clientPhase === "ready" ? () => setProfilePickerOpen(true) : undefined}
+        onChooseAccount={
+          clientPhase === "ready"
+            ? () => {
+                setProfileCreateInitially(false);
+                setProfilePickerOpen(true);
+              }
+            : undefined
+        }
         currentUser={user}
         onManageUsers={() => setUserPanelOpen(true)}
         onManageNetwork={() => setNetworkPanelOpen(true)}
@@ -1188,6 +1196,11 @@ export function App() {
           refreshUser();
         }}
         onAccount={(action) => {
+          if (action.kind === "create") {
+            setProfileCreateInitially(true);
+            setProfilePickerOpen(true);
+            return;
+          }
           if (themeSid === null || accountList === null) return;
           void runAccountAction(action, {
             sid: themeSid,
@@ -1285,6 +1298,7 @@ export function App() {
       )}
       {(clientPhase === "picking" || profilePickerOpen) && (
         <ProfilePicker
+          createInitially={profileCreateInitially}
           onPick={async (id, name) => {
             if (!profilePickerOpen) {
               setPickedAccount(id);
@@ -1394,9 +1408,11 @@ export function App() {
               {clientPhase === "error" && clientError?.status === 401 && (
                 <a href="/gate">重新登录</a>
               )}
-              {clientPhase === "error" && !endFailure && pickedAccount !== null && (
-                <a href="/?new=1">重新选择配置</a>
-              )}
+              {clientPhase === "error" &&
+                !endFailure &&
+                (pickedAccount !== null || clientError?.code === "EXIT_REQUIRED") && (
+                  <a href="/?new=1">重新选择配置并设置出口</a>
+                )}
               {clientPhase === "error" && endFailure && clientSession !== null && (
                 <a href={clientReturnUrl(clientSession.sid)}>返回当前会话</a>
               )}

@@ -106,6 +106,27 @@ export async function createCpaStore(options: { file: string; now?: () => number
       InstanceRow | undefined;
     return row && instance(row);
   };
+  const saveKey = (instanceId: string, name: string, token: string): CpaKey => {
+    const clean = name.trim();
+    if (!clean || [...clean].length > 80)
+      throw new CpaError(400, "CPA_KEY_NAME", "调用密钥名称需要 1 到 80 个字");
+    const result = {
+      id: `key-${randomBytes(10).toString("hex")}`,
+      instanceId,
+      name: clean,
+      prefix: token.slice(0, 12),
+      createdAt: now(),
+    };
+    db.prepare("INSERT INTO cpa_api_keys VALUES(?,?,?,?,?,?)").run(
+      result.id,
+      instanceId,
+      clean,
+      digest(token),
+      result.prefix,
+      result.createdAt,
+    );
+    return result;
+  };
   return {
     get,
     runningInstances(): CpaInstance[] {
@@ -178,26 +199,20 @@ export async function createCpaStore(options: { file: string; now?: () => number
         .map(keyInfo);
     },
     issueKey(instanceId: string, name: string): CpaKey & { token: string } {
-      const clean = name.trim();
-      if (!clean || [...clean].length > 80)
-        throw new CpaError(400, "CPA_KEY_NAME", "调用密钥名称需要 1 到 80 个字");
       const token = `rcpa_${randomBytes(32).toString("base64url")}`;
-      const result = {
-        id: `key-${randomBytes(10).toString("hex")}`,
-        instanceId,
-        name: clean,
-        prefix: token.slice(0, 12),
-        createdAt: now(),
-      };
-      db.prepare("INSERT INTO cpa_api_keys VALUES(?,?,?,?,?,?)").run(
-        result.id,
-        instanceId,
-        clean,
-        digest(token),
-        result.prefix,
-        result.createdAt,
-      );
-      return { ...result, token };
+      return { ...saveKey(instanceId, name, token), token };
+    },
+    /** Registers a legacy caller key without retaining or returning the original token. */
+    importKey(instanceId: string, name: string, token: string): CpaKey {
+      const existing = db
+        .prepare("SELECT * FROM cpa_api_keys WHERE token_hash=?")
+        .get(digest(token));
+      if (existing) {
+        if (existing.instance_id !== instanceId)
+          throw new CpaError(409, "CPA_KEY_CONFLICT", "调用密钥已属于其他 CPA 实例");
+        return keyInfo(existing);
+      }
+      return saveKey(instanceId, name, token);
     },
     resolveKey(token: string): CpaInstance | undefined {
       const row = db

@@ -7,7 +7,7 @@ import { createServer as httpServer, request as httpRequest } from "node:http";
 import { createServer as socketServer, connect as connectSocket } from "node:net";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { detectExitTimeZone, ExitTimeZoneError } from "../packages/gateway/src/egress/timezone.ts";
+import { detectExitMetadata, ExitTimeZoneError } from "../packages/gateway/src/egress/timezone.ts";
 
 const exec = promisify(execFile);
 const UID = 10001;
@@ -289,14 +289,14 @@ export async function startProfileBroker({
       closingBrowsers.delete(id);
     }
   };
-  const timeZoneForNetwork = (item) => {
-    item.timeZone ??= detectExitTimeZone({ proxyUrl: item.proxyUrl, url: geoUrl }).catch(
+  const metadataForNetwork = (item) => {
+    item.exitMetadata ??= detectExitMetadata({ proxyUrl: item.proxyUrl, url: geoUrl }).catch(
       (error) => {
-        item.timeZone = undefined;
+        item.exitMetadata = undefined;
         throw error;
       },
     );
-    return item.timeZone;
+    return item.exitMetadata;
   };
   const startBrowser = async (id, body) => {
     if (!ID.test(id)) throw new Error("Invalid browser id");
@@ -304,9 +304,9 @@ export async function startProfileBroker({
     if (browsers.has(id)) throw new Error("Browser already running");
     const options = validateBrowserOptions(body.options);
     const egress = await ensureNetwork(`browser-${id}`, body.node);
-    let timeZone;
+    let exitMetadata;
     try {
-      timeZone = await timeZoneForNetwork(egress);
+      exitMetadata = await metadataForNetwork(egress);
     } catch (error) {
       await removeNetwork(egress.id);
       throw error;
@@ -334,7 +334,7 @@ export async function startProfileBroker({
           PATH: process.env.PATH,
           HOME: process.env.HOME ?? "/tmp/home",
           LANG: "C.UTF-8",
-          TZ: timeZone,
+          TZ: exitMetadata.timeZone,
           ...options.env,
         },
         stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"],
@@ -356,7 +356,7 @@ export async function startProfileBroker({
     await chown(cdpPath, UID, UID);
     browsers.set(id, item);
     child.once("exit", () => void closeBrowser(id));
-    return { socketPath: cdpPath, proxyUrl: egress.proxyUrl, timeZone };
+    return { socketPath: cdpPath, proxyUrl: egress.proxyUrl, ...exitMetadata };
   };
   const authorized = (request) => {
     const match = /^Basic (.+)$/i.exec(request.headers["proxy-authorization"] ?? "");
@@ -442,7 +442,7 @@ export async function startProfileBroker({
             ? await ensureNetwork(`node-${id}`)
             : networks.get(`node-${id}`);
         if (!item) throw new Error("Egress network is not running");
-        result = { timeZone: await timeZoneForNetwork(item) };
+        result = await metadataForNetwork(item);
       } else if (request.method === "DELETE" && !action) {
         if (type === "egress") await removeNetwork(`node-${id}`);
         else await closeBrowser(id);

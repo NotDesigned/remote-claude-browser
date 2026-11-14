@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { listAccounts, runAccountAction, type AccountList } from "./accounts";
+import { createAccount, listAccounts, runAccountAction, type AccountList } from "./accounts";
 
 const list: AccountList = {
   default: "default",
@@ -74,22 +74,14 @@ describe("accounts in the menu", () => {
     expect(accepted.reload).toHaveBeenCalledOnce();
   });
 
-  it("creates an account and offers to move there", async () => {
+  it("creates an unbound account without switching to it", async () => {
     const { fn, calls } = fetcher({
       "POST /api/accounts": { id: "p-aaaaaaaaaa", name: "新号" },
-      "POST /api/client/session/client-1/account": { account: "p-aaaaaaaaaa" },
     });
-    const answers = dialogs({ prompt: [" 新号 "], confirm: [true] });
-    await runAccountAction(
-      { kind: "create" },
-      { sid: "client-1", list, dialogs: answers, refresh() {}, fetcher: fn },
-    );
-    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
-      "POST /api/accounts",
-      "POST /api/client/session/client-1/account",
-    ]);
+    const made = await createAccount("新号", fn);
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(["POST /api/accounts"]);
     expect(calls[0]?.body).toEqual({ name: "新号" });
-    expect(answers.reload).toHaveBeenCalledOnce();
+    expect(made.proxyId).toBeUndefined();
   });
 
   it("never deletes the default account, and shows what the server refused", async () => {

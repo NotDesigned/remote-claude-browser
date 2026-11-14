@@ -84,6 +84,19 @@ export async function createClientSessions(
     sid,
     label: `独立会话 ${sid.slice("client-".length)}`,
   });
+  const findExisting = (owner: string, clientKey: unknown, requested?: unknown) => {
+    if (!owner || typeof clientKey !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(clientKey))
+      throw new ClientSessionError(400, "INVALID_CLIENT_KEY", "客户端标识无效，请刷新重试");
+    if (requested !== undefined) {
+      if (!isClientSlot(requested))
+        throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个独立会话不属于当前客户端");
+      const hinted = records.get(requested);
+      if (hinted && hinted.owner !== owner)
+        throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个独立会话不属于当前客户端");
+      if (hinted) return hinted;
+    }
+    return [...records.values()].find((r) => r.owner === owner && r.clientKey === clientKey);
+  };
   return {
     capacity() {
       return maxSessions;
@@ -123,20 +136,9 @@ export async function createClientSessions(
     available() {
       return Math.max(0, maxSessions - records.size);
     },
+    findExisting,
     async acquire(owner: string, clientKey: unknown, requested?: unknown, phone = false) {
-      if (!owner || typeof clientKey !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(clientKey))
-        throw new ClientSessionError(400, "INVALID_CLIENT_KEY", "客户端标识无效，请刷新重试");
-      if (requested !== undefined) {
-        if (!isClientSlot(requested))
-          throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个独立会话不属于当前客户端");
-        const hinted = records.get(requested as ClientSlot);
-        if (hinted && hinted.owner !== owner)
-          throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个独立会话不属于当前客户端");
-        if (hinted) return hinted;
-      }
-      const current = [...records.values()].find(
-        (r) => r.owner === owner && r.clientKey === clientKey,
-      );
+      const current = findExisting(owner, clientKey, requested);
       if (current) return current;
       if (records.size >= maxSessions)
         throw new ClientSessionError(
@@ -150,7 +152,7 @@ export async function createClientSessions(
       const record: ClientRecord = {
         sid,
         owner,
-        clientKey,
+        clientKey: clientKey as string,
         createdAt: now(),
         ...(phone ? { phone } : {}),
       };

@@ -75,6 +75,9 @@ export interface ServerStatusMsg {
   browserMemoryBytes: number | null;
   /** This session's browser exit IANA zone, matching the browser's local time. */
   timeZone?: string;
+  /** Geographic labels from the exit IP lookup, independent of the IANA zone name. */
+  exitCity?: string;
+  exitCountry?: string;
 }
 
 export type Down =

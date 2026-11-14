@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { ClientSessionError } from "./clients";
+import type { ExitMetadata } from "../egress/timezone";
 
 export const DEFAULT_PROFILE = "default";
 export const MAX_PROFILES = 8;
@@ -25,6 +26,8 @@ export interface ProfileRecord {
   proxyId?: string | null;
   /** Last detected IANA zone of this profile's exit. Cleared when its exit changes. */
   timeZone?: string;
+  exitCity?: string;
+  exitCountry?: string;
 }
 
 export function isProfileId(value: unknown): value is string {
@@ -72,6 +75,8 @@ export async function createProfileStore(
           ...(typeof record.signedIn === "boolean" ? { signedIn: record.signedIn } : {}),
           ...(typeof record.proxyId === "string" ? { proxyId: record.proxyId } : {}),
           ...(typeof record.timeZone === "string" ? { timeZone: record.timeZone } : {}),
+          ...(typeof record.exitCity === "string" ? { exitCity: record.exitCity } : {}),
+          ...(typeof record.exitCountry === "string" ? { exitCountry: record.exitCountry } : {}),
         });
       }
     } catch (error) {
@@ -95,6 +100,29 @@ export async function createProfileStore(
     const record = isProfileId(id) ? records.get(id) : undefined;
     if (!record) throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
     return record;
+  };
+  const setExitMetadata = async (id: string, metadata: ExitMetadata | undefined): Promise<void> => {
+    const record = known(id);
+    if (
+      record.timeZone === metadata?.timeZone &&
+      record.exitCity === metadata?.exitCity &&
+      record.exitCountry === metadata?.exitCountry
+    )
+      return;
+    const previous = {
+      timeZone: record.timeZone,
+      exitCity: record.exitCity,
+      exitCountry: record.exitCountry,
+    };
+    record.timeZone = metadata?.timeZone;
+    record.exitCity = metadata?.exitCity;
+    record.exitCountry = metadata?.exitCountry;
+    try {
+      await persist();
+    } catch (error) {
+      Object.assign(record, previous);
+      throw error;
+    }
   };
 
   return {
@@ -139,29 +167,26 @@ export async function createProfileStore(
     async setProxy(id: string, proxyId: string | null): Promise<void> {
       const record = known(id);
       const previous = record.proxyId;
-      const previousZone = record.timeZone;
+      const previousMetadata = {
+        timeZone: record.timeZone,
+        exitCity: record.exitCity,
+        exitCountry: record.exitCountry,
+      };
       record.proxyId = proxyId;
       delete record.timeZone;
+      delete record.exitCity;
+      delete record.exitCountry;
       try {
         await persist();
       } catch (error) {
         record.proxyId = previous;
-        record.timeZone = previousZone;
+        Object.assign(record, previousMetadata);
         throw error;
       }
     },
-    async setTimeZone(id: string, timeZone: string | undefined): Promise<void> {
-      const record = known(id);
-      if (record.timeZone === timeZone) return;
-      const previous = record.timeZone;
-      record.timeZone = timeZone;
-      try {
-        await persist();
-      } catch (error) {
-        record.timeZone = previous;
-        throw error;
-      }
-    },
+    setExitMetadata,
+    setTimeZone: (id: string, timeZone: string | undefined): Promise<void> =>
+      setExitMetadata(id, timeZone === undefined ? undefined : { timeZone }),
     /** Remembers who it is signed in as. Unchanged values are not written again. */
     async setLogin(
       id: string,

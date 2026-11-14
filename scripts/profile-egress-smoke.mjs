@@ -20,6 +20,10 @@ const exitTimeZones = {
   "exit-A": { timeZone: "Asia/Tokyo", winterOffset: -540, summerOffset: -540 },
   "exit-B": { timeZone: "America/Los_Angeles", winterOffset: 480, summerOffset: 420 },
 };
+const exitMetadata = {
+  "exit-A": { timeZone: "Asia/Tokyo", exitCity: "大阪", exitCountry: "日本" },
+  "exit-B": { timeZone: "America/Los_Angeles", exitCity: "西雅图", exitCountry: "美国" },
+};
 const command = async (program, args) =>
   (await exec(program, args, { maxBuffer: 4 * 1024 * 1024 })).stdout.trim();
 const readInput = async () => {
@@ -318,7 +322,15 @@ async function startExitFixture(exit, socksPort, targetPort, counters) {
         res.end(JSON.stringify({ success: false }));
         return;
       }
-      res.end(JSON.stringify({ success: true, timezone: { id: exitTimeZones[exit].timeZone } }));
+      const metadata = exitMetadata[exit];
+      res.end(
+        JSON.stringify({
+          success: true,
+          city: metadata.exitCity,
+          country: metadata.exitCountry,
+          timezone: { id: metadata.timeZone },
+        }),
+      );
       return;
     }
     if (req.url.endsWith("/chat/completions")) {
@@ -678,7 +690,7 @@ exec sh /acceptance/profile-network.sh "$@"
       api("/egress/deployment-default/timezone", "POST"),
       api("/egress/deployment-default/timezone", "POST"),
     ]);
-    assert.ok(defaultZones.every((result) => result.timeZone === exitTimeZones["exit-A"].timeZone));
+    assert.deepEqual(defaultZones, [exitMetadata["exit-A"], exitMetadata["exit-A"]]);
     assert.equal(
       counts.A.geo,
       initialDefaultGeo + 1,
@@ -689,9 +701,9 @@ exec sh /acceptance/profile-network.sh "$@"
       stat(`/run/remote-browser/${networkIdentity("node-deployment-default").name}`),
       { code: "ENOENT" },
     );
-    assert.equal(
-      (await api("/egress/deployment-default/timezone", "POST")).timeZone,
-      exitTimeZones["exit-A"].timeZone,
+    assert.deepEqual(
+      await api("/egress/deployment-default/timezone", "POST"),
+      exitMetadata["exit-A"],
     );
     assert.equal(
       counts.A.geo,
@@ -802,7 +814,8 @@ exec sh /acceptance/profile-network.sh "$@"
           env,
         },
       });
-      assert.equal(value.timeZone, exitTimeZones[profile.exit].timeZone);
+      const { timeZone, exitCity, exitCountry } = value;
+      assert.deepEqual({ timeZone, exitCity, exitCountry }, exitMetadata[profile.exit]);
       return value;
     };
     stage = "failed-geo-cleanup";
@@ -912,9 +925,11 @@ exec sh /acceptance/profile-network.sh "$@"
         defaultEgressLifecycle: true,
         headfulPrivateX11: true,
         selectedExitTimeZones: true,
+        actualExitLocations: true,
         workerLocalTime: true,
         seasonalOffsets: true,
         defaultTimeZoneCached: true,
+        defaultExitLocationCached: true,
         failedGeoCleaned: true,
         ...(process.env.PROFILE_EGRESS_STOCK_CPA === "1" ? { stockCpaProxy: true } : {}),
         counts,

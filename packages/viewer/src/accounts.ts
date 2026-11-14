@@ -19,6 +19,8 @@ export interface AccountInfo {
   proxyId?: string | null;
   proxyName?: string | null;
   timeZone?: string;
+  exitCity?: string;
+  exitCountry?: string;
 }
 
 export interface AccountList {
@@ -156,7 +158,7 @@ export interface AccountDialogs {
  * reloads the page, which reconnects it to that account's Chrome.
  */
 export async function runAccountAction(
-  action: AccountAction,
+  action: Exclude<AccountAction, { kind: "create" }>,
   context: {
     sid: string;
     list: AccountList;
@@ -178,13 +180,6 @@ export async function runAccountAction(
       if (!target) return;
       if (!dialogs.confirm(`切换到「${target.name}」？这个会话现在打开的页面会关闭。`)) return;
       await move(target.id);
-    } else if (action.kind === "create") {
-      const name = dialogs.prompt("新浏览器配置的名字")?.trim();
-      if (!name) return;
-      const made = await createAccount(name, context.fetcher);
-      if (dialogs.confirm(`已新建「${made.name}」。现在把这个会话切换过去吗？`))
-        await move(made.id);
-      else context.refresh();
     } else if (action.kind === "rename") {
       if (!current) return;
       const name = dialogs.prompt("浏览器配置的名字", current.name)?.trim();

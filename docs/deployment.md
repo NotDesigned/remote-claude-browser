@@ -73,9 +73,9 @@ docker compose ps
 
 浏览器按所选出口的 IP 地域信息自动确定 IANA 时区，网页与 Worker 使用相同当地时间，工作台时钟也随当前配置切换。`.env` 的 `TZ` 配置服务进程和日志的时区，默认 UTC。详见[时区说明](timezone.md)。
 
-### 可选：按浏览器配置选择出口
+### 按浏览器配置选择出口
 
-添加 [`compose.runtime.yml`](../compose.runtime.yml) 可启用 Mihomo 网络运行时和按用户 CPA。全新部署可以运行：
+浏览器配置必须绑定出口节点后才能打开。添加 [`compose.runtime.yml`](../compose.runtime.yml) 启用 Mihomo 网络运行时，也可使用按用户 CPA。全新部署可以运行：
 
 ```bash
 docker compose -f compose.yml -f compose.runtime.yml up -d --build
@@ -88,8 +88,8 @@ docker compose -f compose.yml -f compose.runtime.yml up -d --build
 从工作台或配置选择页打开「代理与 API」：
 
 1. 导入节点链接、Mihomo YAML 或 HTTP/HTTPS 订阅。普通用户可以管理自己的私有来源，管理员还可以维护共享来源；订阅可以手动刷新。
-2. 在浏览器配置卡片的 ⋯ 菜单选择「设置出口」。列表显示可用的共享和私有节点，空选项表示部署默认出口。更换正在运行的配置会关闭它在所有设备上的页面，再按新出口启动。
-3. 每个绑定节点的浏览器配置使用独立网络命名空间和 Mihomo 出口；网页、DNS 与 WebRTC 一起走所选节点。未绑定节点的配置继续使用原部署出口，包括已有 Xray 设置。
+2. 在浏览器配置卡片的 ⋯ 菜单选择「设置出口」。列表显示可用的共享和私有节点，空选项表示「未分配」。未分配节点时，新建会话、恢复会话和切换到该配置都会返回 `409 EXIT_REQUIRED`；不会分配新会话或启动 Chrome。更换正在运行的配置会关闭它在所有设备上的页面，再按新出口启动。
+3. 每个绑定节点的浏览器配置使用独立网络命名空间和 Mihomo 出口；网页、DNS 与 WebRTC 一起走所选节点。移除绑定后配置保留网站登录资料，但在重新选择节点前不能打开。CPA 的部署默认出口继续使用原部署出站设置，包括已有 Xray 配置。
 
 订阅只提供节点，不接管运行时的规则、端口或管理接口。公开列表仅返回来源与节点的元数据，不返回订阅 URL、节点密码和服务端连接配置。来源与节点保存在 `data` 卷的 `/data/profile/proxy-sources.json`，同样需要按密钥保护。
 
@@ -105,7 +105,7 @@ GET    /api/proxies
 PATCH  /api/accounts/:id/proxy            {proxyId: string | null}
 ```
 
-这些接口使用工作台登录 Cookie，并检查来源和浏览器配置的归属。每个专用 CPA 实例的数据、授权和 Key 也按工作台用户管理。
+`PATCH /api/accounts/:id/proxy` 的 `proxyId: null` 表示清除绑定，而不是选择部署默认出口。这些接口使用工作台登录 Cookie，并检查来源和浏览器配置的归属。每个专用 CPA 实例的数据、授权和 Key 也按工作台用户管理。
 
 隔离网络验收会创建自己的临时容器和网络，不读取正式配置或账号。提供已校验版本的 Mihomo 可执行文件：
 
@@ -118,13 +118,13 @@ bash scripts/limited-run.sh env PROFILE_EGRESS_SMOKE=1 \
 
 ### 兼容：部署级 Xray 出站代理
 
-想让远程浏览器的流量全部从另一个出口出去，在 `.env` 里写：
+已有部署可继续通过 Xray 提供服务级出站和 CPA 默认出口。在 `.env` 里写：
 
 ```bash
 EGRESS_PROXY=vless://uuid@proxy.example.com:443?security=reality&sni=...&pbk=...&sid=...
 ```
 
-再在 compose 文件列表里加上 `compose.proxy.yml`（比如 `COMPOSE_FILE=compose.yml:compose.hostnet.yml:compose.proxy.yml`）。`deploy-container.sh` 看到 `.env` 里有 `EGRESS_PROXY` 会自动加上，部署完会打印网页的出口 IP。
+再在 compose 文件列表里加上 `compose.proxy.yml`（比如 `COMPOSE_FILE=compose.yml:compose.hostnet.yml:compose.proxy.yml`）。`deploy-container.sh` 看到 `.env` 里有 `EGRESS_PROXY` 会自动加上，部署完会打印服务级出口 IP。浏览器配置仍需在工作台绑定自己的节点。
 
 - 支持 `socks5://`、`http://`、`https://`、`ss://`、`vless://`（含 REALITY）、`vmess://`、`trojan://`、`hy2://` 分享链接；其他协议可以直接写一段 Xray outbound JSON（使用 `protocol`、`settings` 和 `streamSettings`）。
 - 容器里的 Xray 建一个 TUN，只接管浏览器用户（uid 10001，Chrome 和网关都是它）的流量，宿主机和其他程序不受影响，`compose.hostnet.yml` 下也一样。网页的 DNS 经代理走 DoH，WebRTC 的 UDP 也走代理，这需要代理支持 UDP（SOCKS5 UDP、Shadowsocks、VLESS、VMess、Trojan、Hysteria2 都可以；HTTP 代理不行，此时网页里的 WebRTC 连不上）。
@@ -153,7 +153,7 @@ docker compose up -d
 
 `compose.runtime.yml` 中的 CPA broker 为工作台用户建立独立实例，由「代理与 API」管理授权、每凭据代理和外部 Key。新调用统一使用浏览器网关的 `/v1/*`，不需要另外公开 CPA 管理端口。
 
-原 `compose.cpa.yml` 和 `compose.cpa.https.yml` 的独立服务继续保留。它使用 `/management.html` 面板和部署级 `CPA_API_KEY`，不会自动导入到新的用户实例。已有同入口部署可以增加 `compose.runtime.https.yml` 按新 Key 前缀分流，并保留旧调用方式。完整说明见 [CPA 部署](cpa.md)。
+原 `compose.cpa.yml` 和 `compose.cpa.https.yml` 的独立服务继续保留。它使用 `/management.html` 面板和部署级 `CPA_API_KEY`，不会自动导入到新的用户实例。未迁移的同入口部署可以增加 `compose.runtime.https.yml` 按新 Key 前缀临时分流。旧授权和调用 Key 迁入指定用户私有实例后，应把整个 `/v1/*` 交给工作台按 Key 归属路由。完整说明见 [CPA 部署](cpa.md)。
 
 ## 兼容：独立入口机和 SSH 隧道
 

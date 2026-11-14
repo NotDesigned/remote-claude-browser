@@ -3,6 +3,7 @@ import { connect as connectSocket } from "node:net";
 import type { ConnectionTransport } from "puppeteer-core";
 import { chromiumLaunchArgs, connectBrowserTransport, type LaunchOpts } from "./launch";
 import { ClientSessionError } from "../session/clients";
+import type { ExitMetadata } from "../egress/timezone";
 
 export async function runtimeRequest<T>(path: string, method: string, body?: unknown): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -68,7 +69,7 @@ export async function pipeTransport(path: string): Promise<ConnectionTransport> 
 }
 
 export async function launchBrokerBrowser(id: string, node: unknown, opts: LaunchOpts) {
-  const started = await runtimeRequest<{ socketPath: string; proxyUrl: string; timeZone: string }>(
+  const started = await runtimeRequest<ExitMetadata & { socketPath: string; proxyUrl: string }>(
     `/browsers/${id}/start`,
     "POST",
     {
@@ -97,7 +98,13 @@ export async function launchBrokerBrowser(id: string, node: unknown, opts: Launc
     browser.kill = async () => {
       await stop();
     };
-    return { browser, proxyUrl: started.proxyUrl, timeZone: started.timeZone };
+    return {
+      browser,
+      proxyUrl: started.proxyUrl,
+      timeZone: started.timeZone,
+      exitCity: started.exitCity,
+      exitCountry: started.exitCountry,
+    };
   } catch (error) {
     await stop();
     throw error;

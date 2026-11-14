@@ -89,7 +89,7 @@ COPY deploy/server-entrypoint.sh deploy/server-egress.sh deploy/egress-tunnel.sh
     deploy/egress-proxy.mjs deploy/timezone.mjs /opt/remote-browser/
 COPY deploy/profile-network.sh /opt/remote-browser/
 RUN chmod 0755 /opt/remote-browser/server-entrypoint.sh /opt/remote-browser/server-egress.sh \
-    /opt/remote-browser/egress-tunnel.sh
+    /opt/remote-browser/egress-tunnel.sh /opt/remote-browser/profile-network.sh
 
 # Without a UTF-8 locale Chromium can't name a download in Chinese, which comes out as "download", and
 # xwininfo can't print such a window's title, which picture mode finds the window by.

@@ -9,6 +9,7 @@ import { mintInvite } from "./auth/invite";
 import { SESSION_COOKIE } from "./auth/middleware";
 import { createUserStore, type FrontendUser, type UpdateUserInput } from "./auth/users";
 import { startClientGateway } from "./clients-main";
+import { ClientSessionError } from "./session/clients";
 import { createProfileStore } from "./session/profiles";
 
 const hooks = vi.hoisted(() => ({
@@ -19,11 +20,18 @@ const hooks = vi.hoisted(() => ({
   launch: vi.fn(async () => {
     throw new Error("management and forbidden-session requests must never start Chrome");
   }),
+  brokerLaunch: vi.fn(async (..._args: unknown[]) => {
+    throw new Error("management and forbidden-session requests must never start a broker browser");
+  }),
 }));
 
 vi.mock("./browser/launch", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./browser/launch")>()),
   launchBrowser: hooks.launch,
+}));
+vi.mock("./browser/broker", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./browser/broker")>()),
+  launchBrokerBrowser: hooks.brokerLaunch,
 }));
 vi.mock("./session/profiles", async (importOriginal) => {
   const original = await importOriginal<typeof import("./session/profiles")>();
@@ -93,6 +101,10 @@ beforeEach(() => {
   hooks.beforeRemove = undefined;
   hooks.beforeUserUpdate = undefined;
   hooks.launch.mockClear();
+  hooks.brokerLaunch.mockReset();
+  hooks.brokerLaunch.mockRejectedValue(
+    new ClientSessionError(503, "BROWSER_TEST_BOUNDARY", "浏览器运行时边界"),
+  );
   vi.stubEnv("MIRROR_E2E", undefined);
   vi.stubEnv("MIRROR_ACCESS_PASSWORD", PASSWORD);
   vi.stubEnv("MIRROR_ADMIN_USERNAME", "admin");
@@ -185,14 +197,35 @@ async function createBob(app: FastifyInstance, admin: string, role = "user") {
   return response.json<FrontendUser>();
 }
 
+async function bindExit(app: FastifyInstance, cookie: string, profileId: string) {
+  expect(
+    (
+      await api(app, cookie, "POST", "/api/proxy-sources", {
+        name: "私有测试出口",
+        visibility: "private",
+        content: "http://fixture-user:fixture-secret@bound-exit.invalid:8080",
+      })
+    ).statusCode,
+  ).toBe(200);
+  const node = (await api(app, cookie, "GET", "/api/proxies")).json().proxies[0];
+  expect(
+    (await api(app, cookie, "PATCH", `/api/accounts/${profileId}/proxy`, { proxyId: node.id }))
+      .statusCode,
+  ).toBe(200);
+}
+
 describe("multi-user management routes", () => {
-  it("reports the requested session's exit timezone and never exposes another owner's status", async () => {
+  it("persists each session's actual city independently of its timezone and owner", async () => {
     vi.stubEnv("TZ", "Europe/Berlin");
-    const { app } = await fixture(async (paths) => {
+    const kaohsiung = { timeZone: "Asia/Taipei", exitCity: "高雄", exitCountry: "台湾" };
+    const taipei = { timeZone: "Asia/Taipei", exitCity: "台北", exitCountry: "台湾" };
+    let secondId = "";
+    const gateway = await fixture(async (paths) => {
       const profiles = await createProfileStore({ file: paths.accounts });
-      const second = await profiles.create("洛杉矶出口");
-      await profiles.setTimeZone("default", "Asia/Tokyo");
-      await profiles.setTimeZone(second.id, "America/Los_Angeles");
+      const second = await profiles.create("台北出口");
+      secondId = second.id;
+      await profiles.setExitMetadata("default", kaohsiung);
+      await profiles.setExitMetadata(second.id, taipei);
       const users = await createUserStore({ file: paths.users, bootstrapPassword: PASSWORD });
       const bob = await users.createUser({ username: "bob", password: BOB_PASSWORD });
       users.assignProfile(second.id, bob.id);
@@ -200,26 +233,142 @@ describe("multi-user management routes", () => {
       await writeFile(
         paths.sessions,
         JSON.stringify([
-          { sid: "client-1", owner: "device-clock-tokyo", clientKey: "tokyo", createdAt: 1 },
+          {
+            sid: "client-1",
+            owner: "device-clock-kaohsiung",
+            clientKey: "kaohsiung",
+            createdAt: 1,
+          },
           {
             sid: "client-2",
-            owner: `${bob.id}/device-clock-la`,
-            clientKey: "la",
+            owner: `${bob.id}/device-clock-taipei`,
+            clientKey: "taipei",
             profile: second.id,
             createdAt: 2,
           },
         ]),
       );
     });
-    const admin = withDevice(await login(app), "device-clock-tokyo");
-    const bob = withDevice(await login(app, "bob", BOB_PASSWORD), "device-clock-la");
-    const tokyo = (await api(app, admin, "GET", "/api/status?sid=client-1")).json();
-    const la = (await api(app, bob, "GET", "/api/status?sid=client-2")).json();
-    expect(tokyo.timeZone).toBe("Asia/Tokyo");
-    expect(la.timeZone).toBe("America/Los_Angeles");
-    expect((await api(app, admin, "GET", "/api/status?sid=client-2")).statusCode).toBe(403);
-    expect((await api(app, bob, "GET", "/api/status?sid=client-1")).statusCode).toBe(403);
-    expect((await api(app, admin, "GET", "/api/status")).json().timeZone).toBeUndefined();
+    const check = async (app: FastifyInstance) => {
+      const admin = withDevice(await login(app), "device-clock-kaohsiung");
+      const bob = withDevice(await login(app, "bob", BOB_PASSWORD), "device-clock-taipei");
+      expect((await api(app, admin, "GET", "/api/status?sid=client-1")).json()).toMatchObject(
+        kaohsiung,
+      );
+      expect((await api(app, bob, "GET", "/api/status?sid=client-2")).json()).toMatchObject(taipei);
+      expect((await api(app, admin, "GET", "/api/status?sid=client-2")).statusCode).toBe(403);
+      expect((await api(app, bob, "GET", "/api/status?sid=client-1")).statusCode).toBe(403);
+      expect((await api(app, admin, "GET", "/api/accounts")).json().accounts).toEqual([
+        expect.objectContaining({ id: "default", ...kaohsiung }),
+      ]);
+      expect((await api(app, bob, "GET", "/api/accounts")).json().accounts).toEqual([
+        expect.objectContaining({ id: secondId, ...taipei }),
+      ]);
+      const generic = (await api(app, admin, "GET", "/api/status")).json();
+      for (const field of ["timeZone", "exitCity", "exitCountry"])
+        expect(generic[field]).toBeUndefined();
+    };
+    await check(gateway.app);
+    const saved = JSON.parse(await readFile(gateway.paths.accounts, "utf8"));
+    expect(saved.find((record: { id: string }) => record.id === "default")).toMatchObject(
+      kaohsiung,
+    );
+    expect(saved.find((record: { id: string }) => record.id === secondId)).toMatchObject(taipei);
+    await gateway.stop();
+    const restarted = await startClientGateway({ listen: false, signals: false });
+    gateways.push(restarted);
+    await check(restarted.app);
+    expect(hooks.launch).not.toHaveBeenCalled();
+    expect(hooks.brokerLaunch).not.toHaveBeenCalled();
+  });
+
+  it("refuses unassigned default and new browser configurations before allocating a session", async () => {
+    const { app, paths } = await fixture(async (paths) => {
+      await writeFile(paths.sessions, "[]");
+    });
+    const admin = await login(app);
+    const created = (await api(app, admin, "POST", "/api/accounts", { name: "未分配出口" })).json();
+    for (const payload of [
+      { clientKey: "implicit-default" },
+      { clientKey: "explicit-default", account: "default" },
+      { clientKey: "new-profile", account: created.id },
+    ]) {
+      const response = await api(app, admin, "POST", "/api/client/session", payload);
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ code: "EXIT_REQUIRED", ownedSessions: [] });
+    }
+    expect(JSON.parse(await readFile(paths.sessions, "utf8"))).toEqual([]);
+    expect((await api(app, admin, "GET", "/api/status")).json().clientsAllocated).toBe(0);
+    await expect(stat(join(paths.profile, "browsers", created.id))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(hooks.launch).not.toHaveBeenCalled();
+    expect(hooks.brokerLaunch).not.toHaveBeenCalled();
+  });
+
+  it("keeps resumed sessions unchanged when their browser or switch destination lacks an exit", async () => {
+    const { app, paths } = await fixture(async (paths) => {
+      await writeFile(
+        paths.sessions,
+        JSON.stringify([
+          { sid: "client-1", owner: "device-existing", clientKey: "existing-key", createdAt: 1 },
+        ]),
+      );
+    });
+    const admin = withDevice(await login(app), "device-existing");
+    const other = (
+      await api(app, admin, "POST", "/api/accounts", { name: "另一未分配配置" })
+    ).json();
+    const before = await readFile(paths.sessions, "utf8");
+    for (const payload of [
+      { clientKey: "existing-key" },
+      { clientKey: "existing-key", sid: "client-1" },
+      { clientKey: "existing-key", sid: "client-1", account: other.id },
+    ]) {
+      const response = await api(app, admin, "POST", "/api/client/session", payload);
+      expect(response.statusCode).toBe(409);
+      expect(response.json().code).toBe("EXIT_REQUIRED");
+    }
+    const switching = await api(app, admin, "POST", "/api/client/session/client-1/account", {
+      account: other.id,
+    });
+    expect(switching.statusCode).toBe(409);
+    expect(switching.json().code).toBe("EXIT_REQUIRED");
+    expect(await readFile(paths.sessions, "utf8")).toBe(before);
+    expect((await api(app, admin, "GET", "/api/status")).json().clientsAllocated).toBe(1);
+    expect(hooks.launch).not.toHaveBeenCalled();
+    expect(hooks.brokerLaunch).not.toHaveBeenCalled();
+  });
+
+  it("admits an explicitly bound browser to its broker and blocks it again after unassignment", async () => {
+    vi.stubEnv("MIRROR_RUNTIME_SOCKET", "/broker-test-boundary.sock");
+    vi.stubEnv("CHROME_HEADFUL", undefined);
+    const { app, paths } = await fixture(async (paths) => {
+      await writeFile(paths.sessions, "[]");
+    });
+    const admin = await login(app);
+    await bindExit(app, admin, "default");
+    const admitted = await api(app, admin, "POST", "/api/client/session", {
+      clientKey: "bound-browser",
+    });
+    expect(admitted.statusCode).toBe(503);
+    expect(admitted.json().code).toBe("BROWSER_TEST_BOUNDARY");
+    expect(hooks.brokerLaunch).toHaveBeenCalledTimes(1);
+    expect(hooks.brokerLaunch.mock.calls[0]?.[0]).toBe("default");
+    expect(JSON.parse(await readFile(paths.sessions, "utf8"))).toEqual([]);
+    expect(
+      (await api(app, admin, "PATCH", "/api/accounts/default/proxy", { proxyId: null })).statusCode,
+    ).toBe(200);
+    const refused = await api(app, admin, "POST", "/api/client/session", {
+      clientKey: "unassigned-again",
+    });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().code).toBe("EXIT_REQUIRED");
+    expect((await api(app, admin, "GET", "/api/accounts")).json().accounts[0]).toMatchObject({
+      proxyId: null,
+      proxyName: null,
+    });
+    expect(hooks.brokerLaunch).toHaveBeenCalledTimes(1);
     expect(hooks.launch).not.toHaveBeenCalled();
   });
   it("binds only visible nodes to an owned profile, redacts secrets and preserves the exit on restart", async () => {
@@ -379,6 +528,7 @@ describe("multi-user management routes", () => {
   });
 
   it("blocks deleting a configuration used on another device, then moves this device's session to its chosen default", async () => {
+    vi.stubEnv("MIRROR_RUNTIME_SOCKET", "/unused-for-management.sock");
     let selectedId = "";
     let removedId = "";
     const { app, paths } = await fixture(async (paths) => {
@@ -410,6 +560,7 @@ describe("multi-user management routes", () => {
     });
     const admin = withDevice(await login(app), "device-here");
     const away = withDevice(await login(app), "device-away");
+    await bindExit(app, admin, selectedId);
     expect((await api(app, admin, "POST", `/api/accounts/${selectedId}/default`)).statusCode).toBe(
       200,
     );

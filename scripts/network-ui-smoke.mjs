@@ -282,6 +282,7 @@ try {
       : await chromium.launch({ executablePath: process.env.CHROME_PATH, headless: true });
   const checks = [];
   for (const mobile of [false, true]) {
+    profileProxyId = null;
     const context = await browser.newContext(
       mobile
         ? { viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true }
@@ -294,6 +295,28 @@ try {
     const click = (locator) => (mobile ? locator.tap() : locator.click());
     await page.goto(origin);
     const sessionsBeforeExit = sessions.length;
+    const profileCard = page.getByRole("button", { name: /默认配置.*未登录/ });
+    await profileCard.waitFor();
+    assert.equal(await profileCard.isDisabled(), true);
+    const unboundText = await profileCard.locator(".profile-exit").evaluateAll((lines) =>
+      lines.map((line) => ({
+        scrollWidth: line.scrollWidth,
+        clientWidth: line.clientWidth,
+        scrollHeight: line.scrollHeight,
+        clientHeight: line.clientHeight,
+      })),
+    );
+    assert.ok(
+      unboundText.every(
+        (line) =>
+          line.scrollWidth <= line.clientWidth + 1 && line.scrollHeight <= line.clientHeight + 1,
+      ),
+      JSON.stringify(unboundText),
+    );
+    await mkdir("artifacts", { recursive: true });
+    await page.screenshot({
+      path: `artifacts/exit-required-picker-${engine}-${mobile ? "phone" : "desktop"}.png`,
+    });
     for (const proxyId of ["proxy-shared", "proxy-private", ""]) {
       await click(page.getByRole("button", { name: "管理「默认配置」", exact: true }));
       await click(page.getByRole("button", { name: "设置出口", exact: true }));
@@ -301,6 +324,14 @@ try {
       const select = editor.getByLabel("「默认配置」的网络出口", { exact: true });
       await select.waitFor();
       if (proxyId === "proxy-shared") assert.equal(await select.inputValue(), "");
+      assert.equal(
+        await select.locator('option[value=""]').textContent(),
+        "未选择出口（禁止打开）",
+      );
+      if (proxyId === "proxy-shared")
+        await page.screenshot({
+          path: `artifacts/exit-required-editor-${engine}-${mobile ? "phone" : "desktop"}.png`,
+        });
       const choices = await select
         .locator("option")
         .evaluateAll((options) => options.map((option) => option.value));
@@ -320,10 +351,11 @@ try {
       });
       await page
         .getByText(
-          `出口：${proxyId === "proxy-shared" ? "共享出口" : proxyId === "proxy-private" ? "私有出口" : "部署默认"}`,
+          `出口：${proxyId === "proxy-shared" ? "共享出口" : proxyId === "proxy-private" ? "私有出口" : "未选择（禁止打开）"}`,
           { exact: true },
         )
         .waitFor();
+      assert.equal(await profileCard.isDisabled(), proxyId === "");
     }
     assert.equal(sessions.length, sessionsBeforeExit);
     await click(page.getByRole("button", { name: "代理与 API", exact: true }));
@@ -440,6 +472,14 @@ try {
     });
     await click(panel.getByRole("button", { name: "关闭代理与 API 管理", exact: true }));
     await panel.waitFor({ state: "hidden" });
+    await click(page.getByRole("button", { name: "管理「默认配置」", exact: true }));
+    await click(page.getByRole("button", { name: "设置出口", exact: true }));
+    const openExit = page.getByLabel("「默认配置」的网络出口", { exact: true });
+    assert.equal(await openExit.inputValue(), "");
+    await openExit.selectOption("proxy-shared");
+    await click(page.getByRole("button", { name: "保存出口", exact: true }));
+    await page.getByText("出口：共享出口", { exact: true }).waitFor();
+    assert.equal(sessions.length, sessionsBeforeExit);
     await click(page.getByRole("button", { name: /默认配置.*未登录/ }));
     await page.waitForURL((url) => url.searchParams.has("sid"));
     await click(page.getByRole("button", { name: /^更多/ }));
@@ -469,7 +509,9 @@ try {
       credentialProxyStatusDelete: true,
       keyOnceAndRevoke: true,
       sharedAdminOnly: true,
-      profileSharedPrivateAndDefaultExit: true,
+      profileSharedPrivateAndUnassignedExit: true,
+      unboundProfilesBlocked: true,
+      noAutomaticFirstExit: true,
       proxySaveWithoutSessionAllocation: true,
       networkPanelVisibleOverPicker: true,
       pickerToolbarWithBackAndNetwork: toolbarLayout,

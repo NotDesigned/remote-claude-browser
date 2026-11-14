@@ -24,7 +24,7 @@ excluded from Git. Do not commit a populated one. `scripts/bootstrap.sh` writes 
 | `MIRROR_ACCOUNTS_DIR` | no | `<profile>-accounts` | Where browser configurations other than the legacy default keep their Chrome profiles |
 | `EGRESS_POLICY` | no | `on` | `off` lets pages reach private networks and the host |
 | `EGRESS_BLOCK` | no | empty | More addresses to block, comma-separated. Add the host's public IP |
-| `EGRESS_PROXY` | for `compose.proxy.yml` | none | An outside proxy all browser traffic leaves through, DNS and WebRTC included: a share link (`socks5://`, `http://`, `https://`, `ss://`, `vless://`, `vmess://`, `trojan://`, `hy2://`) or an Xray outbound in JSON (`protocol`, `settings`, `streamSettings`), including VLESS Encryption and REALITY `pqv`. Needs `EGRESS_POLICY=on`. If the proxy is down, pages get no connection rather than a direct one. See [outside proxy](deployment.md#出站代理) |
+| `EGRESS_PROXY` | for `compose.proxy.yml` | none | A deployment-level outside proxy retained for service traffic and the CPA default exit. Browser profiles must still bind their own catalog node. Accepts: a share link (`socks5://`, `http://`, `https://`, `ss://`, `vless://`, `vmess://`, `trojan://`, `hy2://`) or an Xray outbound in JSON (`protocol`, `settings`, `streamSettings`), including VLESS Encryption and REALITY `pqv`. Needs `EGRESS_POLICY=on`. If the proxy is down, pages get no connection rather than a direct one. See [outside proxy](deployment.md#出站代理) |
 | `EGRESS_BOOTSTRAP_DNS` | no | `1.1.1.1` | The resolver that looks up the proxy's own name, which cannot go through the proxy. An IPv4 address |
 | `MIRROR_PAGE_SLEEP_MS` | no | `1800000` | A page nobody has seen for this long sleeps: it shows a placeholder and the site's renderer exits. A page is seen while it is its session's active tab and a viewer of that session is on screen, so tabs left behind the one in use sleep too. Each loads again when someone switches to it or comes back. Pages writing a reply, playing sound, using the microphone or in picture mode keep running. `0` turns it off |
 | `TZ` | no | `Etc/UTC` | Service-process and log timezone. Each Chrome uses the IANA zone detected through its selected exit. An invalid service zone stops startup. See [timezone behavior](timezone.md) |
@@ -38,6 +38,8 @@ The default database is `<CHROME_USER_DATA_DIR>/users.sqlite`, or `/data/profile
 Docker. It contains service users, scrypt password hashes, SHA-256 login-token digests and browser
 profile ownership; website credentials remain in Chrome's profiles. A remembered login lasts up to
 60 days. Usernames and passwords for this service are independent of accounts on visited websites.
+
+Browser profiles with `proxyId: null` are unassigned. Creating or resuming a session, or switching to an unassigned profile, returns `409 EXIT_REQUIRED` before allocating a new session or launching Chrome. Enable `compose.runtime.yml`, import a shared or private node, then bind it to the profile. CPA credentials may still use the deployment default exit.
 
 Each front-end user sees only their own browser configurations and sessions. The session limit is
 global, rather than a limit on front-end users or online devices. Lowering it keeps existing sessions
@@ -60,7 +62,7 @@ Native clipboard selections stay within that configuration. X11 window control a
 use its private display too. Outside Docker this requires `Xvfb` and `xauth` on `PATH`.
 Each configuration also has its own screen size, font subset and font rendering, derived from
 `MIRROR_AUTH_SECRET`; changing that secret changes every configuration's fingerprint. Audio, WebGL
-and CPU readings, and the egress, stay shared.
+and CPU readings stay shared. Each browser configuration must select an explicit proxy node; its egress depends on that node.
 
 Compose passes the password and signing keys as container environment variables. Anyone who can
 inspect the container or control the Docker daemon can read them, and Docker daemon access is already

@@ -12,7 +12,7 @@
 4. 授权成功后，在凭据列表中分别选择代理节点，或停用、启用、删除该凭据。每个凭据的代理与浏览器配置的出口独立设置。
 5. 生成外部 API Key。完整 Key 只显示这一次，保存后再关闭面板；列表只显示前缀，可随时撤销。
 
-新 Key 以 `rcpa_` 开头，由工作台网关路由到它所属的唯一 CPA 实例：
+新 Key 以 `rcpa_` 开头；迁移导入的旧 Key 保持原值。工作台网关按 Key 摘要查询归属，路由到唯一 CPA 实例：
 
 | 用途 | 地址与认证 |
 | --- | --- |
@@ -31,7 +31,7 @@
 docker compose -f compose.yml -f compose.runtime.yml up -d --build
 ```
 
-长期使用时把相同文件列表保存到 `.env` 的 `COMPOSE_FILE`。已有部署应在现有文件列表后追加 `compose.runtime.yml`，保留已有的出站、入口和私有覆盖文件。浏览器未指定节点和 CPA 的部署默认出口继续使用现有部署的出站配置；已有 `EGRESS_PROXY`/`compose.proxy.yml` 不需要迁走。
+长期使用时把相同文件列表保存到 `.env` 的 `COMPOSE_FILE`。已有部署应在现有文件列表后追加 `compose.runtime.yml`，保留已有的出站、入口和私有覆盖文件。浏览器配置必须明确绑定节点，未分配时不能打开；CPA 的授权和凭据仍可选择部署默认出口，继续使用现有部署的出站配置。已有 `EGRESS_PROXY`/`compose.proxy.yml` 不需要迁走。
 
 用户 CPA 模块需要 Docker bridge 网络，不兼容 `compose.hostnet.yml`。已有主机网络部署应先由部署者移除该覆盖文件、确认 bridge 下的端口和媒体连接，再追加运行时模块；公网入口仍可由同机或独立 VPS 管理。
 
@@ -44,11 +44,15 @@ docker compose -f compose.yml -f compose.runtime.yml up -d --build
 
 公网入口正常转发整个浏览器服务即可，包括 `/api/cpa/instances/*` 和 `/v1/*`。不必对外发布 CPA 管理端口或 Docker socket。同机及独立 VPS 的入口示例见 [`examples/caddy/`](../examples/caddy/README.md)。
 
-### 同一入口保留旧 CPA
+### 旧独立 CPA 的入口与迁移
 
-原 `compose.cpa.yml`/`compose.cpa.https.yml` 可以继续使用。在旧 Caddy 覆盖文件之后叠加 [`compose.runtime.https.yml`](../compose.runtime.https.yml)，其中 [`deploy/Caddyfile.cpa-runtime`](../deploy/Caddyfile.cpa-runtime) 根据 `Authorization: Bearer rcpa_…` 或 `x-api-key: rcpa_…` 把新 Key 的 `/v1/*` 请求交给工作台，其他原有 API Key 和 `/management.html` 继续交给旧 CPA。
+尚未迁移时，原 `compose.cpa.yml`/`compose.cpa.https.yml` 可继续使用。兼容模板 `compose.runtime.https.yml` 按 `rcpa_` 前缀把新 Key 的 `/v1/*` 请求交给工作台，其他调用及旧管理面板继续交给旧 CPA。
 
-已有本机证书或自定义 Caddyfile 覆盖时，应把这组路由合并进实际入口配置，并保留其证书路径和传输设置；不要让新覆盖文件意外替换现有 TLS 配置。旧 CPA 的 `.env` 密钥只用于旧服务，不是用户实例生成的 Key。
+迁移应先明确旧数据属于哪个工作台用户，再建立或检查该用户的私有实例；管理员私有实例与共享池是不同目标。一起备份工作台数据库、旧配置及授权卷，停止旧实例的写入后复制授权，已有目标授权发生冲突时先处理冲突。
+
+`deploy/cpa-migration.mjs` 的 `mergeCpaMigrationConfig(legacy, target)` 保留旧业务配置，包括路由、上游、日志和模型/API 配置；目标实例保留自己的服务监听、内部调用与管理密钥、授权目录和运行时代理地址。旧外部调用 Key 通过内部的 `store.importKey(instanceId, name, token)` 登记摘要，原 Key 不变；重复导入同实例保持幂等，跨实例冲突会拒绝。该导入方法没有公开 HTTP 接口。
+
+迁移完成后，入口应把整个 `/v1/*` 转给工作台，让网关查询 Key 归属；继续按前缀分流会把导入的旧 Key 错送到旧实例。旧管理面板仍可单独保留，迁移验收后再停旧 CPA。已有本机证书或自定义 Caddyfile 时，只调整对应路由并保留证书路径和传输设置。
 
 ## 工作台管理 API
 

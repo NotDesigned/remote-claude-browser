@@ -331,6 +331,12 @@ body {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+.shell-menu-stats .shell-menu-clock {
+  grid-column: 1 / -1;
+  flex-direction: column;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
 
 /* Banners */
 /* Over the page rather than above it: taking height would resize the remote page. */

@@ -273,7 +273,14 @@ export function ShellBar(props: ShellBarProps) {
                     key={account.id}
                     type="button"
                     aria-pressed={props.accounts?.current === account.id}
-                    title={account.sessions > 0 ? `${account.sessions} 个会话在用` : "没有会话在用"}
+                    disabled={!account.proxyId}
+                    title={
+                      !account.proxyId
+                        ? "未选择出口，请到选择浏览器配置页面设置出口"
+                        : account.sessions > 0
+                          ? `${account.sessions} 个会话在用`
+                          : "没有会话在用"
+                    }
                     onClick={() => props.onAccount({ kind: "switch", id: account.id })}
                   >
                     {account.name}
@@ -305,9 +312,9 @@ export function ShellBar(props: ShellBarProps) {
             )}
             <dl class="shell-menu-stats">
               {clock && (
-                <div>
+                <div class="shell-menu-clock">
                   <dt>出口当地时间</dt>
-                  <dd title={clock.title}>{clock.label}</dd>
+                  <dd>{clock.title}</dd>
                 </div>
               )}
               <div>

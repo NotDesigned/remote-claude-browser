@@ -182,11 +182,13 @@ async function requestApi(
         ? "当前设备无权使用这个会话，请重新登录或返回自己的会话。"
         : response.status === 503 && code === "CLIENT_CAPACITY"
           ? "会话名额已占用。请返回已有会话，或等待空闲名额后重试。"
-          : response.status === 503 && code === "CLIENT_RESOURCES"
-            ? "B 的内存较紧张，请等待离线会话自动回收后重试。"
-            : response.status === 503
-              ? "会话服务暂时不可用，请稍后重试。"
-              : "无法完成会话请求，请稍后重试。";
+          : response.status === 409 && code === "EXIT_REQUIRED"
+            ? "此浏览器配置尚未绑定出口节点，请返回选择配置并设置出口。"
+            : response.status === 503 && code === "CLIENT_RESOURCES"
+              ? "B 的内存较紧张，请等待离线会话自动回收后重试。"
+              : response.status === 503
+                ? "会话服务暂时不可用，请稍后重试。"
+                : "无法完成会话请求，请稍后重试。";
   throw new ClientSessionError(response.status, code, message, ownedSessions);
 }
 
