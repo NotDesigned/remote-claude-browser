@@ -51,8 +51,8 @@ importers:
         specifier: 2.1.1
         version: 2.1.1(patch_hash=e4wv4lvfzdohpzl4ccklwez3vu)
       '@rrweb/rrweb-plugin-canvas-webrtc-record':
-        specifier: 2.1.1
-        version: 2.1.1(rrweb@2.1.1)
+        specifier: 2.2.0
+        version: 2.2.0(rrweb@2.1.1)
     devDependencies:
       esbuild:
         specifier: ^0.25.0
@@ -816,8 +816,8 @@ packages:
   '@rrweb/replay@2.1.1':
     resolution: {integrity: sha512-jq64eyJvrh/ioBS1MpDrs/Lj+7QY2TW4xGxp4g4LJKdltSkqMjMbUmhTDcpzaEDZt66S0gasGcgqCulsksSXnw==}
 
-  '@rrweb/rrweb-plugin-canvas-webrtc-record@2.1.1':
-    resolution: {integrity: sha512-pAZ+nmkMKUa7Pg+lPGWmAc4YuoiKcg3DRmh9vT8pyaiUGrMDirrJpeodBgDPOZfWTSmjNRwL4z8yYR7eNF2PiQ==}
+  '@rrweb/rrweb-plugin-canvas-webrtc-record@2.2.0':
+    resolution: {integrity: sha512-l0H2bE7GfTLbwP/MC8CVypMnatR8egC4CpHSNahT2b6GOapAffVAurxCD5PZIZ9bQdIUpvSwtARSiIPoGKnBbg==}
     peerDependencies:
       rrweb: ^2.1.1
 
@@ -2336,7 +2336,7 @@ snapshots:
       '@rrweb/types': 2.1.1
       rrweb: 2.1.1
 
-  '@rrweb/rrweb-plugin-canvas-webrtc-record@2.1.1(rrweb@2.1.1)':
+  '@rrweb/rrweb-plugin-canvas-webrtc-record@2.2.0(rrweb@2.1.1)':
     dependencies:
       rrweb: 2.1.1
 
