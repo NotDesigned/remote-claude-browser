@@ -173,6 +173,147 @@ async function openCardMenu(page, name, touch = false) {
   else await trigger.click();
 }
 
+const exitWarningChecks = [];
+async function checkExitWarnings(page, touch = false) {
+  const account = accounts.find((entry) => entry.id === "p-0123456789");
+  const original = { ...account };
+  const messages = [];
+  let accept = false;
+  const onDialog = (dialog) => {
+    messages.push(dialog.message());
+    return accept ? dialog.accept() : dialog.dismiss();
+  };
+  page.on("dialog", onDialog);
+  const editor = page.locator("form.profile-proxy-editor");
+  const select = page.getByLabel(`「${account.name}」的网络出口`, { exact: true });
+  const press = (button) => (touch ? button.tap() : button.click());
+  async function edit(value) {
+    await openCardMenu(page, account.name, touch);
+    await press(page.getByRole("button", { name: "设置出口", exact: true }));
+    await select.selectOption(value);
+  }
+  async function save({ confirm, proceed, patch, previous, next, running = false }) {
+    accept = proceed;
+    const before = { dialogs: messages.length, patches: proxyChanges.length };
+    const response = patch
+      ? page.waitForResponse(
+          (value) =>
+            value.request().method() === "PATCH" &&
+            new URL(value.url()).pathname === `/api/accounts/${account.id}/proxy`,
+        )
+      : null;
+    await press(page.getByRole("button", { name: "保存出口", exact: true }));
+    if (response) await response;
+    assert.equal(
+      messages.length,
+      before.dialogs + Number(confirm),
+      "one confirmation per actual bound-exit change",
+    );
+    if (confirm) {
+      const message = messages.at(-1);
+      assert.ok(message.includes(`「${previous}」`) && message.includes(`「${next}」`));
+      assert.ok(
+        message.includes(
+          "频繁更换账号的出口 IP 可能触发平台风控，要求重新验证或限制账号。请确认你了解影响并希望继续。",
+        ),
+      );
+      assert.equal(message.includes("关闭该配置在所有设备上打开的页面"), running);
+    }
+    assert.equal(proxyChanges.length, before.patches + Number(patch));
+    if (confirm && !proceed) assert.equal(await editor.isVisible(), true);
+    else await editor.waitFor({ state: "hidden" });
+  }
+  try {
+    account.running = false;
+    account.signedIn = false;
+    await page.reload();
+    await edit("proxy-shared");
+    await save({
+      confirm: true,
+      proceed: false,
+      patch: false,
+      previous: "私有出口",
+      next: "共享出口",
+    });
+    assert.equal(account.proxyId, "proxy-private");
+    assert.equal(
+      await select.inputValue(),
+      "proxy-shared",
+      "cancel keeps the open editor and proposed selection",
+    );
+    await save({
+      confirm: true,
+      proceed: true,
+      patch: true,
+      previous: "私有出口",
+      next: "共享出口",
+    });
+    assert.equal(account.proxyId, "proxy-shared");
+    await edit("proxy-shared");
+    const url = page.url();
+    let navigations = 0;
+    const navigated = (frame) => {
+      if (frame === page.mainFrame()) navigations++;
+    };
+    page.on("framenavigated", navigated);
+    await save({ confirm: false, proceed: true, patch: false });
+    page.off("framenavigated", navigated);
+    assert.equal(navigations, 0, "same-node save must not reload");
+    assert.equal(page.url(), url);
+    await edit("");
+    await save({
+      confirm: true,
+      proceed: true,
+      patch: true,
+      previous: "共享出口",
+      next: "未选择出口（禁止打开）",
+    });
+    assert.equal(account.proxyId, null);
+    await edit("proxy-private");
+    await save({ confirm: false, proceed: true, patch: true });
+    assert.equal(
+      account.proxyId,
+      "proxy-private",
+      "first assignment has no IP-change confirmation",
+    );
+    account.running = true;
+    await page.reload();
+    await edit("proxy-shared");
+    await save({
+      confirm: true,
+      proceed: false,
+      patch: false,
+      previous: "私有出口",
+      next: "共享出口",
+      running: true,
+    });
+    assert.equal(account.proxyId, "proxy-private");
+    await save({
+      confirm: true,
+      proceed: true,
+      patch: true,
+      previous: "私有出口",
+      next: "共享出口",
+      running: true,
+    });
+    assert.equal(account.proxyId, "proxy-shared");
+    exitWarningChecks.push({
+      touch,
+      stoppedAndSignedOutWarned: true,
+      runningWarningCombined: true,
+      cancelledBindingUnchanged: true,
+      sameNodeNoRequestOrReload: true,
+      clearingWarned: true,
+      firstBindingNoWarning: true,
+    });
+  } finally {
+    page.off("dialog", onDialog);
+    Object.assign(account, original);
+    await page.reload();
+    await page.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
+  }
+}
+
 const watchdog = setTimeout(() => process.exit(124), 120_000);
 let browser;
 try {
@@ -266,6 +407,7 @@ try {
     () => !document.querySelector('button.profile-card[data-exit-required="true"]'),
   );
   assert.equal(admissions.length, 0, "binding an exit must not open the profile");
+  await checkExitWarnings(page);
   await openCardMenu(page, "工作");
   await page.getByRole("button", { name: "设「工作」为默认", exact: true }).click();
   await page.waitForFunction(
@@ -488,6 +630,8 @@ try {
   await phone.getByRole("alert").filter({ hasText: "配置暂不可用" }).waitFor();
   await phone.unroute("**/api/accounts");
   await phone.getByRole("button", { name: "重试", exact: true }).tap();
+  await phone.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
+  await checkExitWarnings(phone, true);
   accounts[1].email = "a-very-long-email-address-to-check-mobile-layout@example.com";
   await phone.getByText(accounts[1].email, { exact: true }).waitFor({ timeout: 10_000 });
   const layout = await phone.locator(".profile-picker").evaluate((node) => ({
@@ -656,6 +800,7 @@ try {
       createThenBindThenExplicitOpen: true,
       shellCreateUsesUnifiedPicker: true,
       unboundResumeReturnsToPicker: true,
+      exitWarningChecks,
       proxyChanges,
       phoneLayout: layout,
       loadRetry: true,

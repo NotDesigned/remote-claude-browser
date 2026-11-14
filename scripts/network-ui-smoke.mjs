@@ -58,6 +58,7 @@ const instances = [
   },
 ];
 const credentials = new Map();
+const oauthProxies = new Map();
 const keys = new Map();
 const operations = [];
 const errors = [];
@@ -78,6 +79,9 @@ const server = createServer(async (request, response) => {
       ? { id: "reader", username: "reader", role: "user" }
       : { id: "admin", username: "admin", role: "admin" };
     const manage = (item) => user.role === "admin" || item.ownerId === user.id;
+    const visibleProxy = (id) =>
+      typeof id === "string" &&
+      proxies.some((item) => item.id === id && (item.visibility === "shared" || manage(item)));
     if (url.pathname === "/api/me") return json(response, { user });
     if (url.pathname === "/api/accounts")
       return json(response, {
@@ -175,7 +179,16 @@ const server = createServer(async (request, response) => {
         createdAt: Date.now(),
       };
       instances.push(instance);
-      credentials.set(instance.id, []);
+      credentials.set(instance.id, [
+        {
+          name: "legacy-claude.json",
+          provider: "claude",
+          email: "legacy@example.com",
+          disabled: false,
+          unavailable: false,
+          proxyId: null,
+        },
+      ]);
       keys.set(instance.id, []);
       return json(response, { instance: { ...instance, canManage: true } });
     }
@@ -202,6 +215,8 @@ const server = createServer(async (request, response) => {
           );
           return json(response, { ok: true });
         }
+        if (detail === "proxy" && !visibleProxy(input.proxyId))
+          return json(response, { error: "CPA_EXIT_REQUIRED", message: "请选择代理节点" }, 400);
         Object.assign(
           saved.find((item) => item.name === input.name),
           detail === "status" ? { disabled: input.disabled } : { proxyId: input.proxyId },
@@ -217,12 +232,15 @@ const server = createServer(async (request, response) => {
               email: "fixture@example.com",
               disabled: false,
               unavailable: false,
-              proxyId: null,
+              proxyId: oauthProxies.get(id),
             },
           ]);
           return json(response, { ok: true });
         }
         if (detail === "status") return json(response, { status: "ok" });
+        if (!visibleProxy(input.proxyId))
+          return json(response, { error: "CPA_EXIT_REQUIRED", message: "请选择代理节点" }, 400);
+        oauthProxies.set(id, input.proxyId);
         return json(response, {
           url: "https://example.com/fixture-oauth",
           state: "fixture-state",
@@ -291,7 +309,11 @@ try {
     if (mobile) await context.addCookies([{ name: "fixture-role", value: "user", url: origin }]);
     const page = await context.newPage();
     page.on("pageerror", (error) => errors.push(error.message));
-    page.on("dialog", (dialog) => dialog.accept());
+    const dialogs = [];
+    page.on("dialog", (dialog) => {
+      dialogs.push(dialog.message());
+      void dialog.accept();
+    });
     const click = (locator) => (mobile ? locator.tap() : locator.click());
     await page.goto(origin);
     const sessionsBeforeExit = sessions.length;
@@ -343,8 +365,12 @@ try {
       );
       if (mobile) assert.ok(!choices.includes("proxy-admin"));
       await select.selectOption(proxyId);
+      const previousProxy = profileProxyId;
+      const dialogsBeforeSave = dialogs.length;
       await click(editor.getByRole("button", { name: "保存出口", exact: true }));
       await editor.waitFor({ state: "hidden" });
+      assert.equal(dialogs.length - dialogsBeforeSave, previousProxy ? 1 : 0);
+      if (previousProxy) assert.match(dialogs.at(-1), /IP.*风控/);
       assert.deepEqual(operations.at(-1), {
         type: "profile-proxy",
         input: { proxyId: proxyId || null },
@@ -358,6 +384,10 @@ try {
       assert.equal(await profileCard.isDisabled(), proxyId === "");
     }
     assert.equal(sessions.length, sessionsBeforeExit);
+    // A configured default profile is not a current browser session.
+    profileProxyId = "proxy-shared";
+    await page.reload();
+    await page.getByText("出口：共享出口", { exact: true }).waitFor();
     await click(page.getByRole("button", { name: "代理与 API", exact: true }));
     const panel = page.getByRole("dialog", { name: "代理与 API", exact: true });
     assert.equal(await page.locator('#shell[data-picking="true"]').count(), 1);
@@ -409,8 +439,79 @@ try {
     await panel.getByRole("button", { name: "启动实例", exact: true }).waitFor();
     await click(panel.getByRole("button", { name: "启动实例", exact: true }));
     await panel.getByRole("button", { name: "停止实例", exact: true }).waitFor();
+    const ownInstance = instances.find(
+      (item) => item.scope === "user" && item.ownerId === (mobile ? "reader" : "admin"),
+    );
+    const oauthProxy = panel.getByLabel("授权使用的代理");
+    const generateOAuth = panel.getByRole("button", { name: "生成 Claude 授权链接", exact: true });
+    await oauthProxy.waitFor();
+    await oauthProxy.locator('option[value="proxy-shared"]').waitFor({ state: "attached" });
+    assert.equal(
+      await oauthProxy.inputValue(),
+      "",
+      "the picker has no current browser exit to inherit",
+    );
+    assert.equal(
+      await oauthProxy.locator('option[value=""]').evaluate((option) => option.disabled),
+      true,
+    );
+    assert.equal(await generateOAuth.isDisabled(), true);
+    const legacyProxy = panel.getByLabel("凭据「legacy-claude.json」的代理");
+    await legacyProxy.waitFor();
+    assert.equal(await legacyProxy.inputValue(), "");
+    assert.equal(
+      await legacyProxy.locator('option[value=""]').evaluate((option) => option.disabled),
+      true,
+    );
+    assert.equal(
+      await legacyProxy.locator('option[value=""]').textContent(),
+      "未绑定节点（沿用当前出口）",
+    );
+    const proxyUpdates = operations.filter((item) => item.type === "cpa-credentials-proxy").length;
+    await click(panel.getByRole("button", { name: "刷新实例", exact: true }));
+    await legacyProxy.waitFor();
+    assert.equal(credentials.get(ownInstance.id)[0].proxyId, null);
+    assert.equal(
+      operations.filter((item) => item.type === "cpa-credentials-proxy").length,
+      proxyUpdates,
+    );
+    const missingOAuth = await page.request.post(
+      origin + `/api/cpa/instances/${ownInstance.id}/oauth`,
+      {
+        data: { provider: "claude" },
+      },
+    );
+    assert.equal(
+      missingOAuth.status(),
+      400,
+      "the fixture must reject a missing authorization node",
+    );
+    const defaultCredential = await page.request.patch(
+      origin + `/api/cpa/instances/${ownInstance.id}/credentials/proxy`,
+      { data: { name: "legacy-claude.json", proxyId: null } },
+    );
+    assert.equal(
+      defaultCredential.status(),
+      400,
+      "the fixture must reject a default credential exit",
+    );
+    assert.equal(credentials.get(ownInstance.id)[0].proxyId, null);
+    await oauthProxy.scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: `artifacts/cpa-explicit-proxy-${engine}-${mobile ? "phone" : "desktop"}.png`,
+    });
+    await legacyProxy.selectOption("proxy-shared");
+    await panel.getByText("凭据代理已更新。", { exact: true }).waitFor();
+    await click(panel.getByRole("button", { name: "删除凭据", exact: true }));
+    await panel.getByText("legacy@example.com", { exact: true }).waitFor({ state: "hidden" });
+    await oauthProxy.selectOption("proxy-private");
     await click(panel.getByRole("button", { name: "生成 Claude 授权链接", exact: true }));
     await panel.getByRole("link", { name: "打开 Claude 授权页 ↗", exact: true }).waitFor();
+    assert.deepEqual(operations.at(-1), {
+      type: "cpa-oauth",
+      id: ownInstance.id,
+      input: { provider: "claude", proxyId: "proxy-private" },
+    });
     await panel
       .getByLabel("授权回调 URL 或授权码", { exact: true })
       .fill("http://localhost:54545/callback?code=fixture&state=fixture-state");
@@ -418,6 +519,10 @@ try {
     await panel.getByText("回调已提交，可检查授权状态。", { exact: true }).waitFor();
     await click(panel.getByRole("button", { name: "检查授权状态", exact: true }));
     await panel.getByText("Claude 授权已完成。", { exact: true }).waitFor();
+    assert.equal(
+      await panel.getByLabel("凭据「fixture-claude.json」的代理").inputValue(),
+      "proxy-private",
+    );
     await panel.getByLabel("凭据「fixture-claude.json」的代理").selectOption("proxy-shared");
     await panel.getByText("凭据代理已更新。", { exact: true }).waitFor();
     await click(panel.getByRole("button", { name: "停用凭据", exact: true }));
@@ -475,10 +580,13 @@ try {
     await click(page.getByRole("button", { name: "管理「默认配置」", exact: true }));
     await click(page.getByRole("button", { name: "设置出口", exact: true }));
     const openExit = page.getByLabel("「默认配置」的网络出口", { exact: true });
-    assert.equal(await openExit.inputValue(), "");
-    await openExit.selectOption("proxy-shared");
+    assert.equal(await openExit.inputValue(), "proxy-shared");
+    await openExit.selectOption("proxy-private");
+    const dialogsBeforeOpenExit = dialogs.length;
     await click(page.getByRole("button", { name: "保存出口", exact: true }));
-    await page.getByText("出口：共享出口", { exact: true }).waitFor();
+    await page.getByText("出口：私有出口", { exact: true }).waitFor();
+    assert.equal(dialogs.length, dialogsBeforeOpenExit + 1);
+    assert.match(dialogs.at(-1), /IP.*风控/);
     assert.equal(sessions.length, sessionsBeforeExit);
     await click(page.getByRole("button", { name: /默认配置.*未登录/ }));
     await page.waitForURL((url) => url.searchParams.has("sid"));
@@ -499,6 +607,44 @@ try {
     );
     await click(page.getByRole("button", { name: "代理与 API", exact: true }));
     await panel.waitFor();
+    await click(panel.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
+    const inheritedOAuthProxy = panel.getByLabel("授权使用的代理");
+    await inheritedOAuthProxy.waitFor();
+    await panel.getByText("默认使用当前浏览器配置的出口，可单独更改。", { exact: true }).waitFor();
+    assert.equal(
+      await inheritedOAuthProxy.inputValue(),
+      "proxy-private",
+      "authorization must inherit the current profile exit rather than the first visible node",
+    );
+    assert.equal(
+      await inheritedOAuthProxy.locator("option:not([disabled])").first().getAttribute("value"),
+      "proxy-shared",
+    );
+    await click(panel.getByRole("button", { name: "启动实例", exact: true }));
+    await panel.getByRole("button", { name: "停止实例", exact: true }).waitFor();
+    await inheritedOAuthProxy.scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: `artifacts/cpa-inherited-proxy-${engine}-${mobile ? "phone" : "desktop"}.png`,
+    });
+    await inheritedOAuthProxy.selectOption("proxy-shared");
+    const refreshed = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/cpa/instances" &&
+        response.request().method() === "GET",
+    );
+    await click(panel.getByRole("button", { name: "刷新实例", exact: true }));
+    await refreshed;
+    assert.equal(
+      await inheritedOAuthProxy.inputValue(),
+      "proxy-shared",
+      "a rerender must preserve the manual override",
+    );
+    await click(panel.getByRole("button", { name: "生成 Claude 授权链接", exact: true }));
+    await panel.getByRole("link", { name: "打开 Claude 授权页 ↗", exact: true }).waitFor();
+    assert.deepEqual(operations.filter((item) => item.type === "cpa-oauth").at(-1).input, {
+      provider: "claude",
+      proxyId: "proxy-shared",
+    });
     await click(panel.getByRole("button", { name: "关闭代理与 API 管理", exact: true }));
     await click(page.getByRole("button", { name: "返回会话", exact: true }));
     checks.push({
@@ -506,6 +652,11 @@ try {
       privateImportEditSubscriptionRefreshDelete: true,
       ownInstanceLifecycle: true,
       oauthCallback: true,
+      oauthInheritsCurrentBrowserExit: true,
+      oauthManualOverridePreserved: true,
+      noCurrentBrowserRequiresExplicitNode: true,
+      legacyCredentialUnchangedUntilExplicitSelection: true,
+      noDeploymentDefaultOption: true,
       credentialProxyStatusDelete: true,
       keyOnceAndRevoke: true,
       sharedAdminOnly: true,
