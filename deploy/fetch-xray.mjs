@@ -58,7 +58,7 @@ export async function fetchXray(arch, output, cache) {
   if (!bytes || sha256(bytes) !== release.sha256) {
     const response = await fetch(
       `https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/${release.name}`,
-      { signal: AbortSignal.timeout(120000) },
+      { signal: AbortSignal.timeout(900000) },
     );
     if (!response.ok)
       throw new Error(`downloading ${release.name} failed: HTTP ${response.status}`);

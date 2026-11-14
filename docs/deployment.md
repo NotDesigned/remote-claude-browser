@@ -197,6 +197,12 @@ git pull
 docker compose up -d --build   # 使用预构建镜像时：docker compose pull && docker compose up -d
 ```
 
+在国内构建时，Debian 官方源可能很慢或返回 502，可以给字体那一层换镜像源：
+
+```bash
+docker compose build --build-arg DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian server
+```
+
 升级服务端会重启浏览器，打开的远程页面和未发送的草稿会中断。登录状态保存在 `data` 卷里，不受影响。
 
 ### 资源紧张的双机部署

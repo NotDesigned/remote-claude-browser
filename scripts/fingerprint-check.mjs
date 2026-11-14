@@ -102,6 +102,12 @@ clients.forEach((client, i) => {
   rows[i].grade = /Grade ([A-F][+-]?)/.exec(body)?.[1];
   rows[i].tampered = after(body, "Tampered environment");
   rows[i].tells = after(body, "Anti-detect tells");
+  // Amber (!) and red (✗) rows, apart from the ones every visitor from here shares.
+  const lines = body.split("\n").map((l) => l.trim());
+  rows[i].flags = lines
+    .flatMap((line, at) => (line === "!" || line === "✗" ? [lines[at + 1]] : []))
+    .filter((flag) => !/Trackable fingerprint|Browser language points/.test(flag))
+    .join("; ");
 });
 
 const fp = await visit(clients, "https://demo.fingerprint.com/playground", (b) =>

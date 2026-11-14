@@ -58,7 +58,12 @@ RUN apt-get update \
     && ln -sfn /data/timezone/name /etc/timezone
 
 # Each browser account keeps a different part of these fonts (packages/gateway/src/browser/identity.ts).
-RUN for attempt in 1 2 3; do apt-get update && break; sleep 10; done \
+# DEBIAN_MIRROR, e.g. https://mirrors.tuna.tsinghua.edu.cn/debian, replaces deb.debian.org for them.
+ARG DEBIAN_MIRROR=
+RUN if [ -n "$DEBIAN_MIRROR" ]; then \
+        sed -i "s#http://deb.debian.org/debian#$DEBIAN_MIRROR#g" /etc/apt/sources.list.d/debian.sources; \
+    fi \
+    && for attempt in 1 2 3; do apt-get update && break; sleep 10; done \
     && apt-get install -y --no-install-recommends \
         fonts-arphic-ukai fonts-arphic-uming fonts-cantarell fonts-croscore \
         fonts-crosextra-caladea fonts-crosextra-carlito fonts-droid-fallback fonts-firacode \
