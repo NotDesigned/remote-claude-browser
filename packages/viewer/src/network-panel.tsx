@@ -116,6 +116,7 @@ export function NetworkPanel({
             <ProxyPanel user={user} />
           ) : (
             <CpaPanel
+              open={open}
               user={user}
               browserProxyId={browserProxyId}
               browserSessionId={browserSessionId}

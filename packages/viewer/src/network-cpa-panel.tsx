@@ -49,11 +49,13 @@ function ProxySelect({
 export function CpaPanel({
   user,
   browserProxyId,
+  open,
   browserSessionId,
   onOpenBrowser,
 }: {
   user: FrontendUser;
   browserProxyId?: string | null;
+  open: boolean;
   browserSessionId?: string;
   onOpenBrowser(): void;
 }) {
@@ -71,6 +73,9 @@ export function CpaPanel({
   const [callback, setCallback] = useState("");
   const [keyName, setKeyName] = useState("");
   const [issuedKey, setIssuedKey] = useState<(CpaKey & { token: string }) | null>(null);
+  useLayoutEffect(() => {
+    if (!open) setIssuedKey(null);
+  }, [open, issuedKey]);
   const instance = instances.find((item) => item.id === selected);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
@@ -174,63 +179,65 @@ export function CpaPanel({
           {notice}
         </p>
       )}
-      <div class="network-actions">
-        {!instances.some((item) => item.scope === "user" && item.ownerId === user.id) && (
-          <button type="button" disabled={busy || loading} onClick={() => create("user")}>
-            创建我的 CPA 实例
-          </button>
-        )}
-        {user.role === "admin" && !instances.some((item) => item.scope === "shared") && (
-          <button type="button" disabled={busy || loading} onClick={() => create("shared")}>
-            创建共享 CPA 实例
-          </button>
-        )}
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() =>
-            void run(async () => {
-              const items = await reloadInstances();
-              const item = items.find((entry) => entry.id === selected);
-              if (item?.canManage) await reloadDetails(item);
-            })
-          }
-        >
-          刷新实例
-        </button>
-      </div>
-      <nav class="network-instances" aria-label="CPA 实例">
-        {instances.map((item) => (
+      <div class="network-cpa-toolbar">
+        <nav class="network-instances" aria-label="CPA 实例">
+          {instances.map((item) => (
+            <button
+              type="button"
+              key={item.id}
+              aria-pressed={selected === item.id}
+              disabled={busy}
+              onClick={() => setSelected(item.id)}
+            >
+              <strong>
+                {item.scope === "shared"
+                  ? "共享实例"
+                  : item.ownerId === user.id
+                    ? "我的实例"
+                    : "专用实例"}
+              </strong>
+              <span>
+                {item.status === "running"
+                  ? "运行中"
+                  : item.status === "missing"
+                    ? "未就绪"
+                    : "已停止"}
+              </span>
+            </button>
+          ))}
+        </nav>
+        <div class="network-actions">
+          {!instances.some((item) => item.scope === "user" && item.ownerId === user.id) && (
+            <button type="button" disabled={busy || loading} onClick={() => create("user")}>
+              创建我的 CPA 实例
+            </button>
+          )}
+          {user.role === "admin" && !instances.some((item) => item.scope === "shared") && (
+            <button type="button" disabled={busy || loading} onClick={() => create("shared")}>
+              创建共享 CPA 实例
+            </button>
+          )}
           <button
             type="button"
-            key={item.id}
-            aria-pressed={selected === item.id}
             disabled={busy}
-            onClick={() => setSelected(item.id)}
+            onClick={() =>
+              void run(async () => {
+                const items = await reloadInstances();
+                const item = items.find((entry) => entry.id === selected);
+                if (item?.canManage) await reloadDetails(item);
+              })
+            }
           >
-            <strong>
-              {item.scope === "shared"
-                ? "共享实例"
-                : item.ownerId === user.id
-                  ? "我的实例"
-                  : "专用实例"}
-            </strong>
-            <span>
-              {item.status === "running"
-                ? "运行中"
-                : item.status === "missing"
-                  ? "未就绪"
-                  : "已停止"}
-            </span>
+            刷新实例
           </button>
-        ))}
-      </nav>
+        </div>
+      </div>
       {!loading && instances.length === 0 && (
         <p class="network-muted">还没有 CPA 实例，可以先创建自己的实例。</p>
       )}
       {instance && (
-        <>
-          <section class="network-card">
+        <div class="network-cpa-grid">
+          <section class="network-card network-card-wide">
             <div class="network-card-heading">
               <h3>{instance.scope === "shared" ? "共享 CPA" : "专用 CPA"}</h3>
               {instance.canManage && (
@@ -248,8 +255,16 @@ export function CpaPanel({
           </section>
           {instance.canManage && (
             <>
-              <section class="network-card" aria-labelledby="cpa-credentials-title">
+              <section
+                class="network-card network-card-wide"
+                aria-labelledby="cpa-credentials-title"
+              >
                 <h3 id="cpa-credentials-title">授权凭据 · {credentials.length}</h3>
+                {credentials.length === 0 && (
+                  <p class="network-empty">
+                    尚未添加授权。完成 Claude 授权后，账号和出口会显示在这里。
+                  </p>
+                )}
                 <ul class="network-list">
                   {credentials.map((credential) => (
                     <li key={credential.name}>
@@ -343,6 +358,7 @@ export function CpaPanel({
                 <div class="network-actions">
                   <button
                     type="button"
+                    class="network-primary"
                     disabled={busy || instance.status !== "running" || !selectedOAuthProxy}
                     onClick={() =>
                       void run(async () => {
@@ -361,6 +377,7 @@ export function CpaPanel({
                   <>
                     <button
                       type="button"
+                      class="network-primary"
                       disabled={busy || !browserSessionId || browserProxyId !== oauth.proxyId}
                       onClick={() =>
                         void run(async () => {
@@ -523,7 +540,7 @@ export function CpaPanel({
               </section>
             </>
           )}
-        </>
+        </div>
       )}
     </div>
   );

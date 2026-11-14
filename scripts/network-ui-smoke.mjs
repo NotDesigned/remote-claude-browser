@@ -543,7 +543,17 @@ try {
       await panel.getByLabel("API Base URL", { exact: true }).inputValue(),
       origin + "/v1",
     );
-    await click(panel.getByRole("button", { name: "已保存，隐藏", exact: true }));
+    await click(panel.getByRole("button", { name: "关闭代理与 API 管理", exact: true }));
+    await click(page.getByRole("button", { name: "代理与 API", exact: true }));
+    await panel.waitFor();
+    assert.equal(await panel.getByLabel("新 API Key（仅此一次）", { exact: true }).count(), 0);
+    const closeBox = await panel
+      .getByRole("button", { name: "关闭代理与 API 管理", exact: true })
+      .boundingBox();
+    assert.ok(
+      closeBox && closeBox.y >= 0 && closeBox.y + closeBox.height <= (mobile ? 568 : 900),
+      "close control stays visible after scrolling",
+    );
     await click(panel.getByRole("button", { name: "撤销 API Key「测试客户端」", exact: true }));
     await panel
       .getByRole("button", { name: "撤销 API Key「测试客户端」", exact: true })
