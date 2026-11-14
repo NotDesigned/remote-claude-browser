@@ -19,3 +19,6 @@ artifacts/
 /requirement.md
 deploy/remote/local.env
 client/ssh/
+
+# This machine's private deployment overrides.
+/local/
