@@ -20,6 +20,7 @@ export interface ProxySourceInfo {
   name: string;
   visibility: ProxyVisibility;
   ownerId: string;
+  ownerName: string | null;
   nodeCount: number;
   subscription: boolean;
   canManage: boolean;
@@ -62,8 +63,14 @@ export interface ResolvedProxy {
   name: string;
   url: string;
 }
+export interface ProxySourceUsage {
+  profiles: number;
+  credentials: number;
+}
 export interface ProxyCatalogOptions {
   file: string;
+  usernameFor(id: string): string | undefined;
+  usageForNodes(ids: string[]): ProxySourceUsage;
   endpointForNode(id: string, node: MihomoProxy, user: FrontendUser): Promise<string>;
   onRemovedNodes?(ids: string[]): Promise<void>;
   onChangedNodes?(ids: string[]): Promise<void>;
@@ -102,6 +109,7 @@ export async function createProxyCatalog(options: ProxyCatalogOptions) {
     name: source.name,
     visibility: source.visibility,
     ownerId: source.ownerId,
+    ownerName: options.usernameFor(source.ownerId) ?? null,
     nodeCount: source.nodes.length,
     subscription: !!source.url,
     canManage: managed(user, source),
@@ -188,6 +196,10 @@ export async function createProxyCatalog(options: ProxyCatalogOptions) {
     throw new ProxyCatalogError(404, "PROXY_UNKNOWN", "代理节点已移除或不属于当前用户");
   };
   return {
+    sourceUsage(user: FrontendUser, id: string): ProxySourceUsage {
+      const source = sourceFor(user, id, true);
+      return options.usageForNodes(source.nodes.map((node) => node.id));
+    },
     listSources(user: FrontendUser): ProxySourceInfo[] {
       enabled(user);
       return sources.filter((source) => visible(user, source)).map((source) => info(user, source));

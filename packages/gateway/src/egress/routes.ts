@@ -42,6 +42,15 @@ export function registerProxyRoutes(
       return failed(reply, error);
     }
   });
+  app.get<{ Params: { id: string } }>("/api/proxy-sources/:id/usage", async (request, reply) => {
+    try {
+      return reply.header("cache-control", "no-store").send({
+        usage: options.catalog.sourceUsage(userFor(request.raw), request.params.id),
+      });
+    } catch (error) {
+      return failed(reply, error);
+    }
+  });
   app.post<{ Body: ProxySourceInput }>(
     "/api/proxy-sources",
     { bodyLimit: 2 * 1024 * 1024 },

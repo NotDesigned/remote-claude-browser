@@ -50,16 +50,44 @@ export function ProxyPanel({ user }: { user: FrontendUser }) {
     setUrl("");
     setVisibility("private");
   };
+  const ownerLabel = (source: ProxySourceInfo) =>
+    source.ownerId === user.id ? "你" : (source.ownerName ?? "已删除用户");
+  const confirmChange = async (
+    source: ProxySourceInfo,
+    action: "delete" | "update" | "refresh",
+  ) => {
+    const { usage } = await proxyApi.usage(source.id);
+    const question =
+      action === "delete"
+        ? `删除来源「${source.name}」及其节点？`
+        : action === "refresh"
+          ? `刷新「${source.name}」的订阅节点？`
+          : `更改「${source.name}」的节点或可见范围？`;
+    const impact =
+      usage.profiles || usage.credentials
+        ? `当前绑定 ${usage.profiles} 个浏览器配置、${usage.credentials} 个 CPA 授权。${
+            action === "delete"
+              ? "删除后，相关浏览器会话会关闭，CPA 授权失去出口，需要重新选择节点。"
+              : "节点或可见范围发生变化时，相关浏览器会话会断开重连；不可用的节点需要重新选择。"
+          }`
+        : "当前没有浏览器配置或 CPA 授权绑定这些节点。";
+    return window.confirm(`${question}\n\n所有者：${ownerLabel(source)}。${impact}`);
+  };
   const save = (event: Event) => {
     event.preventDefault();
     void run(async () => {
-      if (editing)
+      if (editing) {
+        if (
+          (visibility !== editing.visibility || content.trim()) &&
+          !(await confirmChange(editing, "update"))
+        )
+          return;
         await proxyApi.update(editing.id, {
           name: name.trim(),
           visibility,
           ...(content.trim() ? { content } : {}),
         });
-      else
+      } else
         await proxyApi.create({
           name: name.trim(),
           visibility,
@@ -74,7 +102,8 @@ export function ProxyPanel({ user }: { user: FrontendUser }) {
   return (
     <div class="network-section" aria-busy={busy || loading}>
       <p class="network-muted">
-        私有来源仅你和管理员可管理；共享来源由管理员发布。浏览器配置和 CPA 凭据可分别选择节点。
+        私有来源仅所有者和管理员可使用、管理；共享来源由管理员管理，所有用户可使用。浏览器配置和 CPA
+        授权可分别选择节点。
       </p>
       {error && (
         <p class="network-message network-error" role="alert">
@@ -112,7 +141,8 @@ export function ProxyPanel({ user }: { user: FrontendUser }) {
                   </span>
                 </div>
                 <p class="network-muted">
-                  {source.nodeCount} 个节点{source.subscription ? " · 订阅" : " · 手动导入"}
+                  所有者：{ownerLabel(source)} · {source.nodeCount} 个节点
+                  {source.subscription ? " · 订阅" : " · 手动导入"}
                 </p>
                 {source.canManage && (
                   <div class="network-actions">
@@ -138,6 +168,7 @@ export function ProxyPanel({ user }: { user: FrontendUser }) {
                         aria-label={`刷新订阅「${source.name}」`}
                         onClick={() =>
                           void run(async () => {
+                            if (!(await confirmChange(source, "refresh"))) return;
                             await proxyApi.refresh(source.id);
                             await reload();
                             setNotice("订阅已刷新。");
@@ -152,15 +183,15 @@ export function ProxyPanel({ user }: { user: FrontendUser }) {
                       class="network-danger"
                       disabled={busy}
                       aria-label={`删除来源「${source.name}」`}
-                      onClick={() => {
-                        if (window.confirm(`删除来源「${source.name}」及其节点？`))
-                          void run(async () => {
-                            await proxyApi.remove(source.id);
-                            if (editing?.id === source.id) reset();
-                            await reload();
-                            setNotice("来源已删除。");
-                          });
-                      }}
+                      onClick={() =>
+                        void run(async () => {
+                          if (!(await confirmChange(source, "delete"))) return;
+                          await proxyApi.remove(source.id);
+                          if (editing?.id === source.id) reset();
+                          await reload();
+                          setNotice("来源已删除。");
+                        })
+                      }
                     >
                       删除
                     </button>
@@ -249,14 +280,18 @@ export function ProxyPanel({ user }: { user: FrontendUser }) {
       <section class="network-card" aria-labelledby="proxy-nodes-title">
         <h3 id="proxy-nodes-title">可用节点 · {proxies.length}</h3>
         <ul class="network-node-list">
-          {proxies.map((proxy) => (
-            <li key={proxy.id}>
-              <span>{proxy.name}</span>
-              <span class="network-muted">
-                {proxy.type} · {sources.find((source) => source.id === proxy.sourceId)?.name}
-              </span>
-            </li>
-          ))}
+          {proxies.map((proxy) => {
+            const source = sources.find((source) => source.id === proxy.sourceId);
+            return (
+              <li key={proxy.id}>
+                <span>{proxy.name}</span>
+                <span class="network-muted">
+                  {proxy.type} · {source?.name}
+                  {source && ` · ${ownerLabel(source)}`}
+                </span>
+              </li>
+            );
+          })}
         </ul>
       </section>
     </div>

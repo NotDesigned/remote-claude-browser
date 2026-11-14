@@ -40,6 +40,8 @@ async function fixture(extra: Partial<ProxyCatalogOptions> = {}) {
   directories.push(directory);
   const options: ProxyCatalogOptions = {
     file: join(directory, "proxies.json"),
+    usernameFor: (id) => [admin, alice, bob].find((user) => user.id === id)?.username,
+    usageForNodes: () => ({ profiles: 0, credentials: 0 }),
     endpointForNode: vi.fn(async () => "http://internal-token:x@runtime-egress:8781"),
     ...extra,
   };
@@ -65,6 +67,7 @@ describe("proxy directory", () => {
     expect(store.listNodes(bob).map((item) => item.name)).toEqual(["Shared"]);
     expect(store.listSources(bob)[0]).toMatchObject({
       id: shared.id,
+      ownerName: "admin",
       subscription: true,
       canManage: false,
     });
@@ -87,6 +90,37 @@ describe("proxy directory", () => {
     expect(() => store.listNodes({ ...alice, enabled: false })).toThrow("停用");
     await store.removeSource(admin, privateSource.id);
     expect(store.listNodes(alice)).toHaveLength(1);
+  });
+
+  it("only source managers can inspect binding counts, including a deleted owner's retained source", async () => {
+    const usageForNodes = vi.fn(() => ({ profiles: 2, credentials: 3 }));
+    const { store } = await fixture({ usageForNodes });
+    const shared = await store.importSource(admin, {
+      name: "Team",
+      visibility: "shared",
+      content: content(node("Shared")),
+    });
+    const privateSource = await store.importSource(alice, {
+      name: "Alice",
+      visibility: "private",
+      content: content(node("Private")),
+    });
+    expect(() => store.sourceUsage(bob, shared.id)).toThrow("无权管理");
+    expect(() => store.sourceUsage(bob, privateSource.id)).toThrow("没有这个代理源");
+    expect(usageForNodes).not.toHaveBeenCalled();
+    expect(store.sourceUsage(admin, privateSource.id)).toEqual({ profiles: 2, credentials: 3 });
+    expect(usageForNodes).toHaveBeenCalledWith([
+      store.listNodes(alice).find((item) => item.sourceId === privateSource.id)!.id,
+    ]);
+    expect(store.sourceUsage(alice, privateSource.id)).toEqual({ profiles: 2, credentials: 3 });
+    expect(() => store.sourceUsage({ ...alice, enabled: false }, privateSource.id)).toThrow("停用");
+    const { store: retired } = await fixture({ usernameFor: () => undefined });
+    const source = await retired.importSource(alice, {
+      name: "Retained source",
+      visibility: "private",
+      content: content(node("Retained")),
+    });
+    expect(retired.listSources(admin)[0]).toMatchObject({ id: source.id, ownerName: null });
   });
 
   it("persists privately, retains IDs across reorder and credential rotation, and invalidates removed nodes", async () => {

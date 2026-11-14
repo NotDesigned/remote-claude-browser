@@ -3,6 +3,7 @@ export interface ProxySourceInfo {
   name: string;
   visibility: "shared" | "private";
   ownerId: string;
+  ownerName: string | null;
   nodeCount: number;
   subscription: boolean;
   canManage: boolean;
@@ -88,6 +89,8 @@ const instancePath = (id: string) => `/api/cpa/instances/${encodeURIComponent(id
 
 export const proxyApi = {
   sources: () => request<{ sources: ProxySourceInfo[] }>("/api/proxy-sources"),
+  usage: (id: string) =>
+    request<{ usage: { profiles: number; credentials: number } }>(`${sourcePath(id)}/usage`),
   proxies: () => request<{ proxies: ProxyInfo[] }>("/api/proxies"),
   create: (source: ProxySourceInput) =>
     request<{ source: ProxySourceInfo }>("/api/proxy-sources", "POST", source),

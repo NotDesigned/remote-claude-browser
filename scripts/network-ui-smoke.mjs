@@ -14,6 +14,7 @@ const sources = [
     name: "共享节点",
     visibility: "shared",
     ownerId: "admin",
+    ownerName: "admin",
     nodeCount: 1,
     subscription: false,
     updatedAt: 1,
@@ -140,6 +141,7 @@ const server = createServer(async (request, response) => {
         name: input.name,
         visibility: input.visibility,
         ownerId: user.id,
+        ownerName: user.username,
         nodeCount: 1,
         subscription: !!input.url,
         updatedAt: Date.now(),
@@ -151,6 +153,8 @@ const server = createServer(async (request, response) => {
       const id = url.pathname.split("/")[3];
       const source = sources.find((item) => item.id === id);
       if (!manage(source)) return json(response, { error: "没有管理来源的权限" }, 403);
+      if (url.pathname.endsWith("/usage"))
+        return json(response, { usage: { profiles: 2, credentials: 1 } });
       operations.push({
         type:
           request.method === "DELETE"
@@ -409,6 +413,13 @@ try {
     await panel.getByLabel("来源名称", { exact: true }).fill(sourceName + "更新");
     await click(panel.getByRole("button", { name: "保存来源", exact: true }));
     await panel.getByText("来源已更新。", { exact: true }).waitFor();
+    await click(panel.getByRole("button", { name: `编辑来源「${sourceName}更新」`, exact: true }));
+    await panel
+      .getByLabel("替换节点内容（留空保留）", { exact: true })
+      .fill("socks5://updated-secret@proxy.example:1080");
+    await click(panel.getByRole("button", { name: "保存来源", exact: true }));
+    await panel.getByRole("heading", { name: "导入代理来源", exact: true }).waitFor();
+    assert.match(dialogs.at(-1), /2 个浏览器配置、1 个 CPA 授权/);
     await panel.getByLabel("来源名称", { exact: true }).fill(sourceName + "订阅");
     await panel.getByLabel("导入方式").selectOption("url");
     await panel
@@ -418,8 +429,10 @@ try {
     await panel.getByText("代理来源已导入。", { exact: true }).waitFor();
     await click(panel.getByRole("button", { name: `刷新订阅「${sourceName}订阅」`, exact: true }));
     await panel.getByText("订阅已刷新。", { exact: true }).waitFor();
+    assert.match(dialogs.at(-1), /2 个浏览器配置、1 个 CPA 授权/);
     await click(panel.getByRole("button", { name: `删除来源「${sourceName}订阅」`, exact: true }));
     await panel.getByText("来源已删除。", { exact: true }).waitFor();
+    assert.match(dialogs.at(-1), /所有者：你.*2 个浏览器配置、1 个 CPA 授权/);
     await click(panel.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
     if (mobile) {
       await panel.getByText("此实例由管理员管理。", { exact: true }).waitFor();
