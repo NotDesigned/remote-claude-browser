@@ -105,9 +105,9 @@ TZ=$(node /opt/remote-browser/timezone.mjs)
 export TZ
 # Only this container uses the profile, so a lock in it was left by a previous run. Chromium would
 # take one from a container with another hostname to mean the profile is in use elsewhere.
-rm -f "$CHROME_USER_DATA_DIR/SingletonLock" \
-  "$CHROME_USER_DATA_DIR/SingletonSocket" \
-  "$CHROME_USER_DATA_DIR/SingletonCookie"
+for directory in "$CHROME_USER_DATA_DIR" "$CHROME_USER_DATA_DIR/browser-default"; do
+  rm -f "$directory/SingletonLock" "$directory/SingletonSocket" "$directory/SingletonCookie"
+done
 
 display_number=${DISPLAY#:}
 # Abstract sockets belong to the network namespace, which compose.hostnet.yml shares with the host.

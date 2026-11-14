@@ -27,6 +27,7 @@ import {
 } from "./browser/client-scope";
 import { launchBrowser, type BrowserHandle, type BrowserTargetInfo } from "./browser/launch";
 import { launchBrokerBrowser } from "./browser/broker";
+import { separateDefaultProfile } from "./browser/profile-directory";
 import { createProxyCatalog, ProxyCatalogError } from "./egress/catalog";
 import { registerProxyRoutes } from "./egress/routes";
 import { createRuntimeClient } from "./egress/runtime-client";
@@ -149,6 +150,7 @@ export async function startClientGateway(
     process.env.CHROME_USER_DATA_DIR ?? (await mkdtemp(join(tmpdir(), "mirror-clients-")));
   // Other accounts keep their profiles beside the default one.
   const accountsDir = process.env.MIRROR_ACCOUNTS_DIR ?? `${profile}-accounts`;
+  const defaultBrowserDirectory = await separateDefaultProfile(profile);
   const accountStore = await createProfileStore({
     file: join(profile, "accounts.json"),
     maxProfiles: Infinity,
@@ -769,7 +771,8 @@ export async function startClientGateway(
 
   const accounts = new Map<string, Account>();
   const openingAccounts = new Map<string, Promise<Account>>();
-  const accountDir = (id: string) => (id === DEFAULT_PROFILE ? profile : join(accountsDir, id));
+  const accountDir = (id: string) =>
+    id === DEFAULT_PROFILE ? defaultBrowserDirectory : join(accountsDir, id);
   const memoryShort = async (extraBytes = 0): Promise<boolean> => {
     resources = await resourceSampler.sample();
     const available =
@@ -1166,7 +1169,7 @@ export async function startClientGateway(
       },
       onError: (error) => report("client recovery", error),
     });
-    const uploadDir = join(profile, "uploads", sid);
+    const uploadDir = join(account.dir, "uploads", sid);
     let uploads: ClientRuntime["uploads"];
     try {
       await mkdir(uploadDir, { recursive: true });
@@ -1752,11 +1755,7 @@ export async function startClientGateway(
         if (account) await closeAccount(account);
         await accountStore.remove(id);
         userStore.unassignProfile(id);
-        if (id === DEFAULT_PROFILE) {
-          // The legacy Chrome shares its parent with users.sqlite and the service indexes.
-          for (const entry of ["Default", "Local State"])
-            await rm(join(profile, entry), { recursive: true, force: true });
-        } else await rm(accountDir(id), { recursive: true, force: true });
+        await rm(accountDir(id), { recursive: true, force: true });
         return reply.code(204).send();
       });
     } catch (error) {

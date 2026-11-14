@@ -25,6 +25,22 @@ const history = (currentIndex: number) => ({
 });
 
 describe("createNavHandler", () => {
+  it.each([
+    "file:///data/profile/users.sqlite",
+    "chrome://settings",
+    "devtools://devtools",
+    "javascript:alert(1)",
+    "data:text/html,hello",
+    "filesystem:https://example.test/temporary/a",
+  ])("rejects non-web navigation before sending CDP: %s", async (url) => {
+    const send = vi.fn<CdpSend>();
+    const handle = createNavHandler(send);
+    await expect(handle({ t: "nav", tab: "tab", action: "go", url })).rejects.toThrow(
+      "只能打开 HTTP 或 HTTPS 网页",
+    );
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("normalizes URL input and maps go/reload onto the resolved flat session", async () => {
     const calls: Call[] = [];
     const send: CdpSend = async (sessionId, method, params) => {

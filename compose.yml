@@ -19,6 +19,8 @@ services:
     cap_add:
       # For the entrypoint, as root: the firewall, handing over /data, and becoming the browser user.
       - CHOWN
+      # The trusted broker binds private profile/display paths into each browser's filesystem.
+      - DAC_READ_SEARCH
       # PID 1 forwards shutdown to the gateway, browser and tunnel after they change UID.
       - KILL
       - NET_ADMIN

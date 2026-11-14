@@ -49,11 +49,14 @@ export interface NavigationController {
   dispose(): void;
 }
 
-/** Add a default scheme without turning the private URL bar into a search or policy layer. */
+/** Workbench navigation opens web pages; local files and browser internals are not destinations. */
 export function normalizeNavigationUrl(input: string): string {
   const url = input.trim();
   if (url === "") throw new Error("navigation URL is required");
-  if (/^[a-z][a-z\d+.-]*:/i.test(url)) return url;
+  if (/^[a-z][a-z\d+.-]*:/i.test(url)) {
+    if (/^https?:\/\//i.test(url) || url === "about:blank") return url;
+    throw new Error("只能打开 HTTP 或 HTTPS 网页");
+  }
   if (url.startsWith("//")) return `https:${url}`;
   return `https://${url}`;
 }
