@@ -20,3 +20,12 @@ describe("session screen geometry", () => {
     expect(screenMetrics(390, 844, true)).toMatchObject({ screenWidth: 390, screenHeight: 844 });
   });
 });
+
+describe("account screens", () => {
+  it("reports the account's own screen", () => {
+    expect(screenMetrics(1050, 893, false, { width: 2560, height: 1440 })).toMatchObject({
+      screenWidth: 2560,
+      screenHeight: 1440,
+    });
+  });
+});

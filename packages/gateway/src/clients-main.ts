@@ -27,6 +27,7 @@ import {
 } from "./browser/client-scope";
 import { launchBrowser, type BrowserHandle, type BrowserTargetInfo } from "./browser/launch";
 import { createAccountDisplay, type AccountDisplay } from "./browser/display";
+import { browserIdentity, identityEnvironment, type BrowserIdentity } from "./browser/identity";
 import { connectRemoteBrowser } from "./browser/remote";
 import { createNavigationController } from "./browser/nav";
 import { createRendererRecovery } from "./browser/recovery";
@@ -67,6 +68,7 @@ interface Account {
   dir: string;
   browser: BrowserHandle;
   display?: AccountDisplay;
+  identity: BrowserIdentity;
   pool: ReturnType<typeof createClientBrowserPool>;
   agent: ReturnType<typeof createAgentLink>;
   themeCopies: ReturnType<typeof createThemeCopies>;
@@ -108,8 +110,6 @@ const ACCOUNT_MEMORY_BYTES = 560 * 1048576;
 
 const CHROME_ARGS = [
   "--disable-dev-shm-usage",
-  // Sets the first window. On this display's wide screen it would otherwise be huge.
-  "--window-size=1050,980",
   // Nobody is at this browser to click: Claude's sound starts without a gesture here, and the
   // viewer's own browser applies its own rule.
   "--autoplay-policy=no-user-gesture-required",
@@ -633,6 +633,7 @@ export async function startClientGateway(
     id: string,
     dir: string,
     browser: BrowserHandle,
+    identity: BrowserIdentity,
     display?: AccountDisplay,
   ): Promise<Account> {
     const zoomReady = await installZoomExtension(browser, join(dir, "zoom-extension")).then(
@@ -673,6 +674,7 @@ export async function startClientGateway(
       send: browser.send,
       ownerOf: (targetId) => pool.ownerOf(targetId),
       isPhoneSession: (sid) => clientSessions.get(sid)?.phone === true,
+      screen: identity.screen,
       onError: (error) => report("phone identity failed", error),
     });
     const themeCopies = createThemeCopies(browser.send);
@@ -725,6 +727,7 @@ export async function startClientGateway(
       id,
       dir,
       browser,
+      identity,
       display,
       pool,
       agent,
@@ -763,6 +766,7 @@ export async function startClientGateway(
         const dir = accountDir(id);
         await mkdir(dir, { recursive: true, mode: 0o700 });
         const external = id === DEFAULT_PROFILE && !!process.env.BROWSER_CDP_URL;
+        const identity = browserIdentity(process.env.MIRROR_AUTH_SECRET ?? "", id);
         const display =
           !external && process.env.CHROME_HEADFUL === "1"
             ? await createAccountDisplay()
@@ -776,10 +780,13 @@ export async function startClientGateway(
                 executablePath: process.env.CHROME_PATH,
                 headful: process.env.CHROME_HEADFUL === "1",
                 enableExtensions: true,
-                args: CHROME_ARGS,
-                display: display?.env,
+                args: [
+                  ...CHROME_ARGS,
+                  `--window-size=${identity.screen.width},${identity.screen.height}`,
+                ],
+                env: { ...display?.env, ...(await identityEnvironment(dir, identity)) },
               });
-          const account = await buildAccount(id, dir, browser, display);
+          const account = await buildAccount(id, dir, browser, identity, display);
           accounts.set(id, account);
           return account;
         } catch (error) {
@@ -862,6 +869,7 @@ export async function startClientGateway(
       hubFor: (tab) => tabs.hubFor(tab),
       isDriver: (id) => roles.isDriver(id) && viewers.get(id)?.sid === sid,
       mobile: clientSessions.get(sid)?.phone === true,
+      screen: account.identity.screen,
       confirmViewport: (_viewer, tab, { w, h }) => publish(sid, { t: "view-ok", tab, w, h }),
     });
     const input = createInputRelay({
@@ -918,6 +926,7 @@ export async function startClientGateway(
         ),
       ...(account.zoomReady ? { browserZoom } : {}),
       mobile: clientSessions.get(sid)?.phone === true,
+      screen: account.identity.screen,
       ...(displayGrabbable && scoped.sendBrowser
         ? {
             grab: {

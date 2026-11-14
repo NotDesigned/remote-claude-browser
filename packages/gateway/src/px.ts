@@ -13,7 +13,7 @@
 import type { Down, PxQuality, Up } from "@mirror/protocol";
 
 import type { BrowserHandle } from "./browser/launch";
-import { screenMetrics } from "./browser/screen-metrics";
+import { screenMetrics, type Screen } from "./browser/screen-metrics";
 import type { TabHub } from "./hub/tabhub";
 import type { TargetRef } from "./types";
 import { zoomLevelFor, type BrowserZoom } from "./browser/browser-zoom";
@@ -95,6 +95,8 @@ export interface ScreencastOpts {
   browserZoom?: BrowserZoom;
   /** The page lays out as on a phone, following its viewport meta tag. */
   mobile?: boolean;
+  /** The account's screen, for the page's screen metrics. */
+  screen?: Screen;
   grab?: ScreenGrab;
   /** Supply both hooks to track pixel ownership. Acquisition must be synchronous. */
   acquirePixel?(tabId: string): boolean;
@@ -208,6 +210,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
         Math.round(viewport.w * zoom),
         Math.round(viewport.h * zoom),
         opts.mobile === true && zoom <= 1,
+        opts.screen,
       ),
     });
   };

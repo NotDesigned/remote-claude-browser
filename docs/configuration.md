@@ -58,7 +58,9 @@ Managed headful browser configurations each receive a private Xvfb display and a
 `XVFB_SCREEN` applies to each one; display resources therefore grow with active configurations.
 Native clipboard selections stay within that configuration. X11 window control and video capture
 use its private display too. Outside Docker this requires `Xvfb` and `xauth` on `PATH`.
-Site storage and these device boundaries do not make browser fingerprints or shared egress unique.
+Each configuration also has its own screen size, font subset and font rendering, derived from
+`MIRROR_AUTH_SECRET`; changing that secret changes every configuration's fingerprint. Audio, WebGL
+and CPU readings, and the egress, stay shared.
 
 Compose passes the password and signing keys as container environment variables. Anyone who can
 inspect the container or control the Docker daemon can read them, and Docker daemon access is already

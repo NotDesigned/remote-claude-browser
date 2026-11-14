@@ -6,7 +6,7 @@
  * Shared profiles must keep one browser identity across desktop and phone viewers.
  */
 import type { CdpSend, TargetRef } from "../types";
-import { screenMetrics } from "./screen-metrics";
+import { screenMetrics, type Screen } from "./screen-metrics";
 
 const OWNER_WAIT_MS = 500;
 const OWNER_POLL_MS = 10;
@@ -20,6 +20,7 @@ export interface PhoneIdentityDeps {
   send: CdpSend;
   ownerOf(targetId: string): string | undefined;
   isPhoneSession(sid: string): boolean;
+  screen?: Screen;
   sleep?(ms: number): Promise<void>;
   onError?(error: unknown): void;
 }
@@ -49,7 +50,7 @@ export function createPhoneTargetPreparer(deps: PhoneIdentityDeps) {
         height: 0,
         deviceScaleFactor: 0,
         mobile: false,
-        ...screenMetrics(0, 0, false),
+        ...screenMetrics(0, 0, false, deps.screen),
       }),
     ];
     if (deps.isPhoneSession(owner))

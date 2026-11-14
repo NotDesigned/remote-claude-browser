@@ -50,6 +50,7 @@
     "test:rtc-media": "bash scripts/limited-run.sh bash -c 'tsx scripts/rtc-media-acceptance.ts'",
     "smoke": "bash scripts/limited-run.sh bash -c 'tsx scripts/smoke.ts'",
     "smoke:compose": "bash scripts/limited-run.sh bash -c 'bash scripts/compose-smoke.sh'",
+    "check:fingerprint": "bash scripts/fingerprint-check.sh",
     "smoke:cpa": "bash scripts/limited-run.sh node scripts/cpa-smoke.mjs",
     "check:host": "bash scripts/limited-run.sh bash -c 'bash scripts/check-host.sh'",
     "bootstrap": "bash scripts/limited-run.sh bash -c 'bash scripts/bootstrap.sh'",

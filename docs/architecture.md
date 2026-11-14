@@ -31,6 +31,18 @@ Phone viewers keep Chromium's native user agent and Client Hints; touch and view
 adapt the layout. Per-session CDP screen metrics keep the wide Xvfb placement canvas out of the
 page's screen dimensions.
 
+Chromium is launched with an explicit, short argument list rather than Puppeteer's defaults, which
+disable features a real Chrome has; `--disable-features=MediaRouter` alone makes fingerprint.com
+classify the browser as automation.
+
+Each browser account has an identity of its own (`browser/identity.ts`): a screen size, a subset of
+the installed fonts and a font-rendering setting, drawn from a seed derived from
+`MIRROR_AUTH_SECRET` and the account id. The fonts reach Chromium through a per-account
+`FONTCONFIG_FILE`, so the font list, canvas text, element sizes and text metrics differ between
+accounts because their environments really differ. Nothing adds noise to canvas or audio reads;
+detectors such as who.1ms.dog recognise noise as tampering. Audio, WebGL (SwiftShader), CPU and
+memory readings come from the shared machine and stay the same.
+
 The voice bridge carries each client's audio independently, while device enumeration, permission
 queries and EME stay Chromium's own APIs. The recorder still wraps some APIs (shadow DOM,
 clipboard), so this is not an unmodified page environment.
@@ -139,8 +151,8 @@ state. An in-flight credential lookup cannot reopen a revoked workspace's pool. 
 keys remain scoped to sealed session/runtime tokens, even when identical bodies share disk blobs.
 
 These are storage, connection and device boundaries, not a guarantee that websites cannot correlate
-accounts: profiles still share a container, kernel, fonts, hardware and the one configured
-`EGRESS_PROXY`. A stronger boundary would run one browser container per account, each with its own
+accounts: profiles still share a container, kernel, hardware (audio, WebGL, CPU) and the one
+configured `EGRESS_PROXY`. A stronger boundary would run one browser container per account, each with its own
 profile volume, display and egress, behind the same authenticating gateway.
 
 ## Optional CPA

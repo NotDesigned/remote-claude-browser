@@ -7,7 +7,7 @@
  */
 import { EventType, type Down, type SnapshotReason, type TabId, type Up } from "@mirror/protocol";
 import type { CdpSend } from "../types";
-import { screenMetrics } from "../browser/screen-metrics";
+import { screenMetrics, type Screen } from "../browser/screen-metrics";
 
 const DEFAULT_DEBOUNCE_MS = 300;
 const DEFAULT_SNAPSHOT_RETRY_MS = 5_500;
@@ -35,6 +35,8 @@ export interface ViewportAgreementDeps {
   isDriver(viewerId: string): boolean;
   /** The page lays out as on a phone, following its viewport meta tag. */
   mobile?: boolean;
+  /** The account's screen, for the page's screen metrics. */
+  screen?: Screen;
   /**
    * Tells a viewer its unchanged geometry already holds, so it needs no viewport snapshot. Without
    * this every `view` takes the full negotiation.
@@ -331,6 +333,7 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
           Math.round(desired.w * zoom),
           Math.round(desired.h * zoom),
           deps.mobile === true && zoom <= 1,
+          deps.screen,
         ),
       });
       if (!current(tabId, state)) return;

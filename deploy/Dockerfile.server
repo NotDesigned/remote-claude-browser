@@ -57,6 +57,16 @@ RUN apt-get update \
     && ln -sfn /data/timezone/localtime /etc/localtime \
     && ln -sfn /data/timezone/name /etc/timezone
 
+# Each browser account keeps a different part of these fonts (packages/gateway/src/browser/identity.ts).
+RUN for attempt in 1 2 3; do apt-get update && break; sleep 10; done \
+    && apt-get install -y --no-install-recommends \
+        fonts-arphic-ukai fonts-arphic-uming fonts-cantarell fonts-croscore \
+        fonts-crosextra-caladea fonts-crosextra-carlito fonts-droid-fallback fonts-firacode \
+        fonts-freefont-ttf fonts-hack fonts-inconsolata fonts-lato fonts-linuxlibertine \
+        fonts-noto-mono fonts-noto-ui-core fonts-open-sans fonts-oxygen fonts-roboto fonts-stix \
+        fonts-urw-base35 fonts-wqy-microhei fonts-wqy-zenhei \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /opt/gateway/ /app/
 COPY --from=build /app/packages/viewer/dist/ /app/viewer/
 COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md UPSTREAM_COMMIT /app/
