@@ -228,9 +228,7 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
             meta.data.width === state.desired.w &&
             meta.data.height === state.desired.h;
       if (matchesGeometry === false) {
-        // Chromium can acknowledge the override before the recorder sees its new dimensions.
-        // The viewer cannot ack this snapshot. Keep recovery alive instead of leaving it inert
-        // forever, with one quick retry before returning to the normal retry interval.
+        // The recorder can lag Chromium's override: retry once quickly, then at the usual interval.
         if (viewportSnapshot && state.inFlight && !state.geometryRetryUsed) {
           state.geometryRetryUsed = true;
           scheduleSnapshotRetry(snapshot.tab, state, Math.min(debounceMs, snapshotRetryMs));

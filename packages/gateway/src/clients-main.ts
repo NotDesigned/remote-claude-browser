@@ -802,11 +802,8 @@ export async function startClientGateway(
     if (accounts.get(account.id) === account) accounts.delete(account.id);
     account.downloads.close();
     account.pool.dispose();
-    try {
-      await account.browser.close().catch(() => {});
-    } finally {
-      await account.display?.close();
-    }
+    await account.browser.close().catch(() => {});
+    await account.display?.close();
   }
 
   // Every user's Chrome, including the migrated administrator profile, starts on demand.

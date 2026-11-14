@@ -39,7 +39,7 @@ export interface DirectResponse {
 
 export type DirectRequest = (
   url: string,
-  options: { headers: Record<string, string> },
+  options: { headers: Record<string, string>; dispatcher?: Agent },
 ) => Promise<DirectResponse>;
 
 export interface AssetFetcherDeps {
@@ -59,7 +59,7 @@ export interface AssetFetcher {
 }
 
 export interface ManagedAssetFetcher extends AssetFetcher {
-  /** Revoke in-flight requests and TLS state before a workspace is released or changes profile. */
+  /** Drops a workspace's connections and TLS state, including those of requests in flight. */
   closeSession(sessionId: string): Promise<void>;
   close(): Promise<void>;
 }
@@ -81,36 +81,26 @@ interface IoReadResult {
 }
 
 export function createAssetFetcher(deps: AssetFetcherDeps): ManagedAssetFetcher {
-  const sessions = new Map<string, { closed: boolean; agent?: Agent }>();
-  let closed = false;
+  // One connection pool per workspace, so no TLS session or socket crosses between them.
+  const pools = new Map<string, Agent>();
   const closeSession = async (sessionId: string): Promise<void> => {
-    const state = sessions.get(sessionId);
-    if (!state) return;
-    state.closed = true;
-    sessions.delete(sessionId);
-    await state.agent?.destroy();
+    const pool = pools.get(sessionId);
+    pools.delete(sessionId);
+    await pool?.destroy();
   };
 
   return {
     async fetch(request) {
-      if (closed) throw new Error("Asset fetcher is closed");
-      let state = sessions.get(request.ref.sessionId);
-      if (!state) {
-        state = { closed: false };
-        sessions.set(request.ref.sessionId, state);
-      }
-      // Retain this generation across awaits. A released SID may be reused, but an old request
-      // must never acquire its replacement's connection pool or resume after revocation.
-      const generation = state;
+      let pool = pools.get(request.ref.sessionId);
+      if (!pool) pools.set(request.ref.sessionId, (pool = new Agent()));
       const cdpSessionId = await deps.sessionFor(request.ref);
-      if (generation.closed || cdpSessionId === undefined) {
+      if (pool.destroyed || cdpSessionId === undefined) {
         throw new Error(`Asset tab is not attached: ${request.ref.tabId}`);
       }
+      // A request whose workspace was released while it looked up credentials must not go out.
       const directRequest: DirectRequest = (url, options) => {
-        if (generation.closed || closed) throw new Error("Asset session was closed");
-        if (deps.directRequest) return deps.directRequest(url, options);
-        generation.agent ??= new Agent();
-        return defaultDirectRequest(url, options, generation.agent);
+        if (pool.destroyed) throw new Error("Asset session was closed");
+        return (deps.directRequest ?? defaultDirectRequest)(url, { ...options, dispatcher: pool });
       };
 
       if (new URL(request.ref.url).protocol === "blob:") {
@@ -129,8 +119,7 @@ export function createAssetFetcher(deps: AssetFetcherDeps): ManagedAssetFetcher 
     },
     closeSession,
     async close() {
-      closed = true;
-      await Promise.all([...sessions.keys()].map(closeSession));
+      await Promise.all([...pools.keys()].map(closeSession));
     },
   };
 }
@@ -300,22 +289,14 @@ async function fetchDirect(
   };
 }
 
-async function defaultDirectRequest(
-  url: string,
-  options: { headers: Record<string, string> },
-  dispatcher: Agent,
-): Promise<DirectResponse> {
-  const response = await undiciRequest(url, {
-    method: "GET",
-    headers: options.headers,
-    dispatcher,
-  });
+const defaultDirectRequest: DirectRequest = async (url, options) => {
+  const response = await undiciRequest(url, { method: "GET", ...options });
   return {
     statusCode: response.statusCode,
     headers: response.headers,
     body: response.body,
   };
-}
+};
 
 async function mainFrameId(send: CdpSend, cdpSessionId: string): Promise<string> {
   const result = (await send(cdpSessionId, "Page.getFrameTree")) as {

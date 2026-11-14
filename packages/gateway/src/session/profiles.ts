@@ -1,7 +1,7 @@
 /**
- * The accounts a session can use. Each one is a Chrome of its own with its own profile, so sites see
- * separate login state: cookies and storage stay apart, while host/egress fingerprints can match. The default account is the
- * profile the gateway has always used.
+ * The accounts a session can use. Each one is a Chrome of its own with its own profile: logins,
+ * cookies and storage stay apart, though host and egress fingerprints can match. The default
+ * account is the profile the gateway has always used.
  */
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";

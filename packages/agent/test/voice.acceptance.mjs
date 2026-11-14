@@ -1,27 +1,23 @@
 /** Browser contract test: viewer audio stays isolated without invented Web API objects. */
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const workspace = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const require = createRequire(
-  process.env.VOICE_TEST_REQUIRE_BASE ?? resolve(workspace, "packages/gateway/package.json"),
-);
+const require = createRequire(resolve(workspace, "packages/gateway/package.json"));
 const puppeteer = await import(pathToFileURL(require.resolve("puppeteer-core")).href);
-const fixtureSource = process.env.VOICE_FIXTURE_SOURCE
-  ? await readFile(process.env.VOICE_FIXTURE_SOURCE, "utf8")
-  : (
-      await require("esbuild").build({
-        entryPoints: [resolve(workspace, "packages/agent/src/voice.ts")],
-        bundle: true,
-        platform: "browser",
-        format: "iife",
-        globalName: "VoiceFixture",
-        write: false,
-      })
-    ).outputFiles[0].text;
+const fixtureSource = (
+  await require("esbuild").build({
+    entryPoints: [resolve(workspace, "packages/agent/src/voice.ts")],
+    bundle: true,
+    platform: "browser",
+    format: "iife",
+    globalName: "VoiceFixture",
+    write: false,
+  })
+).outputFiles[0].text;
 let executablePath;
 for (const path of [
   process.env.CHROME_PATH,

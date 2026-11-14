@@ -90,7 +90,6 @@ interface Lane {
   lane: string;
   plugin: RecordPluginAdapter;
   streams: Set<MediaStream>;
-  detachPlugin: () => void;
 }
 
 export function captureRtcConstructors(scope: typeof globalThis): CapturedRtcConstructors {
@@ -187,21 +186,16 @@ function withCapturedRtc<T>(
 }
 
 /**
- * rrweb 2.1.1 installs one anonymous message listener per record-plugin instance. Capture that
- * listener during construction so a closed viewer lane can remove it instead of leaking one
- * listener for every Replayer rebuild in the document.
+ * rrweb 2.1.1's record plugin also signals through anonymous window.postMessage, which site scripts
+ * can observe and forge. Construct it without that listener: every lane signals only through
+ * signalSendCallback, even inside an iframe.
  */
 function createNativePlugin(
   scope: typeof globalThis,
   signalSendCallback: (signal: RTCSessionDescriptionInit) => void,
-): { plugin: RecordPluginAdapter; detach: () => void } {
+): RecordPluginAdapter {
   const ownDescriptor = Object.getOwnPropertyDescriptor(scope, "addEventListener");
   const add = scope.addEventListener;
-  const remove = scope.removeEventListener;
-  const listeners: Array<{
-    listener: EventListenerOrEventListenerObject;
-    options?: boolean | AddEventListenerOptions;
-  }> = [];
   Object.defineProperty(scope, "addEventListener", {
     configurable: true,
     enumerable: ownDescriptor?.enumerable ?? true,
@@ -210,9 +204,7 @@ function createNativePlugin(
       listener: EventListenerOrEventListenerObject,
       options?: boolean | AddEventListenerOptions,
     ) {
-      if (type === "message")
-        listeners.push({ listener, ...(options === undefined ? {} : { options }) });
-      add.call(scope, type, listener, options);
+      if (type !== "message") add.call(scope, type, listener, options);
     },
     writable: true,
   });
@@ -227,23 +219,8 @@ function createNativePlugin(
       delete (scope as unknown as Record<string, unknown>).addEventListener;
     else Object.defineProperty(scope, "addEventListener", ownDescriptor);
   }
-  // Each instance already belongs to an authenticated gateway peer/lane. rrweb's anonymous
-  // window.postMessage protocol has neither identity and is observable/forgeable by site scripts,
-  // even when the listener runs in an isolated world. It must never be a second signaling path.
-  for (const { listener, options } of listeners) remove.call(scope, "message", listener, options);
-  listeners.length = 0;
-  // Treat this scoped instance as a standalone recorder, including in an iframe. All of its
-  // offers/candidates go to signalSendCallback rather than rrweb's public frame postMessages.
   plugin.inRootFrame = () => true;
-  return {
-    plugin,
-    detach() {
-      for (const { listener, options } of listeners) {
-        remove.call(scope, "message", listener, options);
-      }
-      listeners.length = 0;
-    },
-  };
+  return plugin;
 }
 
 /**
@@ -350,7 +327,6 @@ export function installCanvasRtcRecord(options: CanvasRtcRecordOptions): CanvasR
     }
     for (const stream of state.streams) stopStream(stream);
     state.streams.clear();
-    state.detachPlugin();
   };
 
   const createLane = (peer: string, laneId: string): Lane => {
@@ -360,10 +336,9 @@ export function installCanvasRtcRecord(options: CanvasRtcRecordOptions): CanvasR
     const signalSend = (signal: RTCSessionDescriptionInit) => {
       if (lanes.has(key)) send(peer, laneId, { type: "signal", signal });
     };
-    const created = options.createPlugin
-      ? { plugin: options.createPlugin(signalSend), detach: () => {} }
+    const plugin = options.createPlugin
+      ? options.createPlugin(signalSend)
       : createNativePlugin(scope, signalSend);
-    const plugin = created.plugin;
 
     // setupPeer is also called by signalReceive and setupStream. Protect all later peer creation
     // even if page code replaces WebRTC constructors after the agent initialized.
@@ -378,7 +353,6 @@ export function installCanvasRtcRecord(options: CanvasRtcRecordOptions): CanvasR
       lane: laneId,
       plugin,
       streams: new Set(),
-      detachPlugin: created.detach,
     };
     lanes.set(key, state);
     const initialized = plugin.initPlugin() as InitializedRecordPlugin & {

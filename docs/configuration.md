@@ -57,7 +57,7 @@ The server's `compose.yml` also accepts these if you add them to its `environmen
 Managed headful browser configurations each receive a private Xvfb display and authorization file.
 `XVFB_SCREEN` applies to each one; display resources therefore grow with active configurations.
 Native clipboard selections stay within that configuration. X11 window control and video capture
-use its private display too. Outside Docker this requires `Xvfb`, `xauth` and `xdpyinfo` on `PATH`.
+use its private display too. Outside Docker this requires `Xvfb` and `xauth` on `PATH`.
 Site storage and these device boundaries do not make browser fingerprints or shared egress unique.
 
 Compose passes the password and signing keys as container environment variables. Anyone who can
