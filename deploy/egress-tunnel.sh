@@ -73,9 +73,7 @@ if [ -z "$(ip -4 rule show priority 10012)" ]; then
 fi
 
 start_tunnel() {
-  setpriv --reuid="$tunnel_uid" --regid="$tunnel_uid" --clear-groups \
-    --inh-caps=-all,+net_admin --ambient-caps=-all,+net_admin \
-    xray run -config "$dir/config.json" &
+  as_tunnel xray run -config "$dir/config.json" &
   child=$!
   tries=0
   until ip -o link show dev "$interface" up 2>/dev/null | grep -q .; do
@@ -95,21 +93,8 @@ if ! start_tunnel; then
   exit 1
 fi
 (
-  shutdown() {
-    trap '' TERM INT
-    as_tunnel kill -TERM "$child" 2>/dev/null || true
-    # Keep fail-closed routing until all browser processes have stopped.
-    tries=0
-    while pgrep -u "$browser_uid" >/dev/null; do
-      tries=$((tries + 1))
-      if [ "$tries" -ge 50 ]; then exit 0; fi
-      sleep 0.1
-    done
-    cleanup_routes
-    echo 'Xray policy routing cleaned up.' >&2
-    exit 0
-  }
-  trap shutdown TERM INT
+  # The entrypoint stops the browser first and removes the routes after this exits.
+  trap 'as_tunnel kill -TERM "$child" 2>/dev/null || true; exit 0' TERM INT
   while :; do
     # This subshell cannot wait on the parent's child, so follow its process lifetime instead.
     while kill -0 "$child" 2>/dev/null; do sleep 1; done
