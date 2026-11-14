@@ -122,7 +122,7 @@ export type Down =
   /** Gateway-initiated: discard all state for the tab; a fresh snapshot follows. */
   | { t: "resync"; tab: TabId }
   | { t: "input-status"; tab: TabId; failed: boolean }
-  | { t: "mode"; tab: TabId; mode: "dom" | "px"; native?: boolean }
+  | { t: "mode"; tab: TabId; mode: "dom" | "px" }
   /** Starts or restarts the pixel view's video stream; a keyframe follows. */
   | { t: "vid-cfg"; tab: TabId; codec: string; description: string }
   /** One H.264 frame, as a binary frame on the wire. `seq` reveals a dropped frame. */

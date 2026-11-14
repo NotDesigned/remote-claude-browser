@@ -18,7 +18,7 @@ The browser sandbox remains enabled; the container never uses `--no-sandbox`.
 
 ### In-page agent
 
-In the default `MIRROR_RECORDING_MODE=dom`, the bundled agent is installed into every attached page and iframe target. rrweb records a full
+The bundled agent is installed into every attached page and iframe target. rrweb records a full
 snapshot and ordered mutations. A randomized isolated-world bridge and CDP `Runtime.addBinding`
 move chunked messages out of the renderer without opening a page WebSocket or depending on page
 CSP.
@@ -27,25 +27,13 @@ The recorder runs where it can observe DOM, shadow DOM, canvas, CSS, and input c
 inputs remain masked. Recorder and replay packages are pinned to the same exact rrweb version;
 `scripts/check-rrweb-versions.mjs` enforces that invariant.
 
-`MIRROR_RECORDING_MODE=native` uses the native pixel path instead. A CDP-only adapter tracks
-navigation and layout and supplies a gateway-owned blank control document for the existing
-snapshot/viewport epoch protocol. It never serializes the website DOM or installs a MAIN-world
-recorder. CDP input, navigation, uploads, downloads and pixel transport remain available; semantic
-replay, page audio and clipboard bridges do not. The viewer disables semantic view in this mode.
-Title observation remains in an isolated world. A failed native initialization is surfaced as an
-error rather than silently enabling DOM recording. The existing pixel slot limit still applies.
+Phone viewers keep Chromium's native user agent and Client Hints; touch and viewport emulation
+adapt the layout. Per-session CDP screen metrics keep the wide Xvfb placement canvas out of the
+page's screen dimensions.
 
-Phone viewers retain Chromium's native UA and Client Hints in pages, frames and workers. Touch
-and viewport emulation provide layout adaptation without a fabricated Android model. Sessions
-sharing a persistent profile therefore retain the same network/browser identity. Per-session CDP
-screen metrics separate each profile's wide Xvfb placement canvas from the page's screen dimensions.
-
-The DOM voice bridge transports each client's audio independently. Device enumeration and
-permission queries remain Chromium's own APIs; client microphone authorization is a separate step.
-DRM monitoring observes encrypted media events without replacing the native EME method. DOM replay
-still wraps some browser APIs, including shadow DOM and clipboard operations: it is not a promise
-of an unmodified page environment. Native mode avoids these recorder hooks. Software rendering
-still exposes SwiftShader and rendering outputs; using a GPU instead can expose GPU/driver details.
+The voice bridge carries each client's audio independently, while device enumeration, permission
+queries and EME stay Chromium's own APIs. The recorder still wraps some APIs (shadow DOM,
+clipboard), so this is not an unmodified page environment.
 
 ### Gateway
 
@@ -151,38 +139,9 @@ state. An in-flight credential lookup cannot reopen a revoked workspace's pool. 
 keys remain scoped to sealed session/runtime tokens, even when identical bodies share disk blobs.
 
 These are storage, connection and device boundaries, not a guarantee that websites cannot correlate
-accounts. The current profiles still share a container, OS user, kernel, fonts, hardware capabilities
-and configured egress. Equal rendering fingerprints can occur even with completely separate profiles.
-
-### Further isolation and multiple egresses
-
-A stronger tenant boundary would use one browser worker/container per authorized account, with only
-that account's profile volume mounted. Keep CDP private, give the worker its own display/device
-bridges, and fetch its authenticated assets inside the worker. The front gateway retains service-user
-authentication and routes only to workers the user owns. Container boundaries still share a host
-kernel; VMs provide a stronger OS boundary when that is required.
-
-Multiple egresses can separate authorized tenants, policies and failure domains. Assign an approved
-egress to a worker for its lifetime rather than randomly rotating individual requests. Its HTTP,
-DNS, WebRTC/UDP, IPv4/IPv6 and authenticated asset fetching must follow the same network namespace
-and fail-closed route. A Chromium-only SOCKS setting is insufficient for all those paths.
-
-Keep egress credentials in the network supervisor, not the page or viewer. Observe actual exit,
-latency, failures and route health per worker. An account suspension or authorization failure must
-stop the affected workflow and be handled through the provider's supported process; it must not
-trigger an automatic exit change to continue the same access. Shared IP can be an association signal,
-but multiple IPs do not ensure anonymity, account independence or acceptance by a service.
-
-The current deployment still has one configured `EGRESS_PROXY`; no per-account egress provisioning
-or rotation is enabled by these isolation changes.
-
-`scripts/isolation-acceptance.mjs` exercises these boundaries against a test gateway inside a
-disposable container, with a fresh profile volume and an internal Docker network. It requires
-`MIRROR_E2E=1` and `NODE_ENV=test`, and a bundled rrweb replay fixture at
-`ISOLATION_REPLAY_BUNDLE` (default `/tmp/isolation-replay.js`). It checks storage, ownership,
-clipboard permissions and delivery, private media signaling and decoded frames, display
-authorization and pixel capture. Never mount a production profile for this suite. The separate
-asset-fetch tests verify connection reuse and revocation with a real HTTP fixture.
+accounts: profiles still share a container, kernel, fonts, hardware and the one configured
+`EGRESS_PROXY`. A stronger boundary would run one browser container per account, each with its own
+profile volume, display and egress, behind the same authenticating gateway.
 
 ## Optional CPA
 

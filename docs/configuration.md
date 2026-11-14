@@ -21,7 +21,6 @@ excluded from Git. Do not commit a populated one. `scripts/bootstrap.sh` writes 
 | `SERVER_IMAGE` | no | local build | A prebuilt image |
 | `MIRROR_CLIENTS` | no | `8` | Total active session slots across users; any positive safe integer. Invalid values prevent startup |
 | `MIRROR_START_URL` | no | `https://claude.ai/new` | The page a new session opens |
-| `MIRROR_RECORDING_MODE` | no | `dom` | `dom` keeps semantic replay, page audio and clipboard bridges. `native` uses CDP-only pixel rendering without a MAIN-world recorder; these bridges and semantic view are unavailable. Recreate the server after changing it. Unknown values stop startup. Native sessions need an available pixel stream slot |
 | `MIRROR_ACCOUNTS_DIR` | no | `<profile>-accounts` | Where browser configurations other than the legacy default keep their Chrome profiles |
 | `EGRESS_POLICY` | no | `on` | `off` lets pages reach private networks and the host |
 | `EGRESS_BLOCK` | no | empty | More addresses to block, comma-separated. Add the host's public IP |

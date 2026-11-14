@@ -18,8 +18,6 @@ import { createAssetCache } from "./assets/cache";
 import { createAssetFetcher } from "./assets/fetch";
 import { registerAssetRoutes } from "./assets/route";
 import { createAgentLink } from "./browser/agentlink";
-import { recordingMode } from "./browser/native-agent";
-import { createNativePixelRetry } from "./browser/native-pixel-retry";
 import { createPhoneTargetPreparer, isPhoneRequest, waitForOwner } from "./browser/phone-identity";
 import { agentBridgeChannel, callAgentBridge, callFrameAgent } from "./browser/bridge";
 import {
@@ -93,7 +91,6 @@ interface ClientRuntime {
   viewport: ReturnType<typeof createViewportAgreement>;
   input: ReturnType<typeof createInputRelay>;
   pixels: ReturnType<typeof createScreencast>;
-  nativePixelRetry?: ReturnType<typeof createNativePixelRetry>;
   navigation: ReturnType<typeof createNavigationController>;
   recovery: ReturnType<typeof createRendererRecovery>;
   uploads: Awaited<ReturnType<typeof createUploadManager>>;
@@ -133,7 +130,6 @@ export async function startClientGateway(
     resourceSampler?: ReturnType<typeof createResourceSampler>;
   } = {},
 ) {
-  const nativePixels = recordingMode(process.env.MIRROR_RECORDING_MODE) === "native";
   const e2e = process.env.MIRROR_E2E === "1";
   const managedProfile = !process.env.CHROME_USER_DATA_DIR;
   const profile =
@@ -349,13 +345,11 @@ export async function startClientGateway(
           t: "mode",
           tab: runtime.tabs.activeTabId ?? "",
           mode: runtime.pixels.modeFor(runtime.tabs.activeTabId ?? "") ?? "dom",
-          native: nativePixels || undefined,
         },
         encodeMsg({
           t: "mode",
           tab: runtime.tabs.activeTabId ?? "",
           mode: runtime.pixels.modeFor(runtime.tabs.activeTabId ?? "") ?? "dom",
-          native: nativePixels || undefined,
         }),
       );
       for (const message of runtime.recovery.status()) viewer.send(message, encodeMsg(message));
@@ -419,7 +413,6 @@ export async function startClientGateway(
     );
   };
   function publish(sid: string, message: Down) {
-    if (nativePixels && message.t === "mode") message = { ...message, native: true };
     if (stopping || closing.has(sid)) return;
     if (message.t === "snapshot") {
       const reason = runtimes.get(sid)?.viewport.noteSnapshot(message);
@@ -693,12 +686,8 @@ export async function startClientGateway(
         .catch((error) => report("client theme failed", error));
     };
     const agent = createAgentLink(browser, {
-      nativePixels,
       prepareTarget: async (target) => {
-        await Promise.all([
-          preparePhoneTarget(target),
-          ...(nativePixels ? [] : [prepareThemeCopy(target)]),
-        ]);
+        await Promise.all([preparePhoneTarget(target), prepareThemeCopy(target)]);
       },
       publishClipboard(message, target) {
         const sid = pool.ownerOf(target);
@@ -919,19 +908,10 @@ export async function startClientGateway(
       if (target.type === "page")
         void theme.applyMedia(target).catch((error) => report("client theme failed", error));
     });
-    const nativePixelRetry = nativePixels
-      ? createNativePixelRetry({
-          current: (tab) =>
-            !closing.has(sid) && runtimes.get(sid)?.tabs.activeTabId === tab && hasViewer(sid),
-          start: (tab) => pixels.handle({ t: "mode", tab, mode: "px" }),
-          publish: (message) => publish(sid, message),
-        })
-      : undefined;
     const pixels = createScreencast({
       browser: scoped,
       hubFor: (tab) => tabs.hubFor(tab),
-      publish: (message) =>
-        nativePixelRetry ? nativePixelRetry.observe(message) : publish(sid, message),
+      publish: (message) => publish(sid, message),
       acquirePixel: (tab) => pixelCapacity.acquire(sid, tab),
       releasePixel: (tab) => pixelCapacity.release(sid, tab),
       backlogged: () =>
@@ -985,7 +965,6 @@ export async function startClientGateway(
       });
     } catch (error) {
       recovery.dispose();
-      nativePixelRetry?.dispose();
       pixels.dispose();
       navigation.dispose();
       viewport.dispose();
@@ -1005,7 +984,6 @@ export async function startClientGateway(
       viewport,
       input,
       pixels,
-      nativePixelRetry,
       navigation,
       recovery,
       uploads,
@@ -1013,7 +991,6 @@ export async function startClientGateway(
         uploads.close();
         runtime.rtc?.dispose();
         recovery!.dispose();
-        nativePixelRetry?.dispose();
         pixels.dispose();
         navigation.dispose();
         viewport.dispose();
@@ -1064,7 +1041,6 @@ export async function startClientGateway(
       uploads.close();
       runtime.rtc?.dispose();
       recovery.dispose();
-      nativePixelRetry?.dispose();
       pixels.dispose();
       navigation.dispose();
       viewport.dispose();
@@ -1129,8 +1105,7 @@ export async function startClientGateway(
       return;
     }
     if (message.t === "mode") {
-      runtime.nativePixelRetry?.request(message.tab);
-      await runtime.pixels.handle(nativePixels ? { ...message, mode: "px" } : message);
+      await runtime.pixels.handle(message);
       publish(runtime.sid, { t: "px-capacity", available: pixelCapacity.available() });
       return;
     }
@@ -1150,10 +1125,6 @@ export async function startClientGateway(
         await runtime.navigation
           .handle(message)
           .catch((error) => report("client navigation failed", error));
-        if (runtime.nativePixelRetry) {
-          runtime.nativePixelRetry.request(message.tab);
-          await runtime.pixels.handle({ t: "mode", tab: message.tab, mode: "px" });
-        }
       }
       return;
     }
@@ -1161,10 +1132,8 @@ export async function startClientGateway(
   }
   async function stopPixels(runtime: ClientRuntime, exceptTab?: string) {
     const holder = pixelCapacity.holder(runtime.sid);
-    if (holder?.sid === runtime.sid && holder.tab !== exceptTab) {
-      runtime.nativePixelRetry?.stop(holder.tab);
+    if (holder?.sid === runtime.sid && holder.tab !== exceptTab)
       await runtime.pixels.handle({ t: "mode", tab: holder.tab, mode: "dom" });
-    }
   }
   const clientError = (reply: FastifyReply, error: unknown, owner?: string) => {
     if (error instanceof ClientSessionError || error instanceof UserStoreError)

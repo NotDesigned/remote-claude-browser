@@ -40,7 +40,6 @@ import { createWsServer } from "./ws/server";
 import type { ViewerConn } from "./ws/viewerconn";
 import { startClientGateway } from "./clients-main";
 import { assertProductionSafe } from "./production-guard";
-import { recordingMode } from "./browser/native-agent";
 
 const SESSION_ID = "dev";
 const DEFAULT_PORT = 3000;
@@ -600,10 +599,5 @@ function isInputMsg(msg: Up): msg is InputMsg {
 assertProductionSafe();
 // Older single-browser fixtures omit MIRROR_CLIENTS deliberately. Every ordinary deployment uses
 // independent sessions, including when the capacity is left at its default.
-if (
-  process.env.MIRROR_E2E === "1" &&
-  process.env.MIRROR_CLIENTS === undefined &&
-  recordingMode(process.env.MIRROR_RECORDING_MODE) === "dom"
-)
-  await main();
+if (process.env.MIRROR_E2E === "1" && process.env.MIRROR_CLIENTS === undefined) await main();
 else await startClientGateway();

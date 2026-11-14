@@ -38,8 +38,6 @@ services:
       MIRROR_CLIENTS: ${MIRROR_CLIENTS:-8}
       MIRROR_START_URL: ${MIRROR_START_URL:-https://claude.ai/new}
       MIRROR_CANVAS_SNAPSHOTS: "0"
-      # native uses CDP-only pixel rendering; DOM replay, page audio and clipboard bridges are off.
-      MIRROR_RECORDING_MODE: ${MIRROR_RECORDING_MODE:-dom}
       # Pages nobody has looked at for this long sleep until someone does. Unset is 30 minutes, 0 is off.
       MIRROR_PAGE_SLEEP_MS: ${MIRROR_PAGE_SLEEP_MS:-}
       # Sites whose canvases the page view samples. Unset means the verification challenges.

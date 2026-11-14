@@ -7,9 +7,7 @@ Notable changes to Remote Browser are recorded here.
 - Keep media SDP/ICE and PeerConnections in a private isolated world, removing the page-visible legacy frame signaling path.
 - Isolate authenticated asset fallback HTTP/TLS pools per workspace, and destroy them on release or profile switch.
 - Give managed headful browser configurations separate authenticated Xvfb displays and native clipboards, including scoped pixel capture.
-
 - Keep native browser identity for phone viewers, isolate per-session screen geometry from the shared X display, and preserve native device, permission and EME APIs.
-- Add optional CDP-only native pixel rendering with no MAIN-world DOM recorder, while retaining the default semantic/audio/clipboard mode.
 
 - Replace sing-box egress with checksum-pinned Xray, including VLESS Encryption, REALITY ML-DSA-65 verification and XHTTP. Browser-only TUN routing and fail-closed DNS/UDP forwarding remain enabled. Existing sing-box outbound JSON must be migrated to Xray JSON.
 

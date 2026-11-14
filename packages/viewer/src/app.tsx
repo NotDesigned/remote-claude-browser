@@ -169,7 +169,6 @@ export function App() {
   }, []);
   const [tabs, setTabs] = useState<Extract<Down, { t: "tabs" }>["tabs"]>([]);
   const [modeByTab, setModeByTab] = useState<Record<TabId, "dom" | "px" | undefined>>({});
-  const [nativePixels, setNativePixels] = useState(false);
   const [pixelAvailable, setPixelAvailable] = useState(true);
   const [resyncByTab, setResyncByTab] = useState<Record<TabId, ResyncTabState | undefined>>({});
   const [rttMs, setRttMs] = useState<number | null>(null);
@@ -691,7 +690,6 @@ export function App() {
       },
     });
     mirrorRef.current = mirror;
-    let nativeRendering = false;
     let activating: { tab: TabId; at: number } | null = null;
     const followTab = (tab: TabId) => {
       const tabChanged = currentTab !== tab;
@@ -699,19 +697,10 @@ export function App() {
       setActiveTab(tab);
       // The gateway stops a tab's picture when another becomes active, without a message
       // about the new one, so the view must follow what this tab is really showing.
-      if (tabChanged)
-        setViewMode(knownModes.get(tab) ?? (nativeRendering ? "px" : (entryMode ?? "dom")));
+      if (tabChanged) setViewMode(knownModes.get(tab) ?? entryMode ?? "dom");
       pxView?.selectTab(tab);
       if (mirror.getActiveTab() !== null && mirror.getActiveTab() !== tab) mirror.selectTab(tab);
       if (tabChanged) scheduleViewport(0);
-      if (tabChanged && nativeRendering && entryMode === null)
-        socket?.send({
-          t: "mode",
-          tab,
-          mode: "px",
-          quality: preferredPxQuality(viewStorage()),
-          ...videoOption(),
-        });
     };
     // Before the click goes out, as the tab's snapshot can arrive ahead of the new tab list.
     activateTabRef.current = (tab) => {
@@ -945,13 +934,6 @@ export function App() {
           }
         }
         if (message.t === "mode") {
-          if (message.native !== undefined) {
-            setNativePixels(message.native);
-            if (message.native && !nativeRendering) {
-              nativeRendering = true;
-              entryMode = "px";
-            }
-          }
           setModeByTab((current) => ({ ...current, [message.tab]: message.mode }));
           knownModes.set(message.tab, message.mode);
           if (message.tab === currentTab) setViewMode(message.mode);
@@ -1159,7 +1141,6 @@ export function App() {
   return (
     <div id="shell" data-theme={theme} data-connection={connection}>
       <ShellBar
-        nativePixels={nativePixels}
         viewMode={(activeTab !== null && modeByTab[activeTab]) || viewMode}
         onViewMode={changeView}
         pixelAvailable={pixelAvailable}
