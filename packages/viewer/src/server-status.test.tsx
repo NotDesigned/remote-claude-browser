@@ -69,12 +69,18 @@ describe("server B status", () => {
       });
     const onSample = vi.fn(),
       onReachable = vi.fn();
-    const stop = pollServerStatus({ fetcher, onSample, onReachable, onAuthFailure: vi.fn() });
+    const stop = pollServerStatus({
+      sid: "client-7",
+      fetcher,
+      onSample,
+      onReachable,
+      onAuthFailure: vi.fn(),
+    });
     await vi.advanceTimersByTimeAsync(6_000);
     expect(onReachable.mock.calls).toEqual([[false], [true]]);
     expect(onSample).toHaveBeenCalledWith(value);
     expect(fetcher).toHaveBeenCalledWith(
-      "/api/status",
+      "/api/status?sid=client-7",
       expect.objectContaining({
         credentials: "same-origin",
         cache: "no-store",

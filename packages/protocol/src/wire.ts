@@ -73,7 +73,7 @@ export interface ServerStatusMsg {
   memoryUsedBytes: number | null;
   memoryTotalBytes: number | null;
   browserMemoryBytes: number | null;
-  /** The remote browser's IANA time zone, which sites see. */
+  /** This session's browser exit IANA zone, matching the browser's local time. */
   timeZone?: string;
 }
 

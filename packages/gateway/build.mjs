@@ -27,5 +27,6 @@ await build({
   target: "node22",
   banner,
   outfile: "dist/profile-broker.mjs",
+  external: ["undici"],
   logLevel: "warning",
 });

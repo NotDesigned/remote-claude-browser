@@ -23,6 +23,8 @@ export interface ProfileRecord {
   unavailable?: boolean;
   /** Stable proxy catalog node; null/absent uses the deployment's configured exit. */
   proxyId?: string | null;
+  /** Last detected IANA zone of this profile's exit. Cleared when its exit changes. */
+  timeZone?: string;
 }
 
 export function isProfileId(value: unknown): value is string {
@@ -69,6 +71,7 @@ export async function createProfileStore(
           ...(record.unavailable === true ? { unavailable: true } : {}),
           ...(typeof record.signedIn === "boolean" ? { signedIn: record.signedIn } : {}),
           ...(typeof record.proxyId === "string" ? { proxyId: record.proxyId } : {}),
+          ...(typeof record.timeZone === "string" ? { timeZone: record.timeZone } : {}),
         });
       }
     } catch (error) {
@@ -136,11 +139,26 @@ export async function createProfileStore(
     async setProxy(id: string, proxyId: string | null): Promise<void> {
       const record = known(id);
       const previous = record.proxyId;
+      const previousZone = record.timeZone;
       record.proxyId = proxyId;
+      delete record.timeZone;
       try {
         await persist();
       } catch (error) {
         record.proxyId = previous;
+        record.timeZone = previousZone;
+        throw error;
+      }
+    },
+    async setTimeZone(id: string, timeZone: string | undefined): Promise<void> {
+      const record = known(id);
+      if (record.timeZone === timeZone) return;
+      const previous = record.timeZone;
+      record.timeZone = timeZone;
+      try {
+        await persist();
+      } catch (error) {
+        record.timeZone = previous;
         throw error;
       }
     },

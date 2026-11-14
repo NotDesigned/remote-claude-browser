@@ -186,6 +186,42 @@ async function createBob(app: FastifyInstance, admin: string, role = "user") {
 }
 
 describe("multi-user management routes", () => {
+  it("reports the requested session's exit timezone and never exposes another owner's status", async () => {
+    vi.stubEnv("TZ", "Europe/Berlin");
+    const { app } = await fixture(async (paths) => {
+      const profiles = await createProfileStore({ file: paths.accounts });
+      const second = await profiles.create("洛杉矶出口");
+      await profiles.setTimeZone("default", "Asia/Tokyo");
+      await profiles.setTimeZone(second.id, "America/Los_Angeles");
+      const users = await createUserStore({ file: paths.users, bootstrapPassword: PASSWORD });
+      const bob = await users.createUser({ username: "bob", password: BOB_PASSWORD });
+      users.assignProfile(second.id, bob.id);
+      users.close();
+      await writeFile(
+        paths.sessions,
+        JSON.stringify([
+          { sid: "client-1", owner: "device-clock-tokyo", clientKey: "tokyo", createdAt: 1 },
+          {
+            sid: "client-2",
+            owner: `${bob.id}/device-clock-la`,
+            clientKey: "la",
+            profile: second.id,
+            createdAt: 2,
+          },
+        ]),
+      );
+    });
+    const admin = withDevice(await login(app), "device-clock-tokyo");
+    const bob = withDevice(await login(app, "bob", BOB_PASSWORD), "device-clock-la");
+    const tokyo = (await api(app, admin, "GET", "/api/status?sid=client-1")).json();
+    const la = (await api(app, bob, "GET", "/api/status?sid=client-2")).json();
+    expect(tokyo.timeZone).toBe("Asia/Tokyo");
+    expect(la.timeZone).toBe("America/Los_Angeles");
+    expect((await api(app, admin, "GET", "/api/status?sid=client-2")).statusCode).toBe(403);
+    expect((await api(app, bob, "GET", "/api/status?sid=client-1")).statusCode).toBe(403);
+    expect((await api(app, admin, "GET", "/api/status")).json().timeZone).toBeUndefined();
+    expect(hooks.launch).not.toHaveBeenCalled();
+  });
   it("binds only visible nodes to an owned profile, redacts secrets and preserves the exit on restart", async () => {
     const gateway = await fixture();
     vi.stubEnv("MIRROR_RUNTIME_SOCKET", "/unused-for-management.sock");

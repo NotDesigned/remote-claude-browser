@@ -2,6 +2,7 @@ import { request } from "node:http";
 import { connect as connectSocket } from "node:net";
 import type { ConnectionTransport } from "puppeteer-core";
 import { chromiumLaunchArgs, connectBrowserTransport, type LaunchOpts } from "./launch";
+import { ClientSessionError } from "../session/clients";
 
 export async function runtimeRequest<T>(path: string, method: string, body?: unknown): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -17,9 +18,15 @@ export async function runtimeRequest<T>(path: string, method: string, body?: unk
         response.on("data", (chunk: Buffer) => chunks.push(chunk));
         response.on("error", reject);
         response.on("end", () => {
-          if (response.statusCode !== 200) return reject(new Error("浏览器网络运行时未就绪"));
           try {
-            resolve(JSON.parse(Buffer.concat(chunks).toString()) as T);
+            const body = JSON.parse(Buffer.concat(chunks).toString());
+            if (response.statusCode !== 200)
+              return reject(
+                body.code === "EXIT_TIMEZONE"
+                  ? new ClientSessionError(503, "EXIT_TIMEZONE", body.error)
+                  : new Error("浏览器网络运行时未就绪"),
+              );
+            resolve(body as T);
           } catch (error) {
             reject(error);
           }
@@ -61,7 +68,7 @@ export async function pipeTransport(path: string): Promise<ConnectionTransport> 
 }
 
 export async function launchBrokerBrowser(id: string, node: unknown, opts: LaunchOpts) {
-  const started = await runtimeRequest<{ socketPath: string; proxyUrl: string }>(
+  const started = await runtimeRequest<{ socketPath: string; proxyUrl: string; timeZone: string }>(
     `/browsers/${id}/start`,
     "POST",
     {
@@ -90,7 +97,7 @@ export async function launchBrokerBrowser(id: string, node: unknown, opts: Launc
     browser.kill = async () => {
       await stop();
     };
-    return { browser, proxyUrl: started.proxyUrl };
+    return { browser, proxyUrl: started.proxyUrl, timeZone: started.timeZone };
   } catch (error) {
     await stop();
     throw error;

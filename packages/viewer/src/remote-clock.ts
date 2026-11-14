@@ -1,14 +1,27 @@
 /**
- * The time where the remote browser is. Sites see that zone, set by the server's TZ, so it is the
- * one easy to lose track of. The viewer's own clock is accurate enough; only the zone comes from
- * the server.
+ * The selected exit's local time, using the gateway's UTC sample and the profile's IANA zone.
  */
+import type { ReceivedServerStatus } from "./server-status";
 
 export interface RemoteClockText {
   /** Short, for the top bar: "洛杉矶 03:12". */
   label: string;
   /** Full, for a tooltip or the menu: "2026-11-11 周三 03:12 · America/Los_Angeles（GMT-8）". */
   title: string;
+}
+
+/** Keep the gateway's UTC clock while advancing by time elapsed on the viewer. */
+export function remoteClockNow(sample: ReceivedServerStatus, now = Date.now()): number {
+  return sample.value.sampledAt + now - sample.receivedAt;
+}
+
+export function formatStatusClock(
+  sample: ReceivedServerStatus | null,
+  now = Date.now(),
+): RemoteClockText | null {
+  return sample
+    ? formatRemoteClock(sample.value.timeZone, new Date(remoteClockNow(sample, now)))
+    : null;
 }
 
 /** The zone's place name, such as 洛杉矶 for America/Los_Angeles; UTC or an offset otherwise. */

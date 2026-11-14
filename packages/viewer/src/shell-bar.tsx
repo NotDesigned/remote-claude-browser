@@ -8,7 +8,7 @@ import { formatSpeed } from "./hud";
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { SERVER_STATUS_STALE_MS, type ReceivedServerStatus } from "./server-status";
-import { formatRemoteClock, msToNextMinute } from "./remote-clock";
+import { formatStatusClock, msToNextMinute, remoteClockNow } from "./remote-clock";
 import type { ViewMode } from "./client-session";
 import type { FrontendUser } from "./users";
 
@@ -89,7 +89,7 @@ export function ShellBar(props: ShellBarProps) {
       : null;
   const warning = sample ? resourceWarning(props.serverStatus) : null;
   // The zone does not go stale with the numbers: keep showing the last one heard.
-  const clock = useRemoteClock(props.serverStatus?.value.timeZone);
+  const clock = useRemoteClock(props.serverStatus);
   const gib = (bytes: number | null | undefined) =>
     bytes === null || bytes === undefined ? "—" : (bytes / 1024 ** 3).toFixed(1);
 
@@ -115,11 +115,7 @@ export function ShellBar(props: ShellBarProps) {
 
       <div class="shell-bar-end">
         {clock && (
-          <span
-            id="shell-clock"
-            title={clock.title}
-            aria-label={`远程浏览器当地时间 ${clock.title}`}
-          >
+          <span id="shell-clock" title={clock.title} aria-label={`出口当地时间 ${clock.title}`}>
             {clock.label}
           </span>
         )}
@@ -310,7 +306,7 @@ export function ShellBar(props: ShellBarProps) {
             <dl class="shell-menu-stats">
               {clock && (
                 <div>
-                  <dt>当地时间</dt>
+                  <dt>出口当地时间</dt>
                   <dd title={clock.title}>{clock.label}</dd>
                 </div>
               )}
@@ -385,17 +381,17 @@ export function resourceWarning(received: ReceivedServerStatus | null): string |
  * The remote browser's time. Each render reads the clock, so one after a throttled background
  * timer is right anyway; the timer only redraws on each new minute.
  */
-function useRemoteClock(timeZone: string | undefined) {
+function useRemoteClock(sample: ReceivedServerStatus | null) {
   const [, redraw] = useState(0);
   useEffect(() => {
-    if (!timeZone) return;
+    if (!sample?.value.timeZone) return;
     let timer: ReturnType<typeof setTimeout>;
     const tick = () => {
       redraw((count) => count + 1);
-      timer = setTimeout(tick, msToNextMinute(Date.now()) + 50);
+      timer = setTimeout(tick, msToNextMinute(remoteClockNow(sample)) + 50);
     };
-    timer = setTimeout(tick, msToNextMinute(Date.now()) + 50);
+    timer = setTimeout(tick, msToNextMinute(remoteClockNow(sample)) + 50);
     return () => clearTimeout(timer);
-  }, [timeZone]);
-  return formatRemoteClock(timeZone);
+  }, [sample]);
+  return formatStatusClock(sample);
 }

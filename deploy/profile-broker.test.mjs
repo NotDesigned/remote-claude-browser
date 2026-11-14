@@ -29,4 +29,11 @@ test("broker permits profile environment only and keeps disk writes under its da
       env: { LD_PRELOAD: "/data/evil.so" },
     }),
   );
+  assert.throws(() =>
+    validateBrowserOptions({
+      userDataDir: "/data/p",
+      args: [],
+      env: { TZ: "Etc/UTC" },
+    }),
+  );
 });

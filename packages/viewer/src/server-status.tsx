@@ -21,11 +21,13 @@ export function receiveServerStatus(
 }
 
 export function pollServerStatus({
+  sid,
   onSample,
   onReachable,
   onAuthFailure,
   fetcher = fetch,
 }: {
+  sid?: string;
   onSample(value: ServerStatusMsg): void;
   onReachable(reachable: boolean): void;
   onAuthFailure(): void;
@@ -39,11 +41,14 @@ export function pollServerStatus({
     pending = controller;
     const timeout = setTimeout(() => controller.abort(), 4_000);
     try {
-      const response = await fetcher("/api/status", {
-        credentials: "same-origin",
-        cache: "no-store",
-        signal: controller.signal,
-      });
+      const response = await fetcher(
+        sid ? `/api/status?sid=${encodeURIComponent(sid)}` : "/api/status",
+        {
+          credentials: "same-origin",
+          cache: "no-store",
+          signal: controller.signal,
+        },
+      );
       if (stopped) return;
       if (response.status === 401 || response.status === 403) {
         stopped = true;

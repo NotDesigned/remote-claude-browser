@@ -16,6 +16,10 @@ import { promisify } from "node:util";
 const exec = promisify(execFile);
 const script = fileURLToPath(import.meta.url);
 const fixtureBody = (exit) => `${exit}|0123456789abcdefghijklmnopqrstuvwxyz`;
+const exitTimeZones = {
+  "exit-A": { timeZone: "Asia/Tokyo", winterOffset: -540, summerOffset: -540 },
+  "exit-B": { timeZone: "America/Los_Angeles", winterOffset: 480, summerOffset: 420 },
+};
 const command = async (program, args) =>
   (await exec(program, args, { maxBuffer: 4 * 1024 * 1024 })).stdout.trim();
 const readInput = async () => {
@@ -144,6 +148,35 @@ async function cdpProbe(input) {
       )
     ).result.value;
     assert.equal(value, input.persist ? "stored" : "retained");
+    const clockProbe = await send(
+      "Runtime.evaluate",
+      {
+        expression: `(async () => {
+        const read = () => ({
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          winterOffset: new Date("2026-01-15T12:00:00.000Z").getTimezoneOffset(),
+          summerOffset: new Date("2026-07-15T12:00:00.000Z").getTimezoneOffset()
+        });
+        const url = URL.createObjectURL(new Blob(["onmessage = () => postMessage((" + read.toString() + ")())"], {type: "text/javascript"}));
+        const worker = new Worker(url);
+        try {
+          const result = await new Promise((resolve, reject) => {
+            worker.onmessage = event => resolve(event.data);
+            worker.onerror = event => reject(new Error(event.message));
+            worker.postMessage("read-clock");
+          });
+          return { main: read(), worker: result };
+        } finally { worker.terminate(); URL.revokeObjectURL(url); }
+      })()`,
+        awaitPromise: true,
+        returnByValue: true,
+      },
+      sessionId,
+    );
+    assert.equal(clockProbe.exceptionDetails, undefined, "clock probe should run in a real Worker");
+    const clocks = clockProbe.result.value;
+    assert.deepEqual(clocks.main, exitTimeZones[input.exit]);
+    assert.deepEqual(clocks.worker, exitTimeZones[input.exit]);
     const image = await send("Page.captureScreenshot", { format: "png" }, sessionId);
     assert.ok(Buffer.from(image.data, "base64").length > 500);
     await send("Page.navigate", { url: "chrome://sandbox" }, sessionId);
@@ -169,6 +202,10 @@ async function cdpProbe(input) {
       persistentProfile: !input.persist,
       namespaceSandbox: true,
       seccompSandbox: true,
+      timeZone: clocks.main.timeZone,
+      workerTimeZone: clocks.worker.timeZone,
+      winterOffset: clocks.main.winterOffset,
+      summerOffset: clocks.main.summerOffset,
     };
   } finally {
     clearTimeout(timeout);
@@ -176,7 +213,7 @@ async function cdpProbe(input) {
   }
 }
 async function probe(mode, input) {
-  if (mode === "api") return rawApi(input.path, input.method, input.body);
+  if (mode === "api") return rawApi(input.path, input.method, input.body, input.expectedStatus);
   if (mode === "cdp") return cdpProbe(input);
   if (mode === "range") {
     const require = createRequire("/app/package.json");
@@ -249,8 +286,9 @@ async function childProbe(mode, input, namespace) {
     child.stdin.end(JSON.stringify(input));
   });
 }
-const api = (path, method, body) => childProbe("api", { path, method, body });
-async function rawApi(path, method, body) {
+const api = (path, method, body, expectedStatus = 200) =>
+  childProbe("api", { path, method, body, expectedStatus });
+async function rawApi(path, method, body, expectedStatus = 200) {
   const response = await new Promise((done, fail) => {
     const req = httpRequest(
       {
@@ -266,12 +304,23 @@ async function rawApi(path, method, body) {
   });
   const chunks = [];
   for await (const chunk of response) chunks.push(chunk);
-  assert.equal(response.statusCode, 200, `Runtime ${path} failed`);
+  assert.equal(response.statusCode, expectedStatus, `Runtime ${path} failed`);
   return JSON.parse(Buffer.concat(chunks).toString());
 }
 async function startExitFixture(exit, socksPort, targetPort, counters) {
   const server = createServer((req, res) => {
     counters.http++;
+    if (req.url === "/geo") {
+      counters.geo++;
+      res.setHeader("content-type", "application/json");
+      if (counters.failGeo) {
+        res.writeHead(429);
+        res.end(JSON.stringify({ success: false }));
+        return;
+      }
+      res.end(JSON.stringify({ success: true, timezone: { id: exitTimeZones[exit].timeZone } }));
+      return;
+    }
     if (req.url.endsWith("/chat/completions")) {
       req.resume();
       res.setHeader("content-type", "application/json");
@@ -499,9 +548,9 @@ async function startPrivateDisplay() {
 }
 
 async function inside() {
-  const { startProfileBroker, networkIdentity } = await import("/acceptance/profile-broker.mjs");
+  const { startProfileBroker, networkIdentity } = await import("/app/profile-egress-broker.mjs");
   const { createMihomoConfig } = await import("/acceptance/config.mjs");
-  const counts = { A: { http: 0, udp: 0, dns: 0 }, B: { http: 0, udp: 0, dns: 0 } };
+  const counts = { A: { http: 0, udp: 0, dns: 0, geo: 0 }, B: { http: 0, udp: 0, dns: 0, geo: 0 } };
   const cleanups = [];
   const raceNetwork = networkIdentity("node-fixture-race");
   let broker;
@@ -513,7 +562,7 @@ async function inside() {
     "--clear-groups",
     "node",
     "-e",
-    "require('fs').mkdirSync('/data/browser-a',{recursive:true})",
+    "for(const name of ['browser-a','browser-b'])require('fs').mkdirSync('/data/'+name,{recursive:true})",
   ]);
   const direct = createServer((_req, res) => res.end("DIRECT-LEAK"));
   await new Promise((done) => direct.listen(80, "0.0.0.0", done));
@@ -562,6 +611,14 @@ exec sh /acceptance/profile-network.sh "$@"
     broker = await startProfileBroker({
       secret: "disposable-smoke-secret-not-production",
       networkScript: "/tmp/profile-network-smoke.sh",
+      geoUrl: "http://203.0.113.10/geo",
+      defaultNode: {
+        name: "Default exit fixture",
+        type: "socks5",
+        server: "127.0.0.1",
+        port: 11080,
+        udp: true,
+      },
       createConfig(node, options) {
         const config = createMihomoConfig(node, options);
         config.dns.nameserver = [
@@ -616,11 +673,32 @@ exec sh /acceptance/profile-network.sh "$@"
     assert.equal(revokedStatus, 407);
     stage = "default-egress-lifecycle";
     await api("/egress/deployment-default/start", "POST", {});
+    const initialDefaultGeo = counts.A.geo;
+    const defaultZones = await Promise.all([
+      api("/egress/deployment-default/timezone", "POST"),
+      api("/egress/deployment-default/timezone", "POST"),
+    ]);
+    assert.ok(defaultZones.every((result) => result.timeZone === exitTimeZones["exit-A"].timeZone));
+    assert.equal(
+      counts.A.geo,
+      initialDefaultGeo + 1,
+      "the live default namespace shares one Geo request",
+    );
     await api("/egress/deployment-default", "DELETE");
     await assert.rejects(
       stat(`/run/remote-browser/${networkIdentity("node-deployment-default").name}`),
       { code: "ENOENT" },
     );
+    assert.equal(
+      (await api("/egress/deployment-default/timezone", "POST")).timeZone,
+      exitTimeZones["exit-A"].timeZone,
+    );
+    assert.equal(
+      counts.A.geo,
+      initialDefaultGeo + 2,
+      "recreated default namespace probes its exit again",
+    );
+    await api("/egress/deployment-default", "DELETE");
     stage = "independent-exits";
     const startedA = await api("/egress/fixture-a/start", "POST", { node: nodes.A });
     const startedB = await api("/egress/fixture-b/start", "POST", { node: nodes.B });
@@ -704,50 +782,114 @@ exec sh /acceptance/profile-network.sh "$@"
       stage = "stock-cpa-authenticated-proxy";
       await stockCpaProbe(startedA.externalProxyUrl);
     }
-    const browserNode = { ...nodes.A, server: networkIdentity("browser-smoke-browser").hostIp };
-    for (const [iteration, persist] of [true, false, false, false].entries()) {
-      stage = persist ? "browser-first-launch" : `browser-reopen-${iteration}`;
-      const browser = await api("/browsers/smoke-browser/start", "POST", {
-        node: browserNode,
+    const browserArgs = [
+      "--no-first-run",
+      "--password-store=basic",
+      "--disable-extensions",
+      "--disable-dev-shm-usage",
+      "--disable-background-networking",
+    ];
+    const browserProfiles = {
+      A: { id: "smoke-browser", exit: "exit-A", directory: "/data/browser-a", node: nodes.A },
+      B: { id: "smoke-browser-b", exit: "exit-B", directory: "/data/browser-b", node: nodes.B },
+    };
+    const startBrowser = async (profile, env = {}, headful = false) => {
+      const value = await api(`/browsers/${profile.id}/start`, "POST", {
+        node: { ...profile.node, server: networkIdentity(`browser-${profile.id}`).hostIp },
         options: {
-          userDataDir: "/data/browser-a",
-          args: [
-            "--headless=new",
-            "--no-first-run",
-            "--password-store=basic",
-            "--disable-extensions",
-            "--disable-dev-shm-usage",
-            "--disable-background-networking",
-          ],
-          env: {},
+          userDataDir: profile.directory,
+          args: [...(headful ? [] : ["--headless=new"]), ...browserArgs],
+          env,
         },
       });
-      results.push(
-        await childProbe("cdp", { socketPath: browser.socketPath, exit: "exit-A", persist }),
+      assert.equal(value.timeZone, exitTimeZones[profile.exit].timeZone);
+      return value;
+    };
+    stage = "failed-geo-cleanup";
+    const failedNetwork = networkIdentity("browser-smoke-geo-failure");
+    const beforeFailure = { A: counts.A.geo, B: counts.B.geo };
+    counts.B.failGeo = true;
+    try {
+      const failed = await api(
+        "/browsers/smoke-geo-failure/start",
+        "POST",
+        {
+          node: { ...nodes.B, server: failedNetwork.hostIp },
+          options: {
+            userDataDir: "/data/browser-b",
+            args: ["--headless=new", ...browserArgs],
+            env: {},
+          },
+        },
+        503,
       );
-      await api("/browsers/smoke-browser", "DELETE");
+      assert.equal(failed.code, "EXIT_TIMEZONE");
+      assert.ok(!(await command("ip", ["netns", "list"])).includes(failedNetwork.name));
+      await assert.rejects(stat(`/run/remote-browser/${failedNetwork.name}`), { code: "ENOENT" });
+      assert.equal(
+        counts.A.geo,
+        beforeFailure.A,
+        "failed B lookup must not fall back to A or deployment default",
+      );
+      assert.equal(
+        counts.B.geo,
+        beforeFailure.B + 1,
+        "the failed provider is queried once without retry",
+      );
+    } finally {
+      delete counts.B.failGeo;
+    }
+    stage = "simultaneous-browser-timezones";
+    const beforeConcurrent = { A: counts.A.geo, B: counts.B.geo };
+    const initialBrowsers = await Promise.all(
+      Object.values(browserProfiles).map((profile) => startBrowser(profile)),
+    );
+    assert.equal(counts.A.geo, beforeConcurrent.A + 1);
+    assert.equal(counts.B.geo, beforeConcurrent.B + 1);
+    const initialClocks = await Promise.all(
+      Object.values(browserProfiles).map((profile, index) =>
+        childProbe("cdp", {
+          socketPath: initialBrowsers[index].socketPath,
+          exit: profile.exit,
+          persist: true,
+        }),
+      ),
+    );
+    results.push(...initialClocks);
+    await Promise.all(
+      Object.values(browserProfiles).map((profile) => api(`/browsers/${profile.id}`, "DELETE")),
+    );
+    for (const [iteration, key] of ["A", "B", "A", "A"].entries()) {
+      stage = `browser-${key}-reopen-${iteration}`;
+      const profile = browserProfiles[key],
+        before = counts[key].geo;
+      const browser = await startBrowser(profile);
+      assert.equal(
+        counts[key].geo,
+        before + 1,
+        "reopening a browser must probe its selected exit again",
+      );
+      results.push(
+        await childProbe("cdp", {
+          socketPath: browser.socketPath,
+          exit: profile.exit,
+          persist: false,
+        }),
+      );
+      await api(`/browsers/${profile.id}`, "DELETE");
     }
     stage = "headful-private-x11";
     const display = await startPrivateDisplay();
     cleanups.push(display.close);
-    const headful = await api("/browsers/smoke-headful/start", "POST", {
-      node: { ...nodes.A, server: networkIdentity("browser-smoke-headful").hostIp },
-      options: {
-        userDataDir: "/data/browser-a",
-        args: [
-          "--no-first-run",
-          "--password-store=basic",
-          "--disable-extensions",
-          "--disable-dev-shm-usage",
-          "--disable-background-networking",
-        ],
-        env: display.env,
-      },
-    });
+    const headful = await startBrowser(
+      { ...browserProfiles.B, id: "smoke-headful" },
+      display.env,
+      true,
+    );
     results.push({
       ...(await childProbe("cdp", {
         socketPath: headful.socketPath,
-        exit: "exit-A",
+        exit: "exit-B",
         persist: false,
       })),
       headful: true,
@@ -756,6 +898,7 @@ exec sh /acceptance/profile-network.sh "$@"
     await api("/browsers/smoke-headful", "DELETE");
     assert.ok(counts.A.dns > 0 && counts.B.dns > 0);
     assert.ok(counts.A.udp > 0 && counts.B.udp > 0);
+    assert.ok(counts.A.geo > 0 && counts.B.geo > 0);
     console.log(
       JSON.stringify({
         passed: true,
@@ -768,6 +911,11 @@ exec sh /acceptance/profile-network.sh "$@"
         pendingEgressRevoked: true,
         defaultEgressLifecycle: true,
         headfulPrivateX11: true,
+        selectedExitTimeZones: true,
+        workerLocalTime: true,
+        seasonalOffsets: true,
+        defaultTimeZoneCached: true,
+        failedGeoCleaned: true,
         ...(process.env.PROFILE_EGRESS_STOCK_CPA === "1" ? { stockCpaProxy: true } : {}),
         counts,
         results,
@@ -829,23 +977,11 @@ async function host() {
     for (const [source, name] of [
       [script, "profile-egress-smoke.mjs"],
       [
-        fileURLToPath(new URL("../deploy/profile-broker.mjs", import.meta.url)),
-        "profile-broker.mjs",
-      ],
-      [
         fileURLToPath(new URL("../deploy/profile-network.sh", import.meta.url)),
         "profile-network.sh",
       ],
     ])
-      await writeFile(
-        join(work, name),
-        name === "profile-broker.mjs" && process.env.PROFILE_EGRESS_DEBUG === "1"
-          ? (await readFile(source, "utf8"))
-              .replaceAll('stdio: "ignore"', 'stdio: "inherit"')
-              .replaceAll("error.code ?? error.name", "error.stderr ?? error.message")
-          : await readFile(source),
-        { mode: 0o644 },
-      );
+      await writeFile(join(work, name), await readFile(source), { mode: 0o644 });
     const require = createRequire(new URL("../packages/gateway/package.json", import.meta.url));
     await require("esbuild").build({
       entryPoints: [
@@ -857,6 +993,26 @@ async function host() {
       outfile: join(work, "config.mjs"),
       logLevel: "warning",
     });
+    await require("esbuild").build({
+      entryPoints: [fileURLToPath(new URL("../deploy/profile-broker.mjs", import.meta.url))],
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      target: "node22",
+      external: ["undici"],
+      banner: {
+        js: 'import { createRequire as __smokeRequire } from "node:module"; const require = __smokeRequire(import.meta.url);',
+      },
+      outfile: join(work, "profile-broker.mjs"),
+      logLevel: "warning",
+    });
+    if (process.env.PROFILE_EGRESS_DEBUG === "1")
+      await writeFile(
+        join(work, "profile-broker.mjs"),
+        (await readFile(join(work, "profile-broker.mjs"), "utf8"))
+          .replaceAll('stdio: "ignore"', 'stdio: "inherit"')
+          .replaceAll("error.code ?? error.name", "error.stderr ?? error.message"),
+      );
     if (process.env.PROFILE_EGRESS_STOCK_CPA === "1") {
       await writeFile(
         join(work, "cpa-broker.mjs"),
@@ -908,6 +1064,7 @@ async function host() {
       "--cpus=1.5",
       "--pids-limit=512",
       "--env=EGRESS_TEST_PRIVATE_PROXY=1",
+      "--env=TZ=Etc/UTC",
       `--env=PROFILE_EGRESS_STOCK_CPA=${process.env.PROFILE_EGRESS_STOCK_CPA ?? "0"}`,
       `--env=PROFILE_EGRESS_DEBUG=${process.env.PROFILE_EGRESS_DEBUG ?? "0"}`,
       `--env=PROFILE_EGRESS_SMOKE_KEEP=${process.env.PROFILE_EGRESS_SMOKE_KEEP ?? "0"}`,
@@ -920,6 +1077,8 @@ async function host() {
       "--tmpfs=/run/remote-browser:rw,size=32m",
       "--mount",
       `type=bind,src=${work},dst=/acceptance,readonly`,
+      "--mount",
+      `type=bind,src=${join(work, "profile-broker.mjs")},dst=/app/profile-egress-broker.mjs,readonly`,
       "--mount",
       `type=bind,src=${binary},dst=/usr/local/bin/mihomo,readonly`,
       "--entrypoint=node",

@@ -467,6 +467,7 @@ export function App() {
     )
       return;
     return pollServerStatus({
+      sid: clientSession?.sid,
       onSample: (value) => {
         const now = Date.now();
         setStatusNow(now);
@@ -475,7 +476,7 @@ export function App() {
       onReachable: setStatusReachable,
       onAuthFailure: () => setStatusAuthRejected(true),
     });
-  }, [clientPhase, clientError?.status, fixturePath, statusAuthRejected]);
+  }, [clientPhase, clientSession?.sid, clientError?.status, fixturePath, statusAuthRejected]);
 
   useEffect(() => {
     const host = hostRef.current;

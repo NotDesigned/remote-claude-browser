@@ -50,5 +50,7 @@ export function createRuntimeClient(options: { socketPath?: string } = {}) {
         node === undefined ? {} : { node },
       ),
     stopEgress: (id: string) => call<void>("DELETE", `/egress/${encodeURIComponent(id)}`),
+    timeZoneForEgress: (id = "deployment-default") =>
+      call<{ timeZone: string }>("POST", `/egress/${encodeURIComponent(id)}/timezone`),
   };
 }

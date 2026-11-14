@@ -126,6 +126,9 @@ function ProfileCard(props: {
           <span class="profile-exit">
             出口：{account.proxyName ?? (account.proxyId ? "节点已移除" : "部署默认")}
           </span>
+          <span class="profile-exit" title={account.timeZone}>
+            时区：{account.timeZone ?? "按出口自动确定"}
+          </span>
         </span>
         <span class="profile-meta">
           {props.isDefault && <span class="profile-badge profile-default-badge">默认</span>}

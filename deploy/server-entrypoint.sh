@@ -99,8 +99,8 @@ fi
 
 umask 0077
 mkdir -p "$HOME" "$CHROME_USER_DATA_DIR"
-# Geo-IP follows this container's public egress, not the device opening the viewer. The resolver
-# writes /etc/localtime's writable target too, so other container processes use the same timezone.
+# Service processes use the configured zone; each Chrome receives the IANA zone detected through
+# its own exit when it starts. Only service processes share /etc/localtime's writable target.
 TZ=$(node /opt/remote-browser/timezone.mjs)
 export TZ
 # Only this container uses the profile, so a lock in it was left by a previous run. Chromium would

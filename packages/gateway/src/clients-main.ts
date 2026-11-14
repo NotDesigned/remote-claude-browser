@@ -30,6 +30,7 @@ import { launchBrokerBrowser } from "./browser/broker";
 import { createProxyCatalog, ProxyCatalogError } from "./egress/catalog";
 import { registerProxyRoutes } from "./egress/routes";
 import { createRuntimeClient } from "./egress/runtime-client";
+import { detectExitTimeZone } from "./egress/timezone";
 import { createCpaStore } from "./cpa/store";
 import { createCpaRuntime } from "./cpa/runtime";
 import { createCpaBrokerDriver } from "./cpa/broker-client";
@@ -77,6 +78,7 @@ interface Account {
   dir: string;
   browser: BrowserHandle;
   proxyUrl?: string;
+  timeZone: string;
   display?: AccountDisplay;
   identity: BrowserIdentity;
   pool: ReturnType<typeof createClientBrowserPool>;
@@ -163,6 +165,25 @@ export async function startClientGateway(
   const accountLifecycle = createLifecycleLock();
   const networkRuntime = createRuntimeClient({ socketPath: process.env.MIRROR_RUNTIME_SOCKET });
   const scopedExits = new Map<string, Set<string>>();
+  let defaultZone: Promise<string> | undefined;
+  const defaultExitTimeZone = async () => {
+    if (e2e) return Intl.DateTimeFormat().resolvedOptions().timeZone;
+    try {
+      if (process.env.MIRROR_RUNTIME_SOCKET)
+        return (await networkRuntime.timeZoneForEgress()).timeZone;
+      defaultZone ??= detectExitTimeZone().catch((error) => {
+        defaultZone = undefined;
+        throw error;
+      });
+      return await defaultZone;
+    } catch {
+      throw new ClientSessionError(
+        503,
+        "EXIT_TIMEZONE",
+        "无法获取所选出口的时区，请检查代理后重试",
+      );
+    }
+  };
   const resetProfileNetwork = async (id: string) => {
     const sessions = clientSessions
       .all()
@@ -182,12 +203,15 @@ export async function startClientGateway(
     }
   };
   const invalidateNodes = async (ids: string[]) => {
-    if (!process.env.MIRROR_RUNTIME_SOCKET) return;
     await accountLifecycle.run(async () => {
       for (const record of accountStore.all())
-        if (record.proxyId && ids.includes(record.proxyId)) await resetProfileNetwork(record.id);
+        if (record.proxyId && ids.includes(record.proxyId)) {
+          await resetProfileNetwork(record.id);
+          await accountStore.setTimeZone(record.id, undefined);
+        }
       for (const id of ids) {
-        for (const scope of scopedExits.get(id) ?? []) await networkRuntime.stopEgress(scope);
+        if (process.env.MIRROR_RUNTIME_SOCKET)
+          for (const scope of scopedExits.get(id) ?? []) await networkRuntime.stopEgress(scope);
         scopedExits.delete(id);
       }
     });
@@ -450,7 +474,7 @@ export async function startClientGateway(
       for (const message of runtime.recovery.status()) viewer.send(message, encodeMsg(message));
       const capacity = { t: "px-capacity", available: pixelCapacity.available() } as const;
       viewer.send(capacity, encodeMsg(capacity));
-      const currentStatus = status();
+      const currentStatus = status(sid);
       viewer.send(currentStatus, encodeMsg(currentStatus));
       broadcastStatus();
       void runtime.tabs
@@ -539,9 +563,7 @@ export async function startClientGateway(
     return owners.size;
   };
   let lastStatusAt = 0;
-  // Chrome runs in this process's zone: TZ, or the system's.
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  function status(): ServerStatusMsg {
+  function status(sid?: string): ServerStatusMsg {
     lastStatusAt = Math.max(Date.now(), lastStatusAt + 1);
     const stale = Date.now() - resources.sampledAt > 10000;
     return {
@@ -561,13 +583,18 @@ export async function startClientGateway(
       clientsMax: clientSessions.capacity(),
       pixelsActive: pixelCapacity.count(),
       pixelsMax: null,
-      timeZone,
+      ...(sid
+        ? {
+            timeZone:
+              runtimes.get(sid)?.account.timeZone ??
+              accountStore.get(clientSessions.profileOf(sid))?.timeZone,
+          }
+        : {}),
     };
   }
   function broadcastStatus() {
     if (stopping) return;
-    const message = status();
-    for (const sid of runtimes.keys()) publish(sid, message);
+    for (const sid of runtimes.keys()) publish(sid, status(sid));
   }
   let e2eIdleOffset = 0;
   /** Whether a page is writing a reply, which closing or reloading it would cut short. */
@@ -665,9 +692,12 @@ export async function startClientGateway(
     now: () => Date.now() + e2eIdleOffset,
     onError: (error) => report("idle client cleanup", error),
   });
-  app.get("/api/status", async (request, reply) => {
+  app.get<{ Querystring: { sid?: string } }>("/api/status", async (request, reply) => {
     if (!currentOwner(request.raw)) return reply.code(401).send({ error: "请重新输入访问密码" });
-    return reply.header("cache-control", "no-store").send(status());
+    const sid = request.query.sid;
+    if (sid && !ownsSession(request.raw, sid))
+      return reply.code(403).send({ error: "这个会话不属于当前客户端" });
+    return reply.header("cache-control", "no-store").send(status(sid));
   });
   const assetFetcher = createAssetFetcher({
     proxyFor: (ref) => runtimes.get(ref.sessionId)?.account.proxyUrl,
@@ -730,6 +760,7 @@ export async function startClientGateway(
     dir: string,
     browser: BrowserHandle,
     identity: BrowserIdentity,
+    timeZone: string,
     display?: AccountDisplay,
   ): Promise<Account> {
     const zoomReady = await installZoomExtension(browser, join(dir, "zoom-extension")).then(
@@ -830,6 +861,7 @@ export async function startClientGateway(
     return {
       id,
       dir,
+      timeZone,
       browser,
       identity,
       display,
@@ -878,6 +910,7 @@ export async function startClientGateway(
             : undefined;
         let browser: BrowserHandle | undefined;
         let proxyUrl: string | undefined;
+        let timeZone: string;
         try {
           const proxyId = accountStore.get(id)!.proxyId;
           const launchOptions = {
@@ -902,13 +935,19 @@ export async function startClientGateway(
             if (!owner?.enabled)
               throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器所属用户已停用");
             const node = proxyCatalog.getNodeConfig(owner, proxyId);
-            ({ browser, proxyUrl } = await launchBrokerBrowser(id, node, launchOptions));
-          } else
+            ({ browser, proxyUrl, timeZone } = await launchBrokerBrowser(id, node, launchOptions));
+          } else {
+            timeZone = await defaultExitTimeZone();
             browser = external
               ? await connectRemoteBrowser(process.env.BROWSER_CDP_URL!)
-              : await launchBrowser(launchOptions);
-          const account = await buildAccount(id, dir, browser, identity, display);
+              : await launchBrowser({
+                  ...launchOptions,
+                  env: { ...launchOptions.env, TZ: timeZone },
+                });
+          }
+          const account = await buildAccount(id, dir, browser, identity, timeZone, display);
           account.proxyUrl = proxyUrl;
+          await accountStore.setTimeZone(id, timeZone);
           accounts.set(id, account);
           return account;
         } catch (error) {
@@ -1462,6 +1501,7 @@ export async function startClientGateway(
             ? (proxyCatalog.listNodes(user).find((node) => node.id === record.proxyId)?.name ??
               null)
             : null,
+          timeZone: accounts.get(record.id)?.timeZone ?? record.timeZone,
           running: accounts.has(record.id),
           signedIn,
           unavailable,

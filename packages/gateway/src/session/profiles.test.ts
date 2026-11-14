@@ -18,10 +18,13 @@ describe("accounts", () => {
     const store = await createProfileStore({ file });
     const privateProfile = await store.create("私有出口");
     await store.setProxy(privateProfile.id, "proxy-123");
+    await store.setTimeZone(privateProfile.id, "Asia/Tokyo");
     const reopened = await createProfileStore({ file });
     expect(reopened.get(privateProfile.id)?.proxyId).toBe("proxy-123");
+    expect(reopened.get(privateProfile.id)?.timeZone).toBe("Asia/Tokyo");
     expect(reopened.get(DEFAULT_PROFILE)?.proxyId).toBeUndefined();
     await reopened.setProxy(privateProfile.id, null);
+    expect(reopened.get(privateProfile.id)?.timeZone).toBeUndefined();
     expect((await createProfileStore({ file })).get(privateProfile.id)?.proxyId ?? null).toBeNull();
   });
   it("starts with the legacy account and normalizes its display name", async () => {

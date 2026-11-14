@@ -71,7 +71,7 @@ docker compose ps
 
 ### 时区
 
-在 `.env` 里用 `TZ` 写一个 IANA 时区名，例如 `TZ=Asia/Shanghai`，未设置时为 UTC。夏令时自动处理。详见[时区说明](timezone.md)。
+浏览器按所选出口的 IP 地域信息自动确定 IANA 时区，网页与 Worker 使用相同当地时间，工作台时钟也随当前配置切换。`.env` 的 `TZ` 配置服务进程和日志的时区，默认 UTC。详见[时区说明](timezone.md)。
 
 ### 可选：按浏览器配置选择出口
 

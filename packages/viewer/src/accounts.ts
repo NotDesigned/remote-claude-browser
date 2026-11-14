@@ -18,6 +18,7 @@ export interface AccountInfo {
   unavailable?: boolean;
   proxyId?: string | null;
   proxyName?: string | null;
+  timeZone?: string;
 }
 
 export interface AccountList {

@@ -7,6 +7,7 @@ import { createServer as httpServer, request as httpRequest } from "node:http";
 import { createServer as socketServer, connect as connectSocket } from "node:net";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { detectExitTimeZone, ExitTimeZoneError } from "../packages/gateway/src/egress/timezone.ts";
 
 const exec = promisify(execFile);
 const UID = 10001;
@@ -122,6 +123,7 @@ export async function startProfileBroker({
   proxyHost = "runtime-egress",
   defaultNode = { name: "Deployment default", type: "direct" },
   validateNode = (value) => value,
+  geoUrl,
 } = {}) {
   if (!secret) throw new Error("Runtime secret required");
   await mkdir(runtimeRoot, { recursive: true, mode: 0o755 });
@@ -287,12 +289,28 @@ export async function startProfileBroker({
       closingBrowsers.delete(id);
     }
   };
+  const timeZoneForNetwork = (item) => {
+    item.timeZone ??= detectExitTimeZone({ proxyUrl: item.proxyUrl, url: geoUrl }).catch(
+      (error) => {
+        item.timeZone = undefined;
+        throw error;
+      },
+    );
+    return item.timeZone;
+  };
   const startBrowser = async (id, body) => {
     if (!ID.test(id)) throw new Error("Invalid browser id");
     await closingBrowsers.get(id);
     if (browsers.has(id)) throw new Error("Browser already running");
     const options = validateBrowserOptions(body.options);
     const egress = await ensureNetwork(`browser-${id}`, body.node);
+    let timeZone;
+    try {
+      timeZone = await timeZoneForNetwork(egress);
+    } catch (error) {
+      await removeNetwork(egress.id);
+      throw error;
+    }
     const cdpPath = join(runtimeRoot, `${egress.info.name}.cdp`);
     const child = spawn(
       "ip",
@@ -316,7 +334,7 @@ export async function startProfileBroker({
           PATH: process.env.PATH,
           HOME: process.env.HOME ?? "/tmp/home",
           LANG: "C.UTF-8",
-          TZ: process.env.TZ,
+          TZ: timeZone,
           ...options.env,
         },
         stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"],
@@ -338,7 +356,7 @@ export async function startProfileBroker({
     await chown(cdpPath, UID, UID);
     browsers.set(id, item);
     child.once("exit", () => void closeBrowser(id));
-    return { socketPath: cdpPath, proxyUrl: egress.proxyUrl };
+    return { socketPath: cdpPath, proxyUrl: egress.proxyUrl, timeZone };
   };
   const authorized = (request) => {
     const match = /^Basic (.+)$/i.exec(request.headers["proxy-authorization"] ?? "");
@@ -395,7 +413,9 @@ export async function startProfileBroker({
   await rm(socketPath, { force: true });
   const api = httpServer(async (request, response) => {
     try {
-      const match = /^\/(egress|browsers)\/([a-zA-Z0-9-]{1,64})(\/start)?$/.exec(request.url);
+      const match = /^\/(egress|browsers)\/([a-zA-Z0-9-]{1,64})(\/(?:start|timezone))?$/.exec(
+        request.url,
+      );
       if (!match) {
         response.writeHead(404);
         response.end();
@@ -416,6 +436,13 @@ export async function startProfileBroker({
           const item = await ensureNetwork(`node-${id}`, body.node);
           result = { proxyUrl: item.proxyUrl, externalProxyUrl: item.externalProxyUrl };
         } else result = await startBrowser(id, body);
+      } else if (request.method === "POST" && type === "egress" && action === "/timezone") {
+        const item =
+          id === "deployment-default"
+            ? await ensureNetwork(`node-${id}`)
+            : networks.get(`node-${id}`);
+        if (!item) throw new Error("Egress network is not running");
+        result = { timeZone: await timeZoneForNetwork(item) };
       } else if (request.method === "DELETE" && !action) {
         if (type === "egress") await removeNetwork(`node-${id}`);
         else await closeBrowser(id);
@@ -429,8 +456,15 @@ export async function startProfileBroker({
       response.end(JSON.stringify(result));
     } catch (error) {
       // Config errors may contain credentials. Keep broker failures free of request contents.
-      response.writeHead(500, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: "Browser network runtime failed" }));
+      const timeZoneError = error instanceof ExitTimeZoneError;
+      response.writeHead(timeZoneError ? 503 : 500, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify(
+          timeZoneError
+            ? { error: error.message, code: "EXIT_TIMEZONE" }
+            : { error: "Browser network runtime failed" },
+        ),
+      );
       console.error("Profile runtime operation failed:", error.code ?? error.name);
     }
   });
