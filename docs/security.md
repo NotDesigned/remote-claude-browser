@@ -44,10 +44,17 @@ administrator during migration; they are not copied to new users. Deleting a fro
 their logins and removes profile ownership, but retains the browser data on disk. Treat retained data
 and backups as sensitive even when the corresponding user no longer exists.
 
-Each browser configuration uses its own Chrome process and profile directory, but these processes
-run as the same browser UID in the same container. This is application-level separation, not separate
-VMs or a hardened boundary against malicious tenants. Administrators and host operators remain
-trusted, and all users share CPU, memory, disk and the global session capacity.
+With `compose.runtime.yml`, each browser configuration has its own Chrome process, profile directory,
+network, mount and PID namespaces. The launcher exposes only that profile, its authenticated X display,
+private temporary storage and `/proc`, and read-only system dependencies. Other profiles, gateway
+databases, application files and runtime management sockets are absent. Browser uploads and downloads
+stay inside its profile. Workbench navigation accepts HTTP, HTTPS and `about:blank`; Chromium policy
+also blocks native file navigation. Chromium remains UID 10001 with its own sandbox enabled.
+
+The legacy default Chrome state is moved into `/data/profile/browser-default`; service databases stay
+in `/data/profile`. These remain processes in one container, sharing the kernel, CPU, memory, disk and
+global session capacity. This does not provide separate VMs, protection from kernel exploits or a claim
+that websites cannot correlate browser fingerprints. Administrators and host operators remain trusted.
 
 All Chrome processes, including the legacy default configuration, start on demand and close after
 120 seconds without an assigned session. Closing a process retains its persistent profile. Each
@@ -65,16 +72,13 @@ navigate or fetch are cancelled.
 
 ### Optional CPA has separate credentials
 
-CPA's inference key, management key and OAuth credentials are separate from front-end user logins
-and browser profiles. Its management page is publicly loadable, while configuration and credential
-APIs require the management key. Native OAuth callback routes use their pending OAuth state/PKCE
-flow instead of a management bearer key. The inference key does not grant management access.
-
-The CPA process only joins an internal network. A separate, unprivileged Xray service handles its
-outbound traffic and forwards the two host-loopback ports without changing their authentication.
-The SOCKS destination filter blocks private addresses and `EGRESS_BLOCK`; the SOCKS listener has
-no host port mapping. Proxy failure does not give CPA a direct internet route. The OAuth and config
-volumes contain credentials and must receive the same backup protection as browser profiles.
+CPA's inference keys and OAuth credentials are separate from front-end user logins and browser
+profiles. The workbench manages private instances and an administrator-managed shared pool; inference
+keys do not grant management access. Stock CPA containers have separate auth/config volumes, join only
+an internal network and expose no host ports. Credential-bound Mihomo exits carry their traffic.
+An unbound credential is disabled while its auth material is retained; the instance-wide proxy denies
+unbound traffic. Exit process failure revokes forwarding until bounded recovery succeeds, with no
+direct-route fallback. OAuth and config volumes need the same backup protection as browser profiles.
 
 However, markup, SVG, CSS, fonts, and browser parsing behavior still cross into the viewer origin.
 They are not passed through a general sanitizer or transcoder. This is a different boundary from
@@ -112,7 +116,7 @@ Compose deployment.
 ## Important limitations
 
 - Front-end authentication does not provide MFA, SSO or a durable audit trail.
-- Browser profiles are separated within one shared container and system UID.
+- Browser filesystem/PID/network namespaces still share one container, system UID and host kernel.
 - Egress denial depends on the supported entrypoint, Docker capabilities and correct host addresses.
 - Signing secrets supplied as Compose environment variables are visible to Docker administrators.
 - The Chromium container receives the broad `SYS_ADMIN` capability for namespace sandboxing.
