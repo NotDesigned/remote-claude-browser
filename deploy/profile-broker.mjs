@@ -337,7 +337,7 @@ export async function startProfileBroker({
     const closing = closingBrowsers.get(id);
     if (closing) return closing;
     const item = browsers.get(id);
-    if (!item) return;
+    if (!item) return removeNetwork(`browser-${id}`);
     browsers.delete(id);
     const cleanup = (async () => {
       item.connection?.destroy();
@@ -450,12 +450,29 @@ export async function startProfileBroker({
     });
     child.stdio[3].on("error", () => {});
     item.server = server;
-    await listen(server, cdpPath);
-    await chmod(cdpPath, 0o600);
-    await chown(cdpPath, UID, UID);
-    browsers.set(id, item);
-    child.once("exit", () => void closeBrowser(id));
-    return { socketPath: cdpPath, proxyUrl: egress.proxyUrl, ...exitMetadata };
+    try {
+      await listen(server, cdpPath);
+      await chmod(cdpPath, 0o600);
+      await chown(cdpPath, UID, UID);
+      if (
+        stopping ||
+        desired.get(egress.id) !== egress.target ||
+        egress.child.exitCode !== null ||
+        egress.child.signalCode !== null ||
+        child.exitCode !== null ||
+        child.signalCode !== null
+      )
+        throw new Error("Browser start cancelled");
+      browsers.set(id, item);
+      child.once("exit", () => void closeBrowser(id));
+      return { socketPath: cdpPath, proxyUrl: egress.proxyUrl, ...exitMetadata };
+    } catch (error) {
+      server.close();
+      await closeChromium(child);
+      await rm(cdpPath, { force: true });
+      if (desired.get(egress.id) === egress.target) await removeNetwork(egress.id);
+      throw error;
+    }
   };
   const authorized = (request) => {
     const match = /^Basic (.+)$/i.exec(request.headers["proxy-authorization"] ?? "");

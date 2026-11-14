@@ -69,6 +69,8 @@ docker compose ps
 
 用户数据默认保存在 `/data/profile/users.sqlite`，包括用户、密码散列、登录令牌摘要和浏览器配置归属。删除用户会撤销其登录并停止其会话，但保留磁盘上的浏览器数据和全局配置记录；删除前端用户不是磁盘数据擦除操作。备份时必须同时保存 SQLite 和浏览器配置，见[备份](#备份)。
 
+文件隔离升级会将旧默认 Chrome 的 `Default`、`Local State` 等资料和下载移入 `/data/profile/browser-default`，管理数据库和配置索引留在原处。升级前停止服务并备份整个 `data` 卷及 CPA 的 config/auth 卷；回退时须同时恢复数据和镜像，不能仅换回旧镜像。
+
 ### 时区
 
 浏览器按所选出口的 IP 地域信息自动确定 IANA 时区，网页与 Worker 使用相同当地时间，工作台时钟也随当前配置切换。`.env` 的 `TZ` 配置服务进程和日志的时区，默认 UTC。详见[时区说明](timezone.md)。

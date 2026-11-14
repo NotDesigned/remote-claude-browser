@@ -675,6 +675,9 @@ describe("multi-user management routes", () => {
       200,
     );
     expect((await api(app, admin, "DELETE", "/api/accounts/default")).statusCode).toBe(204);
+    await expect(stat(join(paths.profile, "browser-default"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     await expect(stat(join(paths.profile, "Default"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(join(paths.profile, "Local State"))).rejects.toMatchObject({
       code: "ENOENT",

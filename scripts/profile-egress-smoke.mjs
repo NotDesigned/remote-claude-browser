@@ -665,6 +665,7 @@ exec sh /acceptance/profile-network.sh "$@"
     broker = await startProfileBroker({
       secret: "disposable-smoke-secret-not-production",
       networkScript: "/tmp/profile-network-smoke.sh",
+      filesystemScript: "/acceptance/browser-filesystem.sh",
       geoUrl: "http://203.0.113.10/geo",
       defaultNode: {
         name: "Default exit fixture",
@@ -1120,6 +1121,10 @@ async function host() {
         fileURLToPath(new URL("../deploy/profile-network.sh", import.meta.url)),
         "profile-network.sh",
       ],
+      [
+        fileURLToPath(new URL("../deploy/browser-filesystem.sh", import.meta.url)),
+        "browser-filesystem.sh",
+      ],
     ])
       await writeFile(join(work, name), await readFile(source), { mode: 0o644 });
     const require = createRequire(new URL("../packages/gateway/package.json", import.meta.url));
@@ -1184,6 +1189,7 @@ async function host() {
       "config.mjs",
     ])
       await chmod(join(work, name), 0o644);
+    await chmod(join(work, "browser-filesystem.sh"), 0o755);
     await command("docker", ["network", "create", "--internal", id]);
     created = true;
     const args = [
@@ -1208,9 +1214,16 @@ async function host() {
       `--env=PROFILE_EGRESS_STOCK_CPA=${process.env.PROFILE_EGRESS_STOCK_CPA ?? "0"}`,
       `--env=PROFILE_EGRESS_DEBUG=${process.env.PROFILE_EGRESS_DEBUG ?? "0"}`,
       `--env=PROFILE_EGRESS_SMOKE_KEEP=${process.env.PROFILE_EGRESS_SMOKE_KEEP ?? "0"}`,
-      ...["CHOWN", "KILL", "NET_ADMIN", "SETGID", "SETUID", "SYS_ADMIN", "SYS_CHROOT"].map(
-        (cap) => `--cap-add=${cap}`,
-      ),
+      ...[
+        "CHOWN",
+        "KILL",
+        "NET_ADMIN",
+        "SETGID",
+        "SETUID",
+        "SYS_ADMIN",
+        "SYS_CHROOT",
+        "DAC_READ_SEARCH",
+      ].map((cap) => `--cap-add=${cap}`),
       "--tmpfs=/tmp:rw,nosuid,nodev,size=512m,mode=1777",
       "--tmpfs=/data:rw,size=256m,uid=10001,gid=10001,mode=0700",
       "--tmpfs=/run/netns:rw,size=16m",
