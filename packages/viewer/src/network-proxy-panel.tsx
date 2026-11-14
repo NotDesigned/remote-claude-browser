@@ -1,10 +1,12 @@
 import { useEffect, useState } from "preact/hooks";
 import type { FrontendUser } from "./users";
+import { ExitHealthDetails } from "./exit-health";
 import {
   proxyApi,
   type ProxyInfo,
   type ProxySourceInfo,
   type ProxySourceInput,
+  type ExitHealth,
 } from "./network-api";
 
 export function ProxyPanel({ user }: { user: FrontendUser }) {
@@ -20,11 +22,13 @@ export function ProxyPanel({ user }: { user: FrontendUser }) {
   const [mode, setMode] = useState<"content" | "url">("content");
   const [content, setContent] = useState("");
   const [url, setUrl] = useState("");
+  const [health, setHealth] = useState<Record<string, ExitHealth>>({});
 
   const reload = async () => {
     const [catalog, nodes] = await Promise.all([proxyApi.sources(), proxyApi.proxies()]);
     setSources(catalog.sources);
     setProxies(nodes.proxies);
+    setHealth({});
   };
   useEffect(() => {
     void reload()
@@ -284,11 +288,36 @@ export function ProxyPanel({ user }: { user: FrontendUser }) {
             const source = sources.find((source) => source.id === proxy.sourceId);
             return (
               <li key={proxy.id}>
-                <span>{proxy.name}</span>
-                <span class="network-muted">
-                  {proxy.type} · {source?.name}
-                  {source && ` · ${ownerLabel(source)}`}
-                </span>
+                <div>
+                  <strong>{proxy.name}</strong>
+                  <p class="network-muted">
+                    {proxy.type} · {source?.name}
+                    {source && ` · ${ownerLabel(source)}`}
+                  </p>
+                  <ExitHealthDetails health={health[proxy.id]} />
+                </div>
+                <button
+                  type="button"
+                  disabled={busy || health[proxy.id]?.status === "checking"}
+                  onClick={async () => {
+                    setHealth((all) => ({ ...all, [proxy.id]: { status: "checking" } }));
+                    try {
+                      const result = await proxyApi.check(proxy.id);
+                      setHealth((all) => ({ ...all, [proxy.id]: result.health }));
+                    } catch (failure) {
+                      setHealth((all) => ({
+                        ...all,
+                        [proxy.id]: {
+                          status: "error",
+                          checkedAt: Date.now(),
+                          error: (failure as Error).message,
+                        },
+                      }));
+                    }
+                  }}
+                >
+                  检查出口
+                </button>
               </li>
             );
           })}

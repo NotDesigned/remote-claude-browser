@@ -249,6 +249,8 @@
   min-width: 0;
   flex-direction: column;
   overflow-wrap: anywhere;
+  align-items: flex-start;
+  gap: 6px;
 }
 .network-instances {
   display: flex;

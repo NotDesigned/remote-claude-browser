@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { IncomingMessage } from "node:http";
 import type { FrontendUser } from "../auth/users";
+import type { ExitHealth } from "./runtime-client";
 import {
   ProxyCatalogError,
   type ProxyCatalog,
@@ -10,7 +11,11 @@ import {
 
 export function registerProxyRoutes(
   app: FastifyInstance,
-  options: { catalog: ProxyCatalog; currentUser(request: IncomingMessage): FrontendUser | null },
+  options: {
+    catalog: ProxyCatalog;
+    currentUser(request: IncomingMessage): FrontendUser | null;
+    checkProxy(user: FrontendUser, id: string): Promise<ExitHealth>;
+  },
 ) {
   const userFor = (request: IncomingMessage) => {
     const user = options.currentUser(request);
@@ -38,6 +43,17 @@ export function registerProxyRoutes(
       return reply
         .header("cache-control", "no-store")
         .send({ proxies: options.catalog.listNodes(userFor(request.raw)) });
+    } catch (error) {
+      return failed(reply, error);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/proxies/:id/check", async (request, reply) => {
+    try {
+      const user = userFor(request.raw);
+      options.catalog.getNodeConfig(user, request.params.id);
+      return reply.header("cache-control", "no-store").send({
+        health: await options.checkProxy(user, request.params.id),
+      });
     } catch (error) {
       return failed(reply, error);
     }

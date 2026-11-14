@@ -1,3 +1,4 @@
+import type { ExitHealth } from "./network-api";
 /**
  * The accounts a session can use. Each is a Chrome of its own on the server, so their logins never
  * mix; switching moves this session to another one, closing the pages it had open.
@@ -21,6 +22,8 @@ export interface AccountInfo {
   timeZone?: string;
   exitCity?: string;
   exitCountry?: string;
+  exitIp?: string;
+  checkedAt?: number;
 }
 
 export interface AccountList {
@@ -129,6 +132,14 @@ export async function setAccountProxy(id: string, proxyId: string | null): Promi
     method: "PATCH",
     body: JSON.stringify({ proxyId }),
   });
+}
+
+export async function checkAccountExit(
+  id: string,
+): Promise<{ scope: "browser" | "node"; health: ExitHealth }> {
+  return (
+    await call(`/api/accounts/${encodeURIComponent(id)}/exit/check`, { method: "POST" })
+  ).json();
 }
 
 export async function switchAccount(

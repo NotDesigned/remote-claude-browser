@@ -142,6 +142,15 @@ const server = createServer(async (request, response) => {
       return json(response, {
         proxies: proxies.filter((item) => item.visibility === "shared" || manage(item)),
       });
+    if (/^\/api\/proxies\/[^/]+\/check$/.test(url.pathname) && request.method === "POST")
+      return json(response, {
+        health: {
+          status: "healthy",
+          exitIp: "203.0.113.30",
+          timeZone: "Asia/Tokyo",
+          checkedAt: Date.now(),
+        },
+      });
     if (url.pathname === "/api/proxy-sources") {
       if (request.method === "GET")
         return json(response, {
@@ -422,6 +431,8 @@ try {
     const panel = page.getByRole("dialog", { name: "代理与 API", exact: true });
     assert.equal(await page.locator('#shell[data-picking="true"]').count(), 1);
     assert.equal(await page.locator(".network-panel-backdrop").isVisible(), true);
+    await click(panel.getByRole("button", { name: "检查出口", exact: true }).first());
+    await panel.getByText("203.0.113.30", { exact: true }).waitFor();
     await panel.getByLabel("来源名称", { exact: true }).fill(mobile ? "手机来源" : "桌面来源");
     await panel
       .getByLabel("节点内容", { exact: true })

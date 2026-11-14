@@ -22,12 +22,14 @@ export interface ProfileRecord {
   signedIn?: boolean;
   /** The site explicitly rejected this account, rather than just failing to respond. */
   unavailable?: boolean;
-  /** Stable proxy catalog node; null/absent uses the deployment's configured exit. */
+  /** Stable proxy catalog node; null/absent prevents opening the browser. */
   proxyId?: string | null;
   /** Last detected IANA zone of this profile's exit. Cleared when its exit changes. */
   timeZone?: string;
   exitCity?: string;
   exitCountry?: string;
+  exitIp?: string;
+  checkedAt?: number;
 }
 
 export function isProfileId(value: unknown): value is string {
@@ -77,6 +79,8 @@ export async function createProfileStore(
           ...(typeof record.timeZone === "string" ? { timeZone: record.timeZone } : {}),
           ...(typeof record.exitCity === "string" ? { exitCity: record.exitCity } : {}),
           ...(typeof record.exitCountry === "string" ? { exitCountry: record.exitCountry } : {}),
+          ...(typeof record.exitIp === "string" ? { exitIp: record.exitIp } : {}),
+          ...(typeof record.checkedAt === "number" ? { checkedAt: record.checkedAt } : {}),
         });
       }
     } catch (error) {
@@ -106,17 +110,23 @@ export async function createProfileStore(
     if (
       record.timeZone === metadata?.timeZone &&
       record.exitCity === metadata?.exitCity &&
-      record.exitCountry === metadata?.exitCountry
+      record.exitCountry === metadata?.exitCountry &&
+      record.exitIp === metadata?.exitIp &&
+      record.checkedAt === metadata?.checkedAt
     )
       return;
     const previous = {
       timeZone: record.timeZone,
       exitCity: record.exitCity,
       exitCountry: record.exitCountry,
+      exitIp: record.exitIp,
+      checkedAt: record.checkedAt,
     };
     record.timeZone = metadata?.timeZone;
     record.exitCity = metadata?.exitCity;
     record.exitCountry = metadata?.exitCountry;
+    record.exitIp = metadata?.exitIp;
+    record.checkedAt = metadata?.checkedAt;
     try {
       await persist();
     } catch (error) {
@@ -171,11 +181,15 @@ export async function createProfileStore(
         timeZone: record.timeZone,
         exitCity: record.exitCity,
         exitCountry: record.exitCountry,
+        exitIp: record.exitIp,
+        checkedAt: record.checkedAt,
       };
       record.proxyId = proxyId;
       delete record.timeZone;
       delete record.exitCity;
       delete record.exitCountry;
+      delete record.exitIp;
+      delete record.checkedAt;
       try {
         await persist();
       } catch (error) {

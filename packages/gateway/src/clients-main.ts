@@ -165,6 +165,8 @@ export async function startClientGateway(
   const accountLifecycle = createLifecycleLock();
   const networkRuntime = createRuntimeClient({ socketPath: process.env.MIRROR_RUNTIME_SOCKET });
   const scopedExits = new Map<string, Set<string>>();
+  const egressScope = (userId: string, nodeId: string) =>
+    `scope-${createHash("sha256").update(`${userId}/${nodeId}`).digest("hex").slice(0, 32)}`;
   const resetProfileNetwork = async (id: string) => {
     const sessions = clientSessions
       .all()
@@ -209,7 +211,7 @@ export async function startClientGateway(
     endpointForNode: async (id, node, user) => {
       if (!process.env.MIRROR_RUNTIME_SOCKET)
         throw new ProxyCatalogError(503, "PROXY_RUNTIME_DISABLED", "请在部署中启用独立出口运行时");
-      const scope = `scope-${createHash("sha256").update(`${user.id}/${id}`).digest("hex").slice(0, 32)}`;
+      const scope = egressScope(user.id, id);
       const scopes = scopedExits.get(id) ?? new Set<string>();
       scopes.add(scope);
       scopedExits.set(id, scopes);
@@ -223,6 +225,19 @@ export async function startClientGateway(
       );
     },
   });
+  const checkProxy = async (user: FrontendUser, id: string) => {
+    proxyCatalog.getNodeConfig(user, id);
+    try {
+      await proxyCatalog.resolveProxyForUser(user, id);
+      return await networkRuntime.checkEgress(egressScope(user.id, id));
+    } catch {
+      return {
+        status: "error" as const,
+        checkedAt: Date.now(),
+        error: "出口检测失败，请检查节点后重试",
+      };
+    }
+  };
   const cpaStore = process.env.CPA_BROKER_SOCKET
     ? await createCpaStore({
         file: join(profile, "cpa.sqlite"),
@@ -233,14 +248,28 @@ export async function startClientGateway(
     ? createCpaRuntime({
         store: cpaStore,
         driver: createCpaBrokerDriver(process.env.CPA_BROKER_SOCKET!),
-        resolveProxyForUser: async (user, proxyId) =>
-          proxyId
-            ? proxyCatalog.resolveProxyForUser(user, proxyId)
-            : {
-                id: "deployment-default",
-                name: "部署默认出口",
-                url: (await networkRuntime.startEgress("deployment-default")).externalProxyUrl,
-              },
+        resolveProxyForUser: async (user, proxyId) => {
+          if (!proxyId) throw new CpaError(409, "CPA_PROXY_REQUIRED", "请为授权选择出口节点");
+          const proxy = await proxyCatalog.resolveProxyForUser(user, proxyId);
+          const scope = egressScope(user.id, proxyId);
+          const metadata = await networkRuntime.timeZoneForEgress(scope);
+          return {
+            ...proxy,
+            timeZone: metadata.timeZone,
+            health: await networkRuntime.egressStatus(scope),
+          };
+        },
+        checkProxyForUser: async (user, proxyId) => {
+          const proxy = await proxyCatalog.resolveProxyForUser(user, proxyId);
+          const health = await networkRuntime.checkEgress(egressScope(user.id, proxyId));
+          if (health.status !== "healthy" || !health.timeZone)
+            throw new CpaError(
+              503,
+              "CPA_EXIT_UNAVAILABLE",
+              health.error ?? "出口检测失败，请检查节点后重试",
+            );
+          return { ...proxy, timeZone: health.timeZone, health };
+        },
         userEnabled: (id) => userStore.getUser(id)?.enabled === true,
         userName: (id) => userStore.getUser(id)?.username,
       })
@@ -335,6 +364,7 @@ export async function startClientGateway(
   registerProxyRoutes(app, {
     catalog: proxyCatalog,
     currentUser: (request) => currentUser(request) ?? null,
+    checkProxy,
   });
   if (cpaRuntime) {
     registerCpaRoutes(app, { runtime: cpaRuntime, currentUser });
@@ -1514,6 +1544,8 @@ export async function startClientGateway(
           timeZone: exit.timeZone,
           exitCity: exit.exitCity,
           exitCountry: exit.exitCountry,
+          exitIp: exit.exitIp,
+          checkedAt: exit.checkedAt,
           running: accounts.has(record.id),
           signedIn,
           unavailable,
@@ -1592,6 +1624,34 @@ export async function startClientGateway(
         return { account: request.params.id };
       });
     } catch (error) {
+      return clientError(reply, error, owner);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/accounts/:id/exit/check", async (request, reply) => {
+    const owner = currentOwner(request.raw);
+    if (!owner) return reply.code(401).send({ error: "请重新登录" });
+    try {
+      return await accountLifecycle.run(async () => {
+        const user = requireLiveOwner(request.raw, owner);
+        const id = request.params.id;
+        if (userStore.profileOwner(id) !== user.id)
+          throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
+        const record = accountStore.get(id)!;
+        if (!record.proxyId)
+          throw new ClientSessionError(409, "PROXY_REQUIRED", "请先为浏览器配置选择出口");
+        proxyCatalog.getNodeConfig(user, record.proxyId);
+        const running = accounts.has(id);
+        const health = running
+          ? await networkRuntime.checkBrowser(id)
+          : await checkProxy(user, record.proxyId);
+        return reply.header("cache-control", "no-store").send({
+          scope: running ? "browser" : "node",
+          health,
+        });
+      });
+    } catch (error) {
+      if (error instanceof ProxyCatalogError)
+        return reply.code(error.statusCode).send({ error: error.message });
       return clientError(reply, error, owner);
     }
   });
@@ -1825,7 +1885,7 @@ export async function startClientGateway(
       if (account) await closeAccount(account);
     }
     for (const [nodeId, scopes] of scopedExits) {
-      const scope = `scope-${createHash("sha256").update(`${userId}/${nodeId}`).digest("hex").slice(0, 32)}`;
+      const scope = egressScope(userId, nodeId);
       if (!scopes.has(scope)) continue;
       const sharedUsesNode = cpaStore
         ?.runningInstances()

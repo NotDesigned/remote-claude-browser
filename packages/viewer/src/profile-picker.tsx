@@ -13,9 +13,12 @@ import {
   setDefaultAccount,
   listProxyChoices,
   setAccountProxy,
+  checkAccountExit,
   type ProxyChoice,
   type AccountInfo,
 } from "./accounts";
+import { ExitHealthDetails } from "./exit-health";
+import type { ExitHealth } from "./network-api";
 import "./profile-picker.css";
 
 const LAST_ACCOUNT_KEY = "mirror.last-account";
@@ -63,6 +66,22 @@ function ProfileCard(props: {
   const { account } = props;
   const signedIn = account.signedIn === true;
   const [menuOpen, setMenuOpen] = useState(false);
+  const [exitCheck, setExitCheck] = useState<{
+    scope: "browser" | "node";
+    health: ExitHealth;
+  } | null>(null);
+  useEffect(() => setExitCheck(null), [account.proxyId, account.running, account.checkedAt]);
+  const checkExit = async () => {
+    setExitCheck({ scope: account.running ? "browser" : "node", health: { status: "checking" } });
+    try {
+      setExitCheck(await checkAccountExit(account.id));
+    } catch (error) {
+      setExitCheck({
+        scope: account.running ? "browser" : "node",
+        health: { status: "error", checkedAt: Date.now(), error: (error as Error).message },
+      });
+    }
+  };
   const entry = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
   useLayoutEffect(() => {
@@ -131,6 +150,14 @@ function ProfileCard(props: {
           <span class="profile-exit" title={account.timeZone}>
             时区：{account.timeZone ?? "按出口自动确定"}
           </span>
+          {account.exitIp && (
+            <span
+              class="profile-exit"
+              title={account.checkedAt ? new Date(account.checkedAt).toLocaleString() : undefined}
+            >
+              启动时 IP：{account.exitIp}
+            </span>
+          )}
           {!account.proxyId && <span class="profile-exit">请通过 ⋯ 设置出口并绑定节点后打开</span>}
         </span>
         <span class="profile-meta">
@@ -143,6 +170,12 @@ function ProfileCard(props: {
           {account.sessions > 0 && <span class="profile-badge">{account.sessions} 个会话</span>}
         </span>
       </button>
+      {exitCheck && (
+        <div class="profile-exit-health">
+          <p>{exitCheck.scope === "browser" ? "当前浏览器出口" : "节点检查（配置尚未运行）"}</p>
+          <ExitHealthDetails health={exitCheck.health} />
+        </div>
+      )}
       <button
         type="button"
         class="profile-menu-toggle"
@@ -162,6 +195,13 @@ function ProfileCard(props: {
         <div class="profile-actions" role="group" aria-label="配置操作">
           <button type="button" disabled={props.disabled} onClick={() => action(props.onProxy)}>
             设置出口
+          </button>
+          <button
+            type="button"
+            disabled={props.disabled || !account.proxyId || exitCheck?.health.status === "checking"}
+            onClick={() => action(() => void checkExit())}
+          >
+            检查出口
           </button>
           <button
             type="button"

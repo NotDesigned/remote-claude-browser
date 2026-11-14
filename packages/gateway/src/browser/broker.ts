@@ -104,6 +104,8 @@ export async function launchBrokerBrowser(id: string, node: unknown, opts: Launc
       timeZone: started.timeZone,
       exitCity: started.exitCity,
       exitCountry: started.exitCountry,
+      exitIp: started.exitIp,
+      checkedAt: started.checkedAt,
     };
   } catch (error) {
     await stop();

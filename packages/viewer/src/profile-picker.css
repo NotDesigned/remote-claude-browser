@@ -55,6 +55,15 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.profile-exit-health {
+  padding: 12px 16px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.profile-exit-health p {
+  margin: 4px 0;
+}
 .profile-proxy-editor {
   display: grid;
   gap: 12px;

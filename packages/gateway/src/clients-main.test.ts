@@ -16,6 +16,12 @@ import { createProfileStore } from "./session/profiles";
 const hooks = vi.hoisted(() => ({
   cpaStop: vi.fn(async (_instance: unknown) => {}),
   stopEgress: vi.fn(async (_scope: string) => {}),
+  checkEgress: vi.fn(async (_scope: string) => ({
+    status: "healthy",
+    timeZone: "Asia/Tokyo",
+    exitIp: "203.0.113.20",
+    checkedAt: 1000,
+  })),
   beforeCreate: undefined as ((name: unknown) => Promise<void>) | undefined,
   beforeRemove: undefined as ((id: unknown) => Promise<void>) | undefined,
   beforeUserUpdate: undefined as
@@ -55,6 +61,18 @@ vi.mock("./egress/runtime-client", () => ({
       externalProxyUrl: `http://${scope}:x@fixture.invalid`,
     }),
     stopEgress: hooks.stopEgress,
+    checkEgress: hooks.checkEgress,
+    timeZoneForEgress: async () => ({
+      timeZone: "Asia/Tokyo",
+      exitIp: "203.0.113.20",
+      checkedAt: 1000,
+    }),
+    egressStatus: async () => ({
+      status: "healthy",
+      timeZone: "Asia/Tokyo",
+      exitIp: "203.0.113.20",
+      checkedAt: 1000,
+    }),
   }),
 }));
 
@@ -490,6 +508,19 @@ describe("multi-user management routes", () => {
     const profiles = (await api(gateway.app, bob, "GET", "/api/accounts")).json();
     const profileId = profiles.default;
     expect(
+      (await api(gateway.app, bob, "POST", `/api/proxies/${adminNode.id}/check`)).statusCode,
+    ).toBe(404);
+    const shared = nodes.find((node) => node.name === "shared.invalid")!;
+    expect(
+      (await api(gateway.app, bob, "POST", `/api/proxies/${shared.id}/check`)).json().health,
+    ).toMatchObject({ status: "healthy", exitIp: "203.0.113.20" });
+    expect(
+      (await api(gateway.app, bob, "POST", "/api/accounts/default/exit/check")).statusCode,
+    ).toBe(403);
+    expect(
+      (await api(gateway.app, bob, "POST", `/api/accounts/${profileId}/exit/check`)).statusCode,
+    ).toBe(409);
+    expect(
       (
         await api(gateway.app, bob, "PATCH", "/api/accounts/default/proxy", {
           proxyId: privateNode.id,
@@ -510,6 +541,15 @@ describe("multi-user management routes", () => {
         })
       ).statusCode,
     ).toBe(200);
+    expect(
+      (await api(gateway.app, bob, "POST", `/api/accounts/${profileId}/exit/check`)).json(),
+    ).toMatchObject({ scope: "node", health: { status: "healthy", exitIp: "203.0.113.20" } });
+    hooks.checkEgress.mockRejectedValueOnce(
+      new Error("http://fixture-user:fixture-secret@private.invalid"),
+    );
+    const failedCheck = await api(gateway.app, bob, "POST", `/api/proxies/${privateNode.id}/check`);
+    expect(failedCheck.json().health.status).toBe("error");
+    expect(failedCheck.body).not.toContain("fixture-secret");
     await gateway.stop();
     const restarted = await startClientGateway({ listen: false, signals: false });
     gateways.push(restarted);

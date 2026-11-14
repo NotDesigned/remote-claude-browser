@@ -39,6 +39,7 @@ const switches = [];
 const renames = [];
 const defaultChanges = [];
 const deletions = [];
+let exitCheckFailure = false;
 const sessionAccounts = new Map();
 let current = "default";
 let currentClientKey;
@@ -72,6 +73,21 @@ const server = createServer(async (req, res) => {
       return json(res, account);
     }
     if (url.pathname === "/api/proxies") return json(res, { proxies });
+    if (/^\/api\/accounts\/[^/]+\/exit\/check$/.test(url.pathname) && req.method === "POST") {
+      const account = accounts.find((item) => item.id === url.pathname.split("/")[3]);
+      return json(res, {
+        scope: account.running ? "browser" : "node",
+        health: exitCheckFailure
+          ? { status: "error", checkedAt: Date.now(), error: "代理连接失败，请检查节点" }
+          : {
+              status: "healthy",
+              exitIp: "203.0.113.20",
+              checkedAt: Date.now(),
+              timeZone: "Asia/Tokyo",
+              browserTimeZone: account.running ? "America/New_York" : undefined,
+            },
+      });
+    }
     if (/^\/api\/accounts\/[^/]+\/proxy$/.test(url.pathname) && req.method === "PATCH") {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
@@ -174,6 +190,23 @@ async function openCardMenu(page, name, touch = false) {
 }
 
 const exitWarningChecks = [];
+async function checkExitHealth(page, touch = false) {
+  const account = accounts.find((item) => item.id === "p-0123456789");
+  const before = admissions.length;
+  const press = (button) => (touch ? button.tap() : button.click());
+  for (const failed of [true, false]) {
+    exitCheckFailure = failed;
+    await openCardMenu(page, account.name, touch);
+    await press(page.getByRole("button", { name: "检查出口", exact: true }));
+    const detail = page.locator(".profile-exit-health");
+    if (failed) await detail.getByText("代理连接失败，请检查节点", { exact: true }).waitFor();
+    else {
+      await detail.getByText("203.0.113.20", { exact: true }).waitFor();
+      if (account.running) await detail.getByText(/出口时区已变化/).waitFor();
+    }
+  }
+  assert.equal(admissions.length, before, "exit checks must not allocate browser sessions");
+}
 async function checkExitWarnings(page, touch = false) {
   const account = accounts.find((entry) => entry.id === "p-0123456789");
   const original = { ...account };
@@ -331,6 +364,7 @@ try {
   await page.goto(origin);
   await page.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
   assert.equal(admissions.length, 0, "choosing a configuration must not allocate a session");
+  await checkExitHealth(page);
   assert.equal(await page.locator("#shell-bar").isVisible(), false);
   assert.equal(await page.getByRole("button", { name: /默认配置.*未登录/ }).isDisabled(), true);
   await page.getByText("请通过 ⋯ 设置出口并绑定节点后打开", { exact: true }).waitFor();
@@ -633,6 +667,7 @@ try {
   await phone.getByRole("button", { name: "重试", exact: true }).tap();
   await phone.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
   await checkExitWarnings(phone, true);
+  await checkExitHealth(phone, true);
   accounts[1].email = "a-very-long-email-address-to-check-mobile-layout@example.com";
   await phone.getByText(accounts[1].email, { exact: true }).waitFor({ timeout: 10_000 });
   const layout = await phone.locator(".profile-picker").evaluate((node) => ({

@@ -19,6 +19,17 @@ export interface ProxyInfo {
   ownerId: string;
 }
 
+export interface ExitHealth {
+  browserTimeZone?: string;
+  status: "unchecked" | "checking" | "healthy" | "error";
+  checkedAt?: number;
+  exitIp?: string;
+  timeZone?: string;
+  exitCity?: string;
+  exitCountry?: string;
+  error?: string;
+}
+
 export interface CpaInstance {
   id: string;
   ownerId: string | null;
@@ -92,6 +103,8 @@ export const proxyApi = {
   usage: (id: string) =>
     request<{ usage: { profiles: number; credentials: number } }>(`${sourcePath(id)}/usage`),
   proxies: () => request<{ proxies: ProxyInfo[] }>("/api/proxies"),
+  check: (id: string) =>
+    request<{ health: ExitHealth }>(`/api/proxies/${encodeURIComponent(id)}/check`, "POST"),
   create: (source: ProxySourceInput) =>
     request<{ source: ProxySourceInfo }>("/api/proxy-sources", "POST", source),
   update: (id: string, source: Omit<ProxySourceInput, "url">) =>
