@@ -636,7 +636,9 @@ try {
       .evaluate((node) => node.scrollWidth <= node.clientWidth + 1),
     true,
   );
-  await phone.screenshot({ path: `artifacts/profile-picker-${engine}-phone-switch.png` });
+  await phone.screenshot({
+    path: `artifacts/exit-required-profile-picker-${engine}-phone-switch.png`,
+  });
   await phone.getByRole("button", { name: "退出登录", exact: true }).tap();
   await phone.waitForURL(origin + "/gate");
   assert.deepEqual(errors, []);
