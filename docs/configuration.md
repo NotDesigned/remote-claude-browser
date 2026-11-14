@@ -39,7 +39,7 @@ Docker. It contains service users, scrypt password hashes, SHA-256 login-token d
 profile ownership; website credentials remain in Chrome's profiles. A remembered login lasts up to
 60 days. Usernames and passwords for this service are independent of accounts on visited websites.
 
-Browser profiles with `proxyId: null` are unassigned. Creating or resuming a session, or switching to an unassigned profile, returns `409 EXIT_REQUIRED` before allocating a new session or launching Chrome. Enable `compose.runtime.yml`, import a shared or private node, then bind it to the profile. CPA credentials may still use the deployment default exit.
+Browser profiles with `proxyId: null` are unassigned. Creating or resuming a session, or switching to an unassigned profile, returns `409 EXIT_REQUIRED` before allocating a new session or launching Chrome. Enable `compose.runtime.yml`, import a shared or private node, then bind it to the profile. New CPA authorizations default to the current browser profile's visible proxy node and require an explicit node; changing a credential proxy also requires a node. Existing unbound credentials and internal instance startup retain their deployment exit.
 
 Each front-end user sees only their own browser configurations and sessions. The session limit is
 global, rather than a limit on front-end users or online devices. Lowering it keeps existing sessions

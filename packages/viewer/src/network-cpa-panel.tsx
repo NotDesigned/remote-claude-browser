@@ -15,23 +15,27 @@ function ProxySelect({
   value,
   disabled,
   label,
+  placeholder,
   onChange,
 }: {
   proxies: ProxyInfo[];
   value: string;
   disabled: boolean;
   label: string;
+  placeholder: string;
   onChange(value: string): void;
 }) {
   return (
     <label>
       {label}
       <select
-        value={value}
+        value={proxies.some((proxy) => proxy.id === value) ? value : ""}
         disabled={disabled}
         onChange={(event) => onChange(event.currentTarget.value)}
       >
-        <option value="">部署默认出口</option>
+        <option value="" disabled>
+          {placeholder}
+        </option>
         {proxies.map((proxy) => (
           <option key={proxy.id} value={proxy.id}>
             {proxy.name} · {proxy.visibility === "shared" ? "共享" : "私有"}
@@ -42,7 +46,13 @@ function ProxySelect({
   );
 }
 
-export function CpaPanel({ user }: { user: FrontendUser }) {
+export function CpaPanel({
+  user,
+  browserProxyId,
+}: {
+  user: FrontendUser;
+  browserProxyId?: string | null;
+}) {
   const [instances, setInstances] = useState<CpaInstance[]>([]);
   const [selected, setSelected] = useState("");
   const [proxies, setProxies] = useState<ProxyInfo[]>([]);
@@ -53,11 +63,15 @@ export function CpaPanel({ user }: { user: FrontendUser }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [oauth, setOAuth] = useState<CpaOAuth | null>(null);
-  const [oauthProxy, setOAuthProxy] = useState("");
+  const [oauthProxy, setOAuthProxy] = useState<string | null>(null);
   const [callback, setCallback] = useState("");
   const [keyName, setKeyName] = useState("");
   const [issuedKey, setIssuedKey] = useState<(CpaKey & { token: string }) | null>(null);
   const instance = instances.find((item) => item.id === selected);
+  const preferredOAuthProxy = oauthProxy ?? browserProxyId ?? "";
+  const selectedOAuthProxy = proxies.some((proxy) => proxy.id === preferredOAuthProxy)
+    ? preferredOAuthProxy
+    : "";
   const reloadInstances = async () => {
     const result = await cpaApi.instances();
     setInstances(result.instances);
@@ -237,18 +251,22 @@ export function CpaPanel({ user }: { user: FrontendUser }) {
                           value={credential.proxyId ?? ""}
                           disabled={busy || instance.status !== "running"}
                           label={`凭据「${credential.name}」的代理`}
+                          placeholder={
+                            credential.proxyId
+                              ? "当前节点不可用，请重新选择"
+                              : "未绑定节点（沿用当前出口）"
+                          }
                           onChange={(proxyId) =>
                             void run(async () => {
-                              await cpaApi.credentialProxy(
-                                instance.id,
-                                credential.name,
-                                proxyId || null,
-                              );
+                              await cpaApi.credentialProxy(instance.id, credential.name, proxyId);
                               await credentialsChanged();
                               setNotice("凭据代理已更新。");
                             })
                           }
                         />
+                        {!credential.proxyId && (
+                          <p class="network-muted">现有凭据沿用部署出口；选择节点后才会更换。</p>
+                        )}
                       </div>
                       <div class="network-actions">
                         <button
@@ -292,18 +310,24 @@ export function CpaPanel({ user }: { user: FrontendUser }) {
                 <h3 id="cpa-oauth-title">添加 Claude 授权</h3>
                 <ProxySelect
                   proxies={proxies}
-                  value={oauthProxy}
+                  value={selectedOAuthProxy}
                   disabled={busy || instance.status !== "running"}
                   label="授权使用的代理"
+                  placeholder="请选择代理节点"
                   onChange={setOAuthProxy}
                 />
+                <p class="network-muted">
+                  {proxies.some((proxy) => proxy.id === browserProxyId)
+                    ? "默认使用当前浏览器配置的出口，可单独更改。"
+                    : "请先选择授权使用的代理节点。"}
+                </p>
                 <div class="network-actions">
                   <button
                     type="button"
-                    disabled={busy || instance.status !== "running"}
+                    disabled={busy || instance.status !== "running" || !selectedOAuthProxy}
                     onClick={() =>
                       void run(async () => {
-                        setOAuth(await cpaApi.oauth(instance.id, oauthProxy || undefined));
+                        setOAuth(await cpaApi.oauth(instance.id, selectedOAuthProxy));
                         setCallback("");
                       })
                     }

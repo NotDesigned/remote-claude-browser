@@ -87,7 +87,7 @@ docker compose -f compose.yml -f compose.runtime.yml up -d --build
 
 长期使用时将 `compose.runtime.yml` 加入 `.env` 的 `COMPOSE_FILE`。已有部署保留原文件列表、数据卷和出站设置，在其后追加这个模块。
 
-打开「代理与 API」即可导入代理来源、创建自己的 CPA 实例、授权 Claude 并生成外部调用 Key。浏览器卡片的 ⋯ →「设置出口」选择节点。空选项表示「未分配」，配置未选节点时不能新开、恢复或切入远程浏览器；CPA 授权仍可选择部署默认出口。新的 OpenAI 兼容 Base URL 为 `/v1`，完整说明、旧独立 CPA 的兼容路由及备份见 [docs/cpa.md](docs/cpa.md)。
+打开「代理与 API」即可导入代理来源、创建自己的 CPA 实例、授权 Claude 并生成外部调用 Key。浏览器卡片的 ⋯ →「设置出口」选择节点。空选项表示「未分配」，配置未选节点时不能新开、恢复或切入远程浏览器；添加 CPA 授权时默认使用当前浏览器配置的出口，可手动换节点；没有可用的当前出口时必须先选择。新的 OpenAI 兼容 Base URL 为 `/v1`，完整说明、旧独立 CPA 的兼容路由及备份见 [docs/cpa.md](docs/cpa.md)。
 
 ## 第一次使用
 

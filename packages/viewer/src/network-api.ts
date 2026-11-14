@@ -106,17 +106,17 @@ export const cpaApi = {
     request<{ credentials: CpaCredential[] }>(`${instancePath(id)}/credentials`),
   credentialStatus: (id: string, name: string, disabled: boolean) =>
     request<{ ok: true }>(`${instancePath(id)}/credentials/status`, "PATCH", { name, disabled }),
-  credentialProxy: (id: string, name: string, proxyId: string | null) =>
+  credentialProxy: (id: string, name: string, proxyId: string) =>
     request<{ ok: true }>(`${instancePath(id)}/credentials/proxy`, "PATCH", { name, proxyId }),
   removeCredential: (id: string, name: string) =>
     request<{ ok: true }>(
       `${instancePath(id)}/credentials?${new URLSearchParams({ name })}`,
       "DELETE",
     ),
-  oauth: (id: string, proxyId?: string) =>
+  oauth: (id: string, proxyId: string) =>
     request<CpaOAuth>(`${instancePath(id)}/oauth`, "POST", {
       provider: "claude",
-      ...(proxyId ? { proxyId } : {}),
+      proxyId,
     }),
   oauthStatus: (id: string, state: string) =>
     request<{ status: "wait" | "ok" | "error"; error?: string }>(

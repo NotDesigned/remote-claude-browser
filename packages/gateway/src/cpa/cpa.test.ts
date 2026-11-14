@@ -212,6 +212,162 @@ describe("CPA instance and key boundaries", () => {
 });
 
 describe("CPA v8 contract", () => {
+  it.each([undefined, null, "", " ", "deployment-default", " deployment-default "])(
+    "rejects a missing or implicit public exit before resolving a proxy or creating OAuth state: %j",
+    async (proxyId) => {
+      const { store, runtime, calls, proxies, setUpstream } = await fixture();
+      const value = store.create(alice);
+      store.setDesiredState(value.id, "running");
+      store.setCredentialProxy(value.id, "claude.json", "existing-node");
+      setUpstream(() => response({ state: "must-not-exist", url: "https://login.example" }));
+
+      await expect(runtime.startOAuth(alice, value.id, proxyId as never)).rejects.toMatchObject({
+        statusCode: 400,
+        code: "CPA_PROXY_REQUIRED",
+      });
+      await expect(
+        runtime.credentialProxy(alice, value.id, "claude.json", proxyId as never),
+      ).rejects.toMatchObject({ statusCode: 400, code: "CPA_PROXY_REQUIRED" });
+      expect(proxies).toEqual([]);
+      expect(calls).toEqual([]);
+      expect(store.oauth(value.id, "must-not-exist")).toBeUndefined();
+      expect(store.credentialProxy(value.id, "claude.json")).toBe("existing-node");
+    },
+  );
+
+  it("checks instance ownership before public exit validation or proxy resolution", async () => {
+    const { store, runtime, calls, proxies } = await fixture();
+    const other = store.create(bob);
+    const shared = store.create(admin, "shared");
+    for (const value of [other, shared]) {
+      for (const proxyId of [undefined, null, "", "deployment-default", "my-node"]) {
+        await expect(runtime.startOAuth(alice, value.id, proxyId as never)).rejects.toMatchObject({
+          statusCode: 403,
+          code: "CPA_FORBIDDEN",
+        });
+        await expect(
+          runtime.credentialProxy(alice, value.id, "claude.json", proxyId as never),
+        ).rejects.toMatchObject({ statusCode: 403, code: "CPA_FORBIDDEN" });
+      }
+    }
+    expect(proxies).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("retains existing unbound credentials when starting and restoring the internal instance exit", async () => {
+    const { store, runtime, calls, proxies, setUpstream } = await fixture();
+    const value = store.create(admin);
+    setUpstream(() => response({ files: [{ name: "migrated-claude.json", provider: "claude" }] }));
+    await runtime.start(admin, value.id);
+    expect((await runtime.credentials(admin, value.id))[0]).toMatchObject({
+      name: "migrated-claude.json",
+      proxyId: null,
+    });
+    expect(await runtime.restore(() => admin)).toEqual({ restored: [value.id], failures: [] });
+    expect(proxies).toEqual([
+      { userId: admin.id, proxyId: undefined },
+      { userId: admin.id, proxyId: undefined },
+    ]);
+    expect(store.credentialBindings(value.id)).toEqual([]);
+    expect(calls.filter((call) => call.input.method === "PATCH")).toEqual([]);
+  });
+
+  it("requires explicit node IDs on public OAuth and credential proxy routes", async () => {
+    const { store, runtime, calls, proxies, setUpstream } = await fixture();
+    const value = store.create(alice);
+    const other = store.create(bob);
+    store.setDesiredState(value.id, "running");
+    setUpstream((_instance, input) =>
+      input.path === "/v8/management/oauth/auth-url"
+        ? response({ state: "explicit-state", url: "https://login.example" })
+        : response({ status: "ok" }),
+    );
+    const app = Fastify();
+    registerCpaRoutes(app, {
+      runtime,
+      currentUser: (req) => (req.headers.cookie === "user=alice" ? alice : null),
+    });
+    try {
+      for (const proxyId of [
+        undefined,
+        null,
+        "",
+        " ",
+        "deployment-default",
+        " deployment-default ",
+      ]) {
+        const node = proxyId === undefined ? {} : { proxyId };
+        for (const [method, path, body] of [
+          ["POST", "/oauth", { provider: "claude", ...node }],
+          ["PATCH", "/credentials/proxy", { name: "claude.json", ...node }],
+        ] as const) {
+          const result = await app.inject({
+            method,
+            url: `/api/cpa/instances/${value.id}${path}`,
+            headers: { cookie: "user=alice" },
+            payload: body,
+          });
+          expect(result.statusCode).toBe(400);
+        }
+      }
+      expect(proxies).toEqual([]);
+      expect(calls).toEqual([]);
+      expect(store.oauth(value.id, "explicit-state")).toBeUndefined();
+      expect(store.credentialBindings(value.id)).toEqual([]);
+
+      for (const [method, path, body] of [
+        ["POST", "/oauth", { provider: "claude", proxyId: "explicit-node" }],
+        ["PATCH", "/credentials/proxy", { name: "claude.json", proxyId: "explicit-node" }],
+      ] as const) {
+        const denied = await app.inject({
+          method,
+          url: `/api/cpa/instances/${other.id}${path}`,
+          headers: { cookie: "user=alice" },
+          payload: body,
+        });
+        expect(denied.statusCode).toBe(403);
+        const anonymous = await app.inject({
+          method,
+          url: `/api/cpa/instances/${value.id}${path}`,
+          payload: body,
+        });
+        expect(anonymous.statusCode).toBe(401);
+      }
+      expect(proxies).toEqual([]);
+      expect(calls).toEqual([]);
+
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: `/api/cpa/instances/${value.id}/oauth`,
+            headers: { cookie: "user=alice" },
+            payload: { provider: "claude", proxyId: "explicit-node" },
+          })
+        ).statusCode,
+      ).toBe(200);
+      expect(store.oauth(value.id, "explicit-state")?.proxyId).toBe("explicit-node");
+      expect(
+        (
+          await app.inject({
+            method: "PATCH",
+            url: `/api/cpa/instances/${value.id}/credentials/proxy`,
+            headers: { cookie: "user=alice" },
+            payload: { name: "claude.json", proxyId: "different-node" },
+          })
+        ).statusCode,
+      ).toBe(200);
+      expect(store.credentialProxy(value.id, "claude.json")).toBe("different-node");
+      expect(proxies.map((proxy) => proxy.proxyId)).toEqual(["explicit-node", "different-node"]);
+      expect(calls.map((call) => call.input.path)).toEqual([
+        "/v8/management/oauth/auth-url",
+        "/v8/management/credentials/fields",
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("forwards proxy selection through supported body fields without exposing URLs", async () => {
     const { store, runtime, calls, setUpstream } = await fixture();
     const value = store.create(alice);
@@ -251,9 +407,6 @@ describe("CPA v8 contract", () => {
     expect(items[0]?.proxyId).toBe("my-proxy");
     expect(items[0]?.email).toBe("alice@example.test");
     expect(JSON.stringify(items)).not.toMatch(/opaque|secret|\/auth|id_token/);
-    await runtime.credentialProxy(alice, value.id, "claude.json", null);
-    expect(store.credentialProxy(value.id, "claude.json")).toBe("deployment-default");
-    expect((await runtime.credentials(alice, value.id))[0]?.proxyId).toBeNull();
     await runtime.startOAuth(alice, value.id, "oauth-node");
     expect(calls.at(-1)?.input.path).toBe("/v8/management/oauth/auth-url");
     expect(JSON.parse(String(calls.at(-1)?.input.body))).toEqual({

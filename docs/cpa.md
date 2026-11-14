@@ -8,8 +8,8 @@
 
 1. 打开右上角或配置选择页中的「代理与 API」，切换到「CPA 授权与 Key」。
 2. 创建自己的 CPA 实例并启动。每个用户最多一个专用实例；管理员还可以建立一个共享实例。共享实例的启动、授权凭据和 Key 由管理员管理，普通用户只能查看其状态。
-3. 在「添加 Claude 授权」中选择可用代理或部署默认出口，生成授权链接，在新页面完成 Claude OAuth。回调到本机地址不可达时，把完整回调 URL 或授权码粘贴回面板，再检查授权状态。
-4. 授权成功后，在凭据列表中分别选择代理节点，或停用、启用、删除该凭据。每个凭据的代理与浏览器配置的出口独立设置。
+3. 在「添加 Claude 授权」中，代理默认选中当前浏览器配置绑定的出口，也可手动选择其他可用节点；没有当前配置或配置未绑定可用节点时，必须先选择节点，不能使用部署默认出口。生成授权链接，在新页面完成 Claude OAuth。回调到本机地址不可达时，把完整回调 URL 或授权码粘贴回面板，再检查授权状态。
+4. 授权成功后，在凭据列表中分别选择代理节点，或停用、启用、删除该凭据。新授权会保存本次所选节点；后续每个凭据的代理与浏览器配置独立设置，不会因浏览器切换出口自动改变。
 5. 生成外部 API Key。完整 Key 只显示这一次，保存后再关闭面板；列表只显示前缀，可随时撤销。
 
 新 Key 以 `rcpa_` 开头；迁移导入的旧 Key 保持原值。工作台网关按 Key 摘要查询归属，路由到唯一 CPA 实例：
@@ -31,7 +31,7 @@
 docker compose -f compose.yml -f compose.runtime.yml up -d --build
 ```
 
-长期使用时把相同文件列表保存到 `.env` 的 `COMPOSE_FILE`。已有部署应在现有文件列表后追加 `compose.runtime.yml`，保留已有的出站、入口和私有覆盖文件。浏览器配置必须明确绑定节点，未分配时不能打开；CPA 的授权和凭据仍可选择部署默认出口，继续使用现有部署的出站配置。已有 `EGRESS_PROXY`/`compose.proxy.yml` 不需要迁走。
+长期使用时把相同文件列表保存到 `.env` 的 `COMPOSE_FILE`。已有部署应在现有文件列表后追加 `compose.runtime.yml`，保留已有的出站、入口和私有覆盖文件。浏览器配置必须明确绑定节点，未分配时不能打开；CPA 新增授权和修改凭据出口同样要求明确的节点；实例内部启动和既有未绑定凭据仍保留原部署出站配置，不自动迁移已有绑定。已有 `EGRESS_PROXY`/`compose.proxy.yml` 不需要迁走。
 
 用户 CPA 模块需要 Docker bridge 网络，不兼容 `compose.hostnet.yml`。已有主机网络部署应先由部署者移除该覆盖文件、确认 bridge 下的端口和媒体连接，再追加运行时模块；公网入口仍可由同机或独立 VPS 管理。
 
@@ -65,9 +65,9 @@ POST   /api/cpa/instances/:id/start
 POST   /api/cpa/instances/:id/stop
 GET    /api/cpa/instances/:id/credentials
 PATCH  /api/cpa/instances/:id/credentials/status   {name, disabled}
-PATCH  /api/cpa/instances/:id/credentials/proxy    {name, proxyId: string | null}
+PATCH  /api/cpa/instances/:id/credentials/proxy    {name, proxyId: string}
 DELETE /api/cpa/instances/:id/credentials?name=…
-POST   /api/cpa/instances/:id/oauth                {provider: "claude", proxyId?}
+POST   /api/cpa/instances/:id/oauth                {provider: "claude", proxyId: string}
 GET    /api/cpa/instances/:id/oauth/status?state=…
 POST   /api/cpa/instances/:id/oauth/callback       {state, code? | redirectUrl?}
 GET    /api/cpa/instances/:id/keys
@@ -75,7 +75,7 @@ POST   /api/cpa/instances/:id/keys                 {name}
 DELETE /api/cpa/instances/:id/keys/:keyId
 ```
 
-实例列表只返回状态与可管理标识。生成 Key 的响应含一次性 `token`，后续列表不再返回完整值。凭据的 `proxyId: null` 表示恢复部署默认出口。
+实例列表只返回状态与可管理标识。生成 Key 的响应含一次性 `token`，后续列表不再返回完整值。已有凭据返回 `proxyId: null` 表示尚未绑定目录节点，可能仍使用迁移前的部署出口；新增授权和修改凭据出口不再接受空值或 `deployment-default`。
 
 ## 持久化与验收
 

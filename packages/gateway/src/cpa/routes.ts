@@ -9,6 +9,7 @@ interface RouteOptions {
   currentUser(request: IncomingMessage): FrontendUser | null | undefined;
 }
 const textField = { type: "string", minLength: 1, maxLength: 2048 };
+const proxyNodeField = { ...textField, pattern: "^(?!deployment-default$)\\S+$" };
 const bodySchema = (properties: Record<string, unknown>, required: string[]) => ({
   type: "object",
   properties,
@@ -80,14 +81,11 @@ export function registerCpaRoutes(app: FastifyInstance, options: RouteOptions) {
     "PATCH",
     "/:id/credentials/proxy",
     async (user, req) => {
-      const body = req.body as { name: string; proxyId: string | null };
+      const body = req.body as { name: string; proxyId: string };
       await runtime.credentialProxy(user, id(req), body.name, body.proxyId);
       return { ok: true };
     },
-    bodySchema({ name: textField, proxyId: { anyOf: [textField, { type: "null" }] } }, [
-      "name",
-      "proxyId",
-    ]),
+    bodySchema({ name: textField, proxyId: proxyNodeField }, ["name", "proxyId"]),
   );
   route("DELETE", "/:id/credentials", async (user, req) => {
     const name = (req.query as { name?: string }).name;
@@ -98,8 +96,8 @@ export function registerCpaRoutes(app: FastifyInstance, options: RouteOptions) {
   route(
     "POST",
     "/:id/oauth",
-    (user, req) => runtime.startOAuth(user, id(req), (req.body as { proxyId?: string }).proxyId),
-    bodySchema({ provider: { const: "claude" }, proxyId: textField }, ["provider"]),
+    (user, req) => runtime.startOAuth(user, id(req), (req.body as { proxyId: string }).proxyId),
+    bodySchema({ provider: { const: "claude" }, proxyId: proxyNodeField }, ["provider", "proxyId"]),
   );
   route("GET", "/:id/oauth/status", (user, req) => {
     const state = (req.query as { state?: string }).state;

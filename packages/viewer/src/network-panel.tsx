@@ -4,7 +4,15 @@ import { ProxyPanel } from "./network-proxy-panel";
 import { CpaPanel } from "./network-cpa-panel";
 import "./network-panel.css";
 
-export function NetworkPanel({ user, onClose }: { user: FrontendUser; onClose(): void }) {
+export function NetworkPanel({
+  user,
+  browserProxyId,
+  onClose,
+}: {
+  user: FrontendUser;
+  browserProxyId?: string | null;
+  onClose(): void;
+}) {
   const [tab, setTab] = useState<"proxies" | "cpa">("proxies");
   const panel = useRef<HTMLElement>(null);
   const close = useRef<HTMLButtonElement>(null);
@@ -96,7 +104,11 @@ export function NetworkPanel({ user, onClose }: { user: FrontendUser; onClose():
           role="tabpanel"
           aria-labelledby={tab === "proxies" ? "network-proxies-tab" : "network-cpa-tab"}
         >
-          {tab === "proxies" ? <ProxyPanel user={user} /> : <CpaPanel user={user} />}
+          {tab === "proxies" ? (
+            <ProxyPanel user={user} />
+          ) : (
+            <CpaPanel user={user} browserProxyId={browserProxyId} />
+          )}
         </div>
       </section>
     </div>

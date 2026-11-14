@@ -1246,7 +1246,15 @@ export function App() {
         <UserPanel current={user} onClose={() => setUserPanelOpen(false)} onChanged={refreshUser} />
       )}
       {networkPanelOpen && user && (
-        <NetworkPanel user={user} onClose={() => setNetworkPanelOpen(false)} />
+        <NetworkPanel
+          user={user}
+          browserProxyId={
+            clientPhase === "ready"
+              ? accountList?.accounts.find((account) => account.id === accountList.current)?.proxyId
+              : undefined
+          }
+          onClose={() => setNetworkPanelOpen(false)}
+        />
       )}
       <UrlBar
         tab={activeTab}

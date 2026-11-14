@@ -20,6 +20,11 @@ interface RestoreFailure {
   proxyId?: string;
   code: string;
 }
+const proxyNode = (proxyId: string): string => {
+  if (typeof proxyId !== "string" || !/^(?!deployment-default$)\S+$/.test(proxyId))
+    throw new CpaError(400, "CPA_PROXY_REQUIRED", "请先选择出口节点");
+  return proxyId;
+};
 
 export function createCpaRuntime(options: CpaRuntimeOptions) {
   const { store, driver } = options;
@@ -181,9 +186,9 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
     async credentialStatus(user: FrontendUser, id: string, name: string, disabled: boolean) {
       await management(managed(user, id), "PATCH", "/credentials/status", { name, disabled });
     },
-    async credentialProxy(user: FrontendUser, id: string, name: string, proxyId: string | null) {
+    async credentialProxy(user: FrontendUser, id: string, name: string, proxyId: string) {
       const value = managed(user, id);
-      const proxy = await options.resolveProxyForUser(user, proxyId ?? undefined);
+      const proxy = await options.resolveProxyForUser(user, proxyNode(proxyId));
       await management(value, "PATCH", "/credentials/fields", { name, proxy_url: proxy.url });
       store.setCredentialProxy(id, name, proxy.id);
     },
@@ -195,9 +200,9 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
       );
       store.removeCredential(id, name);
     },
-    async startOAuth(user: FrontendUser, id: string, proxyId?: string) {
+    async startOAuth(user: FrontendUser, id: string, proxyId: string) {
       const value = managed(user, id);
-      const proxy = await options.resolveProxyForUser(user, proxyId);
+      const proxy = await options.resolveProxyForUser(user, proxyNode(proxyId));
       const result = await management(value, "POST", "/oauth/auth-url", {
         provider: "claude",
         proxy_url: proxy.url,

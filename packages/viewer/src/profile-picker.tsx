@@ -340,12 +340,23 @@ export function ProfilePicker(props: {
   };
   const saveProxy = async (event: Event) => {
     event.preventDefault();
-    const { account, value } = proxyEditor!;
-    if (
-      account.running &&
-      !window.confirm(`更换「${account.name}」的出口会关闭该配置在所有设备上打开的页面。继续吗？`)
-    )
+    const { account, value, choices } = proxyEditor!;
+    if ((account.proxyId ?? "") === value) {
+      setProxyEditor(null);
       return;
+    }
+    if (account.proxyId || account.running) {
+      const previous = account.proxyName ?? "未选择出口";
+      const next = choices.find((node) => node.id === value)?.name ?? "未选择出口（禁止打开）";
+      const warning = [`将「${account.name}」的网络出口从「${previous}」更换为「${next}」。`];
+      if (account.running) warning.push("这会关闭该配置在所有设备上打开的页面。");
+      warning.push(
+        account.proxyId
+          ? "频繁更换账号的出口 IP 可能触发平台风控，要求重新验证或限制账号。请确认你了解影响并希望继续。"
+          : "请确认你希望继续。",
+      );
+      if (!window.confirm(warning.join("\n\n"))) return;
+    }
     setBusy(true);
     setError(null);
     try {
