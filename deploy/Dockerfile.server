@@ -1,6 +1,6 @@
 # The server: one container holding Xvfb, Chromium and the gateway, which drives Chromium over a
 # private pipe. Nothing here listens for the browser's debugging protocol.
-FROM node:22.23.1-bookworm-slim AS build
+FROM node:26.13.0-bookworm-slim AS build
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=/pnpm:$PATH
@@ -23,18 +23,18 @@ RUN pnpm -r --workspace-concurrency=1 --if-present run build \
     && pnpm --filter @mirror/gateway deploy --prod /opt/gateway
 
 # Xray carries the browser's traffic to an outside proxy when EGRESS_PROXY names one.
-FROM node:22.23.1-bookworm-slim AS xray
+FROM node:26.13.0-bookworm-slim AS xray
 ARG TARGETARCH=amd64
 COPY deploy/fetch-xray.mjs /tmp/
 RUN node /tmp/fetch-xray.mjs "$TARGETARCH" /opt/xray
 
-FROM node:22.23.1-bookworm-slim AS mihomo
+FROM node:26.13.0-bookworm-slim AS mihomo
 ARG TARGETARCH=amd64
 COPY deploy/fetch-mihomo.mjs /tmp/
 RUN --mount=type=cache,id=remote-browser-mihomo,target=/var/cache/mihomo \
     MIHOMO_CACHE_DIR=/var/cache/mihomo node /tmp/fetch-mihomo.mjs "$TARGETARCH" /opt/mihomo
 
-FROM node:22.23.1-bookworm-slim AS runtime
+FROM node:26.13.0-bookworm-slim AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
