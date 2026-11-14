@@ -13,6 +13,7 @@ export interface CpaRuntimeOptions {
   driver: CpaDriver;
   resolveProxyForUser(user: FrontendUser, proxyId?: string): Promise<CpaProxy>;
   userEnabled(id: string): boolean;
+  userName(id: string): string | undefined;
 }
 type RestoreUser = (instance: CpaInstance) => FrontendUser | undefined;
 interface RestoreFailure {
@@ -32,6 +33,18 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
   const managed = (user: FrontendUser, id: string) => {
     if (!options.userEnabled(user.id)) throw new CpaError(403, "USER_DISABLED", "这个用户已停用");
     return store.requireManaged(user, id);
+  };
+  const usable = (user: FrontendUser, id: string) => {
+    if (!options.userEnabled(user.id)) throw new CpaError(403, "USER_DISABLED", "这个用户已停用");
+    return store.requireUsable(user, id);
+  };
+  const visibleKeys = (user: FrontendUser, id: string) => {
+    const value = usable(user, id);
+    return store
+      .listKeys(id)
+      .filter(
+        (key) => key.userId === user.id || (value.scope === "shared" && user.role === "admin"),
+      );
   };
   const running = (value: CpaInstance) => {
     if (value.desiredState !== "running")
@@ -334,20 +347,26 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
       });
     },
     listKeys(user: FrontendUser, id: string) {
-      managed(user, id);
-      return store.listKeys(id);
+      return visibleKeys(user, id).map((key) => ({
+        ...key,
+        username: options.userName(key.userId) ?? null,
+      }));
     },
     issueKey(user: FrontendUser, id: string, name: string) {
-      managed(user, id);
-      return store.issueKey(id, name);
+      usable(user, id);
+      return { ...store.issueKey(id, name, user.id), username: user.username };
     },
     revokeKey(user: FrontendUser, id: string, keyId: string) {
-      managed(user, id);
+      if (!visibleKeys(user, id).some((key) => key.id === keyId))
+        throw new CpaError(403, "CPA_KEY_FORBIDDEN", "无权撤销这个调用密钥");
       store.revokeKey(id, keyId);
     },
     inference(token: string) {
-      const value = store.resolveKey(token);
-      if (!value || (value.ownerId !== null && !options.userEnabled(value.ownerId)))
+      const resolved = store.resolveKey(token);
+      if (!resolved || !options.userEnabled(resolved.userId))
+        throw new CpaError(401, "CPA_API_KEY", "调用密钥无效");
+      const value = resolved.instance;
+      if (value.ownerId !== null && !options.userEnabled(value.ownerId))
         throw new CpaError(401, "CPA_API_KEY", "调用密钥无效");
       if (value.desiredState !== "running")
         throw new CpaError(503, "CPA_STOPPED", "CPA 实例已停止");

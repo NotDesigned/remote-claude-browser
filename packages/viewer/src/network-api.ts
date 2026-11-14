@@ -44,6 +44,8 @@ export interface CpaCredential {
 export interface CpaKey {
   id: string;
   instanceId: string;
+  userId: string;
+  username: string | null;
   name: string;
   prefix: string;
   createdAt: number;

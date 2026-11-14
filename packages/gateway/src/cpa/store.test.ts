@@ -20,6 +20,48 @@ afterEach(() => {
 });
 
 describe("legacy CPA key import", () => {
+  it("migrates private and shared caller keys to named users without changing tokens", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cpa-key-owner-migration-"));
+    const file = join(dir, "cpa.sqlite");
+    try {
+      const before = await createCpaStore({ file });
+      const owner = { ...admin, id: "member", username: "member", role: "user" as const };
+      const privateInstance = before.create(owner);
+      const sharedInstance = before.create(admin, "shared");
+      const privateKey = before.issueKey(privateInstance.id, "Private client", owner.id);
+      const sharedKey = before.issueKey(sharedInstance.id, "Existing shared client", admin.id);
+      before.close();
+      const oldDb = new DatabaseSync(file);
+      oldDb.exec("ALTER TABLE cpa_api_keys DROP COLUMN user_id");
+      oldDb.close();
+      await expect(createCpaStore({ file })).rejects.toThrow("NOT NULL");
+      const migrated = await createCpaStore({ file, legacySharedKeyOwnerId: admin.id });
+      expect(migrated.resolveKey(privateKey.token)).toEqual({
+        instance: privateInstance,
+        userId: owner.id,
+      });
+      expect(migrated.resolveKey(sharedKey.token)).toEqual({
+        instance: sharedInstance,
+        userId: admin.id,
+      });
+      expect(migrated.listKeys(sharedInstance.id)).toEqual([
+        expect.objectContaining({ id: sharedKey.id, userId: admin.id }),
+      ]);
+      migrated.close();
+      const reopened = await createCpaStore({ file });
+      expect(reopened.resolveKey(sharedKey.token)?.userId).toBe(admin.id);
+      expect(() =>
+        reopened.importKey(sharedInstance.id, "Unowned key", "old-shared-key-without-owner"),
+      ).toThrow("指定用户");
+      reopened.revokeUserKeys(admin.id);
+      expect(reopened.resolveKey(sharedKey.token)).toBeUndefined();
+      expect(reopened.resolveKey(privateKey.token)?.userId).toBe(owner.id);
+      reopened.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("resolves an old-format key after restart while persisting only its hash and display prefix", async () => {
     const dir = await mkdtemp(join(tmpdir(), "cpa-key-import-"));
     const file = join(dir, "cpa.sqlite");
@@ -40,7 +82,7 @@ describe("legacy CPA key import", () => {
 
       const reopened = await createCpaStore({ file });
       try {
-        expect(reopened.resolveKey(token)).toEqual(target);
+        expect(reopened.resolveKey(token)).toEqual({ instance: target, userId: admin.id });
         expect(reopened.listKeys(target.id)).toEqual([imported]);
       } finally {
         reopened.close();
@@ -78,7 +120,7 @@ describe("legacy CPA key import", () => {
       );
       expect(store.listKeys(destination.id)).toEqual([]);
     }
-    expect(store.resolveKey(token)?.id).toBe(target.id);
+    expect(store.resolveKey(token)?.instance.id).toBe(target.id);
 
     store.revokeKey(target.id, imported.id);
     expect(store.resolveKey(token)).toBeUndefined();

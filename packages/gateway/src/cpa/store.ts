@@ -27,6 +27,7 @@ export interface CpaInstance {
 export interface CpaKey {
   id: string;
   instanceId: string;
+  userId: string;
   name: string;
   prefix: string;
   createdAt: number;
@@ -52,6 +53,7 @@ const digest = (token: string) => createHash("sha256").update(token).digest("hex
 const keyInfo = (row: Record<string, unknown>): CpaKey => ({
   id: String(row.id),
   instanceId: String(row.instance_id),
+  userId: String(row.user_id),
   name: String(row.name),
   prefix: String(row.prefix),
   createdAt: Number(row.created_at),
@@ -71,7 +73,11 @@ export const publicCpaInstance = (value: CpaInstance, user: FrontendUser) => ({
   canManage: canManageCpa(user, value),
 });
 
-export async function createCpaStore(options: { file: string; now?: () => number }) {
+export async function createCpaStore(options: {
+  file: string;
+  now?: () => number;
+  legacySharedKeyOwnerId?: string;
+}) {
   if (options.file !== ":memory:") {
     await mkdir(dirname(options.file), { recursive: true, mode: 0o700 });
     await (await open(options.file, "a", 0o600)).close();
@@ -86,7 +92,8 @@ export async function createCpaStore(options: { file: string; now?: () => number
     );
     CREATE TABLE IF NOT EXISTS cpa_api_keys (
       id TEXT PRIMARY KEY, instance_id TEXT NOT NULL REFERENCES cpa_instances(id) ON DELETE CASCADE,
-      name TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, prefix TEXT NOT NULL, created_at INTEGER NOT NULL
+      user_id TEXT NOT NULL, name TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL,
+      prefix TEXT NOT NULL, created_at INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS cpa_credential_proxies (
       instance_id TEXT NOT NULL REFERENCES cpa_instances(id) ON DELETE CASCADE,
@@ -96,6 +103,28 @@ export async function createCpaStore(options: { file: string; now?: () => number
       state TEXT PRIMARY KEY, instance_id TEXT NOT NULL REFERENCES cpa_instances(id) ON DELETE CASCADE,
       provider TEXT NOT NULL, proxy_id TEXT, created_at INTEGER NOT NULL
     );`);
+  const keyColumns = db.prepare("PRAGMA table_info(cpa_api_keys)").all();
+  if (!keyColumns.some((column) => column.name === "user_id")) {
+    db.exec("BEGIN");
+    try {
+      db.exec(`ALTER TABLE cpa_api_keys RENAME TO cpa_api_keys_legacy;
+        CREATE TABLE cpa_api_keys (
+          id TEXT PRIMARY KEY, instance_id TEXT NOT NULL REFERENCES cpa_instances(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL, name TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL,
+          prefix TEXT NOT NULL, created_at INTEGER NOT NULL
+        );`);
+      db.prepare(
+        `INSERT INTO cpa_api_keys
+        SELECT k.id,k.instance_id,COALESCE(i.owner_id,?),k.name,k.token_hash,k.prefix,k.created_at
+        FROM cpa_api_keys_legacy k JOIN cpa_instances i ON i.id=k.instance_id`,
+      ).run(options.legacySharedKeyOwnerId ?? null);
+      db.exec("DROP TABLE cpa_api_keys_legacy; COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      db.close();
+      throw error;
+    }
+  }
   const oauthColumns = db.prepare("PRAGMA table_info(cpa_oauth_sessions)").all();
   if (!oauthColumns.some((column) => column.name === "url"))
     db.exec("ALTER TABLE cpa_oauth_sessions ADD COLUMN url TEXT");
@@ -111,20 +140,22 @@ export async function createCpaStore(options: { file: string; now?: () => number
       InstanceRow | undefined;
     return row && instance(row);
   };
-  const saveKey = (instanceId: string, name: string, token: string): CpaKey => {
+  const saveKey = (instanceId: string, name: string, token: string, userId: string): CpaKey => {
     const clean = name.trim();
     if (!clean || [...clean].length > 80)
       throw new CpaError(400, "CPA_KEY_NAME", "调用密钥名称需要 1 到 80 个字");
     const result = {
       id: `key-${randomBytes(10).toString("hex")}`,
       instanceId,
+      userId,
       name: clean,
       prefix: token.slice(0, 12),
       createdAt: now(),
     };
-    db.prepare("INSERT INTO cpa_api_keys VALUES(?,?,?,?,?,?)").run(
+    db.prepare("INSERT INTO cpa_api_keys VALUES(?,?,?,?,?,?,?)").run(
       result.id,
       instanceId,
+      userId,
       clean,
       digest(token),
       result.prefix,
@@ -156,6 +187,13 @@ export async function createCpaStore(options: { file: string; now?: () => number
         )
         .all(instanceId)
         .map((row) => ({ name: String(row.name), proxyId: String(row.proxy_id) }));
+    },
+    countCredentialBindings(proxyIds: string[]): number {
+      const ids = new Set(proxyIds);
+      return db
+        .prepare("SELECT proxy_id FROM cpa_credential_proxies")
+        .all()
+        .filter((row) => ids.has(String(row.proxy_id))).length;
     },
     listFor(user: FrontendUser): CpaInstance[] {
       return (
@@ -200,6 +238,12 @@ export async function createCpaStore(options: { file: string; now?: () => number
         throw new CpaError(403, "CPA_FORBIDDEN", "这个 CPA 实例不属于当前用户");
       return value;
     },
+    requireUsable(user: FrontendUser, id: string): CpaInstance {
+      const value = get(id);
+      if (!value || !user.enabled || (value.scope !== "shared" && value.ownerId !== user.id))
+        throw new CpaError(403, "CPA_FORBIDDEN", "无权使用这个 CPA 实例");
+      return value;
+    },
     setDesiredState(id: string, state: "running" | "stopped") {
       db.prepare("UPDATE cpa_instances SET desired_state=? WHERE id=?").run(state, id);
     },
@@ -209,12 +253,12 @@ export async function createCpaStore(options: { file: string; now?: () => number
         .all(instanceId)
         .map(keyInfo);
     },
-    issueKey(instanceId: string, name: string): CpaKey & { token: string } {
+    issueKey(instanceId: string, name: string, userId: string): CpaKey & { token: string } {
       const token = `rcpa_${randomBytes(32).toString("base64url")}`;
-      return { ...saveKey(instanceId, name, token), token };
+      return { ...saveKey(instanceId, name, token, userId), token };
     },
     /** Registers a legacy caller key without retaining or returning the original token. */
-    importKey(instanceId: string, name: string, token: string): CpaKey {
+    importKey(instanceId: string, name: string, token: string, userId?: string): CpaKey {
       const existing = db
         .prepare("SELECT * FROM cpa_api_keys WHERE token_hash=?")
         .get(digest(token));
@@ -223,23 +267,23 @@ export async function createCpaStore(options: { file: string; now?: () => number
           throw new CpaError(409, "CPA_KEY_CONFLICT", "调用密钥已属于其他 CPA 实例");
         return keyInfo(existing);
       }
-      return saveKey(instanceId, name, token);
+      const owner = userId ?? get(instanceId)?.ownerId;
+      if (!owner) throw new CpaError(400, "CPA_KEY_OWNER", "导入共享调用密钥时需要指定用户");
+      return saveKey(instanceId, name, token, owner);
     },
-    resolveKey(token: string): CpaInstance | undefined {
+    resolveKey(token: string): { instance: CpaInstance; userId: string } | undefined {
       const row = db
         .prepare(
-          "SELECT i.* FROM cpa_instances i JOIN cpa_api_keys k ON k.instance_id=i.id WHERE k.token_hash=?",
+          "SELECT i.*,k.user_id FROM cpa_instances i JOIN cpa_api_keys k ON k.instance_id=i.id WHERE k.token_hash=?",
         )
-        .get(digest(token)) as unknown as InstanceRow | undefined;
-      return row && instance(row);
+        .get(digest(token)) as unknown as (InstanceRow & { user_id: string }) | undefined;
+      return row && { instance: instance(row), userId: row.user_id };
     },
     revokeKey(instanceId: string, keyId: string) {
       db.prepare("DELETE FROM cpa_api_keys WHERE instance_id=? AND id=?").run(instanceId, keyId);
     },
     revokeUserKeys(userId: string) {
-      db.prepare(
-        "DELETE FROM cpa_api_keys WHERE instance_id IN (SELECT id FROM cpa_instances WHERE owner_id=?)",
-      ).run(userId);
+      db.prepare("DELETE FROM cpa_api_keys WHERE user_id=?").run(userId);
     },
     setCredentialProxy(instanceId: string, name: string, proxyId: string) {
       db.prepare(

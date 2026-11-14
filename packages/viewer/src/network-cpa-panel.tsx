@@ -100,7 +100,7 @@ export function CpaPanel({
     const request = ++detailRequest.current;
     const [savedKeys, savedCredentials] = await Promise.all([
       cpaApi.keys(item.id),
-      item.status === "running"
+      item.canManage && item.status === "running"
         ? cpaApi.credentials(item.id)
         : Promise.resolve({ credentials: [] }),
     ]);
@@ -125,7 +125,7 @@ export function CpaPanel({
     setIssuedKey(null);
     setError(null);
     setNotice(null);
-    if (instance?.canManage)
+    if (instance)
       void reloadDetails(instance).catch((reason: Error) => {
         if (selectedRef.current === instance.id) setError(reason.message);
       });
@@ -224,7 +224,7 @@ export function CpaPanel({
               void run(async () => {
                 const items = await reloadInstances();
                 const item = items.find((entry) => entry.id === selected);
-                if (item?.canManage) await reloadDetails(item);
+                if (item) await reloadDetails(item);
               })
             }
           >
@@ -248,10 +248,14 @@ export function CpaPanel({
             </div>
             <p class="network-muted">
               {instance.status === "running"
-                ? "实例正在运行，可管理授权凭据。"
-                : "实例未运行；启动后可授权账号或更新凭据。"}
+                ? "实例正在运行，可使用 API Key 调用。"
+                : "实例未运行，API 调用暂不可用。"}
             </p>
-            {!instance.canManage && <p class="network-muted">此实例由管理员管理。</p>}
+            <p class="network-muted">
+              {instance.scope === "shared"
+                ? "共享账号池由管理员维护。每个用户管理自己的调用 Key；管理员可查看归属并撤销。"
+                : "此实例属于你，授权凭据仅由你管理。浏览器网页登录与 CPA 授权互相独立。"}
+            </p>
           </section>
           {instance.canManage && (
             <>
@@ -448,98 +452,107 @@ export function CpaPanel({
                   </>
                 )}
               </section>
-              <section class="network-card network-form" aria-labelledby="cpa-keys-title">
-                <h3 id="cpa-keys-title">外部 API Key</h3>
-                <label>
-                  API Base URL
-                  <input readOnly value={`${window.location.origin}/v1`} />
-                </label>
-                <form
-                  class="network-key-form"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void run(async () => {
-                      const result = await cpaApi.createKey(instance.id, keyName.trim());
-                      setIssuedKey(result.key);
-                      setKeyName("");
-                      await credentialsChanged();
-                    });
-                  }}
-                >
-                  <label>
-                    新 Key 名称
-                    <input
-                      value={keyName}
-                      required
-                      maxLength={80}
-                      disabled={busy}
-                      onInput={(event) => setKeyName(event.currentTarget.value)}
-                    />
-                  </label>
-                  <button class="network-primary" type="submit" disabled={busy || !keyName.trim()}>
-                    生成 API Key
-                  </button>
-                </form>
-                {issuedKey && (
-                  <div class="network-issued-key" role="status">
-                    <label>
-                      新 API Key（仅此一次）
-                      <textarea readOnly rows={3} value={issuedKey.token} />
-                    </label>
-                    <div class="network-actions">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void run(async () => {
-                            await navigator.clipboard.writeText(issuedKey.token);
-                            setNotice("API Key 已复制。");
-                          })
-                        }
-                      >
-                        复制 Key
-                      </button>
-                      <button type="button" onClick={() => setIssuedKey(null)}>
-                        已保存，隐藏
-                      </button>
-                    </div>
-                    <p class="network-muted">关闭面板后不再显示完整 Key，请先保存。</p>
-                  </div>
-                )}
-                <ul class="network-list">
-                  {keys.map((key) => (
-                    <li key={key.id}>
-                      <div class="network-item-heading">
-                        <strong>{key.name}</strong>
-                        <code>{key.prefix}…</code>
-                      </div>
-                      <div class="network-actions">
-                        <button
-                          type="button"
-                          class="network-danger"
-                          disabled={busy}
-                          aria-label={`撤销 API Key「${key.name}」`}
-                          onClick={() => {
-                            if (
-                              window.confirm(
-                                `撤销 API Key「${key.name}」？使用它的客户端将无法继续调用。`,
-                              )
-                            )
-                              void run(async () => {
-                                await cpaApi.removeKey(instance.id, key.id);
-                                if (issuedKey?.id === key.id) setIssuedKey(null);
-                                await credentialsChanged();
-                              });
-                          }}
-                        >
-                          撤销 Key
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </section>
             </>
           )}
+          <section class="network-card network-form" aria-labelledby="cpa-keys-title">
+            <h3 id="cpa-keys-title">
+              {instance.scope === "shared" && instance.canManage ? "共享调用 Key" : "我的 API Key"}
+            </h3>
+            <p class="network-muted">
+              新 Key 归当前用户所有。停用或删除该用户后，其 Key 无法继续调用。
+            </p>
+            <label>
+              API Base URL
+              <input readOnly value={`${window.location.origin}/v1`} />
+            </label>
+            <form
+              class="network-key-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void run(async () => {
+                  const result = await cpaApi.createKey(instance.id, keyName.trim());
+                  setIssuedKey(result.key);
+                  setKeyName("");
+                  await credentialsChanged();
+                });
+              }}
+            >
+              <label>
+                新 Key 名称
+                <input
+                  value={keyName}
+                  required
+                  maxLength={80}
+                  disabled={busy}
+                  onInput={(event) => setKeyName(event.currentTarget.value)}
+                />
+              </label>
+              <button class="network-primary" type="submit" disabled={busy || !keyName.trim()}>
+                生成 API Key
+              </button>
+            </form>
+            {issuedKey && (
+              <div class="network-issued-key" role="status">
+                <label>
+                  新 API Key（仅此一次）
+                  <textarea readOnly rows={3} value={issuedKey.token} />
+                </label>
+                <div class="network-actions">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void run(async () => {
+                        await navigator.clipboard.writeText(issuedKey.token);
+                        setNotice("API Key 已复制。");
+                      })
+                    }
+                  >
+                    复制 Key
+                  </button>
+                  <button type="button" onClick={() => setIssuedKey(null)}>
+                    已保存，隐藏
+                  </button>
+                </div>
+                <p class="network-muted">关闭面板后不再显示完整 Key，请先保存。</p>
+              </div>
+            )}
+            <ul class="network-list">
+              {keys.map((key) => (
+                <li key={key.id}>
+                  <div class="network-item-heading">
+                    <strong>{key.name}</strong>
+                    <code>{key.prefix}…</code>
+                  </div>
+                  <p class="network-muted">
+                    所有者：{key.userId === user.id ? "我" : (key.username ?? "已删除用户")}
+                    {key.userId !== user.id && !key.username && `（${key.userId}）`}
+                  </p>
+                  <div class="network-actions">
+                    <button
+                      type="button"
+                      class="network-danger"
+                      disabled={busy}
+                      aria-label={`撤销 API Key「${key.name}」`}
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `撤销 API Key「${key.name}」？使用它的客户端将无法继续调用。`,
+                          )
+                        )
+                          void run(async () => {
+                            await cpaApi.removeKey(instance.id, key.id);
+                            if (issuedKey?.id === key.id) setIssuedKey(null);
+                            await credentialsChanged();
+                          });
+                      }}
+                    >
+                      撤销 Key
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
         </div>
       )}
     </div>

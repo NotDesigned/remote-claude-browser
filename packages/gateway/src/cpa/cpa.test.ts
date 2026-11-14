@@ -57,6 +57,7 @@ async function fixture() {
     store,
     driver,
     userEnabled: (id) => users.get(id)?.enabled === true,
+    userName: (id) => users.get(id)?.username,
     async resolveProxyForUser(user, proxyId) {
       proxies.push({ userId: user.id, proxyId });
       if (proxyId === "bobs-proxy" && user.id !== bob.id) throw new Error("not owned");
@@ -88,7 +89,7 @@ describe("CPA instance and key boundaries", () => {
       const file = join(dir, "cpa.sqlite");
       const first = await createCpaStore({ file });
       const value = first.create(alice);
-      const key = first.issueKey(value.id, "saved-client");
+      const key = first.issueKey(value.id, "saved-client", alice.id);
       first.setDesiredState(value.id, "running");
       first.setCredentialProxy(value.id, "claude.json", "node-a");
       first.recordOAuth(value.id, "saved-state", "claude", "node-a");
@@ -96,7 +97,7 @@ describe("CPA instance and key boundaries", () => {
       const reopened = await createCpaStore({ file });
       try {
         expect(reopened.get(value.id)).toEqual({ ...value, desiredState: "running" });
-        expect(reopened.resolveKey(key.token)?.id).toBe(value.id);
+        expect(reopened.resolveKey(key.token)?.instance.id).toBe(value.id);
         expect(reopened.credentialBindings(value.id)).toEqual([
           { name: "claude.json", proxyId: "node-a" },
         ]);
@@ -183,7 +184,7 @@ describe("CPA instance and key boundaries", () => {
     expect(() => store.requireManaged(alice, ownB.id)).toThrow();
     expect(() => store.requireManaged(alice, shared.id)).toThrow();
     expect(() => store.requireManaged(admin, ownA.id)).toThrow();
-    const key = store.issueKey(ownA.id, "laptop");
+    const key = store.issueKey(ownA.id, "laptop", alice.id);
     expect(key.token).toMatch(/^rcpa_[A-Za-z0-9_-]{43}$/);
     store.setDesiredState(ownA.id, "running");
     expect(runtime.inference(key.token).id).toBe(ownA.id);
@@ -197,11 +198,77 @@ describe("CPA instance and key boundaries", () => {
     expect(JSON.stringify(listed)).not.toContain(ownA.apiKey);
     expect(JSON.stringify(listed)).not.toContain(ownA.managementKey);
   });
+  it("lets shared-pool users manage only their own keys and revokes use with their workspace account", async () => {
+    const { store, runtime, users } = await fixture();
+    const shared = store.create(admin, "shared");
+    await runtime.start(admin, shared.id);
+    const app = Fastify();
+    registerCpaRoutes(app, {
+      runtime,
+      currentUser: (req) => users.get(String(req.headers["x-test-user"])),
+    });
+    registerCpaInferenceRoutes(app, runtime);
+    const keysPath = `/api/cpa/instances/${shared.id}/keys`;
+    const request = (
+      user: FrontendUser,
+      method: "GET" | "POST" | "DELETE",
+      url: string,
+      payload?: object,
+    ) => app.inject({ method, url, headers: { "x-test-user": user.id }, payload });
+    try {
+      const created = await request(alice, "POST", keysPath, { name: "Alice client" });
+      expect(created.statusCode).toBe(200);
+      const key = created.json().key;
+      expect(key).toMatchObject({ userId: alice.id, username: alice.username });
+      const bobsKey = runtime.issueKey(bob, shared.id, "Bob client");
+      expect((await request(alice, "GET", keysPath)).json().keys).toEqual([
+        expect.objectContaining({ id: key.id, userId: alice.id }),
+      ]);
+      expect((await request(admin, "GET", keysPath)).json().keys).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: key.id, username: alice.username }),
+          expect.objectContaining({ id: bobsKey.id, username: bob.username }),
+        ]),
+      );
+      expect((await request(bob, "DELETE", `${keysPath}/${key.id}`)).statusCode).toBe(403);
+      for (const [method, suffix] of [
+        ["GET", "credentials"],
+        ["POST", "start"],
+        ["POST", "stop"],
+      ] as const)
+        expect(
+          (await request(alice, method, `/api/cpa/instances/${shared.id}/${suffix}`)).statusCode,
+        ).toBe(403);
+      expect(runtime.inference(key.token).id).toBe(shared.id);
+      users.set(alice.id, { ...alice, enabled: false });
+      expect(
+        (
+          await app.inject({
+            method: "GET",
+            url: "/v1/models",
+            headers: { authorization: `Bearer ${key.token}` },
+          })
+        ).statusCode,
+      ).toBe(401);
+      expect((await request(alice, "POST", keysPath, { name: "disabled" })).statusCode).toBe(401);
+      expect(runtime.inference(bobsKey.token).id).toBe(shared.id);
+      users.delete(alice.id);
+      expect(() => runtime.inference(key.token)).toThrow("调用密钥无效");
+      expect(
+        runtime.listKeys(admin, shared.id).find((entry) => entry.id === key.id)?.username,
+      ).toBeNull();
+      expect((await request(admin, "DELETE", `${keysPath}/${key.id}`)).statusCode).toBe(200);
+      expect((await request(bob, "DELETE", `${keysPath}/${bobsKey.id}`)).statusCode).toBe(200);
+      expect(() => runtime.inference(bobsKey.token)).toThrow("调用密钥无效");
+    } finally {
+      await app.close();
+    }
+  });
   it("disabling or deleting an owner invalidates existing API keys", async () => {
     const { store, runtime, users } = await fixture();
     const value = store.create(alice);
     store.setDesiredState(value.id, "running");
-    const key = store.issueKey(value.id, "client");
+    const key = store.issueKey(value.id, "client", alice.id);
     users.set(alice.id, { ...alice, enabled: false });
     expect(() => runtime.inference(key.token)).toThrow();
     users.delete(alice.id);
@@ -533,7 +600,7 @@ describe("CPA v8 contract", () => {
     const { store, runtime, calls, setUpstream } = await fixture();
     const value = store.create(alice);
     await runtime.start(alice, value.id);
-    const key = store.issueKey(value.id, "client");
+    const key = store.issueKey(value.id, "client", alice.id);
     const other = store.create(bob);
     const app = Fastify();
     registerCpaRoutes(app, {
