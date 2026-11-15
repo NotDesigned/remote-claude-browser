@@ -36,8 +36,12 @@ disable features a real Chrome has; `--disable-features=MediaRouter` alone makes
 classify the browser as automation.
 
 Each browser account has an identity of its own (`browser/identity.ts`): a screen size, a subset of
-the installed fonts and a font-rendering setting, drawn from a seed derived from
-`MIRROR_AUTH_SECRET` and the account id. The fonts reach Chromium through a per-account
+the installed fonts and a font-rendering setting. New accounts draw a random identity and save the
+result in `accounts.json`, independently of `MIRROR_AUTH_SECRET`. On upgrade, startup saves all
+legacy accounts' existing identities using the current authentication secret, including accounts
+that are not running. Complete this migration before rotating that secret. Renaming an account,
+restarting it, or subsequently rotating the authentication secret keeps its identity. The fonts
+reach Chromium through a per-account
 `FONTCONFIG_FILE`, so the font list, canvas text, element sizes and text metrics differ between
 accounts because their environments really differ. Nothing adds noise to canvas or audio reads;
 detectors such as who.1ms.dog recognise noise as tampering. Audio, WebGL (SwiftShader), CPU and

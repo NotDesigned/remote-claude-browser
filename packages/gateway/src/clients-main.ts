@@ -38,7 +38,7 @@ import { createCpaBrokerDriver } from "./cpa/broker-client";
 import { registerCpaRoutes, registerCpaInferenceRoutes } from "./cpa/routes";
 import { createAccountDisplay, type AccountDisplay } from "./browser/display";
 import { createClaudeLoginTracker, profileSignedIn } from "./claude/signed-in";
-import { browserIdentity, identityEnvironment, type BrowserIdentity } from "./browser/identity";
+import { identityEnvironment, type BrowserIdentity } from "./browser/identity";
 import { connectRemoteBrowser } from "./browser/remote";
 import { createNavigationController } from "./browser/nav";
 import { createRendererRecovery } from "./browser/recovery";
@@ -154,6 +154,7 @@ export async function startClientGateway(
   const accountStore = await createProfileStore({
     file: join(profile, "accounts.json"),
     maxProfiles: Infinity,
+    legacyIdentitySecret: process.env.MIRROR_AUTH_SECRET ?? "",
   });
   const userStore = await createUserStore({
     file: process.env.MIRROR_USERS_DB ?? join(profile, "users.sqlite"),
@@ -944,7 +945,7 @@ export async function startClientGateway(
         const dir = accountDir(id);
         await mkdir(dir, { recursive: true, mode: 0o700 });
         const external = id === DEFAULT_PROFILE && !!process.env.BROWSER_CDP_URL;
-        const identity = browserIdentity(process.env.MIRROR_AUTH_SECRET ?? "", id);
+        const identity = accountStore.identity(id);
         const display =
           !external && process.env.CHROME_HEADFUL === "1"
             ? await createAccountDisplay()

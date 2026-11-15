@@ -1,9 +1,10 @@
 // @vitest-environment node
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createProfileStore, DEFAULT_PROFILE, isProfileId, MAX_PROFILES } from "./profiles";
+import { browserIdentity } from "../browser/identity";
 
 let dir: string | undefined;
 afterEach(async () => {
@@ -12,6 +13,44 @@ afterEach(async () => {
 });
 
 describe("accounts", () => {
+  it("saves every legacy identity before opening a browser and keeps it after key rotation", async () => {
+    dir = await mkdtemp(join(tmpdir(), "profile-identity-migration-"));
+    const file = join(dir, "accounts.json");
+    const legacy = [
+      { id: DEFAULT_PROFILE, name: "默认账号", createdAt: 0 },
+      { id: "p-0123456789", name: "未打开的账号", createdAt: 1, proxyId: "proxy-123" },
+    ];
+    await writeFile(file, JSON.stringify(legacy));
+    const store = await createProfileStore({ file, legacyIdentitySecret: "original-secret" });
+    const expected = legacy.map((record) => ({
+      ...record,
+      identity: browserIdentity("original-secret", record.id),
+    }));
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual(expected);
+    expect(store.all()).toEqual(legacy);
+
+    await store.rename(DEFAULT_PROFILE, "重命名后");
+    const reopened = await createProfileStore({ file, legacyIdentitySecret: "rotated-secret" });
+    for (const record of expected) expect(reopened.identity(record.id)).toEqual(record.identity);
+    expect(reopened.get(DEFAULT_PROFILE)?.name).toBe("重命名后");
+  });
+
+  it("saves new profiles' independent identities without adding them to API records", async () => {
+    dir = await mkdtemp(join(tmpdir(), "profile-random-identity-"));
+    const file = join(dir, "accounts.json");
+    const store = await createProfileStore({ file, legacyIdentitySecret: "old-key" });
+    const first = await store.create("第一个");
+    const second = await store.create("第二个");
+    expect(first).not.toHaveProperty("identity");
+    expect(store.identity(first.id)).not.toEqual(store.identity(second.id));
+    await store.setProxy(first.id, "proxy-123");
+
+    const reopened = await createProfileStore({ file, legacyIdentitySecret: "new-key" });
+    expect(reopened.identity(first.id)).toEqual(store.identity(first.id));
+    expect(reopened.identity(second.id)).toEqual(store.identity(second.id));
+    expect(reopened.get(first.id)).toEqual({ ...first, proxyId: "proxy-123" });
+  });
+
   it("keeps each profile's selected exit across restarts and can return to the deployment default", async () => {
     dir = await mkdtemp(join(tmpdir(), "profile-proxy-"));
     const file = join(dir, "accounts.json");

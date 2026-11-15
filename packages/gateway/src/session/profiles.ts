@@ -8,6 +8,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { ClientSessionError } from "./clients";
 import type { ExitMetadata } from "../egress/timezone";
+import { browserIdentity, type BrowserIdentity } from "../browser/identity";
 
 export const DEFAULT_PROFILE = "default";
 export const MAX_PROFILES = 8;
@@ -44,7 +45,13 @@ function cleanName(value: unknown): string {
 }
 
 export async function createProfileStore(
-  options: { file?: string; now?: () => number; maxProfiles?: number } = {},
+  options: {
+    file?: string;
+    now?: () => number;
+    maxProfiles?: number;
+    /** Used once to preserve the identity of records written before identities were saved. */
+    legacyIdentitySecret?: string;
+  } = {},
 ) {
   const now = options.now ?? Date.now;
   const maxProfiles = options.maxProfiles ?? MAX_PROFILES;
@@ -53,19 +60,28 @@ export async function createProfileStore(
   const records = new Map<string, ProfileRecord>([
     [DEFAULT_PROFILE, { id: DEFAULT_PROFILE, name: "默认账号", createdAt: 0 }],
   ]);
+  const legacyIdentity = (id: string) => browserIdentity(options.legacyIdentitySecret ?? "", id);
+  const identities = new Map<string, BrowserIdentity>([
+    [DEFAULT_PROFILE, legacyIdentity(DEFAULT_PROFILE)],
+  ]);
+  let migrateIdentities = true;
   if (options.file) {
     try {
       const parsed: unknown = JSON.parse(await readFile(options.file, "utf8"));
       if (!Array.isArray(parsed)) throw new Error("Invalid account store");
       records.clear();
+      identities.clear();
+      migrateIdentities = false;
       for (const value of parsed) {
-        const record = value as Partial<ProfileRecord>;
+        const record = value as Partial<ProfileRecord> & { identity?: BrowserIdentity };
         if (
           !isProfileId(record.id) ||
           typeof record.name !== "string" ||
           !Number.isFinite(record.createdAt)
         )
           throw new Error("Invalid account record");
+        identities.set(record.id, record.identity ?? legacyIdentity(record.id));
+        if (record.identity === undefined) migrateIdentities = true;
         records.set(record.id, {
           id: record.id,
           name: cleanName(record.name),
@@ -95,11 +111,22 @@ export async function createProfileStore(
         if (!options.file) return;
         await mkdir(dirname(options.file), { recursive: true, mode: 0o700 });
         const temporary = options.file + ".next";
-        await writeFile(temporary, JSON.stringify([...records.values()]), { mode: 0o600 });
+        await writeFile(
+          temporary,
+          JSON.stringify(
+            [...records.values()].map((record) => ({
+              ...record,
+              identity: identities.get(record.id),
+            })),
+          ),
+          { mode: 0o600 },
+        );
         await rename(temporary, options.file);
       });
     return tail;
   };
+  // Save every legacy identity before accepting requests, including profiles that stay closed.
+  if (migrateIdentities) await persist();
   const known = (id: unknown): ProfileRecord => {
     const record = isProfileId(id) ? records.get(id) : undefined;
     if (!record) throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
@@ -145,6 +172,10 @@ export async function createProfileStore(
     has(id: unknown): boolean {
       return isProfileId(id) && records.has(id);
     },
+    identity(id: string): BrowserIdentity {
+      known(id);
+      return identities.get(id)!;
+    },
     async create(name: unknown): Promise<ProfileRecord> {
       const clean = cleanName(name);
       if (records.size >= maxProfiles)
@@ -154,10 +185,12 @@ export async function createProfileStore(
       while (records.has(id));
       const record = { id, name: clean, createdAt: now() };
       records.set(id, record);
+      identities.set(id, browserIdentity(randomBytes(32).toString("hex"), id));
       try {
         await persist();
       } catch (error) {
         records.delete(id);
+        identities.delete(id);
         throw error;
       }
       return record;
@@ -221,11 +254,14 @@ export async function createProfileStore(
     },
     async remove(id: unknown): Promise<void> {
       const record = known(id);
+      const identity = identities.get(record.id)!;
       records.delete(record.id);
+      identities.delete(record.id);
       try {
         await persist();
       } catch (error) {
         records.set(record.id, record);
+        identities.set(record.id, identity);
         throw error;
       }
     },

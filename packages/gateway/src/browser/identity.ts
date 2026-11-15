@@ -3,8 +3,8 @@
  *
  * Each account draws a screen size, a set of installed fonts and a way of rendering them from a
  * seed of its own. These are real differences in the environment, not noise added to canvas or
- * audio reads, which detectors recognise as tampering. The seed is derived from the account id,
- * so an account keeps its identity across restarts.
+ * audio reads, which detectors recognise as tampering. The profile store saves the resulting
+ * identity, so authentication-key rotation and browser restarts do not change it.
  */
 import { createHmac } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
