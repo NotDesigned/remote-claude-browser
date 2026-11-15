@@ -618,7 +618,7 @@ describe("createTabLifecycle", () => {
     await lifecycle.handle({ t: "nav", tab: "old-tab", action: "close" });
 
     expect(browser.browserCalls).toEqual([
-      { method: "Target.createTarget", params: { url: "https://claude.ai/new" } },
+      { method: "Target.createTarget", params: { url: "https://claude.ai/" } },
       { method: "Target.activateTarget", params: { targetId: "created-tab" } },
       { method: "Target.closeTarget", params: { targetId: "old-tab" } },
     ]);
@@ -688,7 +688,7 @@ describe("createTabLifecycle", () => {
 
     await vi.waitFor(() =>
       expect(browser.browserCalls).toEqual([
-        { method: "Target.createTarget", params: { url: "https://claude.ai/new" } },
+        { method: "Target.createTarget", params: { url: "https://claude.ai/" } },
         { method: "Target.activateTarget", params: { targetId: "created-tab" } },
       ]),
     );
@@ -714,7 +714,7 @@ describe("createTabLifecycle", () => {
     const message = await lifecycle.tabsMessage();
 
     expect(browser.browserCalls).toEqual([
-      { method: "Target.createTarget", params: { url: "https://claude.ai/new" } },
+      { method: "Target.createTarget", params: { url: "https://claude.ai/" } },
       { method: "Target.activateTarget", params: { targetId: "created-tab" } },
     ]);
     expect(message.tabs.map(({ id, active }) => ({ id, active }))).toEqual([

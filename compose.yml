@@ -37,7 +37,7 @@ services:
       MIRROR_AUTH_SECRET: ${MIRROR_AUTH_SECRET:?Set MIRROR_AUTH_SECRET in .env}
       MIRROR_PUBLIC_ORIGIN: ${MIRROR_PUBLIC_ORIGIN:-}
       MIRROR_CLIENTS: ${MIRROR_CLIENTS:-8}
-      MIRROR_START_URL: ${MIRROR_START_URL:-https://claude.ai/new}
+      MIRROR_START_URL: ${MIRROR_START_URL:-https://claude.ai/}
       MIRROR_CANVAS_SNAPSHOTS: "0"
       # Sites whose canvases the page view samples. Unset means the verification challenges.
       MIRROR_CANVAS_SITES: ${MIRROR_CANVAS_SITES:-}

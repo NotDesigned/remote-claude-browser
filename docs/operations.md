@@ -47,7 +47,7 @@
 
 地址栏右侧 `RTT` 是客户端经 A 到 B 网关的网络往返采样，不包含网页执行和回放。展开后显示实际采用的 DOM 回放缓冲；图像模式不使用此缓冲。
 
-网关连通与网页进程健康分别检查。网页崩溃时会清除旧缓存、丢弃待处理输入，并在原标签页自动重载。一分钟内最多自动恢复两次，失败后显示刷新提示。图像模式启动及首帧均有时限，缺首帧时只补一次受限截图，失败自动退回 DOM。B 设置 `MIRROR_CLIENTS=16`，每个会话首次打开 `MIRROR_START_URL=https://claude.ai/new`，保留原 Profile。会话登记存于 Profile 下的 `client-sessions.json`，需要稳定的 `MIRROR_AUTH_SECRET` 维持设备身份。
+网关连通与网页进程健康分别检查。网页崩溃时会清除旧缓存、丢弃待处理输入，并在原标签页自动重载。一分钟内最多自动恢复两次，失败后显示刷新提示。图像模式启动及首帧均有时限，缺首帧时只补一次受限截图，失败自动退回 DOM。B 设置 `MIRROR_CLIENTS=16`，每个会话首次打开 `MIRROR_START_URL=https://claude.ai/`，保留原 Profile。会话登记存于 Profile 下的 `client-sessions.json`，需要稳定的 `MIRROR_AUTH_SECRET` 维持设备身份。
 
 当前 B 设置 `MIRROR_CANVAS_SNAPSHOTS=0`，关闭采集器可选的画布位图 Worker，避免其临时 Blob 资源初始化触发 Chrome 的来源校验崩溃。图标字体、DOM 和原生图像模式不依赖该 Worker；复杂画布请使用图像模式。
 

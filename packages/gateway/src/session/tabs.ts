@@ -25,7 +25,7 @@ type TabBrowser = Pick<
   "send" | "sendBrowser" | "onAttached" | "onDetached" | "onTargetInfoChanged" | "onSessionEvent"
 >;
 
-const NEW_TAB_URL = "https://claude.ai/new";
+const NEW_TAB_URL = "https://claude.ai/";
 
 export interface TabLifecycleOpts {
   browser: TabBrowser;

@@ -516,5 +516,5 @@ export function afterSignInUrl(url: string | undefined): string | null {
   const back = page.searchParams.get("returnTo") ?? "";
   const safe =
     back.startsWith("/") && !back.startsWith("//") && !/^\/(login|logout)(\/|\?|$)/i.test(back);
-  return `${page.origin}${safe ? back : "/new"}`;
+  return `${page.origin}${safe ? back : "/"}`;
 }

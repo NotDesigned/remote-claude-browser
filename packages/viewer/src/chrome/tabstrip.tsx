@@ -15,7 +15,7 @@ export interface TabStripProps {
   onActivate?(tab: TabId): void;
 }
 
-const NEW_TAB_URL = "https://claude.ai/new";
+const NEW_TAB_URL = "https://claude.ai/";
 
 export function TabStrip({ tabs, chromeByTab = {}, send, onActivate }: TabStripProps) {
   const activeTab = tabs.find((tab) => tab.active) ?? tabs[0];

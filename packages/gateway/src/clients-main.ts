@@ -1184,7 +1184,7 @@ export async function startClientGateway(
           t: "nav",
           tab: "",
           action: "newtab",
-          url: process.env.MIRROR_START_URL ?? "https://claude.ai/new",
+          url: process.env.MIRROR_START_URL ?? "https://claude.ai/",
         });
       // Resolve same-process child frame ownership for the shared download manager too.
       for (const target of targets.values())

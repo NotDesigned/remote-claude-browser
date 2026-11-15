@@ -20,7 +20,7 @@ excluded from Git. Do not commit a populated one. `scripts/bootstrap.sh` writes 
 | `SERVER_SUBNET` | no | `172.31.66.0/24` | The Compose network. Change it if it collides with another network |
 | `SERVER_IMAGE` | no | local build | A prebuilt image |
 | `MIRROR_CLIENTS` | no | `8` | Total active session slots across users; any positive safe integer. Invalid values prevent startup |
-| `MIRROR_START_URL` | no | `https://claude.ai/new` | The page a new session opens |
+| `MIRROR_START_URL` | no | `https://claude.ai/` | The page a new session opens |
 | `MIRROR_ACCOUNTS_DIR` | no | `<profile>-accounts` | Where browser configurations other than the legacy default keep their Chrome profiles |
 | `EGRESS_POLICY` | no | `on` | `off` lets pages reach private networks and the host |
 | `EGRESS_BLOCK` | no | empty | More addresses to block, comma-separated. Add the host's public IP |

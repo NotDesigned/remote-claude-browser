@@ -566,10 +566,10 @@ describe("leaving Claude's sign-in pages", () => {
   it("returns to the requested page, never to another site or sign-in page", () => {
     const login = "https://claude.ai/login?from=logout&reauth=1&returnTo=";
     expect(afterSignInUrl(login + "%2Fcode")).toBe("https://claude.ai/code");
-    expect(afterSignInUrl(login + "%2Flogin%3Fa%3D1")).toBe("https://claude.ai/new");
-    expect(afterSignInUrl(login + "%2F%2Fevil.example")).toBe("https://claude.ai/new");
-    expect(afterSignInUrl(login + "https%3A%2F%2Fevil.example")).toBe("https://claude.ai/new");
-    expect(afterSignInUrl("https://claude.ai/logout?involuntary=1")).toBe("https://claude.ai/new");
+    expect(afterSignInUrl(login + "%2Flogin%3Fa%3D1")).toBe("https://claude.ai/");
+    expect(afterSignInUrl(login + "%2F%2Fevil.example")).toBe("https://claude.ai/");
+    expect(afterSignInUrl(login + "https%3A%2F%2Fevil.example")).toBe("https://claude.ai/");
+    expect(afterSignInUrl("https://claude.ai/logout?involuntary=1")).toBe("https://claude.ai/");
     expect(afterSignInUrl("https://claude.ai/chat/abc")).toBeNull();
     expect(afterSignInUrl("https://accounts.google.com/login")).toBeNull();
     expect(afterSignInUrl(undefined)).toBeNull();
