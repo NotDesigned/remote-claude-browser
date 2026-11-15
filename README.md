@@ -135,6 +135,7 @@ docker compose -f compose.yml -f compose.runtime.yml up -d --build
 - [Caddy 入口示例](examples/caddy/README.md)：同机反向代理或独立 VPS 入口
 - [CPA 面板与 API](docs/cpa.md)：可选服务、OAuth、接口地址、Caddy 路由和出站隔离
 - [配置](docs/configuration.md)：环境变量
+- [Windows 浏览器迁移准备](docs/windows-runtime.md)：Hyper-V 测试虚拟机和原生 Chrome 验证
 - [架构](docs/architecture.md) · [安全](docs/security.md) · [排错](docs/troubleshooting.md)
 - [双机 systemd 部署与运维](docs/operations.md)：不用 Docker 的部署方式和日常使用细节
 
