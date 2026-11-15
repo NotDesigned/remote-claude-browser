@@ -508,6 +508,26 @@ describe("multi-user management routes", () => {
     const profiles = (await api(gateway.app, bob, "GET", "/api/accounts")).json();
     const profileId = profiles.default;
     expect(
+      (
+        await api(gateway.app, bob, "POST", "/api/accounts", {
+          name: "不可用的出口",
+          proxyId: adminNode.id,
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect((await api(gateway.app, bob, "GET", "/api/accounts")).json().accounts).toHaveLength(
+      profiles.accounts.length,
+    );
+    const createdWithExit = await api(gateway.app, bob, "POST", "/api/accounts", {
+      name: "新建时绑定",
+      proxyId: privateNode.id,
+    });
+    expect(createdWithExit.statusCode).toBe(200);
+    expect(createdWithExit.json()).toMatchObject({ name: "新建时绑定", proxyId: privateNode.id });
+    expect((await api(gateway.app, bob, "GET", "/api/accounts")).json().accounts).toContainEqual(
+      expect.objectContaining({ id: createdWithExit.json().id, proxyId: privateNode.id }),
+    );
+    expect(
       (await api(gateway.app, bob, "POST", `/api/proxies/${adminNode.id}/check`)).statusCode,
     ).toBe(404);
     const shared = nodes.find((node) => node.name === "shared.invalid")!;

@@ -419,6 +419,44 @@ button.profile-card:hover .profile-arrow {
 .profile-create {
   cursor: default;
 }
+.profile-new-form {
+  display: grid;
+  gap: 10px;
+}
+.profile-new-form label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.profile-new-form input,
+.profile-new-form select {
+  box-sizing: border-box;
+  width: 100%;
+}
+.profile-new-form select {
+  min-width: 0;
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+  font-size: 16px;
+}
+.profile-create-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.profile-create-help p {
+  margin: 0;
+}
+.profile-create-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 
 .profile-create input {
   flex: 1;

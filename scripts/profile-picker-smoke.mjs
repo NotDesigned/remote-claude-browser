@@ -34,12 +34,15 @@ const proxies = [
   { id: "proxy-private", name: "私有出口", visibility: "private" },
 ];
 const proxyChanges = [];
+const creations = [];
+const proxyChecks = [];
 const admissions = [];
 const switches = [];
 const renames = [];
 const defaultChanges = [];
 const deletions = [];
 let exitCheckFailure = false;
+let createExitFailure = false;
 const sessionAccounts = new Map();
 let current = "default";
 let currentClientKey;
@@ -58,7 +61,10 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/accounts" && req.method === "POST") {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
-      const { name } = JSON.parse(Buffer.concat(chunks).toString());
+      const { name, proxyId } = JSON.parse(Buffer.concat(chunks).toString());
+      const proxy = proxies.find((item) => item.id === proxyId);
+      if (!proxy) return json(res, { error: "请选择出口节点" }, 400);
+      creations.push({ name, proxyId });
       const account = {
         id: "p-9876543210",
         name,
@@ -66,13 +72,27 @@ const server = createServer(async (req, res) => {
         sessions: 0,
         signedIn: false,
         email: null,
-        proxyId: null,
-        proxyName: null,
+        proxyId,
+        proxyName: proxy.name,
       };
       accounts.push(account);
       return json(res, account);
     }
     if (url.pathname === "/api/proxies") return json(res, { proxies });
+    if (url.pathname === "/api/proxy-sources") return json(res, { sources: [] });
+    if (/^\/api\/proxies\/[^/]+\/check$/.test(url.pathname) && req.method === "POST") {
+      proxyChecks.push(url.pathname.split("/")[3]);
+      return json(res, {
+        health: createExitFailure
+          ? { status: "error", checkedAt: Date.now(), error: "代理连接失败，请检查节点" }
+          : {
+              status: "healthy",
+              checkedAt: Date.now(),
+              exitIp: "203.0.113.20",
+              timeZone: "Asia/Tokyo",
+            },
+      });
+    }
     if (/^\/api\/accounts\/[^/]+\/exit\/check$/.test(url.pathname) && req.method === "POST") {
       const account = accounts.find((item) => item.id === url.pathname.split("/")[3]);
       return json(res, {
@@ -591,37 +611,74 @@ try {
   assert.equal(switches.at(-1).account, "default");
   await page.goto(origin + "/?new=1&sid=client-1");
   await page.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
+  await page.route("**/api/proxies", (route) => route.fulfill({ json: { proxies: [] } }));
   await page.getByRole("button", { name: "新建浏览器配置" }).click();
   await page.getByLabel("浏览器配置名称").fill("新工作");
-  const beforeCreate = { admissions: admissions.length, switches: switches.length };
-  await page.getByRole("button", { name: "创建并设置出口" }).click();
-  const createdProxy = page.getByLabel("「新工作」的网络出口", { exact: true });
-  await createdProxy.waitFor();
+  const createSubmit = page.getByRole("button", { name: "检查并打开", exact: true });
+  assert.equal(await createSubmit.isDisabled(), true);
+  await page.getByRole("button", { name: "导入节点或订阅", exact: true }).click();
+  const importPanel = page.getByRole("dialog", { name: "代理与 API", exact: true });
+  await importPanel.waitFor();
+  await importPanel.getByRole("heading", { name: "导入代理来源", exact: true }).waitFor();
+  await page.unroute("**/api/proxies");
+  await importPanel.getByRole("button", { name: "关闭代理与 API 管理", exact: true }).click();
+  assert.equal(
+    await page.getByLabel("浏览器配置名称").inputValue(),
+    "新工作",
+    "opening proxy import retains the new profile draft",
+  );
+  await page.getByRole("button", { name: "刷新节点", exact: true }).click();
+  const createdProxy = page.getByLabel("网络出口", { exact: true });
+  await createdProxy.locator('option[value="proxy-private"]').waitFor({ state: "attached" });
   assert.equal(await createdProxy.inputValue(), "", "a new profile must have no selected node");
-  assert.equal(await page.getByRole("button", { name: /新工作.*未登录/ }).isDisabled(), true);
+  assert.equal(await createSubmit.isDisabled(), true);
+  await createdProxy.selectOption("proxy-private");
+  const beforeCreate = {
+    admissions: admissions.length,
+    switches: switches.length,
+    accounts: accounts.length,
+    creations: creations.length,
+    patches: proxyChanges.length,
+  };
+  createExitFailure = true;
+  await createSubmit.click();
+  await page.getByRole("alert").filter({ hasText: "代理连接失败，请检查节点" }).waitFor();
+  assert.equal(
+    accounts.length,
+    beforeCreate.accounts,
+    "failed exit checks must not leave half-created profiles",
+  );
+  assert.equal(creations.length, beforeCreate.creations);
   assert.equal(admissions.length, beforeCreate.admissions);
   assert.equal(switches.length, beforeCreate.switches);
-  await createdProxy.selectOption("proxy-private");
-  await page.getByRole("button", { name: "保存出口", exact: true }).click();
-  await page.getByRole("button", { name: /新工作.*私有出口/ }).waitFor();
-  assert.equal(admissions.length, beforeCreate.admissions, "saving the exit must not auto-open");
+  assert.equal(await page.getByLabel("浏览器配置名称").inputValue(), "新工作");
+  assert.equal(await createdProxy.inputValue(), "proxy-private");
+  createExitFailure = false;
   const created = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === "/api/client/session" &&
       response.request().postDataJSON()?.account === "p-9876543210",
   );
-  await page.getByRole("button", { name: /新工作.*私有出口/ }).click();
+  await createSubmit.click();
   await created;
   await page.waitForURL(
     (url) => url.searchParams.get("sid") === "client-1" && !url.searchParams.has("new"),
   );
   assert.equal(admissions.at(-1).account, "p-9876543210");
+  assert.deepEqual(creations.at(-1), { name: "新工作", proxyId: "proxy-private" });
+  assert.equal(creations.length, beforeCreate.creations + 1);
+  assert.equal(
+    proxyChanges.length,
+    beforeCreate.patches,
+    "creation binds the selected exit in the same request",
+  );
+  assert.deepEqual(proxyChecks.slice(-2), ["proxy-private", "proxy-private"]);
   assert.notEqual(admissions.at(-1).clientKey, key);
   await page.getByRole("button", { name: "工作台", exact: true }).click();
   await page.getByRole("button", { name: "浏览器配置", exact: true }).click();
   await page.getByRole("button", { name: "新建浏览器配置", exact: true }).click();
   await page.getByLabel("浏览器配置名称", { exact: true }).waitFor();
-  assert.equal(await page.getByRole("button", { name: "创建并设置出口", exact: true }).count(), 1);
+  assert.equal(await page.getByRole("button", { name: "检查并打开", exact: true }).count(), 1);
   await page.getByRole("button", { name: "取消", exact: true }).click();
   await page.getByRole("button", { name: "返回会话", exact: true }).click();
 
@@ -786,6 +843,43 @@ try {
     inputLayout.font >= 16 && inputLayout.bottom <= inputLayout.viewport + 1,
     JSON.stringify(inputLayout),
   );
+  const phoneExit = phone.getByLabel("网络出口", { exact: true });
+  await phoneExit.locator('option[value="proxy-private"]').waitFor({ state: "attached" });
+  assert.equal(await phoneExit.inputValue(), "");
+  assert.equal(
+    await phone.getByRole("button", { name: "检查并打开", exact: true }).isDisabled(),
+    true,
+  );
+  await phoneExit.selectOption("proxy-private");
+  assert.equal(
+    await phone.getByRole("button", { name: "检查并打开", exact: true }).isEnabled(),
+    true,
+  );
+  const createLayout = await phoneExit.evaluate((select) => {
+    const form = select.closest("form");
+    return {
+      viewport: innerWidth,
+      left: form.getBoundingClientRect().left,
+      right: form.getBoundingClientRect().right,
+      scroll: form.scrollWidth,
+      width: form.clientWidth,
+      selectFont: parseFloat(getComputedStyle(select).fontSize),
+      controls: [...form.querySelectorAll("input,select,button")].map(
+        (control) => control.getBoundingClientRect().height,
+      ),
+    };
+  });
+  assert.ok(
+    createLayout.left >= 0 &&
+      createLayout.right <= createLayout.viewport + 1 &&
+      createLayout.scroll <= createLayout.width + 1,
+    JSON.stringify(createLayout),
+  );
+  assert.ok(
+    createLayout.selectFont >= 16 && createLayout.controls.every((height) => height >= 44),
+    JSON.stringify(createLayout),
+  );
+  await phone.screenshot({ path: `artifacts/profile-create-${engine}-phone.png` });
   await phone.getByRole("button", { name: "取消", exact: true }).tap();
   const phoneSession = phone.waitForResponse(
     (response) => new URL(response.url()).pathname === "/api/client/session",
@@ -834,7 +928,9 @@ try {
       newLoginChooses: true,
       unboundCardBlockedAndMenuUsable: true,
       noAutomaticFirstExit: true,
-      createThenBindThenExplicitOpen: true,
+      createChecksBindsAndOpens: true,
+      failedExitCheckPreservesDraftWithoutCreation: true,
+      importEntryPreservesDraftAndRequiresExplicitChoice: true,
       shellCreateUsesUnifiedPicker: true,
       unboundResumeReturnsToPicker: true,
       exitWarningChecks,
@@ -848,6 +944,7 @@ try {
       renamePersistsAfterReload: true,
       renameCurrentWithoutSwitching: true,
       phoneRenameLayout: renameLayout,
+      phoneCreateLayout: createLayout,
       phoneMenuLayout: menuLayout,
       cardMenuEscapeAndOutsideClose: true,
       defaultConfigPersistsAndSortsFirst: true,

@@ -1580,7 +1580,7 @@ export async function startClientGateway(
       current: sid && clientSessions.owns(owner, sid) ? clientSessions.profileOf(sid) : null,
     });
   });
-  app.post<{ Body: { name?: unknown } }>(
+  app.post<{ Body: { name?: unknown; proxyId?: unknown } }>(
     "/api/accounts",
     { bodyLimit: 1024 },
     async (request, reply) => {
@@ -1596,8 +1596,21 @@ export async function startClientGateway(
               "PROFILE_LIMIT",
               `每个用户最多 ${MAX_PROFILES} 个浏览器配置`,
             );
+          const proxyId = request.body?.proxyId;
+          if (proxyId !== undefined) {
+            if (typeof proxyId !== "string" || !proxyId)
+              throw new ClientSessionError(400, "PROXY_REQUIRED", "请选择出口节点");
+            if (!process.env.MIRROR_RUNTIME_SOCKET)
+              throw new ClientSessionError(
+                503,
+                "PROXY_RUNTIME_DISABLED",
+                "请在部署中启用独立出口运行时",
+              );
+            proxyCatalog.getNodeConfig(user, proxyId);
+          }
           const created = await accountStore.create(request.body?.name);
           try {
+            if (typeof proxyId === "string") await accountStore.setProxy(created.id, proxyId);
             userStore.assignProfile(created.id, user.id);
           } catch (error) {
             await accountStore.remove(created.id);
@@ -1606,6 +1619,8 @@ export async function startClientGateway(
           return created;
         });
       } catch (error) {
+        if (error instanceof ProxyCatalogError)
+          return reply.code(error.statusCode).send({ error: error.message });
         return clientError(reply, error, owner);
       }
     },

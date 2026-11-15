@@ -79,16 +79,21 @@ export async function listAccounts(
   };
 }
 
-export async function createAccount(name: string, fetcher?: typeof fetch): Promise<AccountInfo> {
+export async function createAccount(
+  name: string,
+  proxyId?: string,
+  fetcher?: typeof fetch,
+): Promise<AccountInfo> {
   const response = await call(
     "/api/accounts",
-    { method: "POST", body: JSON.stringify({ name }) },
+    { method: "POST", body: JSON.stringify({ name, proxyId }) },
     fetcher,
   );
-  const made = (await response.json()) as { id: string; name: string };
+  const made = (await response.json()) as { id: string; name: string; proxyId?: string };
   return {
     id: made.id,
     name: made.name,
+    proxyId: made.proxyId,
     running: false,
     sessions: 0,
     signedIn: false,

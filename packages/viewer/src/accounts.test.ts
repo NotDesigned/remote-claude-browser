@@ -41,7 +41,7 @@ describe("browser configuration API", () => {
     const { fn, calls } = fetcher({
       "POST /api/accounts": { id: "p-aaaaaaaaaa", name: "新号" },
     });
-    const made = await createAccount("新号", fn);
+    const made = await createAccount("新号", undefined, fn);
     expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(["POST /api/accounts"]);
     expect(calls[0]?.body).toEqual({ name: "新号" });
     expect(made.proxyId).toBeUndefined();

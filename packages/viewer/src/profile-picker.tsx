@@ -18,7 +18,7 @@ import {
   type AccountInfo,
 } from "./accounts";
 import { ExitHealthDetails } from "./exit-health";
-import type { ExitHealth } from "./network-api";
+import { proxyApi, type ExitHealth } from "./network-api";
 import "./profile-picker.css";
 
 const LAST_ACCOUNT_KEY = "mirror.last-account";
@@ -246,6 +246,7 @@ export function ProfilePicker(props: {
   onChanged?(): void;
   onDeleted?(): void;
   workspace?: WorkspaceMenuProps;
+  proxyManagerOpen?: boolean;
   dark: boolean;
   onTheme(): void;
 
@@ -259,6 +260,10 @@ export function ProfilePicker(props: {
   const [defaultId, setDefaultId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [creationProxies, setCreationProxies] = useState<ProxyChoice[] | null>(null);
+  const [creationProxyId, setCreationProxyId] = useState("");
+  const [proxyRefresh, setProxyRefresh] = useState(0);
+  const [creationProgress, setCreationProgress] = useState("");
   const [proxyEditor, setProxyEditor] = useState<{
     account: AccountInfo;
     choices: ProxyChoice[];
@@ -267,6 +272,26 @@ export function ProfilePicker(props: {
   const [refreshAttempt, setRefreshAttempt] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   const last = rememberedAccount();
+
+  useEffect(() => {
+    if (!creating || props.proxyManagerOpen) return;
+    let active = true;
+    setCreationProxies(null);
+    void listProxyChoices()
+      .then((choices) => {
+        if (!active) return;
+        setCreationProxies(choices);
+        setCreationProxyId((previous) =>
+          choices.some((node) => node.id === previous) ? previous : "",
+        );
+      })
+      .catch((reason: Error) => {
+        if (active) setError(reason.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [creating, props.proxyManagerOpen, proxyRefresh]);
 
   useEffect(() => {
     let active = true;
@@ -423,20 +448,30 @@ export function ProfilePicker(props: {
   };
   const create = async (event: Event) => {
     event.preventDefault();
-    if (busy || name.trim() === "") return;
+    if (busy || name.trim() === "" || !creationProxies?.some((node) => node.id === creationProxyId))
+      return;
     setError(null);
     setBusy(true);
+    setCreationProgress("正在检查出口…");
+    let created = false;
     try {
-      const made = await createAccount(name.trim());
+      const { health } = await proxyApi.check(creationProxyId);
+      if (health.status !== "healthy")
+        throw new Error(health.error ?? "出口检查未通过，请重试或选择其他节点");
+      setCreationProgress("正在创建并打开…");
+      const made = await createAccount(name.trim(), creationProxyId);
+      made.proxyName = creationProxies.find((node) => node.id === creationProxyId)!.name;
+      created = true;
       setAccounts((previous) => [...previous!, made]);
       changed();
       setCreating(false);
       setName("");
-      await editProxy(made);
+      if ((await props.onPick(made.id, made.name)) !== false) remember(made.id);
     } catch (reason) {
-      setError((reason as Error).message);
+      setError((created ? "配置已创建，打开失败，可从列表重试：" : "") + (reason as Error).message);
     } finally {
       setBusy(false);
+      setCreationProgress("");
     }
   };
 
@@ -482,7 +517,7 @@ export function ProfilePicker(props: {
               </button>
             </p>
           )}
-          {error !== null && (
+          {error !== null && !creating && (
             <p class="profile-error" role="alert">
               {error}
             </p>
@@ -590,8 +625,10 @@ export function ProfilePicker(props: {
                   ),
                 )}
               {creating ? (
-                <form class="profile-card profile-create" onSubmit={create}>
+                <form class="profile-card profile-create profile-new-form" onSubmit={create}>
+                  <label for="profile-create-name">配置名称</label>
                   <input
+                    id="profile-create-name"
                     ref={input}
                     value={name}
                     maxLength={40}
@@ -601,17 +638,82 @@ export function ProfilePicker(props: {
                     onInput={(event) => setName((event.target as HTMLInputElement).value)}
                     onKeyDown={(event) => event.key === "Escape" && setCreating(false)}
                   />
-                  <button type="submit" disabled={busy || name.trim() === ""}>
-                    {busy ? "创建中…" : "创建并设置出口"}
-                  </button>
-                  <button
-                    type="button"
-                    class="profile-cancel"
-                    disabled={busy}
-                    onClick={() => setCreating(false)}
+                  <label for="profile-create-proxy">网络出口</label>
+                  <select
+                    id="profile-create-proxy"
+                    required
+                    value={creationProxyId}
+                    disabled={busy || creationProxies === null || creationProxies.length === 0}
+                    onChange={(event) => {
+                      setCreationProxyId(event.currentTarget.value);
+                      setError(null);
+                    }}
                   >
-                    取消
-                  </button>
+                    <option value="" disabled>
+                      {creationProxies === null ? "正在加载节点…" : "请选择出口节点"}
+                    </option>
+                    {creationProxies?.map((node) => (
+                      <option key={node.id} value={node.id}>
+                        {node.name} · {node.visibility === "shared" ? "共享" : "私有"}
+                      </option>
+                    ))}
+                  </select>
+                  {creationProxies?.length === 0 ? (
+                    <div class="profile-create-help">
+                      <p>还没有可用节点，先导入节点或订阅，再回来选择出口。</p>
+                      {props.workspace && (
+                        <button
+                          type="button"
+                          class="profile-cancel"
+                          disabled={busy}
+                          onClick={() => props.workspace!.onNavigate("proxies")}
+                        >
+                          导入节点或订阅
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <p class="profile-create-help">将先检查所选出口，通过后创建并打开浏览器。</p>
+                  )}
+                  {error && (
+                    <p class="profile-error" role="alert">
+                      {error}
+                    </p>
+                  )}
+                  <div class="profile-create-actions">
+                    <button
+                      type="submit"
+                      disabled={
+                        busy ||
+                        name.trim() === "" ||
+                        !creationProxies?.some((node) => node.id === creationProxyId)
+                      }
+                    >
+                      {busy ? creationProgress : "检查并打开"}
+                    </button>
+                    <button
+                      type="button"
+                      class="profile-cancel"
+                      disabled={busy}
+                      onClick={() => {
+                        setError(null);
+                        setProxyRefresh((value) => value + 1);
+                      }}
+                    >
+                      刷新节点
+                    </button>
+                    <button
+                      type="button"
+                      class="profile-cancel"
+                      disabled={busy}
+                      onClick={() => {
+                        setCreating(false);
+                        setError(null);
+                      }}
+                    >
+                      取消
+                    </button>
+                  </div>
                 </form>
               ) : (
                 accounts !== null && (
@@ -622,7 +724,9 @@ export function ProfilePicker(props: {
                     onClick={() => {
                       setError(null);
                       setEditing(null);
+                      setProxyEditor(null);
                       setName("");
+                      setCreationProxyId("");
                       setCreating(true);
                     }}
                   >

@@ -1326,6 +1326,7 @@ export function App() {
       )}
       {(clientPhase === "picking" || profilePickerOpen) && (
         <ProfilePicker
+          proxyManagerOpen={networkPanelOpen && networkTab === "proxies"}
           onPick={async (id, name) => {
             if (!profilePickerOpen) {
               setPickedAccount(id);
