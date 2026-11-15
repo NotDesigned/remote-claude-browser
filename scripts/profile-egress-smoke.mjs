@@ -193,11 +193,35 @@ async function cdpProbe(input) {
     assert.deepEqual(clocks.worker, exitTimeZones[input.exit]);
     const image = await send("Page.captureScreenshot", { format: "png" }, sessionId);
     assert.ok(Buffer.from(image.data, "base64").length > 500);
+    const platform = (
+      await send(
+        "Runtime.evaluate",
+        {
+          expression: "navigator.platform",
+          returnByValue: true,
+        },
+        sessionId,
+      )
+    ).result.value;
+    assert.equal(platform, "Linux x86_64");
+    const engine =
+      process.env.PROFILE_EGRESS_ALIASMODE === "1" && input.exit === "exit-B"
+        ? "aliasmode"
+        : "chromium";
+    if (engine === "aliasmode") {
+      const version = await send("Browser.getVersion");
+      assert.match(version.product, /^Chrome\/155\./);
+    }
+    const file = await send("Page.navigate", { url: "file:///etc/passwd" }, sessionId);
+    assert.equal(file.errorText, "net::ERR_BLOCKED_BY_ADMINISTRATOR");
     await send("Browser.close");
     return {
       cdpUnixBridge: true,
       navigation: true,
       screenshot: true,
+      platform,
+      engine,
+      localFileBlocked: true,
       persistentProfile: !input.persist,
       timeZone: clocks.main.timeZone,
       workerTimeZone: clocks.worker.timeZone,
@@ -900,7 +924,17 @@ exec sh /acceptance/profile-network.sh "$@"
         node: { ...profile.node, server: networkIdentity(`browser-${profile.id}`).hostIp },
         options: {
           userDataDir: profile.directory,
-          args: [...(headful ? [] : ["--headless=new"]), ...browserArgs],
+          engine:
+            process.env.PROFILE_EGRESS_ALIASMODE === "1" && profile.exit === "exit-B"
+              ? "aliasmode"
+              : "chromium",
+          args: [
+            ...(headful ? [] : ["--headless=new"]),
+            ...browserArgs,
+            ...(process.env.PROFILE_EGRESS_ALIASMODE === "1" && profile.exit === "exit-B"
+              ? ["--fingerprint=egress-smoke-b", "--fingerprint-platform=linux"]
+              : []),
+          ],
           env,
         },
       });
@@ -1218,6 +1252,7 @@ async function host() {
       `--env=PROFILE_EGRESS_STOCK_CPA=${process.env.PROFILE_EGRESS_STOCK_CPA ?? "0"}`,
       `--env=PROFILE_EGRESS_DEBUG=${process.env.PROFILE_EGRESS_DEBUG ?? "0"}`,
       `--env=PROFILE_EGRESS_SMOKE_KEEP=${process.env.PROFILE_EGRESS_SMOKE_KEEP ?? "0"}`,
+      `--env=PROFILE_EGRESS_ALIASMODE=${process.env.FINGERPRINT_BROWSER_DIR ? "1" : "0"}`,
       ...[
         "CHOWN",
         "KILL",
@@ -1238,6 +1273,12 @@ async function host() {
       `type=bind,src=${join(work, "profile-broker.mjs")},dst=/app/profile-egress-broker.mjs,readonly`,
       "--mount",
       `type=bind,src=${binary},dst=/usr/local/bin/mihomo,readonly`,
+      ...(process.env.FINGERPRINT_BROWSER_DIR
+        ? [
+            "--mount",
+            `type=bind,src=${resolve(process.env.FINGERPRINT_BROWSER_DIR)},dst=/usr/local/lib/aliasmode,readonly`,
+          ]
+        : []),
       "--entrypoint=node",
       image,
       "/acceptance/profile-egress-smoke.mjs",

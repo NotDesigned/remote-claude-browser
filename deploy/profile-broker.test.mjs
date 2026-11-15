@@ -37,3 +37,14 @@ test("broker permits profile environment only and keeps disk writes under its da
     }),
   );
 });
+
+test("broker accepts only its two installed engines, never a caller's executable path", () => {
+  const options = { userDataDir: "/data/p", args: [] };
+  assert.equal(validateBrowserOptions(options).engine, "chromium");
+  assert.equal(validateBrowserOptions({ ...options, engine: "aliasmode" }).engine, "aliasmode");
+  assert.throws(() => validateBrowserOptions({ ...options, engine: "/data/program" }));
+  assert.equal(
+    validateBrowserOptions({ ...options, executablePath: "/data/program" }).executablePath,
+    undefined,
+  );
+});

@@ -35,6 +35,12 @@ Chromium is primarily BSD-licensed and incorporates third-party components under
 permissive and weak-copyleft licenses; Debian package copyright files are included in the image
 under `/usr/share/doc`.
 
+The optional [AliasMode Chromium](https://github.com/aliasmode/aliasmode-chromium) engine is a
+separate GPL-3.0 executable, not included in the default image. `scripts/setup-fingerprint.sh`
+downloads the unmodified 155.0.8059.85 build 5 from its publisher and verifies the pinned digest.
+Its `LICENSE` and `SOURCE.txt` remain beside the executable. The corresponding patches and build
+instructions are at [source revision 9f66792](https://github.com/aliasmode/aliasmode-chromium/tree/9f66792).
+
 This summary is provided for convenience and is not a substitute for the dependency packages'
 license texts. Re-run `pnpm licenses list --prod` and inspect Debian package copyright metadata
 when dependencies or base images change.

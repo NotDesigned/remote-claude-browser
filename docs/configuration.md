@@ -59,9 +59,16 @@ Managed headful browser configurations each receive a private Xvfb display and a
 `XVFB_SCREEN` applies to each one; display resources therefore grow with active configurations.
 Native clipboard selections stay within that configuration. X11 window control and video capture
 use its private display too. Outside Docker this requires `Xvfb` and `xauth` on `PATH`.
-Each configuration also has its own screen size, font subset and font rendering, derived from
-`MIRROR_AUTH_SECRET`; changing that secret changes every configuration's fingerprint. Audio, WebGL
-and CPU readings stay shared. Each browser configuration must select an explicit proxy node; its egress depends on that node.
+Each configuration has a persisted screen size, font subset and font rendering. New identities
+use independent randomness; rotating `MIRROR_AUTH_SECRET` does not change saved identities.
+With native Chromium, audio, WebGL and CPU readings can still match. Each browser configuration
+must select an explicit proxy node; its egress depends on that node.
+
+`compose.fingerprint.yml` adds an optional local AliasMode engine. `MIRROR_BROWSER_ENGINE`
+(`chromium` or `aliasmode`) selects the engine for newly created configurations only. Existing
+configurations retain their saved engine and identity. The full browser directory is mounted
+read-only from `FINGERPRINT_BROWSER_DIR`; keep that mount while AliasMode profiles exist.
+See [fingerprint browser setup and acceptance](fingerprint-browser.md).
 
 Compose passes the password and signing keys as container environment variables. Anyone who can
 inspect the container or control the Docker daemon can read them, and Docker daemon access is already

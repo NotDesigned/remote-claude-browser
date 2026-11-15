@@ -1,20 +1,22 @@
 /**
  * What sets one browser account apart from another on the same machine.
  *
- * Each account draws a screen size, a set of installed fonts and a way of rendering them from a
- * seed of its own. These are real differences in the environment, not noise added to canvas or
- * audio reads, which detectors recognise as tampering. The profile store saves the resulting
- * identity, so authentication-key rotation and browser restarts do not change it.
+ * Native Chromium accounts have their own screen size, font subset and font rendering. AliasMode
+ * accounts instead keep a stable kernel fingerprint seed. The profile store saves the identity,
+ * so authentication-key rotation and browser restarts do not change it.
  */
 import { createHmac } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
+export type BrowserEngine = "chromium" | "aliasmode";
 
 export interface BrowserIdentity {
   screen: { width: number; height: number };
   /** Optional font families this account does not have. */
   missingFonts: string[];
   rendering: { hintstyle: string; antialias: boolean; autohint: boolean };
+  fingerprint?: { engine: "aliasmode"; seed: string; platform: "linux" };
 }
 
 /**
@@ -127,17 +129,21 @@ ${rejected}
 }
 
 /**
- * Writes this account's fontconfig and GTK settings into its profile and returns the environment
- * that uses them. GTK's setting turns off X11 middle-click paste of the primary selection, which
- * the viewer's own system (Windows, macOS, a phone) does not have.
+ * Writes GTK settings and, for native Chromium, the account's fontconfig. AliasMode owns its font
+ * identity. GTK's setting turns off X11 middle-click paste of the primary selection, which the
+ * viewer's own system (Windows, macOS, a phone) does not have.
  */
 export async function identityEnvironment(
   dir: string,
   identity: BrowserIdentity,
 ): Promise<Record<string, string>> {
-  const fonts = join(dir, "fonts.conf");
   const config = join(dir, "xdg-config");
-  await writeFile(fonts, fontconfigFor(identity), { mode: 0o600 });
+  const env: Record<string, string> = { XDG_CONFIG_HOME: config };
+  if (!identity.fingerprint) {
+    const fonts = join(dir, "fonts.conf");
+    await writeFile(fonts, fontconfigFor(identity), { mode: 0o600 });
+    env.FONTCONFIG_FILE = fonts;
+  }
   for (const gtk of ["gtk-3.0", "gtk-4.0"]) {
     await mkdir(join(config, gtk), { recursive: true });
     await writeFile(
@@ -145,5 +151,5 @@ export async function identityEnvironment(
       "[Settings]\ngtk-enable-primary-paste=false\n",
     );
   }
-  return { FONTCONFIG_FILE: fonts, XDG_CONFIG_HOME: config };
+  return env;
 }

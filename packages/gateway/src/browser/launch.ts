@@ -22,9 +22,11 @@ import {
 } from "puppeteer-core";
 import type { CdpSend, TargetEvents, TargetRef } from "../types";
 import { TargetRegistry } from "./targets";
+import type { BrowserEngine } from "./identity";
 
 export interface LaunchOpts {
   userDataDir: string;
+  engine?: BrowserEngine;
   executablePath?: string;
   headful?: boolean;
   /** Additional Chromium flags for development fixtures and diagnostics. */

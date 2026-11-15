@@ -482,6 +482,39 @@ describe("multi-user management routes", () => {
     expect(hooks.brokerLaunch).toHaveBeenCalledTimes(1);
     expect(hooks.launch).not.toHaveBeenCalled();
   });
+  it("launches a newly created fingerprint profile through the broker with its saved seed", async () => {
+    vi.stubEnv("MIRROR_BROWSER_ENGINE", "aliasmode");
+    vi.stubEnv("MIRROR_RUNTIME_SOCKET", "/broker-test-boundary.sock");
+    vi.stubEnv("CHROME_HEADFUL", undefined);
+    const { app, paths } = await fixture();
+    const admin = await login(app);
+    const profile = (await api(app, admin, "POST", "/api/accounts", { name: "新设备" })).json();
+    await bindExit(app, admin, profile.id);
+    await api(app, admin, "POST", "/api/client/session", {
+      clientKey: "fingerprint-browser",
+      account: profile.id,
+    });
+    const records = JSON.parse(await readFile(paths.accounts, "utf8"));
+    const identity = records.find((record: { id: string }) => record.id === profile.id).identity;
+    expect(hooks.brokerLaunch).toHaveBeenCalledWith(
+      profile.id,
+      expect.anything(),
+      expect.objectContaining({
+        engine: "aliasmode",
+        executablePath: "/usr/local/lib/aliasmode/chrome",
+        args: expect.arrayContaining([
+          `--fingerprint=${identity.fingerprint.seed}`,
+          "--fingerprint-platform=linux",
+          `--fingerprint-screen-width=${identity.screen.width}`,
+        ]),
+      }),
+    );
+    expect(hooks.brokerLaunch.mock.calls[0]?.[2]).not.toHaveProperty("env.FONTCONFIG_FILE");
+    expect(
+      records.find((record: { id: string }) => record.id === "default").identity,
+    ).not.toHaveProperty("fingerprint");
+  });
+
   it("binds only visible nodes to an owned profile, redacts secrets and preserves the exit on restart", async () => {
     const gateway = await fixture();
     vi.stubEnv("MIRROR_RUNTIME_SOCKET", "/unused-for-management.sock");

@@ -20,16 +20,30 @@ describe("browser account identity", () => {
 });
 
 describe("browser account environment", () => {
-  it("points Chromium at the account's fonts and turns off middle-click paste", async () => {
-    const { mkdtemp, readFile } = await import("node:fs/promises");
+  it.each(["chromium", "aliasmode"] as const)("configures fonts and GTK for %s", async (engine) => {
+    const { mkdtemp, readFile, rm } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { identityEnvironment } = await import("./identity");
     const dir = await mkdtemp(join(tmpdir(), "identity-"));
-    const env = await identityEnvironment(dir, browserIdentity("secret", "p-a"));
-    expect(env.FONTCONFIG_FILE).toBe(join(dir, "fonts.conf"));
-    expect(await readFile(join(env.XDG_CONFIG_HOME!, "gtk-3.0", "settings.ini"), "utf8")).toContain(
-      "gtk-enable-primary-paste=false",
-    );
+    try {
+      const identity = browserIdentity("secret", "p-a");
+      if (engine === "aliasmode")
+        identity.fingerprint = { engine, seed: "fixed-seed", platform: "linux" };
+      const env = await identityEnvironment(dir, identity);
+      if (engine === "chromium") {
+        expect(env.FONTCONFIG_FILE).toBe(join(dir, "fonts.conf"));
+        expect(await readFile(env.FONTCONFIG_FILE!, "utf8")).toBe(fontconfigFor(identity));
+      } else {
+        expect(env.FONTCONFIG_FILE).toBeUndefined();
+        await expect(readFile(join(dir, "fonts.conf"))).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      for (const gtk of ["gtk-3.0", "gtk-4.0"])
+        expect(await readFile(join(env.XDG_CONFIG_HOME!, gtk, "settings.ini"), "utf8")).toContain(
+          "gtk-enable-primary-paste=false",
+        );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

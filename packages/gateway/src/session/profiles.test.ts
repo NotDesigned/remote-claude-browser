@@ -21,7 +21,11 @@ describe("accounts", () => {
       { id: "p-0123456789", name: "未打开的账号", createdAt: 1, proxyId: "proxy-123" },
     ];
     await writeFile(file, JSON.stringify(legacy));
-    const store = await createProfileStore({ file, legacyIdentitySecret: "original-secret" });
+    const store = await createProfileStore({
+      file,
+      legacyIdentitySecret: "original-secret",
+      browserEngine: "aliasmode",
+    });
     const expected = legacy.map((record) => ({
       ...record,
       identity: browserIdentity("original-secret", record.id),
@@ -30,7 +34,11 @@ describe("accounts", () => {
     expect(store.all()).toEqual(legacy);
 
     await store.rename(DEFAULT_PROFILE, "重命名后");
-    const reopened = await createProfileStore({ file, legacyIdentitySecret: "rotated-secret" });
+    const reopened = await createProfileStore({
+      file,
+      legacyIdentitySecret: "rotated-secret",
+      browserEngine: "aliasmode",
+    });
     for (const record of expected) expect(reopened.identity(record.id)).toEqual(record.identity);
     expect(reopened.get(DEFAULT_PROFILE)?.name).toBe("重命名后");
   });
@@ -45,10 +53,51 @@ describe("accounts", () => {
     expect(store.identity(first.id)).not.toEqual(store.identity(second.id));
     await store.setProxy(first.id, "proxy-123");
 
-    const reopened = await createProfileStore({ file, legacyIdentitySecret: "new-key" });
+    const reopened = await createProfileStore({
+      file,
+      legacyIdentitySecret: "new-key",
+      browserEngine: "aliasmode",
+    });
     expect(reopened.identity(first.id)).toEqual(store.identity(first.id));
     expect(reopened.identity(second.id)).toEqual(store.identity(second.id));
     expect(reopened.get(first.id)).toEqual({ ...first, proxyId: "proxy-123" });
+    expect(reopened.identity(first.id).fingerprint).toBeUndefined();
+  });
+
+  it("persists independent AliasMode seeds through renaming, proxy changes and key rotation", async () => {
+    dir = await mkdtemp(join(tmpdir(), "profile-aliasmode-"));
+    const file = join(dir, "accounts.json");
+    const store = await createProfileStore({
+      file,
+      browserEngine: "aliasmode",
+      legacyIdentitySecret: "old-key",
+    });
+    const originalDefault = structuredClone(store.identity(DEFAULT_PROFILE));
+    expect(originalDefault.fingerprint).toBeUndefined();
+    const first = await store.create("第一个");
+    const second = await store.create("第二个");
+    const expected = [first, second].map((profile) => structuredClone(store.identity(profile.id)));
+    for (const identity of expected)
+      expect(identity.fingerprint).toEqual({
+        engine: "aliasmode",
+        seed: expect.stringMatching(/^[0-9a-f]{32}$/),
+        platform: "linux",
+      });
+    expect(expected[0]!.fingerprint!.seed).not.toBe(expected[1]!.fingerprint!.seed);
+    await store.rename(first.id, "重命名后");
+    await store.setProxy(first.id, "proxy-first");
+    await store.setProxy(first.id, "proxy-second");
+
+    const reopened = await createProfileStore({
+      file,
+      browserEngine: "chromium",
+      legacyIdentitySecret: "rotated-key",
+    });
+    expect(reopened.identity(first.id)).toEqual(expected[0]);
+    expect(reopened.identity(second.id)).toEqual(expected[1]);
+    expect(reopened.identity(DEFAULT_PROFILE)).toEqual(originalDefault);
+    const native = await reopened.create("原生浏览器");
+    expect(reopened.identity(native.id).fingerprint).toBeUndefined();
   });
 
   it("keeps each profile's selected exit across restarts and can return to the deployment default", async () => {

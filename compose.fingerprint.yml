@@ -1,0 +1,8 @@
+# Optional local fingerprint engine. Download the pinned release with scripts/setup-fingerprint.sh.
+# Existing profiles retain Chromium; only newly created profiles use AliasMode.
+services:
+  server:
+    environment:
+      MIRROR_BROWSER_ENGINE: ${MIRROR_BROWSER_ENGINE:-aliasmode}
+    volumes:
+      - ${FINGERPRINT_BROWSER_DIR:?Set FINGERPRINT_BROWSER_DIR to the installed AliasMode directory}:/usr/local/lib/aliasmode:ro

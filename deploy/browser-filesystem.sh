@@ -31,6 +31,8 @@ bind_readonly() {
   mount --bind "$source" "$root$source"
   mount -o remount,bind,ro "$root$source"
 }
+# Docker mounts the optional engine below /usr. A plain bind of /usr omits submounts.
+if [ -d /usr/local/lib/aliasmode ]; then bind_readonly /usr/local/lib/aliasmode; fi
 for path in /etc/chromium.d /etc/fonts /var/cache/fontconfig /etc/ssl/certs /etc/passwd /etc/group /etc/nsswitch.conf /etc/hosts /etc/resolv.conf /etc/ld.so.cache; do
   bind_readonly "$path"
 done

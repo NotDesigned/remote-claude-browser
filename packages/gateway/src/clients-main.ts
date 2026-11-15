@@ -43,6 +43,7 @@ import { registerCpaRoutes, registerCpaInferenceRoutes } from "./cpa/routes";
 import { createAccountDisplay, type AccountDisplay } from "./browser/display";
 import { createClaudeLoginTracker, profileSignedIn } from "./claude/signed-in";
 import { identityEnvironment, type BrowserIdentity } from "./browser/identity";
+import { configuredBrowserEngine, profileBrowserOptions } from "./browser/engine";
 import { connectRemoteBrowser } from "./browser/remote";
 import { createNavigationController } from "./browser/nav";
 import { createRendererRecovery } from "./browser/recovery";
@@ -152,6 +153,7 @@ export async function startClientGateway(
     file: join(profile, "accounts.json"),
     maxProfiles: Infinity,
     legacyIdentitySecret: process.env.MIRROR_AUTH_SECRET ?? "",
+    browserEngine: configuredBrowserEngine(process.env.MIRROR_BROWSER_ENGINE),
   });
   const userStore = await createUserStore({
     file: process.env.MIRROR_USERS_DB ?? join(profile, "users.sqlite"),
@@ -901,13 +903,16 @@ export async function startClientGateway(
         let exit: ExitMetadata;
         try {
           const proxyId = accountStore.get(id)!.proxyId;
+          const engine = profileBrowserOptions(identity);
           const launchOptions = {
             userDataDir: dir,
-            executablePath: process.env.CHROME_PATH,
+            engine: engine.engine,
+            executablePath: engine.executablePath,
             headful: process.env.CHROME_HEADFUL === "1",
             enableExtensions: true,
             args: [
               ...CHROME_ARGS,
+              ...engine.args,
               `--window-size=${identity.screen.width},${identity.screen.height}`,
             ],
             env: { ...display?.env, ...(await identityEnvironment(dir, identity)) },

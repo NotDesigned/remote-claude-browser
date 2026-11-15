@@ -23,8 +23,8 @@ export async function runtimeRequest<T>(path: string, method: string, body?: unk
             const body = JSON.parse(Buffer.concat(chunks).toString());
             if (response.statusCode !== 200)
               return reject(
-                body.code === "EXIT_TIMEZONE"
-                  ? new ClientSessionError(503, "EXIT_TIMEZONE", body.error)
+                body.code === "EXIT_TIMEZONE" || body.code === "BROWSER_ENGINE_MISSING"
+                  ? new ClientSessionError(503, body.code, body.error)
                   : new Error("浏览器网络运行时未就绪"),
               );
             resolve(body as T);
@@ -76,6 +76,7 @@ export async function launchBrokerBrowser(id: string, node: unknown, opts: Launc
       node,
       options: {
         userDataDir: opts.userDataDir,
+        engine: opts.engine,
         args: chromiumLaunchArgs(opts.args, {
           headful: opts.headful,
           enableExtensions: opts.enableExtensions,

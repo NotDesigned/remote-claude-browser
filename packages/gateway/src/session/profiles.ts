@@ -8,7 +8,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { ClientSessionError } from "./clients";
 import type { ExitMetadata } from "../egress/timezone";
-import { browserIdentity, type BrowserIdentity } from "../browser/identity";
+import { browserIdentity, type BrowserEngine, type BrowserIdentity } from "../browser/identity";
 import type { ClaudeKyc, ClaudeLogin } from "../claude/signed-in";
 
 export const DEFAULT_PROFILE = "default";
@@ -54,6 +54,8 @@ export async function createProfileStore(
     maxProfiles?: number;
     /** Used once to preserve the identity of records written before identities were saved. */
     legacyIdentitySecret?: string;
+    /** Applies only to newly created profiles; saved and legacy identities are unchanged. */
+    browserEngine?: BrowserEngine;
   } = {},
 ) {
   const now = options.now ?? Date.now;
@@ -189,7 +191,14 @@ export async function createProfileStore(
       while (records.has(id));
       const record = { id, name: clean, createdAt: now() };
       records.set(id, record);
-      identities.set(id, browserIdentity(randomBytes(32).toString("hex"), id));
+      const identity = browserIdentity(randomBytes(32).toString("hex"), id);
+      if (options.browserEngine === "aliasmode")
+        identity.fingerprint = {
+          engine: "aliasmode",
+          seed: randomBytes(16).toString("hex"),
+          platform: "linux",
+        };
+      identities.set(id, identity);
       try {
         await persist();
       } catch (error) {

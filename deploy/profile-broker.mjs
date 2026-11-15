@@ -2,12 +2,14 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, chmod, chown, writeFile, rm, readFile } from "node:fs/promises";
+import { access, mkdir, chmod, chown, writeFile, rm, readFile } from "node:fs/promises";
+import { constants } from "node:fs";
 import { createServer as httpServer, request as httpRequest } from "node:http";
 import { createServer as socketServer, connect as connectSocket } from "node:net";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { detectExitMetadata, ExitTimeZoneError } from "../packages/gateway/src/egress/timezone.ts";
+import { ALIASMODE_PATH } from "../packages/gateway/src/browser/engine.ts";
 
 const exec = promisify(execFile);
 const UID = 10001;
@@ -34,13 +36,15 @@ export function validateBrowserOptions(options, dataRoot = "/data") {
   if (!dir.startsWith(resolve(dataRoot) + "/")) throw new Error("Profile must be in /data");
   if (!Array.isArray(options.args) || !options.args.every((arg) => typeof arg === "string"))
     throw new Error("Invalid Chromium arguments");
+  const engine = options.engine ?? "chromium";
+  if (engine !== "chromium" && engine !== "aliasmode") throw new Error("Invalid browser engine");
   const env = {};
   for (const [key, value] of Object.entries(options.env ?? {})) {
     if (!ENV_KEYS.has(key) || typeof value !== "string")
       throw new Error("Invalid browser environment");
     env[key] = value;
   }
-  return { userDataDir: dir, args: options.args, env };
+  return { userDataDir: dir, engine, args: options.args, env };
 }
 
 async function stopProcess(child) {
@@ -398,6 +402,12 @@ export async function startProfileBroker({
     await closingBrowsers.get(id);
     if (browsers.has(id)) throw new Error("Browser already running");
     const options = validateBrowserOptions(body.options);
+    if (options.engine === "aliasmode")
+      await access(ALIASMODE_PATH, constants.X_OK).catch(() => {
+        throw Object.assign(new Error("此浏览器所需的 AliasMode 内核未安装，请联系管理员"), {
+          code: "BROWSER_ENGINE_MISSING",
+        });
+      });
     const egress = await ensureNetwork(`browser-${id}`, body.node);
     let exitMetadata;
     try {
@@ -416,8 +426,11 @@ export async function startProfileBroker({
         filesystemScript,
         join(egress.dir, "root"),
         options.userDataDir,
-        chromePath,
+        options.engine === "aliasmode" ? ALIASMODE_PATH : chromePath,
         ...options.args,
+        ...(options.engine === "aliasmode"
+          ? [`--fingerprint-timezone=${exitMetadata.timeZone}`]
+          : []),
         `--user-data-dir=${options.userDataDir}`,
         "--remote-debugging-pipe",
       ],
@@ -592,12 +605,17 @@ export async function startProfileBroker({
     } catch (error) {
       // Config errors may contain credentials. Keep broker failures free of request contents.
       const timeZoneError = error instanceof ExitTimeZoneError;
-      response.writeHead(timeZoneError ? 503 : 500, { "content-type": "application/json" });
+      const engineError = error.code === "BROWSER_ENGINE_MISSING";
+      response.writeHead(timeZoneError || engineError ? 503 : 500, {
+        "content-type": "application/json",
+      });
       response.end(
         JSON.stringify(
           timeZoneError
             ? { error: error.message, code: "EXIT_TIMEZONE" }
-            : { error: "Browser network runtime failed" },
+            : engineError
+              ? { error: error.message, code: error.code }
+              : { error: "Browser network runtime failed" },
         ),
       );
       console.error("Profile runtime operation failed:", error.code ?? error.name);
