@@ -90,6 +90,7 @@ export function attachTouchCapture(options: TouchCaptureOptions): () => void {
       t: "ptr",
       tab: options.tab,
       kind: "move",
+      pointerType: "touch",
       ...position,
       buttons: 0,
       mods: eventMods(event),
@@ -98,6 +99,7 @@ export function attachTouchCapture(options: TouchCaptureOptions): () => void {
       t: "ptr",
       tab: options.tab,
       kind: "down",
+      pointerType: "touch",
       ...position,
       button: 0,
       buttons: 1,
@@ -108,6 +110,7 @@ export function attachTouchCapture(options: TouchCaptureOptions): () => void {
       t: "ptr",
       tab: options.tab,
       kind: "up",
+      pointerType: "touch",
       ...position,
       button: 0,
       buttons: 0,
@@ -117,7 +120,7 @@ export function attachTouchCapture(options: TouchCaptureOptions): () => void {
   };
 
   /**
-   * Presses at the start of the swipe and moves with the finger, as a mouse drag would. The
+   * Presses at the start of the swipe and moves with the finger. The
    * gateway places each move from where the press landed, so the node pressed is all it needs.
    */
   const dragPointer = (
@@ -132,6 +135,7 @@ export function attachTouchCapture(options: TouchCaptureOptions): () => void {
       t: "ptr",
       tab: options.tab,
       kind,
+      pointerType: "touch",
       ...pointerPosition(point, target, options.doc, options.rootDoc),
       ...(kind === "move" ? {} : { button: 0, clicks: 1 }),
       buttons,
@@ -190,16 +194,18 @@ export function attachTouchCapture(options: TouchCaptureOptions): () => void {
 
     const touch = event.touches[0]!;
     if (gesture.mode === "pending") {
-      const distance = Math.hypot(touch.clientX - gesture.startX, touch.clientY - gesture.startY);
-      if (distance <= TOUCH_SLOP_PX) return;
-
       const deltaX = -(touch.clientX - gesture.startX);
       const deltaY = -(touch.clientY - gesture.startY);
-      // Sideways over something that cannot scroll that way, such as a slider: drag it.
-      if (
+      const sideways =
         Math.abs(deltaX) > SIDEWAYS_RATIO * Math.abs(deltaY) &&
-        scrollCandidates(gesture.target, options.doc, deltaX, 0).length === 0
-      ) {
+        scrollCandidates(gesture.target, options.doc, deltaX, 0).length === 0;
+      if (Math.hypot(deltaX, deltaY) <= TOUCH_SLOP_PX) {
+        // Reserve horizontal gestures on their first move, before Safari starts a native pan.
+        // Keep the tap slop so a finger wobble does not become a remote drag.
+        if (sideways) event.preventDefault();
+        return;
+      }
+      if (sideways) {
         startDrag(gesture, touch, event);
         return;
       }

@@ -101,6 +101,7 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
   const rectCache = new Map<string, { at: number; value: ResolvedRect }>();
   /** Where the held button was pressed, in the page and in the viewer. */
   const presses = new Map<string, { x: number; y: number; vx: number; vy: number }>();
+  const touchPositions = new Map<string, Point>();
   const resolverDeps: ResolveNodeDeps = {
     agentLink: deps.agentLink,
     send: deps.send,
@@ -163,6 +164,7 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     tabTails.delete(tabId);
     for (const key of rectCache.keys()) if (key.startsWith(`${tabId}:`)) rectCache.delete(key);
     presses.delete(tabId);
+    touchPositions.delete(tabId);
   };
   relay.rectFallbacksFor = (tabId) => rectFallbacks.get(tabId) ?? 0;
   return relay;
@@ -262,8 +264,34 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     msg: Extract<InputMsg, { t: "ptr" }>,
     valid: () => boolean,
   ): Promise<boolean> {
+    // A finger has no hover; the viewer's pre-press move only positions a mouse.
+    if (msg.pointerType === "touch" && msg.kind === "move" && msg.buttons === 0) return true;
     const { x, y } = await resolvePoint(msg);
     if (!valid()) return false;
+    if (msg.pointerType === "touch" && msg.kind !== "wheel") {
+      const touch = { touchPoints: [{ x, y, id: 0 }], modifiers: msg.mods };
+      if (msg.kind === "up") {
+        const previous = touchPositions.get(msg.tab);
+        touchPositions.delete(msg.tab);
+        // touchEnd carries no points, so its changedTouches use the last move's location.
+        if (previous && (previous.x !== x || previous.y !== y)) {
+          await deps.send(sessionId, "Input.dispatchTouchEvent", { ...touch, type: "touchMove" });
+          if (!valid()) return false;
+        }
+        await deps.send(sessionId, "Input.dispatchTouchEvent", {
+          type: "touchEnd",
+          touchPoints: [],
+          modifiers: msg.mods,
+        });
+      } else {
+        touchPositions.set(msg.tab, { x, y });
+        await deps.send(sessionId, "Input.dispatchTouchEvent", {
+          ...touch,
+          type: msg.kind === "down" ? "touchStart" : "touchMove",
+        });
+      }
+      return true;
+    }
     const common: Record<string, unknown> = {
       x,
       y,

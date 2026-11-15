@@ -241,8 +241,10 @@ describe("mobile input capture", () => {
     attachTouch(doc, sent);
 
     doc.fire("touchstart", touch(thumb, [{ x: 20, y: 50 }]));
-    const first = touch(thumb, [{ x: 35, y: 52 }]);
+    const first = touch(thumb, [{ x: 22, y: 50 }]);
     doc.fire("touchmove", first);
+    expect(sent).toHaveLength(0);
+    expect(first.preventDefault).toHaveBeenCalledOnce();
     const second = touch(thumb, [{ x: 80, y: 55 }]);
     doc.fire("touchmove", second);
     const end = touchEnd(thumb, { x: 90, y: 55 });
@@ -253,11 +255,15 @@ describe("mobile input capture", () => {
     ).toEqual([
       ["move", 20, 0],
       ["down", 20, 1],
-      ["move", 35, 1],
       ["move", 80, 1],
       ["up", 90, 0],
     ]);
-    expect(sent.every((message) => message.t === "ptr" && message.nodeId === 20)).toBe(true);
+    expect(
+      sent.every(
+        (message) =>
+          message.t === "ptr" && message.nodeId === 20 && message.pointerType === "touch",
+      ),
+    ).toBe(true);
     for (const event of [first, second, end]) expect(event.preventDefault).toHaveBeenCalledOnce();
   });
 

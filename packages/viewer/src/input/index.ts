@@ -37,7 +37,7 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
   const forwardedClock = createForwardedInputClock();
   const documents = new Map<Document, () => void>();
   const watchedFrames = new Map<HTMLIFrameElement, () => void>();
-  const frameDocuments = new Map<HTMLIFrameElement, Document>();
+  const frameDocuments = new Map<HTMLIFrameElement, { doc: Document; root: HTMLElement | null }>();
   let active = true;
 
   const attachDocument = (doc: Document): void => {
@@ -162,13 +162,12 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
   };
 
   const refreshFrameSoon = (frame: HTMLIFrameElement): void => {
-    // rrweb can rebuild the serialized child with document.open(): the Document identity remains
-    // stable while its listeners are cleared. Renew through the initial replay window because a
-    // concurrent load event does not reliably distinguish that rebuild from transient about:blank.
+    // document.open() can retain Document identity while replacing its root and clearing listeners.
+    // Watch for that rebuild without interrupting gestures on an unchanged child document.
     let attempts = 60;
     const refresh = () => {
       if (!active) return;
-      attachFrameDocument(frame, true);
+      attachFrameDocument(frame);
       attempts -= 1;
       if (attempts <= 0) return;
       frame.ownerDocument.defaultView?.requestAnimationFrame(refresh);
@@ -193,12 +192,12 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
       const child = frame.contentDocument;
       if (child === null) return false;
       const previous = frameDocuments.get(frame);
-      if (previous === child && !renew) return true;
+      if (previous?.doc === child && previous.root === child.documentElement && !renew) return true;
       if (previous !== undefined) {
-        documents.get(previous)?.();
-        documents.delete(previous);
+        documents.get(previous.doc)?.();
+        documents.delete(previous.doc);
       }
-      frameDocuments.set(frame, child);
+      frameDocuments.set(frame, { doc: child, root: child.documentElement });
       attachDocument(child);
       return true;
     } catch {

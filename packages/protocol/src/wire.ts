@@ -198,6 +198,8 @@ export type Up =
       t: "ptr";
       tab: TabId;
       kind: "move" | "down" | "up" | "wheel";
+      /** Omitted for mouse input; touch gestures retain native touch events remotely. */
+      pointerType?: "touch";
       nodeId: number;
       /** Position within the node, [0,1]. */
       rx: number;

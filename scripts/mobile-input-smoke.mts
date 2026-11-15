@@ -23,8 +23,8 @@ const require = createRequire(new URL("../packages/gateway/package.json", import
 const { WebSocketServer } = require("ws");
 const root = resolve("packages/viewer/dist");
 const remoteHtml = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>
-body{margin:0;height:1800px;background:linear-gradient(#fff,#ddd);font:16px sans-serif}#editor{position:absolute;left:20px;top:20px;width:280px;height:80px;border:1px solid #555}#tap{position:absolute;left:20px;top:125px;width:160px;height:36px}.hover-row{position:absolute;left:20px;top:180px;width:280px;height:40px;background:#eee}.hover-button{position:absolute;right:4px;top:0;width:0;height:40px;opacity:0;pointer-events:none}.hover-row:hover .hover-button{width:40px;opacity:1;pointer-events:auto}@media(pointer:coarse){.hover-button{width:40px;opacity:1;pointer-events:auto}}#nested{position:absolute;left:20px;top:270px;width:280px;height:150px;overflow:auto;border:1px solid #333}#nested-content{height:1000px;background:linear-gradient(#cde,#7ad)}#bottom{position:absolute;top:1500px}
-</style></head><body><div id="editor" contenteditable="true" role="textbox"></div><button id="tap" onclick="window.tapCount++">Tap button</button><div class="hover-row">Hover menu<button class="hover-button" id="menu" onclick="window.menuCount++">⋯</button></div><div id="nested"><div id="nested-content">Nested scrolling</div></div><p id="bottom">Bottom of page</p><script>window.tapCount=0;window.menuCount=0;</script></body></html>`;
+body{margin:0;height:1800px;background:linear-gradient(#fff,#ddd);font:16px sans-serif}#editor{position:absolute;left:20px;top:20px;width:280px;height:80px;border:1px solid #555}#tap{position:absolute;left:20px;top:125px;width:160px;height:36px}.hover-row{position:absolute;left:20px;top:180px;width:280px;height:40px;background:#eee}.hover-button{position:absolute;right:4px;top:0;width:0;height:40px;opacity:0;pointer-events:none}.hover-row:hover .hover-button{width:40px;opacity:1;pointer-events:auto}@media(pointer:coarse){.hover-button{width:40px;opacity:1;pointer-events:auto}}#nested{position:absolute;left:20px;top:270px;width:280px;height:150px;overflow:auto;border:1px solid #333}#nested-content{height:1000px;background:linear-gradient(#cde,#7ad)}#bottom{position:absolute;top:1500px}#slider{position:absolute;left:20px;top:450px;width:280px;height:44px;background:#ddd}#thumb{position:absolute;width:44px;height:44px;background:#777;touch-action:none}
+</style></head><body><div id="editor" contenteditable="true" role="textbox"></div><button id="tap" onclick="window.tapCount++">Tap button</button><div class="hover-row">Hover menu<button class="hover-button" id="menu" onclick="window.menuCount++">⋯</button></div><div id="nested"><div id="nested-content">Nested scrolling</div></div><div id="slider"><div id="thumb"></div></div><p id="bottom">Bottom of page</p><script>window.tapCount=0;window.menuCount=0;window.dragX=0;window.dragEvents=[];let startX=null;const thumb=document.getElementById('thumb');thumb.addEventListener('touchstart',e=>{e.preventDefault();startX=e.touches[0].clientX;window.dragEvents.push(e.type)}, {passive:false});document.addEventListener('touchmove',e=>{if(startX===null)return;e.preventDefault();window.dragX=e.touches[0].clientX-startX;thumb.style.transform='translateX('+window.dragX+'px)';window.dragEvents.push(e.type)}, {passive:false});document.addEventListener('touchend',()=>{if(startX===null)return;startX=null;window.dragEvents.push('touchend')});</script></body></html>`;
 const server = createServer(async (request, response) => {
   const path = new URL(request.url!, "http://fixture").pathname;
   if (path === "/api/client/session") {
@@ -68,7 +68,7 @@ const server = createServer(async (request, response) => {
 await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
 const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 const browser = await chromium.launch({
-  executablePath: "/opt/claude-test-chrome/chrome",
+  executablePath: process.env.CHROME_PATH ?? chromium.executablePath(),
   headless: true,
 });
 let viewerBrowser = browser;
@@ -103,6 +103,7 @@ try {
   await remote.goto(origin + "/remote");
   await remote.waitForFunction(() => typeof (window as any).__mirror_cmd === "function");
   const remoteCdp = await remote.context().newCDPSession(remote);
+  await remoteCdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
   const sendCmd = async (_tab: string, command: AgentCmdInput): Promise<CmdRes> => {
     const id = ++reqId;
     let timer: ReturnType<typeof setTimeout>;
@@ -198,6 +199,8 @@ try {
           if (mode === "px") await pixels();
           else hub.requestSnapshot("resync");
         });
+      // Reproduce the old mouse-only relay without interacting with a real verification service.
+      if (baseline && message.t === "ptr") delete message.pointerType;
       if (["ptr", "key", "text", "value", "scroll", "ime"].includes(message.t))
         dispatches.push(relay("mobile-viewer", message as InputMsg));
     });
@@ -227,7 +230,7 @@ try {
   });
   const page = await context.newPage();
   page.on("pageerror", (error) => console.error("mobile fixture viewer error", error.message));
-  await page.goto(origin);
+  await page.goto(origin + "/?sid=client-1");
   await page.waitForFunction(
     () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
   );
@@ -250,7 +253,7 @@ try {
     await page.waitForTimeout(200);
     await Promise.all(dispatches);
   };
-  const swipe = async (x: number, from: number, to: number) => {
+  const swipe = async (x: number, from: number, to: number, toX = x) => {
     const cdp = await context.newCDPSession(page);
     await cdp.send("Input.dispatchTouchEvent", {
       type: "touchStart",
@@ -259,7 +262,7 @@ try {
     for (let step = 1; step <= 12; step++) {
       await cdp.send("Input.dispatchTouchEvent", {
         type: "touchMove",
-        touchPoints: [{ x, y: from + ((to - from) * step) / 12 }],
+        touchPoints: [{ x: x + ((toX - x) * step) / 12, y: from + ((to - from) * step) / 12 }],
       });
       await page.waitForTimeout(18);
     }
@@ -308,6 +311,12 @@ try {
     () => (window as any).__mirrorWebsiteScriptRan === false,
   );
   if (!webkitViewer) {
+    const thumb = await local.locator("#thumb").boundingBox();
+    assert.ok(thumb);
+    await swipe(thumb.x + 15, thumb.y + 20, thumb.y + 20, thumb.x + 165);
+    checks.domTouchOnlySliderDrags = await remote.evaluate(
+      () => (window as any).dragX >= 140 && (window as any).dragEvents.at(-1) === "touchend",
+    );
     const rect = await page.locator("#mirror-host iframe").boundingBox();
     assert.ok(rect);
     await swipe(rect.x + 350, rect.y + Math.min(480, rect.height - 20), rect.y + 160);

@@ -319,6 +319,66 @@ describe("InputRelay", () => {
     ]);
   });
 
+  it("keeps touch drags ordered and ends at the final finger position", async () => {
+    let release!: (value: CmdRes) => void;
+    const h = harness({
+      rect: () => new Promise((resolve) => (release = resolve)),
+      rectTimeoutMs: 1000,
+    });
+    const down = h.relay("driver", { ...pointer("down"), pointerType: "touch" });
+    const move = h.relay("driver", {
+      ...pointer("move"),
+      pointerType: "touch",
+      vx: 730,
+      vy: 505,
+    });
+    const up = h.relay("driver", {
+      ...pointer("up"),
+      pointerType: "touch",
+      vx: 800,
+      vy: 500,
+    });
+    await vi.waitFor(() => expect(h.rectCalls()).toBe(1));
+    release({ reqId: 1, ok: true, data: { x: 10, y: 20, w: 100, h: 80, visible: true } });
+    await expect(Promise.all([down, move, up])).resolves.toEqual([true, true, true]);
+
+    expect(h.rectCalls()).toBe(1);
+    expect(h.cdp.map(({ method, params }) => [method, params])).toEqual(
+      [
+        { type: "touchStart", touchPoints: [{ x: 60, y: 40, id: 0 }] },
+        { type: "touchMove", touchPoints: [{ x: 90, y: 45, id: 0 }] },
+        { type: "touchMove", touchPoints: [{ x: 160, y: 40, id: 0 }] },
+        { type: "touchEnd", touchPoints: [] },
+      ].map((params) => ["Input.dispatchTouchEvent", { ...params, modifiers: Mod.Shift }]),
+    );
+  });
+
+  it("ignores touch hover, forwards pixel taps, and keeps wheel and mouse input unchanged", async () => {
+    const h = harness();
+    await h.relay("driver", { ...pointer("move"), pointerType: "touch", buttons: 0 });
+    expect(h.commands).toEqual([]);
+    expect(h.cdp).toEqual([]);
+
+    for (const kind of ["down", "up"] as const)
+      await h.relay("driver", {
+        ...pointer(kind),
+        pointerType: "touch",
+        nodeId: -1,
+        vx: 25,
+        vy: 35,
+      });
+    await h.relay("driver", { ...pointer("wheel"), pointerType: "touch" });
+    await h.relay("driver", pointer("down"));
+    expect(h.cdp.map(({ method, params }) => [method, params?.type])).toEqual([
+      ["Input.dispatchTouchEvent", "touchStart"],
+      ["Input.dispatchTouchEvent", "touchEnd"],
+      ["Input.dispatchMouseEvent", "mouseWheel"],
+      ["Input.dispatchMouseEvent", "mousePressed"],
+    ]);
+    expect(h.cdp[0]?.params).toMatchObject({ touchPoints: [{ x: 25, y: 35, id: 0 }] });
+    expect(h.cdp[2]?.params).toMatchObject({ deltaX: 4, deltaY: 9 });
+  });
+
   it("does not resolve through frames a node the top document says is gone", async () => {
     const h = harness({
       rect: async (call) => ({ reqId: call, ok: false, err: "node not found" }),

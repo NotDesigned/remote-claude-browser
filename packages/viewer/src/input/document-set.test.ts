@@ -184,6 +184,48 @@ function keyboard(target: FakeElement) {
 }
 
 describe("mirror input document set", () => {
+  it("keeps a child touch drag across frame-listener refreshes", () => {
+    const root = new FakeDocument();
+    const frame = new FakeElement(root, 10, "IFRAME", {
+      left: 100,
+      top: 200,
+      width: 300,
+      height: 200,
+    });
+    const child = new FakeDocument(frame);
+    frame.contentDocument = child;
+    root.add(frame);
+    const slider = new FakeElement(child, 41);
+    const sent: Up[] = [];
+    const replayer = {
+      iframe: { contentDocument: root },
+      getMirror: () => ({ getId: (node: Node) => (node as unknown as FakeElement).nodeId }),
+    } as unknown as Replayer;
+    const detach = attachMirrorInput({
+      replayer,
+      tab: "T1",
+      send: (message) => sent.push(message),
+    });
+    const touch = (x: number) => {
+      const point = { target: slider, clientX: x, clientY: 50 };
+      return { ...mouse(slider), touches: [point], changedTouches: [point] };
+    };
+
+    child.fire("touchstart", touch(20));
+    root.flushAnimationFrame();
+    child.fire("touchmove", touch(50));
+    root.flushAnimationFrame();
+    child.fire("touchend", { ...touch(90), touches: [] });
+
+    expect(sent).toMatchObject([
+      { t: "ptr", kind: "move", nodeId: 41, vx: 120, vy: 250, buttons: 0 },
+      { t: "ptr", kind: "down", nodeId: 41, vx: 120, vy: 250, buttons: 1 },
+      { t: "ptr", kind: "move", nodeId: 41, vx: 150, vy: 250, buttons: 1 },
+      { t: "ptr", kind: "up", nodeId: 41, vx: 190, vy: 250, buttons: 0 },
+    ]);
+    detach();
+  });
+
   it("relays child input, contains child links, composes coordinates, and follows document swaps", () => {
     const root = new FakeDocument();
     const frame = new FakeElement(root, 10, "IFRAME", {
@@ -232,6 +274,7 @@ describe("mirror input document set", () => {
 
     // rrweb's document.open() rebuild retains Document identity but clears its listeners.
     child.listeners.clear();
+    child.documentElement = new FakeElement(child, 1, "HTML");
     root.flushAnimationFrame();
     child.fire("keydown", keyboard(input));
     expect(sent.at(-1)).toMatchObject({ t: "key", kind: "down", key: "q" });
