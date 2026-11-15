@@ -306,7 +306,8 @@ async function runFixtureChaos(
   while (observedTotal - baseline < desiredResyncs) {
     if (Date.now() >= deadline) throw new Error(`chaos deadline expired in ${fixture.label}`);
     const state = await viewerRecoveryState(page);
-    if (state.storm) throw new Error(`AUTO-PX stormed during paced chaos on ${fixture.label}`);
+    if (state.storm)
+      throw new Error(`Resync rate limit reached during paced chaos on ${fixture.label}`);
     if (state.total > observedTotal) {
       latestValue = await setMutationClock(gatewayUrl, tab, false);
       clockRunning = false;
@@ -425,7 +426,7 @@ async function main(): Promise<void> {
       monitor(page),
     ]);
     assert.equal(sampled.whiteScreens, 0, sampled.lastFailure);
-    assert.equal(viewer.storm, false, "paced chaos unexpectedly entered AUTO-PX");
+    assert.equal(viewer.storm, false, "paced chaos unexpectedly reached the resync rate limit");
     assert(recovered >= run.targetResyncs, `only ${recovered} resyncs recovered`);
     assert(
       chaos.deltaMessagesDropped >= recovered,

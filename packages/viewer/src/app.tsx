@@ -641,8 +641,6 @@ export function App() {
     const resync = createResyncController({
       windowMs: configuredResyncWindowMs(),
       send: (message) => socket?.send(message),
-      // Remote pictures are an explicit user choice; recovery must not start a stream.
-      autoPx: () => undefined,
       onStateChange(state) {
         if (disposed) return;
         setResyncByTab((current) => ({ ...current, [state.tab]: state }));
@@ -1065,9 +1063,6 @@ export function App() {
             return;
           }
           if (state === "closed" && !presentation.isPixel(currentTab)) mirror.connectionLost();
-          // The server puts pages to sleep when every viewer has been hidden for a long time.
-          if (state === "open")
-            socketRef.current?.send({ t: "visibility", visible: !document.hidden });
           if (state === "open" && reconnected && !presentation.isPixel(currentTab)) {
             // `hello` says whether the gateway resumed this replay; recovery waits for it.
             // Content recovery does not unlock input before its viewport acknowledgement.
@@ -1089,12 +1084,17 @@ export function App() {
 
   useEffect(() => {
     const report = () => {
-      socketRef.current?.send({ t: "visibility", visible: !document.hidden });
       // A phone in the background may have lost the connection without the page hearing of it.
       if (!document.hidden) socketRef.current?.probe();
     };
     document.addEventListener("visibilitychange", report);
-    return () => document.removeEventListener("visibilitychange", report);
+    window.addEventListener("pageshow", report);
+    window.addEventListener("online", report);
+    return () => {
+      document.removeEventListener("visibilitychange", report);
+      window.removeEventListener("pageshow", report);
+      window.removeEventListener("online", report);
+    };
   }, []);
 
   const closeClientSession = async () => {
@@ -1386,8 +1386,8 @@ export function App() {
                       : "正在连接当前用户的独立浏览器。首次打开可能需要一些时间。"}
             </p>
             <p class="session-policy">
-              不同用户的浏览器数据互相隔离。同一浏览器配置下的会话共享网站登录。关闭网页 60
-              秒后自动回收会话；正在生成时暂缓。
+              不同用户的浏览器数据互相隔离。同一浏览器配置下的会话共享网站登录。离线约 60
+              秒后释放远程窗口；返回时重新打开启动页，未发送草稿不保留。正在生成时暂缓释放。
             </p>
             {clientPhase === "error" &&
               clientError !== null &&

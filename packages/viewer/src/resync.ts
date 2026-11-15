@@ -2,8 +2,8 @@
  * Per-tab divergence recovery policy.
  *
  * Mirror owns the mechanical Replayer swap. This controller owns when a recovery request may
- * leave the viewer: repeated requests are delayed with bounded exponential backoff and the fourth
- * request inside one rolling 30 second window degrades only that tab to pixel mode.
+ * leave the viewer: repeated requests back off, and a full rolling window delays the next request
+ * until a slot opens. Recovery never permanently disables a tab or changes its display mode.
  */
 import type { TabId, Up } from "@mirror/protocol";
 
@@ -20,12 +20,12 @@ export interface ResyncTabState {
   recentResyncs: number;
   pending: boolean;
   backoffMs: number;
+  /** The pending request is waiting for space in the rolling rate limit. */
   storm: boolean;
 }
 
 export interface ResyncControllerOptions {
   send(message: Extract<Up, { t: "resync-req" }>): void;
-  autoPx(tab: TabId): void;
   onStateChange?(state: ResyncTabState): void;
   now?: () => number;
   setTimer?: typeof setTimeout;
@@ -37,7 +37,7 @@ export interface ResyncControllerOptions {
 }
 
 export interface ResyncController {
-  /** Returns false when an equivalent request is already pending or the tab is degraded. */
+  /** Returns false when an equivalent request is already pending. */
   request(tab: TabId, reason: string): boolean;
   /** Cancel a not-yet-sent request when another epoch repaired the mirror first. */
   recovered(tab: TabId): void;
@@ -106,27 +106,25 @@ export function createResyncController(options: ResyncControllerOptions): Resync
     options.onStateChange?.(snapshot(tab, state));
   };
 
-  const degrade = (tab: TabId, state: MutableTabState): void => {
-    if (state.storm) return;
-    if (state.timer !== null) cancel(state.timer);
-    state.timer = null;
-    state.pendingReason = null;
-    state.backoffMs = 0;
-    state.storm = true;
+  const wait = (tab: TabId, state: MutableTabState, delayMs: number): void => {
+    state.backoffMs = delayMs;
+    state.timer = schedule(() => dispatch(tab, state), delayMs);
+    state.timer.unref?.();
     notify(tab, state);
-    options.autoPx(tab);
   };
 
   const dispatch = (tab: TabId, state: MutableTabState): void => {
     state.timer = null;
     const reason = state.pendingReason;
-    state.pendingReason = null;
-    if (disposed || reason === null || state.storm) return;
+    if (disposed || reason === null) return;
     prune(state, now(), windowMs);
     if (state.sentAt.length >= maxResyncs) {
-      degrade(tab, state);
+      state.storm = true;
+      wait(tab, state, state.sentAt[0]! + windowMs - now());
       return;
     }
+    state.pendingReason = null;
+    state.storm = false;
     state.sentAt.push(now());
     state.totalResyncs += 1;
     state.backoffMs = 0;
@@ -138,24 +136,16 @@ export function createResyncController(options: ResyncControllerOptions): Resync
     request(tab, reason) {
       if (disposed) return false;
       const state = mutable(tab);
-      if (state.storm || state.pendingReason !== null) return false;
-      if (state.sentAt.length >= maxResyncs) {
-        degrade(tab, state);
-        return false;
-      }
-
-      const delayMs =
-        state.sentAt.length === 0
+      if (state.pendingReason !== null) return false;
+      state.pendingReason = reason;
+      state.storm = state.sentAt.length >= maxResyncs;
+      const delayMs = state.storm
+        ? state.sentAt[0]! + windowMs - now()
+        : state.sentAt.length === 0
           ? 0
           : Math.min(backoffMaxMs, backoffBaseMs * 2 ** (state.sentAt.length - 1));
-      state.pendingReason = reason;
-      state.backoffMs = delayMs;
-      notify(tab, state);
       if (delayMs === 0) dispatch(tab, state);
-      else {
-        state.timer = schedule(() => dispatch(tab, state), delayMs);
-        state.timer.unref?.();
-      }
+      else wait(tab, state, delayMs);
       return true;
     },
     recovered(tab) {
@@ -165,6 +155,7 @@ export function createResyncController(options: ResyncControllerOptions): Resync
       state.timer = null;
       state.pendingReason = null;
       state.backoffMs = 0;
+      state.storm = false;
       notify(tab, state);
     },
     getState(tab) {

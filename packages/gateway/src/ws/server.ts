@@ -267,7 +267,7 @@ export interface WsServer {
   readonly webSocketServer: WebSocketServer;
   /** Available during onConnection and cleared on revocation or disconnect. */
   sessionForViewer(viewer: ViewerConn): string | undefined;
-  /** Revoke subscriptions synchronously before a released SID can be assigned to a new owner. */
+  /** Close subscriptions; omitting the terminal code keeps this page eligible to reconnect. */
   closeSession(sessionId: string, code?: number): void;
   /** Revoke input/fanout and notify disconnection synchronously before closing the transport. */
   closeViewer(viewer: ViewerConn, code?: number, reason?: string): boolean;
@@ -523,7 +523,7 @@ export function createWsServer(opts: WsServerOpts): WsServer {
     replaceSession,
     closeSession(sessionId, code) {
       assertSessionId(sessionId);
-      if (opts.replaceSessionOnConnect) {
+      if (opts.replaceSessionOnConnect && code !== undefined) {
         latestUpgrade.set(sessionId, ++nextUpgrade);
         retireKey(sessionId, activeKeys.get(sessionId));
         activeKeys.delete(sessionId);
@@ -537,6 +537,7 @@ export function createWsServer(opts: WsServerOpts): WsServer {
         viewerSockets.delete(viewer);
         viewerSessions.delete(viewer);
         fanout.removeViewer(viewer);
+        notifyDisconnection(viewer, sessionId);
       }
       // No subscriber remains in this SID, so old pending deltas can be discarded immediately.
       fanout.flushSession(sessionId);

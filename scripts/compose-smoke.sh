@@ -26,8 +26,6 @@ export MIRROR_ACCESS_SECRET=compose-smoke-access-key
 export MIRROR_AUTH_SECRET=compose-smoke-auth-key
 export MIRROR_PUBLIC_ORIGIN=http://127.0.0.1:$smoke_port
 export MIRROR_START_URL=about:blank
-# Short enough for the end-to-end check to see a page sleep and wake.
-export MIRROR_PAGE_SLEEP_MS=4000
 
 in_server() {
   "${compose[@]}" --project-name "$project" exec -T server "$@"

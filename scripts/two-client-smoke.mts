@@ -234,7 +234,10 @@ async function lease(owner: string, clientKey: string): Promise<Lease> {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ clientKey }),
   });
-  assert.ok(response.ok, `client acquisition failed: ${response.status}`);
+  assert.ok(
+    response.ok,
+    `client acquisition failed: ${response.status} ${response.ok ? "" : await response.text()}`,
+  );
   return response.json() as Promise<Lease>;
 }
 async function state(owner: string, sid: string): Promise<State> {
@@ -366,7 +369,7 @@ try {
       MIRROR_E2E: "1",
       MIRROR_IDLE_GRACE_MS: "60000",
       CHROME_HEADFUL: "0",
-      CHROME_PATH: "/opt/claude-test-chrome/chrome",
+      CHROME_PATH: process.env.CHROME_PATH ?? "/opt/claude-test-chrome/chrome",
       MIRROR_CANVAS_SNAPSHOTS: "0",
       MIRROR_DISABLE_RTC: "1",
       MIRROR_START_URL: fixtureOrigin + "/initial",
@@ -887,6 +890,7 @@ try {
   const released = await request("a", `/api/client/session/${first.sid}`, { method: "DELETE" });
   assert.ok([200, 204].includes(released.status));
   await waitFor(() => a.closed, "released owner's WebSocket closed");
+  assert.equal(a.closeCode, 4010, "explicitly ended sessions stay terminal");
   await b.negotiate(bTab, 940, 640);
   await focusEnd("b", second.sid, bTab);
   b.send({ t: "text", tab: bTab, insert: "，乙仍可操作" });
@@ -944,9 +948,20 @@ try {
   );
   await evaluate("c", third.sid, cTab, "document.querySelector('#idle-busy-stop').remove(); true");
   const reclaimedStatus = await advanceIdle(3000);
-  assertStatus(reclaimedStatus, 1, 1, 0);
-  assert.equal((await request("c", `/__e2e/state?sid=${third.sid}`)).status, 403);
-  assert.ok([401, 403].includes(await rejectedWs("c", third.sid)));
+  assertStatus(reclaimedStatus, 1, 2, 0);
+  assert.equal((await (await request("b", "/healthz")).json()).clients, 1);
+  const resumedC = await new Viewer("c", third.sid, c.connectionKey).open();
+  await waitFor(
+    async () => (await state("c", third.sid)).tabs.length > 0,
+    "idle C reconnects with its original identity",
+  );
+  assert.notEqual((await state("c", third.sid)).tabs[0]!.tab, cTab);
+  assert.equal((await lease("c", "c-test")).sid, third.sid);
+  checks.idleReleasesWindowsAndReconnectsSameSession = true;
+  await resumedC.close();
+  await waitFor(() => b.status?.clientsOnline === 1, "resumed C is offline again");
+  await advanceIdle(61000);
+  assert.equal((await (await request("b", "/healthz")).json()).clients, 1);
   assert.equal(b.closed, false);
   await focusEnd("b", second.sid, bTab);
   b.send({ t: "text", tab: bTab, insert: "，自动回收不影响乙" });
@@ -954,16 +969,24 @@ try {
     async () => (await editor("b", second.sid, bTab)) === beforeIdleB + "，自动回收不影响乙",
     "B input survives idle reclamation",
   );
+  for (let index = 0; index < sessionCapacity - 2; index++) {
+    const owner = `filler-${index}`;
+    const filler = await lease(owner, owner);
+    await new Viewer(owner, filler.sid).open();
+  }
   const fresh = await lease("fresh", "fresh-test");
   assert.equal(fresh.sid, third.sid);
   const freshViewer = await new Viewer("fresh", fresh.sid).open();
   await waitFor(
-    () => freshViewer.status?.clientsOnline === 2 && freshViewer.status?.clientsAllocated === 2,
-    "fresh lease status after idle slot reuse",
+    () =>
+      freshViewer.status?.clientsOnline === sessionCapacity &&
+      freshViewer.status?.clientsAllocated === sessionCapacity,
+    "full capacity reuses a dormant session slot",
   );
-  assertStatus(freshViewer.status!, 2, 2, 0);
+  assertStatus(freshViewer.status!, sessionCapacity, sessionCapacity, 0);
   assertOnlyOwned(freshViewer, new Set([cTab, bTab]));
   assert.equal((await request("c", `/__e2e/state?sid=${fresh.sid}`)).status, 403);
+  assert.ok([401, 403].includes(await rejectedWs("c", third.sid)));
   checks.idleBusyProtectionAndAutomaticReclaim = true;
   const result = {
     fixtureOnly: true,

@@ -1,8 +1,8 @@
 /**
  * Reconnecting typed WebSocket client.
  *
- * There is deliberately no resume cursor: a reconnect asks the mirror to discard its local
- * state and the gateway supplies a fresh snapshot (D10).
+ * Reconnects offer the current replay cursor; the gateway resumes it or supplies a fresh snapshot.
+ * Input and acknowledgements belong to the connection that produced them and are never queued.
  */
 import {
   MAX_KNOWN_SHEETS,
@@ -81,6 +81,8 @@ export interface GatewaySocketOptions {
 }
 
 const OPEN = 1;
+const CONNECTING = 0;
+export const CONNECT_MS = 20_000;
 export const RTT_INTERVAL_MS = 5_000;
 /**
  * A connection the network dropped without a word, as a phone's does in the background or a
@@ -116,13 +118,13 @@ export function connectGateway(
   );
   let socket: WebSocketLike | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let connectTimer: ReturnType<typeof setTimeout> | null = null;
   let rttTimer: ReturnType<typeof setInterval> | null = null;
   let disposed = false;
   let hasOpened = false;
   let nextPingId = 1;
   const pendingPings = new Map<number, number>();
   let lastSent: { bytes: number; at: number } | null = null;
-  const pending: Up[] = [];
   /** When the oldest ping not yet followed by anything from the gateway was sent. */
   let quietSince: number | null = null;
   let probeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -132,7 +134,9 @@ export function connectGateway(
   const patience = (ms: number) =>
     ms * 2 ** Math.min(now() - lastStallAt < STALL_MEMORY_MS ? stalls : 0, 3);
 
-  const stopRtt = () => {
+  const stopMonitoring = () => {
+    if (connectTimer !== null) clearTimeout(connectTimer);
+    connectTimer = null;
     if (rttTimer !== null) clearInterval(rttTimer);
     rttTimer = null;
     if (probeTimer !== null) clearTimeout(probeTimer);
@@ -141,26 +145,37 @@ export function connectGateway(
     quietSince = null;
   };
 
-  /** Whether the connection has been silent too long, in which case it is given up. */
-  const stalled = (ms: number): boolean => {
-    if (quietSince === null || now() - quietSince < patience(ms) || socket === null) return false;
-    stalls = now() - lastStallAt < STALL_MEMORY_MS ? stalls + 1 : 1;
-    lastStallAt = now();
+  const dropSocket = () => {
     const dead = socket;
+    socket = null;
+    stopMonitoring();
+    if (dead === null) return;
     dead.onopen = null;
     dead.onmessage = null;
     dead.onclose = null;
     try {
       dead.close();
     } catch {
-      // It is being dropped either way.
+      // Recovery must not wait for a dead connection's closing handshake.
     }
+  };
+
+  /** Whether the connection has been silent too long, in which case it is given up. */
+  const stalled = (ms: number): boolean => {
+    if (quietSince === null || now() - quietSince < patience(ms) || socket === null) return false;
+    stalls = now() - lastStallAt < STALL_MEMORY_MS ? stalls + 1 : 1;
+    lastStallAt = now();
     lost();
     return true;
   };
 
   const ping = () => {
-    if (socket?.readyState !== OPEN || stalled(STALL_MS)) return;
+    if (socket === null) return;
+    if (socket.readyState !== OPEN) {
+      lost();
+      return;
+    }
+    if (stalled(STALL_MS)) return;
     const id = nextPingId++;
     const sentTs = now();
     pendingPings.clear();
@@ -182,7 +197,9 @@ export function connectGateway(
   };
 
   const open = () => {
-    if (disposed) return;
+    if (disposed || socket !== null) return;
+    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
     notify("connecting");
     const resume = hasOpened ? (options.resumeParam?.() ?? null) : null;
     if (resume === null) socketUrl.searchParams.delete("resume");
@@ -193,16 +210,16 @@ export function connectGateway(
     // Pixel frames arrive as binary JPEG frames; read them as ArrayBuffers, not Blobs.
     current.binaryType = "arraybuffer";
     socket = current;
+    connectTimer = setTimeout(() => {
+      if (current === socket) lost();
+    }, CONNECT_MS);
 
     current.onopen = () => {
       if (disposed || current !== socket) return;
       const reconnected = hasOpened;
       hasOpened = true;
+      stopMonitoring();
       options.onStateChange?.("open", reconnected);
-      while (pending.length > 0 && current.readyState === OPEN) {
-        current.send(encodeMsg(pending.shift()!));
-      }
-      stopRtt();
       lastTickAt = now();
       rttTimer = setInterval(tick, rttIntervalMs);
     };
@@ -225,7 +242,7 @@ export function connectGateway(
             // This page lost a sheet the gateway believes it has; start over without any.
             knownSheets.clear();
             forgetAllSheets();
-            current.close();
+            lost();
             return;
           }
           message.data = data;
@@ -258,12 +275,10 @@ export function connectGateway(
         (event?.code === VIEWER_REPLACED_CODE || event?.code === SESSION_ENDED_CODE) &&
         !disposed
       ) {
-        socket = null;
-        stopRtt();
+        dropSocket();
         disposed = true;
         if (reconnectTimer !== null) clearTimeout(reconnectTimer);
         reconnectTimer = null;
-        pending.length = 0;
         notify(event.code === SESSION_ENDED_CODE ? "ended" : "replaced");
         return;
       }
@@ -273,9 +288,9 @@ export function connectGateway(
 
   /** The connection is gone; try again shortly. */
   function lost() {
-    socket = null;
-    stopRtt();
+    dropSocket();
     if (disposed) return;
+    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
     notify("closed");
     reconnectTimer = setTimeout(open, reconnectDelayMs);
   }
@@ -288,11 +303,16 @@ export function connectGateway(
     send(msg) {
       if (disposed) return;
       if (socket?.readyState === OPEN) socket.send(encodeMsg(msg));
-      else pending.push(msg);
     },
     probe() {
-      if (disposed || socket?.readyState !== OPEN || probeTimer !== null) return;
+      if (disposed || socket?.readyState === CONNECTING) return;
+      if (socket?.readyState !== OPEN) {
+        lost();
+        return;
+      }
+      if (probeTimer !== null) return;
       ping();
+      if (socket === null) return;
       probeTimer = setTimeout(() => {
         probeTimer = null;
         stalled(PROBE_MS);
@@ -303,10 +323,7 @@ export function connectGateway(
       disposed = true;
       if (reconnectTimer !== null) clearTimeout(reconnectTimer);
       reconnectTimer = null;
-      stopRtt();
-      socket?.close();
-      socket = null;
-      pending.length = 0;
+      dropSocket();
     },
   };
 }

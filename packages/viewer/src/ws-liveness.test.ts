@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { connectGateway, PROBE_MS, RTT_INTERVAL_MS, STALL_MS } from "./ws";
+import { connectGateway, CONNECT_MS, PROBE_MS, RTT_INTERVAL_MS, STALL_MS } from "./ws";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -21,7 +21,7 @@ function fakeSocket() {
   };
 }
 
-function connect() {
+function connect(opened = true) {
   const sockets: ReturnType<typeof fakeSocket>[] = [];
   const states: string[] = [];
   const gateway = connectGateway("ws://example.test/ws", () => {}, {
@@ -34,7 +34,8 @@ function connect() {
     onStateChange: (state) => states.push(state),
   });
   const current = () => sockets.at(-1)!;
-  current().onopen?.();
+  if (opened) current().onopen?.();
+  else current().readyState = 0;
   const answer = () => {
     const ping = JSON.parse(current().sent.at(-1)!) as { id: number; sentTs: number };
     current().onmessage?.({
@@ -43,6 +44,51 @@ function connect() {
   };
   return { gateway, sockets, states, current, answer };
 }
+
+it("retries a stalled handshake without waiting for a close event", () => {
+  const { gateway, sockets, states, current } = connect(false);
+  const lateOpen = current().onopen;
+  gateway.probe();
+  vi.advanceTimersByTime(CONNECT_MS);
+  expect(sockets[0]!.closed).toBe(true);
+  expect(states.at(-1)).toBe("closed");
+  vi.advanceTimersByTime(10);
+  expect(sockets).toHaveLength(2);
+  lateOpen?.();
+  expect(states.at(-1)).toBe("connecting");
+  gateway.close();
+});
+
+it.each([2, 3])("reconnects on return when the socket is already in state %s", (readyState) => {
+  const { gateway, sockets, current } = connect();
+  current().readyState = readyState;
+  gateway.probe();
+  expect(sockets[0]!.closed).toBe(true);
+  vi.advanceTimersByTime(10);
+  expect(sockets).toHaveLength(2);
+  gateway.close();
+});
+
+it("does not replay old input or acknowledgements when a connection opens", () => {
+  const { gateway, current, sockets } = connect(false);
+  gateway.send({ t: "view-ack", tab: "old-tab", epoch: 1 });
+  gateway.send({ t: "text", tab: "old-tab", insert: "stale" });
+  current().readyState = 1;
+  current().onopen?.();
+  expect(current().sent).toEqual([]);
+
+  current().onclose?.();
+  gateway.send({ t: "view", tab: "old-tab", w: 320, h: 600, dpr: 2 });
+  vi.advanceTimersByTime(10);
+  expect(sockets).toHaveLength(2);
+  current().onopen?.();
+  expect(current().sent).toEqual([]);
+  gateway.send({ t: "visibility", visible: true });
+  expect(current().sent.map((message) => JSON.parse(message))).toEqual([
+    { t: "visibility", visible: true },
+  ]);
+  gateway.close();
+});
 
 it("gives up a connection that has gone silent and connects again", () => {
   const { gateway, sockets, states, answer } = connect();

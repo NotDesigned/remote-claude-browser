@@ -85,15 +85,15 @@ it("restores a stylesheet by hash, and offers it on the next connection", () => 
   gateway.close();
 });
 
-it("reconnects without its sheets when a snapshot needs one it lacks", () => {
+it("reconnects without waiting for close when a snapshot needs a missing sheet", () => {
   vi.useFakeTimers();
   const { urls, sockets, received, gateway, deliver } = connect();
   deliver(snapshot("ffffffffffffffff"));
   expect(received).toEqual([]);
   expect(sockets[0]!.closed).toBe(true);
 
-  sockets[0]!.onclose?.({ code: 1006 });
   vi.advanceTimersByTime(10);
+  expect(sockets).toHaveLength(2);
   expect(new URL(urls[1]!).searchParams.get("sheets")).toBe("");
   gateway.close();
 });

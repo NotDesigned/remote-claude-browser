@@ -11,7 +11,6 @@ describe("P2-RESYNC controller", () => {
     const sent: Array<{ tab: string; at: number }> = [];
     const controller = createResyncController({
       send: (message) => sent.push({ tab: message.tab, at: Date.now() }),
-      autoPx: () => undefined,
     });
 
     expect(controller.request("A", "first gap")).toBe(true);
@@ -36,14 +35,12 @@ describe("P2-RESYNC controller", () => {
     controller.dispose();
   });
 
-  it("turns only the storming tab into AUTO-PX on the fourth request in 30 seconds", () => {
+  it("automatically sends a rate-limited request when the rolling window has room", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     const sent: string[] = [];
-    const degraded: string[] = [];
     const controller = createResyncController({
       send: (message) => sent.push(message.tab),
-      autoPx: (tab) => degraded.push(tab),
     });
 
     controller.request("storm", "one");
@@ -51,22 +48,31 @@ describe("P2-RESYNC controller", () => {
     vi.advanceTimersByTime(250);
     controller.request("storm", "three");
     vi.advanceTimersByTime(500);
-    expect(controller.request("storm", "four")).toBe(false);
+    expect(controller.request("storm", "four")).toBe(true);
 
     expect(sent).toEqual(["storm", "storm", "storm"]);
-    expect(degraded).toEqual(["storm"]);
     expect(controller.getState("storm")).toMatchObject({
       totalResyncs: 3,
       recentResyncs: 3,
-      pending: false,
+      pending: true,
+      backoffMs: RESYNC_WINDOW_MS - 750,
       storm: true,
     });
     expect(controller.request("storm", "five")).toBe(false);
-    expect(degraded).toEqual(["storm"]);
 
     controller.request("healthy", "one");
     expect(sent.at(-1)).toBe("healthy");
     expect(controller.getState("healthy").storm).toBe(false);
+    vi.advanceTimersByTime(RESYNC_WINDOW_MS - 751);
+    expect(sent.filter((tab) => tab === "storm")).toHaveLength(3);
+    vi.advanceTimersByTime(1);
+    expect(sent.filter((tab) => tab === "storm")).toHaveLength(4);
+    expect(controller.getState("storm")).toMatchObject({
+      totalResyncs: 4,
+      recentResyncs: 3,
+      pending: false,
+      storm: false,
+    });
     controller.dispose();
   });
 
@@ -76,7 +82,6 @@ describe("P2-RESYNC controller", () => {
     const reasons: string[] = [];
     const controller = createResyncController({
       send: (message) => reasons.push(message.reason),
-      autoPx: () => undefined,
     });
 
     controller.request("A", "one");
@@ -89,6 +94,34 @@ describe("P2-RESYNC controller", () => {
     controller.request("A", "fresh window");
     expect(reasons).toEqual(["one", "fresh window"]);
     expect(controller.getState("A")).toMatchObject({ recentResyncs: 1, storm: false });
+    controller.dispose();
+  });
+
+  it("cancels a rate-limited retry when a snapshot has already recovered the tab", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const reasons: string[] = [];
+    const controller = createResyncController({
+      send: (message) => reasons.push(message.reason),
+    });
+    controller.request("A", "one");
+    controller.request("A", "two");
+    vi.advanceTimersByTime(250);
+    controller.request("A", "three");
+    vi.advanceTimersByTime(500);
+    controller.request("A", "obsolete");
+    expect(controller.getState("A")).toMatchObject({ pending: true, storm: true });
+
+    controller.recovered("A");
+    expect(controller.getState("A")).toMatchObject({
+      pending: false,
+      storm: false,
+      backoffMs: 0,
+    });
+    vi.advanceTimersByTime(RESYNC_WINDOW_MS);
+    expect(reasons).toEqual(["one", "two", "three"]);
+    controller.request("A", "later");
+    expect(reasons.at(-1)).toBe("later");
     controller.dispose();
   });
 });

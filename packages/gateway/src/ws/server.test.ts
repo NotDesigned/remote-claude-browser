@@ -405,7 +405,8 @@ describe("session-scoped WebSocket upgrades", () => {
       expect(wsServer.fanout.viewerCount).toBe(1);
       expect(wsServer.fanout.sessionForViewer(oldViewer)).toBeUndefined();
       expect(wsServer.sessionForViewer(oldViewer)).toBeUndefined();
-      expect(onDisconnection).not.toHaveBeenCalled();
+      expect(onDisconnection).toHaveBeenCalledOnce();
+      expect(onDisconnection).toHaveBeenCalledWith(oldViewer, "a");
 
       const newA = await connect("a");
       const newViewer = connected.get("a")!;
@@ -544,6 +545,8 @@ describe("replacing a workspace viewer", () => {
       const other = await test.connect("b", "other-page");
       test.wsServer.closeSession("a", 4010);
       expect(await ended.closed).toEqual({ code: 4010, reason: "session ended" });
+      const retry = await test.connect("a", "ended-page");
+      expect(await retry.closed).toEqual({ code: 4009, reason: "replaced" });
       expect(other.socket.readyState).toBe(WebSocket.OPEN);
       test.wsServer.fanout.publishToSession("b", { t: "clip", text: "still active" });
       await vi.waitFor(() =>
@@ -553,6 +556,45 @@ describe("replacing a workspace viewer", () => {
       await test.close();
     }
   });
+  it.each([false, true])(
+    "keeps the page key after a recoverable close (already offline: %s)",
+    async (offline) => {
+      let finishUpgrade!: (allowed: boolean) => void;
+      const slow = new Promise<boolean>((resolve) => (finishUpgrade = resolve));
+      const started = vi.fn();
+      const test = await replacementHarness((request) => {
+        if (request.headers["x-slow"] !== "1") return true;
+        started();
+        return slow;
+      });
+      try {
+        const page = await test.connect("a", "same-page");
+        const pending = test.connect("a", "same-page", { "x-slow": "1" });
+        await vi.waitFor(() => expect(started).toHaveBeenCalledOnce());
+        if (offline) {
+          page.socket.terminate();
+          await page.closed;
+        }
+        test.wsServer.closeSession("a");
+        await page.closed;
+        finishUpgrade(true);
+        const restored = await pending;
+        await vi.waitFor(() =>
+          expect(restored.messages.find((message) => message.t === "hello")).toMatchObject({
+            role: "driver",
+          }),
+        );
+        const newer = await test.connect("a", "newer-page");
+        expect(await restored.closed).toEqual({ code: 4009, reason: "replaced" });
+        const stale = await test.connect("a", "same-page");
+        expect(await stale.closed).toEqual({ code: 4009, reason: "replaced" });
+        expect(newer.socket.readyState).toBe(WebSocket.OPEN);
+      } finally {
+        finishUpgrade(false);
+        await test.close();
+      }
+    },
+  );
   it("prevents keyless old bundles repeatedly reconnecting from displacing a valid driver", async () => {
     const test = await replacementHarness(() => true, true, true);
     try {

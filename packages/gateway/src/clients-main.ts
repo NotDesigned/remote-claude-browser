@@ -61,12 +61,6 @@ import { isClientSlot, ClientSessionError, createClientSessions } from "./sessio
 import { createLifecycleLock } from "./session/lifecycle-lock";
 import { registerAccountRoutes } from "./auth/account-routes";
 import { createIdleReaper, PAGE_GENERATING_EXPRESSION } from "./session/idle-reaper";
-import {
-  createPageSleep,
-  PAGE_PLAYING_EXPRESSION,
-  pageSleepAfterMs,
-  sleepPlaceholderUrl,
-} from "./session/page-sleep";
 import { createProfileStore, DEFAULT_PROFILE, MAX_PROFILES } from "./session/profiles";
 import { createResourceSampler } from "./monitor/resources";
 import type { TargetRef, AgentLink } from "./types";
@@ -116,7 +110,6 @@ interface ClientRuntime {
 
 /** Frames wait before encoding beyond this, since a viewer cannot skip one once it is encoded. */
 const VIDEO_BACKLOG_BYTES = 512 * 1024;
-const PAGE_IDLE_RELEASE_MS = 60_000;
 /** An account's Chrome nobody has used for this long is closed. It starts again when needed. */
 const ACCOUNT_IDLE_CLOSE_MS = 120_000;
 /** Headroom for another Chrome plus its private Xvfb display before the first page. */
@@ -402,8 +395,6 @@ export async function startClientGateway(
       owner: string;
       userId: string;
       authorized(): boolean;
-      /** Whether it is on screen. Viewers that never say count as looking. */
-      visible: boolean;
     }
   >();
   /** Tabs whose page is using its microphone, for a viewer that connects while it does. */
@@ -476,7 +467,6 @@ export async function startClientGateway(
         owner: currentOwner(request)!,
         userId: currentUser(request)!.id,
         authorized: () => ownsSession(request, sid),
-        visible: true,
       });
       idleReaper.touch(sid);
       const runtime = runtimes.get(sid)!;
@@ -549,12 +539,7 @@ export async function startClientGateway(
       // A valid driver is still forbidden from naming another client's CDP target.
       if ("tab" in message && message.tab !== "" && !runtime.browser.ownsTarget(message.tab))
         return;
-      // Any viewer, driver or not, says whether it is on screen.
-      if (message.t === "visibility") {
-        connection.visible = message.visible === true;
-        if (connection.visible) await pageSleep.look(sid);
-        return;
-      }
+      if (message.t === "visibility") return;
       await roles.routeUp(id, message, (forwarded) => handle(runtime, id, forwarded));
     },
   });
@@ -633,17 +618,10 @@ export async function startClientGateway(
   }
   let e2eIdleOffset = 0;
   /** Whether a page is writing a reply, which closing or reloading it would cut short. */
-  function pageGenerating(runtime: ClientRuntime, target: TargetRef): Promise<boolean> {
-    return pageAsks(runtime, target, PAGE_GENERATING_EXPRESSION);
-  }
-  async function pageAsks(
-    runtime: ClientRuntime,
-    target: TargetRef,
-    expression: string,
-  ): Promise<boolean> {
+  async function pageGenerating(runtime: ClientRuntime, target: TargetRef): Promise<boolean> {
     const response = (await Promise.race([
       runtime.browser.send(target.sessionId, "Runtime.evaluate", {
-        expression,
+        expression: PAGE_GENERATING_EXPRESSION,
         returnByValue: true,
       }),
       new Promise<never>((_resolve, reject) => {
@@ -653,60 +631,12 @@ export async function startClientGateway(
     ])) as { result?: { value?: unknown } };
     return response.result?.value === true;
   }
-  /** Pages of sessions whose viewers have all been hidden or gone for a long time. */
-  const pageSleepMs = pageSleepAfterMs(process.env.MIRROR_PAGE_SLEEP_MS);
-  const pageSleep = createPageSleep({
-    afterMs: pageSleepMs,
-    watched: (sid) =>
-      [...viewers.values()].some((connection) => connection.sid === sid && connection.visible),
-    activeTab: (sid) => runtimes.get(sid)?.tabs.activeTabId,
-    pages: (sid) =>
-      [...(runtimes.get(sid)?.targets.values() ?? [])]
-        .filter((target) => target.type === "page")
-        .map((target) => target.targetId),
-    async canSleep(sid, tab) {
-      const runtime = runtimes.get(sid);
-      const target = runtime?.targets.get(tab);
-      if (!runtime || !target || closing.has(sid)) return false;
-      if (runtime.recovery.isBlocked(tab) || micTabs.has(tab)) return false;
-      if (runtime.pixels.modeFor(tab) === "px") return false;
-      // A page that cannot be asked counts as busy.
-      if (await pageGenerating(runtime, target).catch(() => true)) return false;
-      return !(await pageAsks(runtime, target, PAGE_PLAYING_EXPRESSION).catch(() => true));
-    },
-    async sleep(sid, tab) {
-      const runtime = runtimes.get(sid);
-      const target = runtime?.targets.get(tab);
-      if (!runtime || !target) return null;
-      const history = (await runtime.browser.send(
-        target.sessionId,
-        "Page.getNavigationHistory",
-      )) as {
-        currentIndex: number;
-        entries: { id: number; url: string; title: string }[];
-      };
-      const entry = history.entries[history.currentIndex];
-      if (!entry || !/^https?:/.test(entry.url)) return null;
-      await runtime.browser.send(target.sessionId, "Page.navigate", {
-        url: sleepPlaceholderUrl(entry.title),
-      });
-      console.log(`page asleep: ${sid}`);
-      return { entryId: entry.id, url: entry.url };
-    },
-    async wake(sid, tab, page) {
-      const runtime = runtimes.get(sid);
-      const target = runtime?.targets.get(tab);
-      if (!runtime || !target) return;
-      // Back to the page's own entry keeps its history as it was; a lost entry loads the address.
-      await runtime.browser
-        .send(target.sessionId, "Page.navigateToHistoryEntry", { entryId: page.entryId })
-        .catch(() => runtime.browser.send(target.sessionId, "Page.navigate", { url: page.url }));
-      console.log(`page awake: ${sid}`);
-    },
-    onError: (error) => report("page sleep", error),
-  });
   const idleReaper = createIdleReaper({
-    sessions: () => clientSessions.all().map((record) => ({ sid: record.sid, token: record })),
+    sessions: () =>
+      clientSessions
+        .all()
+        .filter((record) => runtimePromises.has(record.sid))
+        .map((record) => ({ sid: record.sid, token: record })),
     isOnline: (sid) => onlineSessions().has(sid),
     isBusy: async (sid) => {
       const runtime = runtimes.get(sid);
@@ -718,11 +648,21 @@ export async function startClientGateway(
       }
       return false;
     },
-    release: async (sid, token) => {
-      const current = clientSessions.get(sid);
-      if (current && current === token && !onlineSessions().has(sid))
-        await releaseClient(current.owner, sid);
-    },
+    release: (sid, token) =>
+      accountLifecycle.run(async () => {
+        const current = clientSessions.get(sid);
+        if (!current || current !== token || onlineSessions().has(sid)) return;
+        closing.add(sid);
+        try {
+          // An offline viewer can reconnect to this identity after its windows are released.
+          await stopRuntime(sid);
+        } finally {
+          runtimes.delete(sid);
+          runtimePromises.delete(sid);
+          closing.delete(sid);
+          broadcastStatus();
+        }
+      }),
     graceMs: e2e ? Number(process.env.MIRROR_IDLE_GRACE_MS ?? 60000) : 60000,
     now: () => Date.now() + e2eIdleOffset,
     onError: (error) => report("idle client cleanup", error),
@@ -1336,7 +1276,6 @@ export async function startClientGateway(
         await stopPixels(runtime, message.action === "activate" ? message.tab : undefined);
       if (["newtab", "close", "activate"].includes(message.action)) {
         await runtime.tabs.handle(message);
-        if (message.action === "activate") await pageSleep.look(runtime.sid);
       } else {
         // An address that does not load is an ordinary outcome, shown as a failed page. Letting this
         // propagate would close the viewer's connection, which is how it would hear about that page.
@@ -1400,6 +1339,15 @@ export async function startClientGateway(
               "CLIENT_RESOURCES",
               "内存较紧张，请等待离线会话自动回收后重试",
             );
+          while (!existing && clientSessions.available() === 0) {
+            const dormant = clientSessions
+              .all()
+              .find(
+                (record) => !runtimePromises.has(record.sid) && !onlineSessions().has(record.sid),
+              );
+            if (!dormant) break;
+            await clientSessions.release(dormant.owner, dormant.sid);
+          }
           const record = await clientSessions.acquire(
             owner,
             request.body?.clientKey,
@@ -2145,22 +2093,6 @@ export async function startClientGateway(
       .catch((error) => report("resource sampling", error));
   }, 3000);
   statusTimer.unref?.();
-  /** A page nothing is happening on gives back its caches, which its renderer holds on to. */
-  const releasedAt = new WeakMap<object, number>();
-  const releaseIdlePageMemory = () => {
-    const now = Date.now();
-    for (const runtime of runtimes.values())
-      for (const hub of runtime.tabs.hubs()) {
-        if (now - hub.lastActivityAt < PAGE_IDLE_RELEASE_MS) continue;
-        if ((releasedAt.get(hub) ?? 0) >= hub.lastActivityAt) continue;
-        const session = runtime.targets.get(hub.tabId)?.sessionId;
-        if (!session) continue;
-        releasedAt.set(hub, now);
-        void runtime.account.browser
-          .send(session, "Memory.simulatePressureNotification", { level: "critical" })
-          .catch((error) => report("page memory release failed", error));
-      }
-  };
   const closeUnusedAccounts = () =>
     accountLifecycle.run(async () => {
       if (stopping) return;
@@ -2178,9 +2110,6 @@ export async function startClientGateway(
   const idleTimer = setInterval(
     () => {
       void idleReaper.sweep();
-      releaseIdlePageMemory();
-      if (pageSleepMs > 0)
-        void pageSleep.sweep([...runtimes.keys()]).catch((error) => report("page sleep", error));
       void closeUnusedAccounts().catch((error) => report("account cleanup failed", error));
     },
     e2e ? 200 : 3000,

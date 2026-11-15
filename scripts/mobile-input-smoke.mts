@@ -90,10 +90,13 @@ const inspectPasswords = (node: any) => {
   for (const child of node.childNodes ?? []) inspectPasswords(child);
 };
 let reqId = 0;
+let connectionCount = 0;
+let silentConnection = false;
 let mode: "dom" | "px" = "dom";
 let viewport = { w: 375, h: 640 };
 const watchdog = setTimeout(() => process.exit(124), 240000);
 const broadcast = (message: Down) => {
+  if (silentConnection) return;
   for (const socket of sockets) if (socket.readyState === 1) socket.send(JSON.stringify(message));
 };
 try {
@@ -163,6 +166,8 @@ try {
     });
   let controlWork = Promise.resolve();
   wss.on("connection", (socket: any) => {
+    connectionCount++;
+    silentConnection = false;
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
     socket.send(
@@ -182,6 +187,7 @@ try {
     );
     for (const down of hub.joinPayload()) socket.send(JSON.stringify(down));
     socket.on("message", (raw: any) => {
+      if (silentConnection) return;
       const message = JSON.parse(String(raw)) as Up;
       received.push(message);
       if (message.t === "ping")
@@ -197,12 +203,7 @@ try {
         controlWork = controlWork.then(async () => {
           viewport = { w: message.w, h: message.h };
           hub.viewport = { ...viewport, dpr: 1 };
-          await remoteCdp.send("Emulation.setDeviceMetricsOverride", {
-            width: message.w,
-            height: message.h,
-            deviceScaleFactor: 1,
-            mobile: false,
-          });
+          await remote.setViewportSize({ width: message.w, height: message.h });
           hub.requestSnapshot("viewport");
         });
       if (message.t === "resync-req") hub.requestSnapshot("resync");
@@ -439,6 +440,36 @@ try {
     );
     checks.pixelTapRetainsLocalIme = await page.evaluate(
       () => document.activeElement?.classList.contains("px-ime-input") === true,
+    );
+  }
+  if (!baseline) {
+    await page.locator('[data-view-mode="dom"]').click();
+    await page.waitForFunction(
+      () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
+    );
+    await settle();
+    const beforeConnections = connectionCount;
+    await page.evaluate(() => ((window as any).__sameViewerDocument = true));
+    silentConnection = true;
+    // Model a socket silently lost while Safari was suspended, then restored from page cache.
+    await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
+    const deadline = Date.now() + 15000;
+    while (connectionCount === beforeConnections && Date.now() < deadline)
+      await page.waitForTimeout(100);
+    checks.returnFromBackgroundReconnects = connectionCount > beforeConnections;
+    await page.waitForFunction(
+      () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
+    );
+    await settle();
+    const beforeTap = await remote.evaluate(() => (window as any).tapCount);
+    await local.locator("#tap").tap();
+    await settle();
+    checks.reconnectedPageAcceptsInput = await remote.evaluate(
+      (before) => (window as any).tapCount === before + 1,
+      beforeTap,
+    );
+    checks.reconnectDoesNotReloadViewer = await page.evaluate(
+      () => (window as any).__sameViewerDocument === true,
     );
   }
   const result = {
