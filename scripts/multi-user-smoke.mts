@@ -362,7 +362,6 @@ try {
     GATEWAY_PORT: String(gatewayAddress.port),
     MIRROR_ACCESS_PASSWORD: adminPassword,
     MIRROR_ADMIN_USERNAME: "admin",
-    MIRROR_ACCESS_SECRET: randomBytes(32).toString("hex"),
     MIRROR_AUTH_SECRET: randomBytes(32).toString("hex"),
     MIRROR_PUBLIC_ORIGIN: origin,
     MIRROR_CLIENTS: String(DEFAULT_SESSION_CAPACITY),

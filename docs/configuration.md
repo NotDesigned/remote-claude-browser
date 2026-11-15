@@ -9,7 +9,6 @@ excluded from Git. Do not commit a populated one. `scripts/bootstrap.sh` writes 
 | --- | :---: | --- | --- |
 | `MIRROR_ACCESS_PASSWORD` | for first initialization | none | Bootstrap administrator password, at least 8 characters. Used only when the user database is empty; Compose still requires a non-empty value |
 | `MIRROR_ADMIN_USERNAME` | no | `admin` | Bootstrap administrator name. Changing it does not rename an existing user |
-| `MIRROR_ACCESS_SECRET` | yes | none | At least 16 characters. Retained for compatibility with access-token authentication |
 | `MIRROR_AUTH_SECRET` | yes | none | At least 16 characters. Signs device/session ownership tokens |
 | `MIRROR_PUBLIC_ORIGIN` | for public use | empty | The exact origin people open. WebSockets from others are refused |
 | `SERVER_BIND` | no | `127.0.0.1` | Keep loopback behind a tunnel or reverse proxy |

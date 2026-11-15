@@ -42,7 +42,6 @@ if [ ! -f .env ]; then
   umask 077
   {
     printf 'MIRROR_ACCESS_PASSWORD=%s\n' "$(value MIRROR_ACCESS_PASSWORD)"
-    printf 'MIRROR_ACCESS_SECRET=%s\n' "$(value MIRROR_ACCESS_SECRET)"
     printf 'MIRROR_AUTH_SECRET=%s\n' "$(value MIRROR_AUTH_SECRET)"
     printf 'MIRROR_PUBLIC_ORIGIN=%s\n' "$(value MIRROR_PUBLIC_ORIGIN)"
     printf 'EGRESS_BLOCK=%s\n' "$own_ips${own_ips:+,}$(value GATEWAY_A_IP)"

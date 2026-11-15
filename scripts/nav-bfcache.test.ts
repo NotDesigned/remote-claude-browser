@@ -8,10 +8,10 @@ import test from "node:test";
 
 import type { Down } from "@mirror/protocol";
 
-import { createAgentLink } from "../../packages/gateway/src/browser/agentlink";
-import { launchBrowser } from "../../packages/gateway/src/browser/launch";
-import { createTabLifecycle } from "../../packages/gateway/src/session/tabs";
-import type { TargetRef } from "../../packages/gateway/src/types";
+import { createAgentLink } from "../packages/gateway/src/browser/agentlink";
+import { launchBrowser } from "../packages/gateway/src/browser/launch";
+import { createTabLifecycle } from "../packages/gateway/src/session/tabs";
+import type { TargetRef } from "../packages/gateway/src/types";
 
 const TIMEOUT_MS = 20_000;
 

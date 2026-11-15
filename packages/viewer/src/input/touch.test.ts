@@ -35,6 +35,10 @@ class FakeElement {
   getBoundingClientRect() {
     return this.rect;
   }
+
+  getAttribute() {
+    return null;
+  }
 }
 
 class FakeDocument {

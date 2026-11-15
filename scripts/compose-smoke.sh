@@ -22,7 +22,6 @@ export SERVER_PORT=$smoke_port
 export SERVER_SUBNET=${SERVER_SUBNET:-172.31.67.0/24}
 export MIRROR_ACCESS_PASSWORD=compose-smoke-password
 export MIRROR_ADMIN_USERNAME=${MIRROR_ADMIN_USERNAME:-compose-admin}
-export MIRROR_ACCESS_SECRET=compose-smoke-access-key
 export MIRROR_AUTH_SECRET=compose-smoke-auth-key
 export MIRROR_PUBLIC_ORIGIN=http://127.0.0.1:$smoke_port
 export MIRROR_START_URL=about:blank

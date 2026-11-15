@@ -30,7 +30,7 @@ class FakeSocket {
 describe("connectGateway", () => {
   beforeEach(() => vi.useFakeTimers());
 
-  it("queues typed messages until open and decodes Down messages", () => {
+  it("drops messages sent before open and decodes Down messages", () => {
     const sockets: FakeSocket[] = [];
     const received: unknown[] = [];
     const gateway = connectGateway("ws://example.test/ws", (message) => received.push(message), {
@@ -44,6 +44,8 @@ describe("connectGateway", () => {
     gateway.send({ t: "resync-req", tab: "T1", reason: "test" });
     expect(sockets[0]!.sent).toEqual([]);
     sockets[0]!.open();
+    expect(sockets[0]!.sent).toEqual([]);
+    gateway.send({ t: "resync-req", tab: "T1", reason: "test" });
     expect(sockets[0]!.sent.map(JSON.parse)).toEqual([
       { t: "resync-req", tab: "T1", reason: "test" },
     ]);
@@ -83,7 +85,7 @@ describe("connectGateway", () => {
     expect(sockets).toHaveLength(2);
   });
 
-  it("lets reconnect send view before flushing input queued while disconnected", () => {
+  it("sends fresh view state on reconnect without replaying disconnected input", () => {
     const sockets: FakeSocket[] = [];
     let gateway: ReturnType<typeof connectGateway>;
     gateway = connectGateway("ws://example.test/ws", () => {}, {
@@ -111,12 +113,14 @@ describe("connectGateway", () => {
       mods: 0,
     });
     vi.advanceTimersByTime(25);
+    gateway.send({ t: "text", tab: "T1", insert: "typed while reconnecting" });
+    expect(sockets[0]!.sent).toEqual([]);
+    expect(sockets[1]!.sent).toEqual([]);
     sockets[1]!.open();
 
     expect(sockets[1]!.sent.map(JSON.parse)).toEqual([
       { t: "view", tab: "T1", w: 1280, h: 720, dpr: 1 },
       { t: "resync-req", tab: "T1", reason: "ws reconnect" },
-      { t: "key", tab: "T1", kind: "down", key: "a", code: "KeyA", mods: 0 },
     ]);
     gateway.close();
   });

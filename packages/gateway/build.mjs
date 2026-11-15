@@ -13,7 +13,7 @@ await build({
   banner,
   outfile: "dist/main.mjs",
   sourcemap: false,
-  external: ["@fastify/static", "dockerode", "fastify", "puppeteer-core", "undici", "ws"],
+  external: ["@fastify/static", "fastify", "puppeteer-core", "undici", "ws"],
   logLevel: "warning",
 });
 

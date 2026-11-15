@@ -143,6 +143,7 @@ pnpm install --frozen-lockfile
 pnpm build
 pnpm typecheck
 pnpm test
+CHROME_PATH=/path/to/chrome pnpm test:browser-lifecycle # 正式浏览器组件的跨站前进、后退和快照恢复
 pnpm test:profiles-ui # 配置选择、状态刷新、新建、恢复和手机布局；使用本地测试页面
 pnpm test:profiles-webkit # 使用 WebKit 再验收同一套流程，需先安装 Playwright WebKit 及运行依赖
 pnpm smoke:compose   # 构建镜像并做端到端检查，需要 Docker，设置 CHROME_PATH 后还会真实登录一次

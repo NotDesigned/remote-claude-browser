@@ -6,7 +6,6 @@ project="remote-browser-proxy-smoke-$$"
 export EGRESS_PROXY=socks5://127.0.0.1:1080
 export SERVER_SUBNET=${PROXY_SMOKE_SUBNET:-172.31.69.0/24}
 export MIRROR_ACCESS_PASSWORD=proxy-smoke-password
-export MIRROR_ACCESS_SECRET=proxy-smoke-access-secret
 export MIRROR_AUTH_SECRET=proxy-smoke-auth-secret
 export MIRROR_START_URL=about:blank
 export TZ=Etc/UTC

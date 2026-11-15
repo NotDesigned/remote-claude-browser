@@ -3,7 +3,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ACCESS_COOKIE, createAccessGate } from "./auth/access-gate";
+import { createUserGate, USER_COOKIE } from "./auth/user-gate";
+import { createUserStore } from "./auth/users";
 import { gatewayHost, registerViewerStatic, staticCacheControl, trustedProxies } from "./serving";
 
 const roots: string[] = [];
@@ -19,10 +20,12 @@ describe("gateway production serving", () => {
     await writeFile(join(root, "index.html"), "<!doctype html><title>Mirror viewer</title>");
 
     const app = Fastify();
-    const gate = createAccessGate({
-      password: "correct",
-      secret: Buffer.from("serving-test-secret"),
+    const store = await createUserStore({
+      file: ":memory:",
+      bootstrapPassword: "correct-password",
     });
+    app.addHook("onClose", async () => store.close());
+    const gate = createUserGate({ store });
     app.addHook("preHandler", gate.preHandler);
     gate.registerRoutes(app);
     expect(await registerViewerStatic(app, root)).toBe(true);
@@ -36,11 +39,11 @@ describe("gateway production serving", () => {
       method: "POST",
       url: "/gate",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      payload: "password=correct",
+      payload: "username=admin&password=correct-password",
     });
     const setCookie = granted.headers["set-cookie"];
     const cookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie)?.split(";", 1)[0];
-    expect(cookie).toContain(`${ACCESS_COOKIE}=`);
+    expect(cookie).toContain(`${USER_COOKIE}=`);
 
     const response = await app.inject({ url: "/", headers: { cookie } });
     expect(response.statusCode).toBe(200);

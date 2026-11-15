@@ -55,6 +55,10 @@ class FakeInput {
     readonly checked: boolean,
   ) {}
 
+  getAttribute() {
+    return null;
+  }
+
   getBoundingClientRect() {
     return { left: 0, top: 0, width: 20, height: 20 };
   }

@@ -91,6 +91,7 @@ export interface MirrorRtcOptions {
 interface LiveRtc {
   lane: string;
   controller: CanvasRtc;
+  hasMediaRequests(): boolean;
 }
 
 interface LiveState {
@@ -103,6 +104,7 @@ interface LiveState {
   detachInteraction: () => void;
   detachMediaRestore: () => void;
   rtc: LiveRtc | null;
+  rtcDisconnected: boolean;
   bufferMs: number;
   /** Paints sampled canvas pictures; the replayer itself is never handed canvas commands. */
   canvas: CanvasCompositor;
@@ -482,15 +484,19 @@ export function createMirror(opts: MirrorOpts): Mirror {
     try {
       if (opts.rtc !== undefined) {
         const lane = opts.rtc.createLane?.() ?? createRtcLane();
+        let mediaRequested = false;
         const controller = (opts.rtc.create ?? createCanvasRtc)({
           document: opts.container.ownerDocument,
-          send: (payload) => opts.rtc?.send(message.tab, lane, payload),
+          send: (payload) => {
+            if (payload.type === "video" || payload.type === "canvas") mediaRequested = true;
+            opts.rtc?.send(message.tab, lane, payload);
+          },
           ...(opts.rtc.requestCanvases === undefined
             ? {}
             : { requestCanvases: opts.rtc.requestCanvases }),
           onError: opts.rtc.onError,
         });
-        rtc = { lane, controller };
+        rtc = { lane, controller, hasMediaRequests: () => mediaRequested };
       }
       replayer = new Replayer(initialEvents, {
         root: mount,
@@ -582,6 +588,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
       detachInteraction: () => {},
       detachMediaRestore: mediaRestore.detach,
       rtc,
+      rtcDisconnected: false,
       bufferMs: clock.liveBufferMs(),
       canvas: createCanvasCompositor(
         { getReplayer: () => replayer },
@@ -701,9 +708,12 @@ export function createMirror(opts: MirrorOpts): Mirror {
     connectionLost() {
       for (const tab of [...parked.keys()]) dropParked(tab);
       endTabSwitch();
-      if (state?.rtc !== null && state !== null) {
+      // Plain pages keep their unused media discovery plugin when DOM replay resumes. A lane
+      // that asked for media must rebuild: its disposed plugin cannot negotiate again.
+      if (state?.rtc?.hasMediaRequests()) {
         const rtc = state.rtc;
         state.rtc = null;
+        state.rtcDisconnected = true;
         disposeRtc(state.tab, rtc);
       }
       if (state === null) renderStatus("Connection lost. Reconnecting…");
@@ -712,11 +722,12 @@ export function createMirror(opts: MirrorOpts): Mirror {
     },
     connectionRestored(resumed = false) {
       delete opts.container.dataset.connectionStale;
-      if (resumed && state !== null && state.tab === activeTab) return;
+      if (resumed && state !== null && state.tab === activeTab && !state.rtcDisconnected) return;
       if (activeTab !== null) requestFreshSnapshot(activeTab, "ws reconnect");
     },
     resumeCursor() {
-      if (state === null || resyncRequested || state.tab !== activeTab) return null;
+      if (state === null || resyncRequested || state.tab !== activeTab || state.rtcDisconnected)
+        return null;
       return { tab: state.tab, epoch: state.epoch, nextSeq: state.lastSeq + 1 };
     },
     selectTab(tab) {

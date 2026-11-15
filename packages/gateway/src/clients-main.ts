@@ -9,9 +9,13 @@ import type { IncomingMessage } from "node:http";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ACCESS_MAX_AGE_SECONDS } from "./auth/access-gate";
 import { createUserGate } from "./auth/user-gate";
-import { createUserStore, UserStoreError, type FrontendUser } from "./auth/users";
+import {
+  createUserStore,
+  USER_SESSION_TTL_MS,
+  UserStoreError,
+  type FrontendUser,
+} from "./auth/users";
 import { createSessionGuard, SESSION_COOKIE } from "./auth/middleware";
 import { mintInvite } from "./auth/invite";
 import { createAssetCache } from "./assets/cache";
@@ -343,8 +347,9 @@ export async function startClientGateway(
       previous?.role === "driver" && previous.sid.startsWith("device-")
         ? previous.sid
         : `device-${randomUUID()}`;
-    const exp = Math.floor(Date.now() / 1000) + ACCESS_MAX_AGE_SECONDS;
-    return `${SESSION_COOKIE}=${mintInvite({ sid: owner, role: "driver", exp }, key)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${ACCESS_MAX_AGE_SECONDS}`;
+    const maxAge = USER_SESSION_TTL_MS / 1000;
+    const exp = Math.floor(Date.now() / 1000) + maxAge;
+    return `${SESSION_COOKIE}=${mintInvite({ sid: owner, role: "driver", exp }, key)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
   };
   const gate = createUserGate({
     store: userStore,

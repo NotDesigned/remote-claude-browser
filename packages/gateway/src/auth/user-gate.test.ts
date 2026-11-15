@@ -314,7 +314,7 @@ describe("persisted front-end user gate", () => {
 
   it("escapes every HTML metacharacter in errors and bounds login request bodies", async () => {
     const error = `<script>alert("x" & 'y')</script>`;
-    const html = renderGatePage(error, { users: true });
+    const html = renderGatePage(error);
     expect(html).toContain("&lt;script&gt;alert(&quot;x&quot; &amp; &#39;y&#39;)&lt;/script&gt;");
     expect(html).not.toContain(error);
     expect(html).toContain('aria-describedby="login-error"');

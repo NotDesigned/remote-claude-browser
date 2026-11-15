@@ -907,10 +907,44 @@ describe("D10 recovery triggers", () => {
     expect({ attached, detached }).toEqual({ attached: 2, detached: 1 });
   });
 
-  it("scopes one RTC controller to each Replayer generation and closes it on every lifecycle edge", () => {
+  it("keeps a plain page's DOM cursor and media discovery plugin across reconnects", () => {
+    const document = new FakeDocument();
+    const requestResync = vi.fn();
+    const dispose = vi.fn();
+    const mirror = createMirror({
+      container: new FakeElement(document) as unknown as HTMLElement,
+      pipeline: new EventPipeline(),
+      requestResync,
+      rtc: {
+        createLane: () => "plain-page",
+        send: vi.fn(),
+        create: () => ({
+          replayPlugin: {},
+          receive: () => true,
+          dispose,
+          isLive: () => false,
+        }),
+      },
+    });
+    mirror.handle({ t: "snapshot", tab: "T1", epoch: 1, seq: 1, data: [full(1_000)] });
+    const previous = mirror.getReplayer();
+    mirror.connectionLost();
+    expect(mirror.resumeCursor()).toEqual({ tab: "T1", epoch: 1, nextSeq: 2 });
+    mirror.connectionRestored(true);
+    expect(requestResync).not.toHaveBeenCalled();
+    expect(mirror.getReplayer()).toBe(previous);
+    expect(dispose).not.toHaveBeenCalled();
+    mirror.handle({ t: "delta", tab: "T1", epoch: 1, seq: 2, data: [delta(1_001)] });
+    expect(mirror.resumeCursor()?.nextSeq).toBe(3);
+    mirror.teardown();
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it("scopes RTC to each replay and rebuilds media after reconnect instead of resuming DOM alone", () => {
     fakeRrweb.FakeReplayer.instances.length = 0;
     const document = new FakeDocument();
     const container = new FakeElement(document) as unknown as HTMLElement;
+    const requestResync = vi.fn();
     const sent: Array<{ tab: string; lane: string; payload: unknown }> = [];
     const controllers: Array<{
       replayPlugin: { name: string };
@@ -922,11 +956,12 @@ describe("D10 recovery triggers", () => {
     const mirror = createMirror({
       container,
       pipeline: new EventPipeline(),
-      requestResync: () => {},
+      requestResync,
       rtc: {
         createLane: () => `lane-${++lane}`,
         send: (tab, rtcLane, payload) => sent.push({ tab, lane: rtcLane, payload }),
-        create: () => {
+        create: ({ send }) => {
+          send({ type: "video", id: 12 });
           const controller = {
             replayPlugin: { name: `plugin-${lane}` },
             receive: vi.fn(() => true),
@@ -992,8 +1027,23 @@ describe("D10 recovery triggers", () => {
     expect(controllers[2]?.dispose).toHaveBeenCalledOnce();
     expect(sent).toContainEqual({ tab: "T2", lane: "lane-3", payload: { type: "close" } });
     expect(mirror.getReplayer()).not.toBeNull();
+    expect(mirror.resumeCursor()).toBeNull();
+    requestResync.mockClear();
+    mirror.connectionRestored(true);
+    expect(requestResync).toHaveBeenCalledWith("T2", "ws reconnect");
+    mirror.handle({
+      t: "snapshot",
+      tab: "T2",
+      epoch: 1,
+      seq: 2,
+      reason: "resync",
+      data: [full(1_300)],
+    });
+    expect(sent).toContainEqual({ tab: "T2", lane: "lane-4", payload: { type: "video", id: 12 } });
+    expect(mirror.resumeCursor()).toEqual({ tab: "T2", epoch: 1, nextSeq: 3 });
     mirror.teardown();
     expect(controllers[2]?.dispose).toHaveBeenCalledOnce();
+    expect(controllers[3]?.dispose).toHaveBeenCalledOnce();
   });
 
   it("reports an applied viewport epoch only after replay and CSS-scales a follower to fit", () => {

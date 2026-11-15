@@ -47,7 +47,7 @@ export function createUserGate(options: {
       // Keep same-origin form submissions verifiable without sending referrers to other sites.
       .header("referrer-policy", "same-origin")
       .type("text/html; charset=utf-8")
-      .send(renderGatePage(error, { users: true }));
+      .send(renderGatePage(error));
   const preHandler: preHandlerAsyncHookHandler = async (request, reply) => {
     if (
       !["GET", "HEAD", "OPTIONS"].includes(request.method) &&

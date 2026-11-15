@@ -3,11 +3,10 @@
  *
  * - MIRROR_E2E disables the access gate entirely and exposes `/__e2e/evaluate`, which runs
  *   arbitrary JavaScript inside the logged-in remote page. It must never reach production.
- * - Without stable HMAC secrets every restart mints new keys, which logs out every device and
- *   (in multi-client mode) orphans the persisted session ownership records.
+ * - Without a stable HMAC secret every restart invalidates device ownership tokens and orphans
+ *   the persisted session ownership records. User logins are stored separately in SQLite.
  */
 const MIN_SECRET_LENGTH = 16;
-const REQUIRED_SECRETS = ["MIRROR_ACCESS_SECRET", "MIRROR_AUTH_SECRET"] as const;
 
 export function productionConfigErrors(env: NodeJS.ProcessEnv): string[] {
   if (env.NODE_ENV !== "production") return [];
@@ -15,13 +14,10 @@ export function productionConfigErrors(env: NodeJS.ProcessEnv): string[] {
   if (env.MIRROR_E2E !== undefined && env.MIRROR_E2E !== "" && env.MIRROR_E2E !== "0") {
     errors.push("MIRROR_E2E must not be set when NODE_ENV=production (it disables authentication)");
   }
-  for (const name of REQUIRED_SECRETS) {
-    const value = env[name] ?? "";
-    if (value.length < MIN_SECRET_LENGTH) {
-      errors.push(
-        `${name} must be set to at least ${MIN_SECRET_LENGTH} characters when NODE_ENV=production (generate with: openssl rand -hex 32)`,
-      );
-    }
+  if ((env.MIRROR_AUTH_SECRET ?? "").length < MIN_SECRET_LENGTH) {
+    errors.push(
+      `MIRROR_AUTH_SECRET must be set to at least ${MIN_SECRET_LENGTH} characters when NODE_ENV=production (generate with: openssl rand -hex 32)`,
+    );
   }
   return errors;
 }

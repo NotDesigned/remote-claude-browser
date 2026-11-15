@@ -21,7 +21,6 @@ if [[ ! -e .env ]]; then
   trap 'rm -f "$temp_env"' EXIT
   {
     printf 'MIRROR_ACCESS_PASSWORD=%s\n' "$password"
-    printf 'MIRROR_ACCESS_SECRET=%s\n' "${MIRROR_ACCESS_SECRET:-$(openssl rand -hex 32)}"
     printf 'MIRROR_AUTH_SECRET=%s\n' "${MIRROR_AUTH_SECRET:-$(openssl rand -hex 32)}"
     printf 'MIRROR_PUBLIC_ORIGIN=%s\n' "${MIRROR_PUBLIC_ORIGIN:-}"
     printf 'SERVER_BIND=%s\n' "${SERVER_BIND:-127.0.0.1}"

@@ -10,8 +10,7 @@
  * - Expose the raw flat session BEFORE resume — injection (P0-INJECT) must run its sequence
  *   first, or every new target hangs paused.
  *
- * P3-SESSIONS keeps this pipe launcher as the default local BrowserHost and reuses the same
- * BrowserHandle adapter for Docker's private-network websocket transport.
+ * The same BrowserHandle adapter also supports broker transports and remote CDP endpoints.
  */
 import {
   connect,
@@ -21,10 +20,6 @@ import {
   type ConnectionTransport,
   type Protocol,
 } from "puppeteer-core";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import type { CdpSend, TargetEvents, TargetRef } from "../types";
 import { TargetRegistry } from "./targets";
 
@@ -90,41 +85,10 @@ export interface BrowserHandle extends TargetEvents {
   ): () => void;
   /** Metadata changes used by navigation chrome and tab lifecycle. */
   onTargetInfoChanged(cb: (info: BrowserTargetInfo) => void): void;
-  /** Host lifecycle hooks. BrowserHost implementations use these; ordinary consumers do not. */
+  /** Browser liveness and process lifecycle. */
   isAlive?(): boolean;
   kill?(): Promise<void>;
   close(): Promise<void>;
-}
-
-export type BrowserProfile = { mode: "ephemeral" } | { mode: "persistent"; name: string };
-
-export interface BrowserHostLaunchOptions {
-  sessionId: string;
-  /** Ephemeral is the safe default for direct host callers and ordinary sessions. */
-  profile?: BrowserProfile;
-}
-
-/** A browser process/container and the host resources that belong exclusively to it. */
-export interface BrowserHostSession {
-  readonly id: string;
-  readonly browser: BrowserHandle;
-  isRunning(): Promise<boolean>;
-  /** Ask Chromium to exit cleanly. This is allowed to hang; SessionManager owns the deadline. */
-  close(): Promise<void>;
-  /** Hard-stop the Chromium process tree (SIGKILL for Docker). */
-  kill(): Promise<void>;
-  /** Remove per-session host resources. Named persistent profiles deliberately survive. */
-  remove(): Promise<void>;
-}
-
-export interface BrowserHost {
-  readonly kind: "local" | "docker";
-  launch(options: BrowserHostLaunchOptions): Promise<BrowserHostSession>;
-}
-
-export interface LocalBrowserHostOptions extends Omit<LaunchOpts, "userDataDir"> {
-  /** Parent for ephemeral dev/test profiles. Defaults to the operating-system temp directory. */
-  profileRoot?: string;
 }
 
 type TargetCallback = (target: TargetRef) => void;
@@ -424,10 +388,7 @@ async function browserHandle(browser: Browser): Promise<BrowserHandle> {
   }
 }
 
-/**
- * The compatibility entry point used by every Phase 0–2 dev/acceptance harness. It deliberately
- * remains a direct local launch over `--remote-debugging-pipe`.
- */
+/** Launch a local browser for development and acceptance fixtures over a private debugging pipe. */
 export async function launchBrowser(opts: LaunchOpts): Promise<BrowserHandle> {
   if (opts.userDataDir.trim() === "") {
     throw new Error("launchBrowser requires a dedicated userDataDir");
@@ -439,8 +400,7 @@ export async function launchBrowser(opts: LaunchOpts): Promise<BrowserHandle> {
     userDataDir: opts.userDataDir,
     ...(opts.enableExtensions ? { enableExtensions: true } : {}),
   });
-  // Local development in this repository can run as root; production runs unprivileged in
-  // the P3-SESSIONS browser container.
+  // Local development can run as root; the production broker launches an unprivileged browser.
   if (typeof process.getuid === "function" && process.getuid() === 0) {
     args.push("--no-sandbox");
   }
@@ -503,7 +463,7 @@ export function chromiumLaunchArgs(
   return args;
 }
 
-/** Connect the same raw-CDP BrowserHandle to a remote endpoint (used only by DockerBrowserHost). */
+/** Connect the same raw-CDP BrowserHandle to a remote endpoint. */
 export async function connectBrowser(browserWSEndpoint: string): Promise<BrowserHandle> {
   const browser = await connect({ browserWSEndpoint, defaultViewport: null });
   return browserHandle(browser);
@@ -514,63 +474,4 @@ export async function connectBrowserTransport(
   transport: ConnectionTransport,
 ): Promise<BrowserHandle> {
   return browserHandle(await connect({ transport, defaultViewport: null }));
-}
-
-/**
- * Default BrowserHost for development and tests. Each managed session still gets an isolated
- * temporary profile, but Chromium keeps the P0 pipe transport and launch behavior unchanged.
- */
-export function createLocalBrowserHost(options: LocalBrowserHostOptions = {}): BrowserHost {
-  return {
-    kind: "local",
-    async launch({ sessionId, profile = { mode: "ephemeral" } }) {
-      if (sessionId.trim() === "") throw new Error("sessionId must not be empty");
-      const profileRoot = options.profileRoot ?? tmpdir();
-      await mkdir(profileRoot, { recursive: true });
-      const persistent = profile.mode === "persistent";
-      const userDataDir = persistent
-        ? join(profileRoot, `mirror-browser-profile-${profileName(profile.name)}`)
-        : await mkdtemp(join(profileRoot, "mirror-browser-"));
-      if (persistent) await mkdir(userDataDir, { recursive: true });
-      let browser: BrowserHandle | undefined;
-      try {
-        browser = await launchBrowser({
-          userDataDir,
-          ...(options.executablePath === undefined
-            ? {}
-            : { executablePath: options.executablePath }),
-          ...(options.headful === undefined ? {} : { headful: options.headful }),
-          ...(options.args === undefined ? {} : { args: options.args }),
-        });
-      } catch (error) {
-        if (!persistent) await rm(userDataDir, { recursive: true, force: true });
-        throw error;
-      }
-
-      const launched = browser;
-      let removed = false;
-      return {
-        id: sessionId,
-        browser: launched,
-        isRunning: async () => launched.isAlive?.() ?? true,
-        close: () => launched.close(),
-        kill: async () => {
-          if (launched.kill !== undefined) await launched.kill();
-          else await launched.close();
-        },
-        remove: async () => {
-          if (removed) return;
-          if (!persistent) await rm(userDataDir, { recursive: true, force: true });
-          removed = true;
-        },
-      };
-    },
-  };
-}
-
-function profileName(name: string): string {
-  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/.test(name)) {
-    throw new Error("persistent profile name must be 1-80 URL-safe characters");
-  }
-  return name;
 }
