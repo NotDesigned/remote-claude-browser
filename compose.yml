@@ -66,7 +66,8 @@ services:
     cpus: ${SERVER_CPUS:-0}
     # The browser gives way when something else on the host needs the CPU.
     cpu_shares: 256
-    pids_limit: 1024
+    # Linux counts threads too; each independent Chromium profile needs hundreds.
+    pids_limit: ${SERVER_PIDS_LIMIT:-4096}
     healthcheck:
       test:
         [

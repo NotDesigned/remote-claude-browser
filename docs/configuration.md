@@ -17,6 +17,7 @@ excluded from Git. Do not commit a populated one. `scripts/bootstrap.sh` writes 
 | `SERVER_MEMORY` | no | `4g` | Container memory limit. New sessions are refused as it runs short |
 | `SERVER_MEMSWAP` | no | `0` | Memory plus swap. `0` leaves it to Docker |
 | `SERVER_CPUS` | no | `0` | CPU limit. `0` means all of the host's CPUs |
+| `SERVER_PIDS_LIMIT` | no | `4096` | Combined process and thread limit. Chromium profiles each use many threads |
 | `SERVER_SUBNET` | no | `172.31.66.0/24` | The Compose network. Change it if it collides with another network |
 | `SERVER_IMAGE` | no | local build | A prebuilt image |
 | `MIRROR_CLIENTS` | no | `8` | Total active session slots across users; any positive safe integer. Invalid values prevent startup |
