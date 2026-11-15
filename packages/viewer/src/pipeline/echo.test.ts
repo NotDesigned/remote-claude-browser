@@ -7,7 +7,10 @@ import { createEchoFilter } from "./echo";
 class FakeInput {
   readonly nodeType = 1;
   readonly tagName = "INPUT";
-  readonly type = "text";
+  type = "text";
+  getAttribute() {
+    return null;
+  }
   value = "";
   selectionStart: number | null = 0;
   selectionEnd: number | null = 0;
@@ -70,6 +73,32 @@ function mutationEvent(
 }
 
 describe("F5 native local typing echo", () => {
+  it("keeps a locally typed password through idle, blur and a snapshot, but accepts a remote clear", () => {
+    vi.useFakeTimers();
+    const echo = createEchoFilter();
+    const field = new FakeInput();
+    field.type = "password";
+    field.value = "Ab9!";
+    const focus = { element: field as unknown as HTMLInputElement, nodeId: 41 };
+    echo.input(focus);
+    expect(echo(inputEvent(41, "****"), { tab: "T1", nowMs: Date.now() })).toBeNull();
+    vi.advanceTimersByTime(1500);
+    echo.setFocused(null);
+    expect(field.value).toBe("Ab9!");
+    echo.setFocused(focus);
+    expect(echo.restoreHook.capture({} as HTMLIFrameElement)?.value).toBe("Ab9!");
+    field.value = "";
+    echo.input(focus);
+    echo(inputEvent(41, ""), { tab: "T1", nowMs: Date.now() });
+    field.value = "New1!";
+    echo.input(focus);
+    echo(inputEvent(41, "*****"), { tab: "T1", nowMs: Date.now() });
+    vi.advanceTimersByTime(1500);
+    expect(field.value).toBe("New1!");
+    expect(echo(inputEvent(41, ""), { tab: "T1", nowMs: Date.now() })).not.toBeNull();
+    echo.reset();
+    vi.useRealTimers();
+  });
   it("suppresses server input during a native-input burst at simulated 150ms RTT", () => {
     let now = 0;
     const timers: Array<() => void> = [];

@@ -59,6 +59,8 @@ export type AgentCmd =
       reqId: number;
       nodeId: number;
       value: string;
+      /** Native password range edit or undo/redo, preserving unknown masked characters. */
+      edit?: { start: number; end: number } | "undo" | "redo";
       commit?: boolean;
       /** Checkbox/radio committed state; when present, `value` is not applied. */
       checked?: boolean;

@@ -15,6 +15,7 @@ import {
   type EditableFocus,
 } from "../input/keys";
 import type { RebuildRestoreHook } from "../rebuild-restore";
+import { isPasswordField } from "../input/password";
 import type { PipelineCtx, Stage } from "./index";
 
 interface EditingState {
@@ -74,6 +75,11 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
   const reconcile = (nodeId: number) => {
     const state = nodes.get(nodeId);
     if (state === undefined) return;
+    // A nonempty password echo contains a mask, never an authoritative editable value.
+    if (isPasswordField(state.element) && state.pendingServerValue !== "") {
+      state.timer = null;
+      return;
+    }
     if (!isValueEchoField(state.element)) {
       state.timer = null;
       if (state.needsReconcile && state.element.textContent?.trim()) {
@@ -144,11 +150,11 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
     if (data.source === IncrementalSource.Mutation) {
       const activeSubtrees: Set<number>[] = [];
       for (const [nodeId, state] of nodes) {
-        if (state.subtreeNodeIds === undefined) continue;
         if (state.element.isConnected === false) {
           clearState(nodeId);
           continue;
         }
+        if (state.subtreeNodeIds === undefined) continue;
         const ids = state.subtreeNodeIds;
         for (const mutation of data.adds)
           if (ids.has(mutation.parentId)) collectSerializedNodeIds(mutation.node, ids);
@@ -206,6 +212,10 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
     if (data.source !== IncrementalSource.Input || data.isChecked) return event;
     const state = nodes.get(data.id);
     if (state === undefined || !isValueEchoField(state.element)) return event;
+    if (isPasswordField(state.element) && data.text !== "") {
+      state.pendingServerValue = undefined;
+      return null;
+    }
     if (ctx.nowMs - state.lastKeyTs < decayMs) {
       state.pendingServerValue = data.text;
       return null;

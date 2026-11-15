@@ -24,7 +24,7 @@ const { WebSocketServer } = require("ws");
 const root = resolve("packages/viewer/dist");
 const remoteHtml = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>
 body{margin:0;height:1800px;background:linear-gradient(#fff,#ddd);font:16px sans-serif}#editor{position:absolute;left:20px;top:20px;width:280px;height:80px;border:1px solid #555}#tap{position:absolute;left:20px;top:125px;width:160px;height:36px}.hover-row{position:absolute;left:20px;top:180px;width:280px;height:40px;background:#eee}.hover-button{position:absolute;right:4px;top:0;width:0;height:40px;opacity:0;pointer-events:none}.hover-row:hover .hover-button{width:40px;opacity:1;pointer-events:auto}@media(pointer:coarse){.hover-button{width:40px;opacity:1;pointer-events:auto}}#nested{position:absolute;left:20px;top:270px;width:280px;height:150px;overflow:auto;border:1px solid #333}#nested-content{height:1000px;background:linear-gradient(#cde,#7ad)}#bottom{position:absolute;top:1500px}#slider{position:absolute;left:20px;top:450px;width:280px;height:44px;background:#ddd}#thumb{position:absolute;width:44px;height:44px;background:#777;touch-action:none}
-</style></head><body><div id="editor" contenteditable="true" role="textbox"></div><button id="tap" onclick="window.tapCount++">Tap button</button><div class="hover-row">Hover menu<button class="hover-button" id="menu" onclick="window.menuCount++">⋯</button></div><div id="nested"><div id="nested-content">Nested scrolling</div></div><div id="slider"><div id="thumb"></div></div><p id="bottom">Bottom of page</p><script>window.tapCount=0;window.menuCount=0;window.dragX=0;window.dragEvents=[];let startX=null;const thumb=document.getElementById('thumb');thumb.addEventListener('touchstart',e=>{e.preventDefault();startX=e.touches[0].clientX;window.dragEvents.push(e.type)}, {passive:false});document.addEventListener('touchmove',e=>{if(startX===null)return;e.preventDefault();window.dragX=e.touches[0].clientX-startX;thumb.style.transform='translateX('+window.dragX+'px)';window.dragEvents.push(e.type)}, {passive:false});document.addEventListener('touchend',()=>{if(startX===null)return;startX=null;window.dragEvents.push('touchend')});</script></body></html>`;
+#password,#existing-password{position:absolute;left:20px;top:225px;width:280px;height:30px}#existing-password{top:510px}</style></head><body><input id="password" type="password" autocomplete="current-password"><input id="existing-password" type="password" value="Existing-Ab9!"><div id="editor" contenteditable="true" role="textbox"></div><button id="tap" onclick="window.tapCount++">Tap button</button><div class="hover-row">Hover menu<button class="hover-button" id="menu" onclick="window.menuCount++">⋯</button></div><div id="nested"><div id="nested-content">Nested scrolling</div></div><div id="slider"><div id="thumb"></div></div><p id="bottom">Bottom of page</p><script>window.tapCount=0;window.menuCount=0;window.dragX=0;window.dragEvents=[];let startX=null;const thumb=document.getElementById('thumb');thumb.addEventListener('touchstart',e=>{e.preventDefault();startX=e.touches[0].clientX;window.dragEvents.push(e.type)}, {passive:false});document.addEventListener('touchmove',e=>{if(startX===null)return;e.preventDefault();window.dragX=e.touches[0].clientX-startX;thumb.style.transform='translateX('+window.dragX+'px)';window.dragEvents.push(e.type)}, {passive:false});document.addEventListener('touchend',()=>{if(startX===null)return;startX=null;window.dragEvents.push('touchend')});</script></body></html>`;
 const server = createServer(async (request, response) => {
   const path = new URL(request.url!, "http://fixture").pathname;
   if (path === "/api/client/session") {
@@ -80,6 +80,15 @@ const pending = new Map<number, (reply: CmdRes) => void>();
 const received: Up[] = [];
 const dispatches: Promise<unknown>[] = [];
 const checks: Record<string, boolean> = {};
+const passwordNodeIds = new Set<number>();
+let passwordsMasked = true;
+const inspectPasswords = (node: any) => {
+  if (node.attributes?.type === "password" || node.attributes?.["data-rr-is-password"]) {
+    passwordNodeIds.add(node.id);
+    passwordsMasked &&= !node.attributes.value || /^\*+$/.test(node.attributes.value);
+  }
+  for (const child of node.childNodes ?? []) inspectPasswords(child);
+};
 let reqId = 0;
 let mode: "dom" | "px" = "dom";
 let viewport = { w: 375, h: 640 };
@@ -92,6 +101,12 @@ try {
   await remote.exposeFunction("__mirror_emit", (payload: string) => {
     const message = chunks.add(payload);
     if (!message) return;
+    if (message.kind === "rrweb") {
+      const event = message.e as any;
+      if (event.type === 2) inspectPasswords(event.data.node);
+      if (event.type === 3 && event.data.source === 5 && passwordNodeIds.has(event.data.id))
+        passwordsMasked &&= !event.data.text || /^\*+$/.test(event.data.text);
+    }
     if (message.kind === "cmdres") {
       pending.get(message.reqId)?.(message);
       return;
@@ -310,6 +325,71 @@ try {
   checks.websiteScriptsRemainBlocked = await page.evaluate(
     () => (window as any).__mirrorWebsiteScriptRan === false,
   );
+  const password = local.locator("#password");
+  const passwordMatches = async (expected: string, id = "#password") =>
+    remote.locator(id).evaluate((el, value) => (el as HTMLInputElement).value === value, expected);
+  await password.tap();
+  await settle();
+  await page.keyboard.type("aB1!@_");
+  await settle();
+  checks.passwordCaseAndSymbols = await passwordMatches("aB1!@_");
+  await page.waitForTimeout(1200);
+  await page.keyboard.insertText("cD2#");
+  await settle();
+  checks.passwordAppendAfterIdle = await passwordMatches("aB1!@_cD2#");
+  await page.waitForTimeout(1200);
+  await page.keyboard.press("Enter");
+  await settle();
+  checks.passwordEnterAfterIdle = await passwordMatches("aB1!@_cD2#");
+  await local.locator("#editor").tap();
+  await settle();
+  checks.passwordBlur = await passwordMatches("aB1!@_cD2#");
+  await password.tap();
+  await settle();
+  await sendCmd("mobile", { cmd: "snapshot" });
+  await settle();
+  await page.keyboard.press("End");
+  await page.keyboard.insertText("E");
+  await settle();
+  checks.passwordEditAfterSnapshot = await passwordMatches("aB1!@_cD2#E");
+  const existing = local.locator("#existing-password");
+  await existing.tap();
+  await settle();
+  await existing.evaluate((el) => (el as HTMLInputElement).setSelectionRange(2, 2));
+  await page.keyboard.press("Backspace");
+  await settle();
+  checks.maskedPasswordPartialDelete = await passwordMatches("Eisting-Ab9!", "#existing-password");
+  await page.keyboard.press("ControlOrMeta+z");
+  await settle();
+  checks.maskedPasswordUndo = await passwordMatches("Existing-Ab9!", "#existing-password");
+  await existing.evaluate((el) => (el as HTMLInputElement).setSelectionRange(1, 2));
+  await page.keyboard.insertText("*");
+  await settle();
+  checks.maskedPasswordLiteralStar = await passwordMatches("E*isting-Ab9!", "#existing-password");
+  await existing.press("ControlOrMeta+A");
+  await page.keyboard.insertText("Paste-Ab9!*");
+  await settle();
+  checks.passwordWholeReplacement = await passwordMatches("Paste-Ab9!*", "#existing-password");
+  await remote
+    .locator("#existing-password")
+    .evaluate((el) => ((el as HTMLInputElement).type = "text"));
+  await settle();
+  await existing.press("End");
+  await page.keyboard.insertText("Z");
+  await settle();
+  checks.passwordShowToggleEdit = await passwordMatches("Paste-Ab9!*Z", "#existing-password");
+  await existing.press("ControlOrMeta+A");
+  await page.keyboard.press("Backspace");
+  await page.keyboard.insertText("B");
+  await settle();
+  await page.waitForTimeout(1200);
+  await page.keyboard.insertText("C");
+  await settle();
+  checks.passwordClearThenRetype = await passwordMatches("BC", "#existing-password");
+  checks.passwordRecordingRemainsMasked = passwordsMasked && passwordNodeIds.size === 2;
+  await remote.evaluate(() => window.scrollTo(0, 0));
+  await local.locator("body").evaluate((el) => el.ownerDocument.defaultView!.scrollTo(0, 0));
+  await settle();
   if (!webkitViewer) {
     const thumb = await local.locator("#thumb").boundingBox();
     assert.ok(thumb);

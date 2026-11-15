@@ -414,7 +414,19 @@ export function createCommandHandler(
             }
             setNativeSelectedValues(node, cmd.values);
           } else {
-            setNativeValue(node, cmd.value);
+            if (cmd.edit !== undefined) {
+              if (!(node instanceof view.HTMLInputElement))
+                throw new Error("password edit requires an input");
+              if (typeof cmd.edit === "string") {
+                node.focus({ preventScroll: true });
+                node.ownerDocument.execCommand(cmd.edit);
+              } else if (cmd.edit.start !== cmd.edit.end || cmd.value !== "") {
+                node.focus({ preventScroll: true });
+                node.setSelectionRange(cmd.edit.start, cmd.edit.end);
+                if (!node.ownerDocument.execCommand("insertText", false, cmd.value))
+                  throw new Error("password edit failed");
+              }
+            } else setNativeValue(node, cmd.value);
             if (
               (node instanceof view.HTMLInputElement || node instanceof view.HTMLTextAreaElement) &&
               cmd.selectionStart !== undefined &&
@@ -430,7 +442,9 @@ export function createCommandHandler(
           if (dispatchCheckedClick) {
             node.dispatchEvent(new Event("click", { bubbles: true, composed: true }));
           }
-          node.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+          // Native password edits already emitted input and populated the browser undo stack.
+          if (cmd.edit === undefined)
+            node.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
           if (cmd.commit !== false) node.dispatchEvent(new Event("change", { bubbles: true }));
           emitter.emit({ kind: "cmdres", reqId: cmd.reqId, ok: true });
           return;

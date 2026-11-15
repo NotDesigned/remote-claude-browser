@@ -212,6 +212,7 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
               cmd: "value",
               nodeId: resolved.localId,
               value: msg.value,
+              ...(msg.edit === undefined ? {} : { edit: msg.edit }),
               ...(msg.commit === undefined ? {} : { commit: msg.commit }),
               ...(msg.checked === undefined ? {} : { checked: msg.checked }),
               ...(msg.values === undefined ? {} : { values: msg.values }),

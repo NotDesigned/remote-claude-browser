@@ -9,6 +9,7 @@
 import type { TabId } from "@mirror/protocol";
 import { createForwardedInputClock, type ForwardedInputClock } from "./forwarded";
 import { eventMods, isElement, type SendInput } from "./pointer";
+import { isPasswordField } from "./password";
 
 export interface EditableFocus {
   element: HTMLInputElement | HTMLTextAreaElement | HTMLElement;
@@ -209,15 +210,15 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
     }
     if (isLocalShortcut(event)) return;
     if (
-      host !== null &&
-      options.committedContenteditable &&
+      ((host !== null && options.committedContenteditable) ||
+        (isElement(event.target) && isPasswordField(event.target))) &&
       ((event.key.length === 1 &&
         ((!event.ctrlKey && !event.metaKey) ||
           event.altKey ||
           NATIVE_EDITING_SHORTCUTS.has(event.key.toLowerCase()))) ||
         event.key === "Backspace" ||
         event.key === "Delete" ||
-        (event.key === "Enter" && event.shiftKey))
+        (host !== null && event.key === "Enter" && event.shiftKey))
     ) {
       if (event.key === "Enter") enterDown = false;
       if (kind === "down") options.onKeyDown?.(event, focused);

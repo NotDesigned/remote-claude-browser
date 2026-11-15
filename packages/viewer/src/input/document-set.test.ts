@@ -35,6 +35,9 @@ class FakeElement {
   readOnly = false;
   multiple = false;
   isContentEditable = false;
+  getAttribute() {
+    return null;
+  }
 
   constructor(
     readonly ownerDocument: FakeDocument,

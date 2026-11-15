@@ -224,6 +224,8 @@ export type Up =
       tab: TabId;
       nodeId: number;
       value: string;
+      /** Password edits never send the recorded mask back as a complete value. */
+      edit?: { start: number; end: number } | "undo" | "redo";
       /** False for a native editing event; omitted preserves legacy committed-change behavior. */
       commit?: boolean;
       /** Checkbox/radio committed state; when present, `value` is not applied. */

@@ -39,6 +39,9 @@ class FakeElement {
   options: { selected: boolean; value: string }[] = [];
   isContentEditable = false;
   childNodes: FakeElement[] = [];
+  getAttribute() {
+    return null;
+  }
 
   constructor(
     readonly nodeId: number,
@@ -462,6 +465,30 @@ describe("P1 input capture", () => {
     expect(focused).toEqual([44]);
     expect(printable.preventDefault).not.toHaveBeenCalled();
     expect(browserShortcut.preventDefault).toHaveBeenCalledOnce();
+  });
+
+  it("leaves password edits to native input while forwarding Enter and Shift+Enter", () => {
+    const doc = new FakeDocument();
+    const input = new FakeElement(39);
+    input.tagName = "INPUT";
+    input.type = "password";
+    doc.activeElement = input;
+    const sent: Up[] = [];
+    attachKeyCapture({
+      doc: doc as unknown as Document,
+      tab: "T1",
+      getNodeId: () => 39,
+      send: (message) => sent.push(message),
+    });
+    for (const key of ["A", "Backspace", "Delete"]) doc.fire("keydown", keyboard(input, key));
+    doc.fire("keydown", keyboard(input, "z", { ctrlKey: true }));
+    expect(sent).toEqual([]);
+    doc.fire("keydown", keyboard(input, "Enter"));
+    doc.fire("keydown", keyboard(input, "Enter", { shiftKey: true }));
+    expect(sent).toMatchObject([
+      { t: "key", key: "Enter", mods: 0 },
+      { t: "key", key: "Enter", mods: 8 },
+    ]);
   });
 
   it("sends the complete native paste value without replaying the remote clipboard", () => {

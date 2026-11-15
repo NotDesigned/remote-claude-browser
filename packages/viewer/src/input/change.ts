@@ -15,6 +15,12 @@ import {
   type EditableFocus,
 } from "./keys";
 import { isElement, resolvePointerTarget, type SendInput } from "./pointer";
+import {
+  isPasswordField,
+  passwordReplacement,
+  passwordSelection,
+  type PasswordSelection,
+} from "./password";
 
 const DEFAULT_TYPING_WINDOW_MS = 1_000;
 const DEFAULT_ORPHAN_WINDOW_MS = 150;
@@ -54,6 +60,16 @@ export function attachChangeCapture(options: ChangeCaptureOptions): {
   const lastValues = new WeakMap<ValueControl, string>();
   const editedValues = new WeakSet<ValueControl>();
   const editedContenteditables = new WeakSet<HTMLElement>();
+  const passwordBefore = new WeakMap<HTMLInputElement, PasswordSelection>();
+  const capturePassword = (target: EventTarget | null) => {
+    if (isElement(target) && isPasswordField(target))
+      passwordBefore.set(target, passwordSelection(target));
+  };
+  const onBeforeInput = (event: InputEvent) => {
+    if (event.isTrusted) capturePassword(event.target);
+  };
+  const onFocusIn = (event: FocusEvent) => capturePassword(event.target);
+  capturePassword(options.doc.activeElement);
 
   const sendEditable = (host: HTMLElement) => {
     const nodeId = options.getNodeId(host);
@@ -153,6 +169,29 @@ export function attachChangeCapture(options: ChangeCaptureOptions): {
     if (resolved === null || !isEchoField(resolved.control)) return;
     editedValues.add(resolved.control);
     options.onEditableInput?.({ element: resolved.control, nodeId: resolved.nodeId });
+    if (isPasswordField(resolved.control)) {
+      const control = resolved.control;
+      const after = passwordSelection(control);
+      const before = passwordBefore.get(control);
+      const inputType = (event as InputEvent).inputType;
+      const edit =
+        inputType === "historyUndo" || inputType === "historyRedo"
+          ? { edit: inputType === "historyUndo" ? ("undo" as const) : ("redo" as const), value: "" }
+          : before
+            ? passwordReplacement(before, after)
+            : { edit: { start: 0, end: Number.MAX_SAFE_INTEGER }, value: control.value };
+      options.send({
+        t: "value",
+        tab: options.tab,
+        nodeId: resolved.nodeId,
+        ...edit,
+        commit: false,
+        selectionStart: after.start,
+        selectionEnd: after.end,
+      });
+      passwordBefore.set(control, after);
+      return;
+    }
     const isComposing = (event as InputEvent).isComposing;
     if (composingNodes.has(resolved.nodeId) && !isComposing) {
       composingNodes.delete(resolved.nodeId);
@@ -179,6 +218,16 @@ export function attachChangeCapture(options: ChangeCaptureOptions): {
     if (!event.isTrusted) return;
     const resolved = resolveControl(event.target);
     if (resolved === null) return;
+    if (isPasswordField(resolved.control)) {
+      options.send({
+        t: "value",
+        tab: options.tab,
+        nodeId: resolved.nodeId,
+        value: "",
+        edit: { start: 0, end: 0 },
+      });
+      return;
+    }
     const lastForwardedAt = forwardedClock.get(resolved.nodeId);
     if (
       isEchoField(resolved.control) &&
@@ -193,7 +242,8 @@ export function attachChangeCapture(options: ChangeCaptureOptions): {
   const onCompositionStart = (event: CompositionEvent) => {
     if (!event.isTrusted) return;
     const resolved = resolveControl(event.target);
-    if (resolved === null || !isEchoField(resolved.control)) return;
+    if (resolved === null || !isEchoField(resolved.control) || isPasswordField(resolved.control))
+      return;
     composingNodes.add(resolved.nodeId);
     armComposeFlush(resolved.control, resolved.nodeId);
   };
@@ -211,7 +261,8 @@ export function attachChangeCapture(options: ChangeCaptureOptions): {
       return;
     }
     const resolved = resolveControl(event.target);
-    if (resolved === null || !isEchoField(resolved.control)) return;
+    if (resolved === null || !isEchoField(resolved.control) || isPasswordField(resolved.control))
+      return;
     composingNodes.delete(resolved.nodeId);
     cancelComposeFlush(resolved.nodeId);
     sendValue(resolved.control, resolved.nodeId);
@@ -226,6 +277,7 @@ export function attachChangeCapture(options: ChangeCaptureOptions): {
     const resolved = resolveControl(target);
     if (
       resolved === null ||
+      isPasswordField(resolved.control) ||
       (!composingNodes.has(resolved.nodeId) && !(complete && editedValues.has(resolved.control)))
     )
       return;
@@ -235,11 +287,15 @@ export function attachChangeCapture(options: ChangeCaptureOptions): {
   };
 
   options.doc.addEventListener("input", onInput, true);
+  options.doc.addEventListener("beforeinput", onBeforeInput, true);
+  options.doc.addEventListener("focusin", onFocusIn, true);
   options.doc.addEventListener("change", onChange, true);
   options.doc.addEventListener("compositionstart", onCompositionStart, true);
   options.doc.addEventListener("compositionend", onCompositionEnd, true);
   const dispose = () => {
     options.doc.removeEventListener("input", onInput, true);
+    options.doc.removeEventListener("beforeinput", onBeforeInput, true);
+    options.doc.removeEventListener("focusin", onFocusIn, true);
     options.doc.removeEventListener("change", onChange, true);
     options.doc.removeEventListener("compositionstart", onCompositionStart, true);
     options.doc.removeEventListener("compositionend", onCompositionEnd, true);
