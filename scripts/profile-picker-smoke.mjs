@@ -375,6 +375,7 @@ async function checkExitWarnings(page, touch = false) {
 async function checkMobileKyc(page) {
   const statuses = [
     ["not_required", "当前未要求 KYC"],
+    ["created", "KYC 流程已创建"],
     ["approved", "KYC 已通过"],
     ["pending", "KYC 待处理"],
     ["denied", "KYC 未通过"],
@@ -407,7 +408,6 @@ async function checkMobileKyc(page) {
     await hint.getByText(label, { exact: true }).waitFor();
     await hint.scrollIntoViewIfNeeded();
     assert.match(await hint.textContent(), /当前组织/);
-    assert.ok(await hint.getByText("升级或付款时仍可能要求验证", { exact: true }).isVisible());
     if (fixtures[index].kyc) {
       assert.ok(await hint.locator("time").isVisible());
       assert.equal(

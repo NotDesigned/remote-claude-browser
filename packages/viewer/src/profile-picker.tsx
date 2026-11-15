@@ -53,6 +53,7 @@ function initial(account: AccountInfo): string {
 
 const KYC_LABELS = new Map([
   ["not_required", "当前未要求 KYC"],
+  ["created", "KYC 流程已创建"],
   ["approved", "KYC 已通过"],
   ["pending", "KYC 待处理"],
   ["denied", "KYC 未通过"],
@@ -80,7 +81,6 @@ function ProfileKyc({ account }: { account: AccountInfo }) {
           "打开浏览器后获取"
         )}
       </span>
-      <span>升级或付款时仍可能要求验证</span>
     </span>
   );
 }
