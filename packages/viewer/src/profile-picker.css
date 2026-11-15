@@ -377,6 +377,20 @@ button.profile-card:focus-visible {
   opacity: 1;
 }
 
+.profile-kyc {
+  display: grid;
+  gap: 2px;
+  margin: 2px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.profile-kyc-status[data-status="pending"],
+.profile-kyc-status[data-status="denied"] {
+  color: var(--bad);
+}
+
 .profile-meta {
   display: flex;
   flex: none;

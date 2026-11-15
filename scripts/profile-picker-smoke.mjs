@@ -25,6 +25,11 @@ const accounts = [
     sessions: 1,
     signedIn: true,
     email: null,
+    kyc: {
+      status: "approved",
+      organizationId: "organization-work",
+      checkedAt: Date.UTC(2026, 10, 15, 12, 34),
+    },
     proxyId: "proxy-private",
     proxyName: "私有出口",
   },
@@ -365,6 +370,66 @@ async function checkExitWarnings(page, touch = false) {
     await page.reload();
     await page.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
   }
+}
+
+async function checkMobileKyc(page) {
+  const statuses = [
+    ["not_required", "当前未要求 KYC"],
+    ["approved", "KYC 已通过"],
+    ["pending", "KYC 待处理"],
+    ["denied", "KYC 未通过"],
+    ["future_status", "KYC 状态未知"],
+    [null, "KYC 暂未获取"],
+  ];
+  const fixtures = statuses.map(([status], index) => ({
+    ...accounts[1],
+    id: `kyc-${index}`,
+    name: `验证状态 ${index}`,
+    running: false,
+    kyc: status ? { ...accounts[1].kyc, status } : undefined,
+  }));
+  fixtures.push({ ...accounts[1], id: "kyc-signed-out", name: "已退出验证账号", signedIn: false });
+  const route = (request) =>
+    request.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ accounts: fixtures, default: fixtures[0].id, current: null }),
+    });
+  const viewport = page.viewportSize();
+  const before = admissions.length;
+  await page.route("**/api/accounts", route);
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.reload();
+  for (const [index, [, label]] of statuses.entries()) {
+    const card = page.locator(".profile-card").filter({
+      has: page.getByText(fixtures[index].name, { exact: true }),
+    });
+    const hint = card.locator(".profile-kyc");
+    await hint.getByText(label, { exact: true }).waitFor();
+    await hint.scrollIntoViewIfNeeded();
+    assert.match(await hint.textContent(), /当前组织/);
+    assert.ok(await hint.getByText("升级或付款时仍可能要求验证", { exact: true }).isVisible());
+    if (fixtures[index].kyc) {
+      assert.ok(await hint.locator("time").isVisible());
+      assert.equal(
+        await hint.locator("time").getAttribute("datetime"),
+        new Date(fixtures[index].kyc.checkedAt).toISOString(),
+      );
+    } else assert.ok(await hint.getByText("打开浏览器后获取", { exact: true }).isVisible());
+    assert.ok(await card.evaluate((node) => node.scrollWidth <= node.clientWidth + 1));
+  }
+  assert.equal(
+    await page
+      .locator(".profile-card")
+      .filter({ hasText: "已退出验证账号" })
+      .locator(".profile-kyc")
+      .count(),
+    0,
+  );
+  assert.equal(admissions.length, before, "reading KYC must not open browser sessions");
+  await page.unroute("**/api/accounts", route);
+  await page.setViewportSize(viewport);
+  await page.reload();
+  await page.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
 }
 
 const watchdog = setTimeout(() => process.exit(124), 120_000);
@@ -725,6 +790,7 @@ try {
   await phone.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
   await checkExitWarnings(phone, true);
   await checkExitHealth(phone, true);
+  await checkMobileKyc(phone);
   accounts[1].email = "a-very-long-email-address-to-check-mobile-layout@example.com";
   await phone.getByText(accounts[1].email, { exact: true }).waitFor({ timeout: 10_000 });
   const layout = await phone.locator(".profile-picker").evaluate((node) => ({
@@ -922,6 +988,7 @@ try {
       localFixtureOnly: true,
       engine,
       dynamicEmailAndUnavailableState: true,
+      kycStatesAndCachedTimeVisibleOnMobile: true,
       noAdmissionBeforePick: true,
       chosenAccount: true,
       reloadResumes: true,

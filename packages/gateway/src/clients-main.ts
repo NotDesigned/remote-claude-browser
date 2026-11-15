@@ -757,6 +757,7 @@ export async function startClientGateway(
       email: accountStore.get(id)?.email,
       signedIn: accountStore.get(id)?.signedIn,
       unavailable: accountStore.get(id)?.unavailable,
+      kyc: accountStore.get(id)?.kyc,
       save: (login) => accountStore.setLogin(id, login),
     });
     const pool = createClientBrowserPool(browser, {
@@ -1518,6 +1519,7 @@ export async function startClientGateway(
           signedIn,
           unavailable,
           email: signedIn ? (live ? live.email : (record.email ?? null)) : null,
+          kyc: signedIn ? (live ? live.kyc : record.kyc) : undefined,
           sessions: clientSessions
             .all()
             .filter((session) => (session.profile ?? DEFAULT_PROFILE) === record.id).length,

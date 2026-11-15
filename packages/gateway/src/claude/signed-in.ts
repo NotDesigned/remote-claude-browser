@@ -16,26 +16,53 @@ export interface ClaudeLogin {
   signedIn: boolean;
   email: string | null;
   unavailable?: boolean;
+  kyc?: ClaudeKyc;
+}
+
+export interface ClaudeKyc {
+  status: string;
+  organizationId: string;
+  checkedAt: number;
 }
 
 const ACCOUNT_WORLD = `_${randomBytes(8).toString("hex")}`;
-const READ_LOGIN = `(location.origin === "https://claude.ai" ? fetch("/api/account", {
-    credentials: "include", signal: AbortSignal.timeout(8000),
-  })
-  .then(async (response) => {
+const READ_LOGIN = `(async () => {
+  if (location.origin !== "https://claude.ai") return null;
+  const init = { credentials: "include", cache: "no-store", signal: AbortSignal.timeout(8000) };
+  try {
+    const response = await fetch("/api/account", init);
     if (response.status === 401) return { signedIn: false, email: null };
     const account = await response.json().catch(() => null);
     if (response.status === 403 && account?.error?.message === "account_banned")
       return { signedIn: false, email: null, unavailable: true };
-    return response.ok ? account : null;
-  })
-  .then((account) => {
-    if (account?.signedIn === false) return account;
+    if (!response.ok) return null;
     const email = account && (account.email_address ?? account.account?.email_address);
-    return typeof email === "string" && email.trim() !== ""
-      ? { signedIn: true, email } : null;
-  })
-  .catch(() => null) : Promise.resolve(null))`;
+    if (typeof email !== "string" || email.trim() === "") return null;
+    const login = { signedIn: true, email };
+    try {
+      const selectedOrg = () => document.cookie.split(";").map((cookie) => cookie.trim())
+        .find((cookie) => cookie.startsWith("lastActiveOrg="))?.slice(14) ?? "";
+      const selected = selectedOrg();
+      const organizations = await fetch("/api/organizations", init);
+      if (!organizations.ok) return login;
+      const orgs = await organizations.json();
+      if (!Array.isArray(orgs)) return login;
+      const org = selected ? orgs.find((item) => item?.uuid === selected)
+        : orgs.length === 1 ? orgs[0] : undefined;
+      if (typeof org?.uuid !== "string" || !org.uuid) return login;
+      const response = await fetch("/api/organizations/" + encodeURIComponent(org.uuid) + "/kyc_status", init);
+      if (!response.ok) return login;
+      const kyc = await response.json();
+      if (selectedOrg() === selected && typeof kyc?.status === "string" && kyc.status.trim())
+        login.kyc = { status: kyc.status.trim(), organizationId: org.uuid, checkedAt: Date.now() };
+    } catch {
+      // KYC availability must not change the detected login state.
+    }
+    return login;
+  } catch {
+    return null;
+  }
+})()`;
 
 /** Undefined means the site could not be checked, rather than that the user signed out. */
 export async function readClaudeLogin(
@@ -73,7 +100,7 @@ export async function readClaudeLogin(
           ...(login.unavailable ? { unavailable: true } : {}),
         };
       if (login?.signedIn === true && typeof login.email === "string" && login.email.trim())
-        return { signedIn: true, email: login.email };
+        return { signedIn: true, email: login.email, ...(login.kyc ? { kyc: login.kyc } : {}) };
     } catch {
       // A tab may be navigating or closing. Another tab can still answer.
     }
@@ -89,6 +116,7 @@ export function createClaudeLoginTracker(
     email?: string | null;
     signedIn?: boolean;
     unavailable?: boolean;
+    kyc?: ClaudeKyc;
     save(login: ClaudeLogin): Promise<void>;
   },
 ) {
@@ -109,6 +137,13 @@ export function createClaudeLoginTracker(
           signedIn: present && !(!observed && (options.unavailable || options.signedIn === false)),
           email: present && !observed ? (options.email ?? null) : null,
           ...(!observed && present && options.unavailable ? { unavailable: true } : {}),
+          ...(!observed &&
+          present &&
+          !options.unavailable &&
+          options.signedIn !== false &&
+          options.kyc
+            ? { kyc: options.kyc }
+            : {}),
         };
         if (observed || !present) save(state);
         checkedAt = undefined;

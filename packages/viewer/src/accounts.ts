@@ -15,6 +15,8 @@ export interface AccountInfo {
   signedIn?: boolean;
   /** The Claude account it is signed in as, once seen. */
   email?: string | null;
+  /** Latest verification status for the signed-in account's current organization. */
+  kyc?: { status: string; organizationId: string; checkedAt: number };
   /** Claude explicitly rejected the account, for example because it was disabled. */
   unavailable?: boolean;
   proxyId?: string | null;

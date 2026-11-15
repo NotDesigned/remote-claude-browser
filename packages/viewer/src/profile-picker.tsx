@@ -51,6 +51,40 @@ function initial(account: AccountInfo): string {
   return [...source.trim()][0]?.toUpperCase() ?? "?";
 }
 
+const KYC_LABELS = new Map([
+  ["not_required", "当前未要求 KYC"],
+  ["approved", "KYC 已通过"],
+  ["pending", "KYC 待处理"],
+  ["denied", "KYC 未通过"],
+]);
+
+function ProfileKyc({ account }: { account: AccountInfo }) {
+  const { kyc } = account;
+  const checked = kyc ? new Date(kyc.checkedAt) : null;
+  return (
+    <span class="profile-kyc">
+      <span>
+        <span class="profile-kyc-status" data-status={kyc?.status}>
+          {kyc ? (KYC_LABELS.get(kyc.status) ?? "KYC 状态未知") : "KYC 暂未获取"}
+        </span>
+        {" · 当前组织"}
+      </span>
+      <span>
+        {checked ? (
+          <>
+            检测于 <time dateTime={checked.toISOString()}>{checked.toLocaleString()}</time>
+          </>
+        ) : account.running ? (
+          "运行中自动更新"
+        ) : (
+          "打开浏览器后获取"
+        )}
+      </span>
+      <span>升级或付款时仍可能要求验证</span>
+    </span>
+  );
+}
+
 function ProfileCard(props: {
   account: AccountInfo;
   last: boolean;
@@ -144,6 +178,7 @@ function ProfileCard(props: {
                   : "未登录"}
             </span>
           </span>
+          {signedIn && <ProfileKyc account={account} />}
           <span class="profile-exit">
             出口：{account.proxyName ?? (account.proxyId ? "节点已移除" : "未选择（禁止打开）")}
           </span>
