@@ -276,7 +276,6 @@ function startGateway(port: number, temp: string): { child: ChildProcess; logs: 
       GATEWAY_HOST: "127.0.0.1",
       GATEWAY_PORT: String(port),
       MIRROR_E2E: "1",
-      MIRROR_CLIENTS: "1",
       MIRROR_START_URL: "about:blank",
       MIRROR_DISABLE_RTC: "0",
       MIRROR_PUBLIC_ORIGIN: `http://127.0.0.1:${port}`,

@@ -611,7 +611,6 @@ export async function startClientGateway(
       t: "server-status",
       clientsOnline: onlineOwnerCount(),
       clientsAllocated: clientSessions.all().length,
-      clientsMax: clientSessions.capacity(),
       pixelsActive: pixelCapacity.count(),
       pixelsMax: null,
       ...(exit
@@ -984,6 +983,12 @@ export async function startClientGateway(
     [...runtimePromises.keys()].some((sid) => clientSessions.profileOf(sid) === id);
 
   async function createRuntime(sid: string): Promise<ClientRuntime> {
+    if (!e2e && (await memoryShort()))
+      throw new ClientSessionError(
+        503,
+        "CLIENT_RESOURCES",
+        "内存较紧张，请等待离线会话自动回收后重试",
+      );
     const account = await openAccount(clientSessions.profileOf(sid));
     const assetKey = randomBytes(32);
     const { pool, agent, themeCopies, browser, frameOwners } = account;
@@ -1344,21 +1349,6 @@ export async function startClientGateway(
                 ? chosen
                 : await defaultProfileFor(user);
           requireBrowserExit(profileId);
-          if (!e2e && !existing && (await memoryShort()))
-            throw new ClientSessionError(
-              503,
-              "CLIENT_RESOURCES",
-              "内存较紧张，请等待离线会话自动回收后重试",
-            );
-          while (!existing && clientSessions.available() === 0) {
-            const dormant = clientSessions
-              .all()
-              .find(
-                (record) => !runtimePromises.has(record.sid) && !onlineSessions().has(record.sid),
-              );
-            if (!dormant) break;
-            await clientSessions.release(dormant.owner, dormant.sid);
-          }
           const record = await clientSessions.acquire(
             owner,
             request.body?.clientKey,
@@ -1380,8 +1370,6 @@ export async function startClientGateway(
             return {
               ...clientSessions.describe(record.sid),
               account: clientSessions.profileOf(record.sid),
-              maxClients: clientSessions.capacity(),
-              available: clientSessions.available(),
               sharedAccount: true,
             };
           } catch (error) {
@@ -2002,7 +1990,6 @@ export async function startClientGateway(
       browser: alive,
       pages,
       clients: runtimes.size,
-      maxClients: clientSessions.capacity(),
     });
   });
   if (e2e) {

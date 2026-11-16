@@ -88,14 +88,16 @@ function isServerStatus(value: unknown): value is ServerStatusMsg {
     item.t === "server-status" &&
     nonnegative(item.sampledAt) &&
     [item.clientsOnline, item.clientsAllocated, item.pixelsActive].every(integer) &&
-    integer(item.clientsMax) &&
-    (item.clientsMax as number) > 0 &&
     (item.pixelsMax === null || (integer(item.pixelsMax) && (item.pixelsMax as number) > 0)) &&
     integer(item.cpuCount) &&
     (item.cpuCount as number) > 0 &&
-    [item.cpuPercent, item.memoryUsedBytes, item.memoryTotalBytes, item.browserMemoryBytes].every(
-      (v) => v === null || nonnegative(v),
-    ) &&
+    [
+      item.cpuPercent,
+      item.memoryUsedBytes,
+      item.memoryTotalBytes,
+      item.browserMemoryBytes,
+      item.browserMemoryLimitBytes,
+    ].every((v) => v === null || nonnegative(v)) &&
     (item.timeZone === undefined || typeof item.timeZone === "string") &&
     (item.exitCity === undefined || typeof item.exitCity === "string") &&
     (item.exitCountry === undefined || typeof item.exitCountry === "string")

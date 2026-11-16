@@ -23,7 +23,6 @@ const status = (
     exitCountry,
     clientsOnline: 1,
     clientsAllocated: 1,
-    clientsMax: 8,
     pixelsActive: 0,
     pixelsMax: null,
     cpuPercent: null,
@@ -31,6 +30,7 @@ const status = (
     memoryUsedBytes: null,
     memoryTotalBytes: null,
     browserMemoryBytes: null,
+    browserMemoryLimitBytes: null,
   },
 });
 afterEach(() => vi.useRealTimers());

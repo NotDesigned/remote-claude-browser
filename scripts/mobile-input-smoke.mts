@@ -32,8 +32,6 @@ const server = createServer(async (request, response) => {
       JSON.stringify({
         sid: "client-1",
         label: "Mobile QA",
-        maxClients: 8,
-        available: 7,
         sharedAccount: true,
       }),
     );

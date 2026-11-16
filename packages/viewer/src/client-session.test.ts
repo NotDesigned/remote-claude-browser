@@ -19,8 +19,6 @@ const SECOND_KEY = "22222222-2222-4222-8222-222222222222";
 const SESSION = {
   sid: "client-1",
   label: "独立会话 1",
-  maxClients: 5,
-  available: 4,
   sharedAccount: true,
 };
 
@@ -138,10 +136,10 @@ describe("client session bootstrap", () => {
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
-  it("exposes only valid owned-session return links when capacity is full", async () => {
+  it("exposes only valid owned-session return links when memory is short", async () => {
     const fetcher = fetchResponse(
       {
-        code: "CLIENT_CAPACITY",
+        code: "CLIENT_RESOURCES",
         ownedSessions: [
           { sid: "client-1", label: "独立会话 1" },
           { sid: "client-2", label: "独立会话 2" },
@@ -153,7 +151,7 @@ describe("client session bootstrap", () => {
     await expect(
       requestClientSession({ clientKey: SECOND_KEY }, { fetcher }),
     ).rejects.toMatchObject({
-      code: "CLIENT_CAPACITY",
+      code: "CLIENT_RESOURCES",
       status: 503,
       ownedSessions: [
         { sid: "client-1", label: "独立会话 1" },
@@ -161,6 +159,19 @@ describe("client session bootstrap", () => {
       ],
     });
   });
+
+  it.each(["CLIENT_RESOURCES", "PROFILE_RESOURCES"])(
+    "explains memory admission failure for %s",
+    async (code) => {
+      await expect(
+        requestClientSession({ clientKey: FIRST_KEY }, { fetcher: fetchResponse({ code }, 503) }),
+      ).rejects.toMatchObject({
+        code,
+        status: 503,
+        message: "服务器内存不足，请等待离线会话自动回收后重试。",
+      });
+    },
+  );
 
   it("keeps an aborted bootstrap aborted rather than converting it into a retry state", async () => {
     const controller = new AbortController();
@@ -213,8 +224,8 @@ describe("client session bootstrap", () => {
     ).toThrow("浏览器无法保存");
   });
 
-  it("validates dynamic capacity metadata without a fixed slot list", async () => {
-    const fifth = { ...SESSION, sid: "client-5", label: "独立会话 5", available: 0 };
+  it("validates session identifiers without a fixed slot list", async () => {
+    const fifth = { ...SESSION, sid: "client-5", label: "独立会话 5" };
     await expect(
       requestClientSession({ clientKey: FIRST_KEY }, { fetcher: fetchResponse(fifth) }),
     ).resolves.toEqual(fifth);
@@ -223,11 +234,6 @@ describe("client session bootstrap", () => {
       { sid: "client-01" },
       { sid: "client-1.5" },
       { sid: "client-9007199254740992" },
-      { maxClients: 0 },
-      { maxClients: 1.5 },
-      { maxClients: Number.MAX_SAFE_INTEGER + 1 },
-      { available: -1 },
-      { available: 6 },
     ]) {
       await expect(
         requestClientSession(
@@ -252,18 +258,9 @@ describe("client session bootstrap", () => {
     await expect(
       requestClientSession(
         { clientKey: FIRST_KEY },
-        { fetcher: fetchResponse({ ...SESSION, sid, maxClients: 128, available: 0 }) },
+        { fetcher: fetchResponse({ ...SESSION, sid }) },
       ),
     ).resolves.toMatchObject({ sid });
-  });
-
-  it("accepts a restored session above a newly reduced capacity", async () => {
-    await expect(
-      requestClientSession(
-        { clientKey: FIRST_KEY },
-        { fetcher: fetchResponse({ ...SESSION, sid: "client-12", maxClients: 3, available: 0 }) },
-      ),
-    ).resolves.toMatchObject({ sid: "client-12", maxClients: 3, available: 0 });
   });
 
   it("retries a recycled forbidden sid once using only this tab's key", async () => {

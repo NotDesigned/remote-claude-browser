@@ -38,6 +38,7 @@ let heldDelete;
 let statusTimer;
 let statusSampledAt = 0;
 let cpuPercent = 30;
+let memoryPressure = false;
 
 function deferred() {
   let release;
@@ -72,14 +73,14 @@ function statusSample() {
         .map((entry) => entry.sid),
     ).size,
     clientsAllocated: slots.size,
-    clientsMax: 16,
     pixelsActive: 0,
     pixelsMax: null,
     cpuPercent,
     cpuCount: 2,
     memoryUsedBytes: 1.2 * 1024 ** 3,
     memoryTotalBytes: 1.9 * 1024 ** 3,
-    browserMemoryBytes: 0.8 * 1024 ** 3,
+    browserMemoryBytes: (memoryPressure ? 3.8 : 0.8) * 1024 ** 3,
+    browserMemoryLimitBytes: 4 * 1024 ** 3,
   };
 }
 function broadcastStatus() {
@@ -101,6 +102,23 @@ async function bodyJson(request) {
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url, "http://fixture.test");
+    if (url.pathname === "/api/accounts" && request.method === "GET") {
+      json(response, 200, {
+        default: "default",
+        current: url.searchParams.has("sid") ? "default" : null,
+        accounts: [
+          {
+            id: "default",
+            name: "测试浏览器",
+            running: slots.size > 0,
+            sessions: slots.size,
+            proxyId: "fixture-proxy",
+            proxyName: "测试出口",
+          },
+        ],
+      });
+      return;
+    }
     if (url.pathname === "/api/status" && request.method === "GET") {
       note("status-request");
       json(response, 200, statusSample());
@@ -120,24 +138,24 @@ const server = createServer(async (request, response) => {
       let session = [...slots.values()].find((slot) => slot.clientKey === body.clientKey);
       if (!session && body.sid) session = slots.get(body.sid);
       if (!session) {
-        const sid = ["client-1", "client-2"].find((candidate) => !slots.has(candidate));
-        if (!sid) {
-          note("capacity-response", { clientKey: body.clientKey });
+        if (memoryPressure) {
+          note("memory-response", { clientKey: body.clientKey });
           json(response, 503, {
-            code: "CLIENT_CAPACITY",
+            code: "CLIENT_RESOURCES",
             ownedSessions: [...slots.values()].map(({ sid, label }) => ({ sid, label })),
           });
           return;
         }
-        session = { sid, label: `独立会话 ${sid.at(-1)}`, clientKey: body.clientKey };
+        let slot = 1;
+        while (slots.has(`client-${slot}`)) slot++;
+        const sid = `client-${slot}`;
+        session = { sid, label: `独立会话 ${slot}`, clientKey: body.clientKey };
         slots.set(sid, session);
       }
       note("create-response", { sid: session.sid, clientKey: body.clientKey });
       json(response, 200, {
         sid: session.sid,
         label: session.label,
-        maxClients: 16,
-        available: 16 - slots.size,
         sharedAccount: true,
       });
       return;
@@ -528,6 +546,7 @@ try {
     chooserOpened = true;
   });
   await firstPage.goto(`${origin}/?new=1`);
+  await firstPage.locator("button.profile-card[data-exit-required]").click();
   const firstRequest = await firstCreateObserved.promise;
   await firstPage.waitForTimeout(250);
   assert.equal(
@@ -546,6 +565,7 @@ try {
 
   const secondPage = await context.newPage();
   await secondPage.goto(`${origin}/?new=1`);
+  await secondPage.locator("button.profile-card[data-exit-required]").click();
   await ready(secondPage, "client-2");
   const secondRequest = creates.find((request) => request.clientKey !== firstRequest.clientKey);
   assert(secondRequest, "The second tab reused the first client key");
@@ -646,17 +666,17 @@ try {
   checks.refreshReusesSession = true;
   checks.actualModeNavigation = true;
 
+  memoryPressure = true;
+  broadcastStatus();
   const thirdPage = await context.newPage();
   await thirdPage.goto(`${origin}/?new=1`);
-  await thirdPage.getByRole("heading", { name: "会话名额已占用" }).waitFor();
+  await thirdPage.locator("button.profile-card[data-exit-required]").click();
+  await thirdPage.getByRole("heading", { name: "暂时无法打开会话" }).waitFor();
   assert.equal(
     await thirdPage.locator("#client-session-overlay").getAttribute("data-phase"),
     "error",
   );
-  assert.match(
-    await thirdPage.locator("#client-session-overlay").innerText(),
-    /历史、设置和额度共享/,
-  );
+  assert.match(await thirdPage.locator("#client-session-overlay").innerText(), /服务器内存不足/);
   const ownedLinks = await thirdPage
     .locator(".owned-client-sessions a")
     .evaluateAll((links) => links.map((link) => link.getAttribute("href")).sort());
@@ -674,15 +694,19 @@ try {
   assert.equal(creates.length, beforeRetry + 1);
   assert.equal(creates.at(-1).clientKey, thirdKey);
   assert.equal(connections.filter((connection) => !connection.closed).length, 2);
-  checks.capacityOverlayOwnedLinksAndStableRetry = true;
+  checks.memoryOverlayOwnedLinksAndStableRetry = true;
 
   await firstPage.locator("#shell-menu-toggle").click();
   const menu = firstPage.locator("#shell-menu");
   await menu.waitFor();
-  await firstPage.waitForFunction(() =>
-    document.querySelector("#shell-menu")?.textContent?.includes("在线设备2"),
+  await firstPage.waitForFunction(
+    () =>
+      document.querySelector("#shell-menu")?.textContent?.includes("在线设备2") &&
+      document.querySelector("#shell-menu")?.textContent?.includes("3.8 / 4.0 GiB"),
   );
   assert.match(await menu.innerText(), /1\.2 \/ 1\.9 GiB/);
+  assert.match(await menu.innerText(), /3\.8 \/ 4\.0 GiB/);
+  assert.match(await menu.innerText(), /服务器内存紧张/);
   assert.equal(
     await firstPage.locator("#presence-chrome").count(),
     0,
@@ -694,7 +718,7 @@ try {
         (entry) => entry.kind === "api-call" && entry.path === "/api/status",
       ).length,
   );
-  const capacityStatusRequests = await thirdPage.evaluate(
+  const memoryStatusRequests = await thirdPage.evaluate(
     () =>
       window.__clientUiTrace.filter(
         (entry) => entry.kind === "api-call" && entry.path === "/api/status",
@@ -712,7 +736,7 @@ try {
       window.__clientUiTrace.filter(
         (entry) => entry.kind === "api-call" && entry.path === "/api/status",
       ).length > before,
-    capacityStatusRequests,
+    memoryStatusRequests,
   );
   assert.equal(
     await firstPage.evaluate(
@@ -724,7 +748,7 @@ try {
     readyStatusRequests,
     "Ready page also polls HTTP status",
   );
-  checks.liveWebSocketStatusAndCapacityHttpPolling = true;
+  checks.liveWebSocketStatusAndMemoryHttpPolling = true;
 
   await firstPage.bringToFront();
   const headerHeight = await firstPage
@@ -786,7 +810,9 @@ try {
   assert.equal(slots.size, 1);
   checks.redundantToolbarButtonsRemovedAndClosedPageDoesNotReconnect = true;
 
+  memoryPressure = false;
   await firstPage.locator("#client-session-reopen").click();
+  await firstPage.locator("button.profile-card[data-exit-required]").click();
   await ready(firstPage, "client-1");
   assert.equal(creates.length, closedCreates + 1);
   assert.notEqual(creates.at(-1).clientKey, firstRequest.clientKey);

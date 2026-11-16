@@ -14,6 +14,8 @@ import { ClientSessionError } from "./session/clients";
 import { createProfileStore } from "./session/profiles";
 
 const hooks = vi.hoisted(() => ({
+  browserMemoryBytes: 64 * 1048576,
+  memoryUsedBytes: 128 * 1048576,
   cpaStop: vi.fn(async (_instance: unknown) => {}),
   stopEgress: vi.fn(async (_scope: string) => {}),
   checkEgress: vi.fn(async (_scope: string) => ({
@@ -125,9 +127,9 @@ vi.mock("./monitor/resources", () => ({
       sampledAt: Date.now(),
       cpuPercent: 0,
       cpuCount: 1,
-      memoryUsedBytes: 128 * 1048576,
+      memoryUsedBytes: hooks.memoryUsedBytes,
       memoryTotalBytes: 4096 * 1048576,
-      browserMemoryBytes: 64 * 1048576,
+      browserMemoryBytes: hooks.browserMemoryBytes,
       browserMemoryLimitBytes: 3584 * 1048576,
     }),
   }),
@@ -148,6 +150,8 @@ interface Paths {
 }
 
 beforeEach(() => {
+  hooks.browserMemoryBytes = 64 * 1048576;
+  hooks.memoryUsedBytes = 128 * 1048576;
   hooks.beforeCreate = undefined;
   hooks.beforeRemove = undefined;
   hooks.beforeUserUpdate = undefined;
@@ -161,7 +165,6 @@ beforeEach(() => {
   vi.stubEnv("MIRROR_ADMIN_USERNAME", "admin");
   vi.stubEnv("MIRROR_AUTH_SECRET", SECRET);
   vi.stubEnv("MIRROR_PUBLIC_ORIGIN", ORIGIN);
-  vi.stubEnv("MIRROR_CLIENTS", undefined);
   vi.stubEnv("BROWSER_CDP_URL", undefined);
   vi.stubEnv("MIRROR_RUNTIME_SOCKET", undefined);
   vi.stubEnv("CPA_BROKER_SOCKET", undefined);
@@ -482,6 +485,48 @@ describe("multi-user management routes", () => {
     expect(hooks.brokerLaunch).toHaveBeenCalledTimes(1);
     expect(hooks.launch).not.toHaveBeenCalled();
   });
+  it("admits sessions beyond sixteen by available memory and preserves existing sessions on refusal", async () => {
+    vi.stubEnv("MIRROR_RUNTIME_SOCKET", "/broker-test-boundary.sock");
+    vi.stubEnv("CHROME_HEADFUL", undefined);
+    const { app, paths } = await fixture(async (paths) => {
+      await writeFile(
+        paths.sessions,
+        JSON.stringify(
+          Array.from({ length: 17 }, (_, i) => ({
+            sid: `client-${i + 1}`,
+            owner: "device-legacy",
+            clientKey: `existing-${i}`,
+            createdAt: i + 1,
+          })),
+        ),
+      );
+    });
+    const admin = withDevice(await login(app), "device-legacy");
+    await bindExit(app, admin, "default");
+    const previous = await readFile(paths.sessions, "utf8");
+    for (const [browserMiB, hostUsedMiB, code] of [
+      [3400, 128, "CLIENT_RESOURCES"],
+      [3000, 128, "PROFILE_RESOURCES"],
+      [64, 3900, "CLIENT_RESOURCES"],
+    ] as const) {
+      hooks.browserMemoryBytes = browserMiB * 1048576;
+      hooks.memoryUsedBytes = hostUsedMiB * 1048576;
+      for (const clientKey of ["new-tab", "existing-0"]) {
+        const response = await api(app, admin, "POST", "/api/client/session", { clientKey });
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe(code);
+      }
+      expect(hooks.brokerLaunch).not.toHaveBeenCalled();
+      expect(await readFile(paths.sessions, "utf8")).toBe(previous);
+    }
+    hooks.browserMemoryBytes = 64 * 1048576;
+    hooks.memoryUsedBytes = 128 * 1048576;
+    const admitted = await api(app, admin, "POST", "/api/client/session", { clientKey: "new-tab" });
+    expect(admitted.json().code).toBe("BROWSER_TEST_BOUNDARY");
+    expect(hooks.brokerLaunch).toHaveBeenCalledTimes(1);
+    expect(await readFile(paths.sessions, "utf8")).toBe(previous);
+  });
+
   it("launches a newly created fingerprint profile through the broker with its saved seed", async () => {
     vi.stubEnv("MIRROR_BROWSER_ENGINE", "aliasmode");
     vi.stubEnv("MIRROR_RUNTIME_SOCKET", "/broker-test-boundary.sock");
@@ -956,7 +1001,6 @@ describe("multi-user management routes", () => {
     expect(accounts.accounts.map((record: { id: string }) => record.id)).toEqual([bobProfile]);
     const status = (await api(app, admin, "GET", "/api/status")).json();
     expect(status.clientsAllocated).toBe(2);
-    expect(status.clientsMax).toBe(8);
     await app.listen({ host: "127.0.0.1", port: 0 });
     const address = app.server.address();
     if (!address || typeof address === "string") throw new Error("missing test server address");
@@ -964,16 +1008,13 @@ describe("multi-user management routes", () => {
     expect(hooks.launch).not.toHaveBeenCalled();
   });
 
-  it("uses configured capacity, revokes disabled users, and never reassigns a deleted user's profiles after restart", async () => {
-    vi.stubEnv("MIRROR_CLIENTS", "3");
+  it("revokes disabled users and never reassigns a deleted user's profiles after restart", async () => {
     const gateway = await fixture();
     const { app } = gateway;
     const admin = await login(app);
     const bob = await createBob(app, admin);
     const bobCookie = await login(app, "bob", BOB_PASSWORD);
     const bobProfile = (await api(app, bobCookie, "GET", "/api/accounts")).json().accounts[0].id;
-    expect((await api(app, admin, "GET", "/api/status")).json().clientsMax).toBe(3);
-    expect((await app.inject({ url: "/healthz" })).json().maxClients).toBe(3);
     expect(
       (await api(app, admin, "PATCH", `/api/users/${bob.id}`, { enabled: false })).statusCode,
     ).toBe(200);

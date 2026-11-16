@@ -27,7 +27,6 @@ describe("wire envelope", () => {
         sampledAt: 123,
         clientsOnline: 2,
         clientsAllocated: 3,
-        clientsMax: 16,
         pixelsActive: 2,
         pixelsMax: null,
         cpuPercent: 20,
@@ -35,6 +34,7 @@ describe("wire envelope", () => {
         memoryUsedBytes: 1073741824,
         memoryTotalBytes: 2147483648,
         browserMemoryBytes: 800000000,
+        browserMemoryLimitBytes: null,
       },
       { t: "px", tab: "T1", data: "aGk=", w: 1280, h: 720 },
       {

@@ -9,7 +9,6 @@ const value: ServerStatusMsg = {
   sampledAt: 1,
   clientsOnline: 1,
   clientsAllocated: 2,
-  clientsMax: 16,
   pixelsActive: 2,
   pixelsMax: null,
   cpuPercent: 30.2,
@@ -17,6 +16,7 @@ const value: ServerStatusMsg = {
   memoryUsedBytes: 1.2 * 1024 ** 3,
   memoryTotalBytes: 1.9 * 1024 ** 3,
   browserMemoryBytes: 0.8 * 1024 ** 3,
+  browserMemoryLimitBytes: null,
 };
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 afterEach(() => vi.useRealTimers());
@@ -25,11 +25,17 @@ describe("resource warning", () => {
   const warned = (change: Partial<ServerStatusMsg>) =>
     resourceWarning({ value: { ...value, ...change }, receivedAt: 1 });
 
-  it("names full sessions and short memory, and otherwise says nothing", () => {
+  it("warns about memory rather than the number of sessions", () => {
     expect(warned({})).toBeNull();
     expect(resourceWarning(null)).toBeNull();
-    expect(warned({ clientsAllocated: 16 })).toContain("会话名额已满");
+    expect(warned({ clientsAllocated: 128 })).toBeNull();
     expect(warned({ memoryUsedBytes: 1.7 * 1024 ** 3 })).toContain("内存紧张");
+    expect(
+      warned({ browserMemoryBytes: 7.3 * 1024 ** 3, browserMemoryLimitBytes: 8 * 1024 ** 3 }),
+    ).toContain("内存紧张");
+    expect(
+      warned({ browserMemoryBytes: 7 * 1024 ** 3, browserMemoryLimitBytes: 8 * 1024 ** 3 }),
+    ).toBeNull();
   });
 });
 

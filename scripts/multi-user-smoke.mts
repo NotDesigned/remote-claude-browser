@@ -12,7 +12,6 @@ import type { Down, TabMeta, Up } from "../packages/protocol/src/index";
 import type { FrontendUser } from "../packages/gateway/src/auth/users";
 import type { startClientGateway as GatewayStarter } from "../packages/gateway/src/clients-main";
 import { assertProductionSafe } from "../packages/gateway/src/production-guard";
-import { DEFAULT_SESSION_CAPACITY } from "../packages/gateway/src/session/clients";
 import { createResourceSampler } from "../packages/gateway/src/monitor/resources";
 
 if (process.env.CLAUDE_LIMITED_TASK !== "1")
@@ -47,11 +46,9 @@ interface FixtureReport {
 interface Lease {
   sid: string;
   account: string;
-  maxClients: number;
 }
 interface WorkspaceStatus {
   clientsAllocated: number;
-  clientsMax: number;
 }
 interface AccountList {
   accounts: { id: string; running: boolean; sessions: number }[];
@@ -364,7 +361,6 @@ try {
     MIRROR_ADMIN_USERNAME: "admin",
     MIRROR_AUTH_SECRET: randomBytes(32).toString("hex"),
     MIRROR_PUBLIC_ORIGIN: origin,
-    MIRROR_CLIENTS: String(DEFAULT_SESSION_CAPACITY),
     MIRROR_DISABLE_RTC: "1",
     MIRROR_START_URL: fixtureOrigin + "/blank",
     MIRROR_USERS_DB: join(profile, "users.sqlite"),
@@ -394,7 +390,6 @@ try {
     "bootstrap_administrator",
     adminInfo.user.username === "admin" && adminInfo.user.role === "admin",
   );
-  check("configured_capacity", (await admin.status()).clientsMax === DEFAULT_SESSION_CAPACITY);
   const userA = await admin.json<FrontendUser>(
     "/api/users",
     "POST",

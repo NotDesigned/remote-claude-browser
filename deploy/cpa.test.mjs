@@ -77,11 +77,11 @@ test("CPA egress exposes only TCP SOCKS and rejects private destinations without
 
 test("setup preserves browser settings and quoted VLESS secrets, and is idempotent", () => {
   const source =
-    "EGRESS_PROXY='vless://fixture$literal@proxy.example:443'\nSERVER_MEMORY=8g\nMIRROR_CLIENTS=16\nPUBLIC_HOST=browser.example.com\nCOMPOSE_FILE=compose.yml:compose.proxy.yml:compose.https.yml\n";
+    "EGRESS_PROXY='vless://fixture$literal@proxy.example:443'\nSERVER_MEMORY=8g\nSERVER_PIDS_LIMIT=4096\nPUBLIC_HOST=browser.example.com\nCOMPOSE_FILE=compose.yml:compose.proxy.yml:compose.https.yml\n";
   const first = prepareCpaEnv(source);
   assert.equal(first.origin, "https://browser.example.com");
   assert.ok(first.text.includes("EGRESS_PROXY='vless://fixture$literal@proxy.example:443'"));
-  assert.ok(first.text.includes("SERVER_MEMORY=8g\nMIRROR_CLIENTS=16\n"));
+  assert.ok(first.text.includes("SERVER_MEMORY=8g\nSERVER_PIDS_LIMIT=4096\n"));
   assert.ok(
     first.text.includes(
       "COMPOSE_FILE=compose.yml:compose.proxy.yml:compose.https.yml:compose.cpa.yml:compose.cpa.https.yml",

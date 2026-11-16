@@ -64,7 +64,6 @@ export interface ServerStatusMsg {
   sampledAt: number;
   clientsOnline: number;
   clientsAllocated: number;
-  clientsMax: number;
   pixelsActive: number;
   /** Null when pixel sessions have no separate global limit. */
   pixelsMax: number | null;
@@ -73,6 +72,7 @@ export interface ServerStatusMsg {
   memoryUsedBytes: number | null;
   memoryTotalBytes: number | null;
   browserMemoryBytes: number | null;
+  browserMemoryLimitBytes: number | null;
   /** This session's browser exit IANA zone, matching the browser's local time. */
   timeZone?: string;
   /** Geographic labels from the exit IP lookup, independent of the IANA zone name. */

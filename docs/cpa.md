@@ -201,7 +201,7 @@ POST /v1/chat/completions
 POST /v1/responses
 ```
 
-Claude Code 订阅额度与浏览器会话容量无关。`MIRROR_CLIENTS=16` 不代表订阅允许 16 路 API 并发；限额和可用模型仍由上游决定。此部署保留 CPA 原有兼容行为，不额外注入自定义伪装参数，也不保证免风控。订阅授权是否适用于具体用途，应参考 [Anthropic 的当前说明](https://support.claude.com/en/articles/13189465-log-in-to-your-claude-account)。
+Claude Code 订阅额度与浏览器会话数量无关。浏览器按可用内存接收新会话，API 并发限额和可用模型仍由上游决定。此部署保留 CPA 原有兼容行为，不额外注入自定义伪装参数，也不保证免风控。订阅授权是否适用于具体用途，应参考 [Anthropic 的当前说明](https://support.claude.com/en/articles/13189465-log-in-to-your-claude-account)。
 
 ### 出口与资源
 

@@ -13,13 +13,12 @@ excluded from Git. Do not commit a populated one. `scripts/bootstrap.sh` writes 
 | `MIRROR_PUBLIC_ORIGIN` | for public use | empty | The exact origin people open. WebSockets from others are refused |
 | `SERVER_BIND` | no | `127.0.0.1` | Keep loopback behind a tunnel or reverse proxy |
 | `SERVER_PORT` | no | `3010` | The gateway's port on the host |
-| `SERVER_MEMORY` | no | `4g` | Container memory limit. New sessions are refused as it runs short |
+| `SERVER_MEMORY` | no | `4g` | Container memory limit. New sessions and dormant-session resumes are refused as it runs short |
 | `SERVER_MEMSWAP` | no | `0` | Memory plus swap. `0` leaves it to Docker |
 | `SERVER_CPUS` | no | `0` | CPU limit. `0` means all of the host's CPUs |
 | `SERVER_PIDS_LIMIT` | no | `4096` | Combined process and thread limit. Chromium profiles each use many threads |
 | `SERVER_SUBNET` | no | `172.31.66.0/24` | The Compose network. Change it if it collides with another network |
 | `SERVER_IMAGE` | no | local build | A prebuilt image |
-| `MIRROR_CLIENTS` | no | `8` | Total active session slots across users; any positive safe integer. Invalid values prevent startup |
 | `MIRROR_START_URL` | no | `https://claude.ai/` | The page a new session opens |
 | `MIRROR_ACCOUNTS_DIR` | no | `<profile>-accounts` | Where browser configurations other than the legacy default keep their Chrome profiles |
 | `EGRESS_POLICY` | no | `on` | `off` lets pages reach private networks and the host |
@@ -40,10 +39,12 @@ profile ownership; website credentials remain in Chrome's profiles. A remembered
 
 Browser profiles with `proxyId: null` are unassigned. Creating or resuming a session, or switching to an unassigned profile, returns `409 EXIT_REQUIRED` before allocating a new session or launching Chrome. Enable `compose.runtime.yml`, import a shared or private node, then bind it to the profile. New CPA authorizations default to the current browser profile's visible proxy node and require an explicit node; changing a credential proxy also requires a node. Existing unbound credentials and internal instance startup retain their deployment exit.
 
-Each front-end user sees only their own browser configurations and sessions. The session limit is
-global, rather than a limit on front-end users or online devices. Lowering it keeps existing sessions
-running and refuses new ones until occupancy drops below the configured capacity. Admission can
-also be refused when memory is low.
+Each front-end user sees only their own browser configurations and sessions, and can save up to
+eight browser profiles. Sessions have no fixed count limit. New sessions and dormant-session resumes are admitted
+according to available container and host memory; opening another browser profile reserves additional memory.
+Offline sessions release their windows after about 60 seconds, and profiles with no running
+sessions close their browser process after another 120 seconds. Profile data and session ownership
+are retained for reconnecting.
 
 The server's `compose.yml` also accepts these if you add them to its `environment`:
 

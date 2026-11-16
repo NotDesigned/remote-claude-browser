@@ -26,8 +26,6 @@ const server = createServer(async (request, response) => {
       JSON.stringify({
         sid: "client-1",
         label: "独立会话 1",
-        maxClients: 2,
-        available: 1,
         sharedAccount: true,
       }),
     );

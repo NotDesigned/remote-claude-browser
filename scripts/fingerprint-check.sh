@@ -21,7 +21,7 @@ chmod 600 "$dir/env"
 
 docker rm -f "$name" >/dev/null 2>&1 || true
 docker run -d --name "$name" --init --env-file "$dir/env" \
-  -e NODE_ENV=test -e MIRROR_E2E=1 -e MIRROR_CLIENTS=8 -e MIRROR_START_URL=about:blank \
+  -e NODE_ENV=test -e MIRROR_E2E=1 -e MIRROR_START_URL=about:blank \
   --cap-drop ALL --cap-add CHOWN --cap-add KILL --cap-add NET_ADMIN --cap-add SETGID \
   --cap-add SETUID --cap-add SYS_ADMIN --cap-add SYS_CHROOT \
   --device /dev/net/tun --security-opt no-new-privileges:true \

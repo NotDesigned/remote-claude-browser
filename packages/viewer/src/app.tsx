@@ -1369,9 +1369,7 @@ export function App() {
                     : clientPhase === "error"
                       ? endFailure
                         ? "未能结束会话"
-                        : clientError?.code === "CLIENT_CAPACITY"
-                          ? "会话名额已占用"
-                          : "暂时无法打开会话"
+                        : "暂时无法打开会话"
                       : "正在打开独立会话…"}
             </h1>
             <p>
@@ -1380,7 +1378,7 @@ export function App() {
                 : clientPhase === "closed"
                   ? "当前页面已停止连接。点击重新开启后，才会再次申请会话。"
                   : clientPhase === "ending"
-                    ? "已停止本页面的输入和连接，正在释放会话名额。"
+                    ? "已停止本页面的输入和连接，正在释放会话资源。"
                     : clientPhase === "error"
                       ? clientError?.message
                       : "正在连接当前用户的独立浏览器。首次打开可能需要一些时间。"}

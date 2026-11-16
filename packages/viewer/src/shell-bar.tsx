@@ -223,7 +223,7 @@ export function ShellBar(props: ShellBarProps) {
               </div>
               <div>
                 <dt>会话</dt>
-                <dd>{sample ? `${sample.clientsAllocated} / ${sample.clientsMax}` : "—"}</dd>
+                <dd>{sample?.clientsAllocated ?? "—"}</dd>
               </div>
               <div>
                 <dt>CPU</dt>
@@ -246,7 +246,9 @@ export function ShellBar(props: ShellBarProps) {
                 <dd>
                   {sample?.browserMemoryBytes === null || sample?.browserMemoryBytes === undefined
                     ? "—"
-                    : `${gib(sample.browserMemoryBytes)} GiB`}
+                    : sample.browserMemoryLimitBytes === null
+                      ? `${gib(sample.browserMemoryBytes)} GiB`
+                      : `${gib(sample.browserMemoryBytes)} / ${gib(sample.browserMemoryLimitBytes)} GiB`}
                 </dd>
               </div>
               <div>
@@ -277,9 +279,15 @@ export function resourceWarning(received: ReceivedServerStatus | null): string |
     sample.memoryTotalBytes !== null && sample.memoryUsedBytes !== null
       ? sample.memoryTotalBytes - sample.memoryUsedBytes
       : null;
-  if (sample.clientsAllocated >= sample.clientsMax)
-    return `会话名额已满（${sample.clientsAllocated} / ${sample.clientsMax}），暂时无法新建会话；已打开的会话不受影响。`;
-  if (free !== null && free < 384 * 1024 ** 2)
+  const budget = sample.browserMemoryLimitBytes;
+  const headroom = budget === null ? null : Math.max(300 * 1024 ** 2, budget * 0.1);
+  if (
+    (budget !== null &&
+      headroom !== null &&
+      sample.browserMemoryBytes !== null &&
+      sample.browserMemoryBytes > budget - headroom) ||
+    (free !== null && free < 256 * 1024 ** 2)
+  )
     return "服务器内存紧张，新建会话可能失败；已打开的会话不受影响。";
   return null;
 }

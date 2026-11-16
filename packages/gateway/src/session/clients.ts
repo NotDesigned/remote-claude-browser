@@ -1,23 +1,9 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-export const DEFAULT_SESSION_CAPACITY = 8;
 export type ClientSlot = `client-${number}`;
 
-export function parseSessionCapacity(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env.MIRROR_CLIENTS?.trim();
-  if (raw === undefined || raw === "") return DEFAULT_SESSION_CAPACITY;
-  if (!/^[1-9]\d*$/.test(raw)) throw new Error("MIRROR_CLIENTS must be a positive safe integer");
-  return sessionCapacity(Number(raw));
-}
-
-function sessionCapacity(value: number): number {
-  if (!Number.isSafeInteger(value) || value < 1)
-    throw new Error("MIRROR_CLIENTS must be a positive safe integer");
-  return value;
-}
-
-/** A persisted slot remains valid when the operator reduces the admission limit. */
+/** Session identifiers remain stable across reconnects and gateway restarts. */
 export function isClientSlot(value: unknown): value is ClientSlot {
   return (
     typeof value === "string" &&
@@ -46,10 +32,7 @@ export class ClientSessionError extends Error {
 }
 
 /** Stable device ownership is separate from the workspace selected in a browser tab. */
-export async function createClientSessions(
-  options: { file?: string; now?: () => number; maxSessions?: number } = {},
-) {
-  const maxSessions = sessionCapacity(options.maxSessions ?? parseSessionCapacity());
+export async function createClientSessions(options: { file?: string; now?: () => number } = {}) {
   const records = new Map<ClientSlot, ClientRecord>();
   const now = options.now ?? Date.now;
   if (options.file) {
@@ -98,12 +81,6 @@ export async function createClientSessions(
     return [...records.values()].find((r) => r.owner === owner && r.clientKey === clientKey);
   };
   return {
-    capacity() {
-      return maxSessions;
-    },
-    *slots(): IterableIterator<ClientSlot> {
-      for (let slot = 1; slot <= maxSessions; slot++) yield `client-${slot}`;
-    },
     owns,
     all() {
       return [...records.values()];
@@ -133,19 +110,10 @@ export async function createClientSessions(
       }
     },
     describe,
-    available() {
-      return Math.max(0, maxSessions - records.size);
-    },
     findExisting,
     async acquire(owner: string, clientKey: unknown, requested?: unknown, phone = false) {
       const current = findExisting(owner, clientKey, requested);
       if (current) return current;
-      if (records.size >= maxSessions)
-        throw new ClientSessionError(
-          503,
-          "CLIENT_CAPACITY",
-          `${maxSessions} 个会话均已占用，离线会话会自动回收，请稍后重试`,
-        );
       let slot = 1;
       while (records.has(`client-${slot}`)) slot++;
       const sid: ClientSlot = `client-${slot}`;

@@ -2,25 +2,9 @@ import { describe, it, expect } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createClientSessions, isClientSlot, parseSessionCapacity } from "./clients";
+import { createClientSessions, isClientSlot } from "./clients";
 
-describe("session capacity configuration", () => {
-  it("defaults to eight and accepts positive safe integer capacities", () => {
-    expect(parseSessionCapacity({})).toBe(8);
-    expect(parseSessionCapacity({ MIRROR_CLIENTS: "" })).toBe(8);
-    for (const size of [1, 3, 12, 32, 128])
-      expect(parseSessionCapacity({ MIRROR_CLIENTS: String(size) })).toBe(size);
-  });
-
-  it.each(["0", "-1", "1.5", "1e2", "NaN", "Infinity", "01", "9007199254740992"])(
-    "rejects invalid capacity %s instead of falling back to a shared browser",
-    (value) => {
-      expect(() => parseSessionCapacity({ MIRROR_CLIENTS: value })).toThrow(
-        "positive safe integer",
-      );
-    },
-  );
-
+describe("session identifiers", () => {
   it("rejects malformed and unsafe slot identifiers", () => {
     for (const value of [
       "client-0",
@@ -36,66 +20,23 @@ describe("session capacity configuration", () => {
 });
 
 describe("client ownership", () => {
-  it.each([3, 12])(
-    "honors a capacity of %i, restores a tab and rejects an extra session",
-    async (maxSessions) => {
-      const sessions = await createClientSessions({ maxSessions });
-      expect(sessions.capacity()).toBe(maxSessions);
-      expect([...sessions.slots()]).toHaveLength(maxSessions);
-      const [a, b] = await Promise.all([
-        sessions.acquire("device-a", "tab-a"),
-        sessions.acquire("device-b", "tab-b"),
-      ]);
-      expect([a.sid, b.sid]).toEqual(["client-1", "client-2"]);
-      expect(await sessions.acquire("device-a", "tab-a")).toBe(a);
-      await Promise.all(
-        Array.from({ length: maxSessions - 2 }, (_, i) =>
-          sessions.acquire(`device-${i + 3}`, `tab-${i + 3}`),
-        ),
-      );
-      expect(sessions.available()).toBe(0);
-      expect(sessions.all()).toHaveLength(maxSessions);
-      await expect(sessions.acquire("device-c", "tab-c")).rejects.toMatchObject({
-        statusCode: 503,
-        code: "CLIENT_CAPACITY",
-      });
-      expect(sessions.owns("device-b", a.sid)).toBe(false);
-      await expect(sessions.acquire("device-b", "another", a.sid)).rejects.toMatchObject({
-        statusCode: 403,
-      });
-      await expect(sessions.release("device-b", a.sid)).rejects.toMatchObject({ statusCode: 403 });
-      await sessions.release("device-a", a.sid);
-      expect((await sessions.acquire("device-c", "tab-c")).sid).toBe("client-1");
-      expect(sessions.owns("device-b", b.sid)).toBe(true);
-    },
-  );
-  it("keeps persisted sessions above a reduced limit and blocks admission until enough are released", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "client-capacity-test-"));
-    try {
-      const file = join(dir, "sessions.json");
-      const original = await createClientSessions({ file, maxSessions: 3 });
-      const records = await Promise.all(
-        [1, 2, 3].map((n) => original.acquire("device", `tab-${n}`)),
-      );
-      const reduced = await createClientSessions({ file, maxSessions: 1 });
-      expect(reduced.all()).toHaveLength(3);
-      expect(reduced.available()).toBe(0);
-      expect(await reduced.acquire("device", "return", "client-3")).toEqual(records[2]);
-      expect(reduced.describe("client-3").label).toBe("独立会话 3");
-      await expect(reduced.acquire("new", "new")).rejects.toMatchObject({
-        code: "CLIENT_CAPACITY",
-      });
-      await reduced.release("device", "client-1");
-      await reduced.release("device", "client-2");
-      await expect(reduced.acquire("new", "new")).rejects.toMatchObject({
-        code: "CLIENT_CAPACITY",
-      });
-      await reduced.release("device", "client-3");
-      expect(reduced.available()).toBe(1);
-      expect((await reduced.acquire("new", "new")).sid).toBe("client-1");
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+  it("allocates beyond the old limit, restores ownership and reuses released identifiers", async () => {
+    const sessions = await createClientSessions();
+    const records = await Promise.all(
+      Array.from({ length: 32 }, (_, i) => sessions.acquire(`device-${i}`, `tab-${i}`)),
+    );
+    expect(sessions.all()).toHaveLength(32);
+    expect(new Set(records.map((record) => record.sid)).size).toBe(32);
+    expect(await sessions.acquire("device-0", "tab-0")).toBe(records[0]);
+    await expect(sessions.acquire("device-1", "another", records[0]!.sid)).rejects.toMatchObject({
+      statusCode: 403,
+    });
+    await expect(sessions.release("device-1", records[0]!.sid)).rejects.toMatchObject({
+      statusCode: 403,
+    });
+    await sessions.release("device-0", records[0]!.sid);
+    expect((await sessions.acquire("new-device", "new-tab")).sid).toBe(records[0]!.sid);
+    expect(sessions.owns("device-1", records[1]!.sid)).toBe(true);
   });
   it("allocates again after automatic release when the page restores its old session hint", async () => {
     const sessions = await createClientSessions();
@@ -105,11 +46,11 @@ describe("client ownership", () => {
     expect(next).not.toBe(previous);
     expect(sessions.owns("device-a", next.sid)).toBe(true);
   });
-  it("retains ownership and capacity when releasing cannot persist, and permits a later retry", async () => {
+  it("retains ownership when releasing cannot persist, and permits a later retry", async () => {
     const dir = await mkdtemp(join(tmpdir(), "clients-release-failure-"));
     try {
       const file = join(dir, "sessions.json");
-      const sessions = await createClientSessions({ file, maxSessions: 1 });
+      const sessions = await createClientSessions({ file });
       const record = await sessions.acquire("device-a", "tab-a", undefined, true);
       await sessions.setProfile("device-a", record.sid, "p-0123456789");
       await rm(dir, { recursive: true, force: true });
@@ -117,15 +58,10 @@ describe("client ownership", () => {
       await expect(sessions.release("device-a", record.sid)).rejects.toThrow();
       expect(sessions.get(record.sid)).toBe(record);
       expect(sessions.owns("device-a", record.sid)).toBe(true);
-      expect(sessions.available()).toBe(0);
       expect(sessions.profileOf(record.sid)).toBe("p-0123456789");
-      await expect(sessions.acquire("device-b", "tab-b")).rejects.toMatchObject({
-        code: "CLIENT_CAPACITY",
-      });
       await rm(dir);
       await sessions.release("device-a", record.sid);
-      expect(sessions.available()).toBe(1);
-      expect((await createClientSessions({ file, maxSessions: 1 })).all()).toEqual([]);
+      expect((await createClientSessions({ file })).all()).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

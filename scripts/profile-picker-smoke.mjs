@@ -177,8 +177,6 @@ const server = createServer(async (req, res) => {
       return json(res, {
         sid: "client-1",
         label: "Fixture",
-        maxClients: 8,
-        available: 7,
         sharedAccount: true,
       });
     }

@@ -12,7 +12,7 @@ if [[ $# != 0 ]]; then
 fi
 # Explicit invocation values override saved defaults, including a corrected literal SSH host.
 declare -A publish_overrides=()
-for publish_setting in REMOTE_HOST REMOTE_SERVER_DIR REMOTE_SSH_IDENTITY REMOTE_SSH_KNOWN_HOSTS DEPLOY_SESSION_CAPACITY; do
+for publish_setting in REMOTE_HOST REMOTE_SERVER_DIR REMOTE_SSH_IDENTITY REMOTE_SSH_KNOWN_HOSTS; do
   if [[ -v $publish_setting ]]; then publish_overrides[$publish_setting]=${!publish_setting}; fi
 done
 if [[ -f deploy/remote/local.env ]]; then . deploy/remote/local.env; fi
@@ -21,18 +21,8 @@ for publish_setting in "${!publish_overrides[@]}"; do
 done
 remote_host=${REMOTE_HOST:?Set REMOTE_HOST to the browser server SSH host}
 server_dir=${REMOTE_SERVER_DIR:-/opt/claude-browser/docker}
-# Empty keeps the server's own MIRROR_CLIENTS; a number replaces it.
-session_capacity=${DEPLOY_SESSION_CAPACITY:-}
 [[ $remote_host =~ ^[A-Za-z0-9][A-Za-z0-9_.@:-]*$ ]] || exit 2
 [[ $server_dir =~ ^/[A-Za-z0-9_./-]+$ && $server_dir != *..* ]] || exit 2
-if [[ -n $session_capacity ]]; then
-  [[ $session_capacity =~ ^[1-9][0-9]*$ ]] || exit 2
-  python3 - "$session_capacity" <<'PY'
-import sys
-if int(sys.argv[1]) > 9007199254740991:
-    raise SystemExit('DEPLOY_SESSION_CAPACITY must be a positive safe integer')
-PY
-fi
 
 ssh_options=(-o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes)
 if [[ -n ${REMOTE_SSH_IDENTITY:-} ]]; then
@@ -104,11 +94,10 @@ remote_stage=$(ssh_server mktemp -d /tmp/claude-container-publish.XXXXXX)
 [[ $remote_stage =~ ^/tmp/claude-container-publish\.[A-Za-z0-9]+$ ]] || exit 2
 ssh_server "cat > $remote_stage/payload.tar.gz" <"$archive"
 
-ssh_server bash -s -- "$remote_stage" "$archive_digest" "$release_id" "$server_dir" "${session_capacity:--}" <<'REMOTE'
+ssh_server bash -s -- "$remote_stage" "$archive_digest" "$release_id" "$server_dir" <<'REMOTE'
 set -euo pipefail
 umask 077
-stage=$1 expected_digest=$2 release_id=$3 server_dir=$4 capacity=$5
-if [[ $capacity = - ]]; then capacity=; fi
+stage=$1 expected_digest=$2 release_id=$3 server_dir=$4
 exec 9>/run/lock/claude-container-deploy.lock
 flock -n 9 || { echo 'Another container deployment is already running.' >&2; exit 1; }
 cd "$server_dir"
@@ -266,13 +255,12 @@ metadata_ready=1
 install -m 644 "$release/payload/compose.yml" "$server_dir/compose.yml"
 install -m 644 "$release/payload/compose.hostnet.yml" "$server_dir/compose.hostnet.yml"
 install -m 644 "$release/payload/compose.proxy.yml" "$server_dir/compose.proxy.yml"
-python3 - "$server_dir/.env" "$image" "$capacity" <<'PY'
+python3 - "$server_dir/.env" "$image" <<'PY'
 from pathlib import Path
 import os, re, sys
 file = Path(sys.argv[1])
-# Only the image always changes. TZ stays the operator's; capacity changes only when one was given.
+# Only the image changes; preserve the operator's timezone and resource settings.
 values = {'SERVER_IMAGE': sys.argv[2]}
-if sys.argv[3]: values['MIRROR_CLIENTS'] = sys.argv[3]
 lines = []
 for line in file.read_text().splitlines():
     match = re.match(r'\s*(?:export\s+)?([A-Z0-9_]+)\s*=', line)
@@ -291,12 +279,11 @@ port=${port:-3010}
 [[ $port =~ ^[0-9]+$ ]]
 for attempt in $(seq 1 45); do
   health=$(curl --fail --silent --max-time 3 "http://127.0.0.1:$port/healthz" 2>/dev/null || true)
-  if CLAUDE_HEALTH_JSON="$health" python3 - "$capacity" <<'PY'
+  if CLAUDE_HEALTH_JSON="$health" python3 - <<'PY'
 import json, os, sys
 try: value=json.loads(os.environ.get('CLAUDE_HEALTH_JSON',''))
 except Exception: sys.exit(1)
-capacity_ok = not sys.argv[1] or value.get('maxClients') == int(sys.argv[1])
-sys.exit(0 if value.get('ok') is True and value.get('browser') is True and capacity_ok else 1)
+sys.exit(0 if value.get('ok') is True and value.get('browser') is True else 1)
 PY
   then
     active=$("${compose[@]}" ps --quiet server)
@@ -319,7 +306,7 @@ PY
     ln -sfn "$release" /opt/claude-browser/container-current
     finished=1
     rm -rf -- "$stage"
-    echo "Container healthy: $image${capacity:+; session capacity=$capacity}"
+    echo "Container healthy: $image"
     exit 0
   fi
   sleep 2

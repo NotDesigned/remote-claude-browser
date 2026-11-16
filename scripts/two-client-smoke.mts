@@ -10,7 +10,6 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import type { Down, Up } from "../packages/protocol/src/index";
 import { decodePxBinary, encodeResumeCursors } from "../packages/protocol/src/index";
-import { parseSessionCapacity } from "../packages/gateway/src/session/clients";
 
 /** Binary pixel frames carry raw JPEG; keep only the metadata the checks use. */
 function pixelDown(raw: Buffer): Down {
@@ -20,8 +19,6 @@ function pixelDown(raw: Buffer): Down {
 }
 
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Run through scripts/limited-run.sh");
-const sessionCapacity = parseSessionCapacity({ MIRROR_CLIENTS: process.env.TWO_CLIENT_CAPACITY });
-assert.ok(sessionCapacity >= 3, "two-client smoke needs at least three fixture session slots");
 const require = createRequire(new URL("../packages/gateway/package.json", import.meta.url));
 const WebSocket = require("ws") as typeof import("ws").WebSocket;
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
@@ -84,8 +81,6 @@ interface State {
 interface Lease {
   sid: string;
   label: string;
-  maxClients: number;
-  available: number;
   sharedAccount: boolean;
 }
 type ServerStatus = Extract<Down, { t: "server-status" }>;
@@ -274,7 +269,6 @@ function assertStatus(status: ServerStatus, online: number, allocated: number, p
   assert.equal(status.t, "server-status");
   assert.equal(status.clientsOnline, online);
   assert.equal(status.clientsAllocated, allocated);
-  assert.equal(status.clientsMax, sessionCapacity);
   assert.equal(status.pixelsActive, pixels);
   assert.equal(status.pixelsMax, null);
   assert.ok(Number.isFinite(status.sampledAt) && status.sampledAt > 0);
@@ -284,7 +278,12 @@ function assertStatus(status: ServerStatus, online: number, allocated: number, p
     status.cpuPercent === null ||
       (Number.isFinite(status.cpuPercent) && status.cpuPercent >= 0 && status.cpuPercent <= 100),
   );
-  for (const key of ["memoryUsedBytes", "memoryTotalBytes", "browserMemoryBytes"] as const)
+  for (const key of [
+    "memoryUsedBytes",
+    "memoryTotalBytes",
+    "browserMemoryBytes",
+    "browserMemoryLimitBytes",
+  ] as const)
     assert.ok(
       status[key] === null || (Number.isFinite(status[key]) && status[key]! >= 0),
       `${key} must be nullable bytes`,
@@ -365,7 +364,6 @@ try {
     stdio: ["ignore", "pipe", "pipe"],
     env: {
       ...process.env,
-      MIRROR_CLIENTS: String(sessionCapacity),
       MIRROR_E2E: "1",
       MIRROR_IDLE_GRACE_MS: "60000",
       CHROME_HEADFUL: "0",
@@ -399,10 +397,7 @@ try {
   const first = await lease("a", "a-test"),
     second = await lease("b", "b-test");
   assert.notEqual(first.sid, second.sid);
-  assert.equal(first.maxClients, sessionCapacity);
   assert.equal(first.sharedAccount, true);
-  assert.equal(first.available, sessionCapacity - 1);
-  checks.configurableSessionCapacityMetadata = true;
   let a = await new Viewer("a", first.sid).open();
   const b = await new Viewer("b", second.sid).open();
   assert.notEqual(a.viewerId, b.viewerId);
@@ -969,31 +964,28 @@ try {
     async () => (await editor("b", second.sid, bTab)) === beforeIdleB + "，自动回收不影响乙",
     "B input survives idle reclamation",
   );
-  for (let index = 0; index < sessionCapacity - 2; index++) {
-    const owner = `filler-${index}`;
-    const filler = await lease(owner, owner);
-    await new Viewer(owner, filler.sid).open();
-  }
   const fresh = await lease("fresh", "fresh-test");
-  assert.equal(fresh.sid, third.sid);
+  assert.notEqual(fresh.sid, third.sid);
   const freshViewer = await new Viewer("fresh", fresh.sid).open();
   await waitFor(
-    () =>
-      freshViewer.status?.clientsOnline === sessionCapacity &&
-      freshViewer.status?.clientsAllocated === sessionCapacity,
-    "full capacity reuses a dormant session slot",
+    () => freshViewer.status?.clientsOnline === 2 && freshViewer.status?.clientsAllocated === 3,
+    "new session preserves the dormant session identity",
   );
-  assertStatus(freshViewer.status!, sessionCapacity, sessionCapacity, 0);
+  assertStatus(freshViewer.status!, 2, 3, 0);
   assertOnlyOwned(freshViewer, new Set([cTab, bTab]));
   assert.equal((await request("c", `/__e2e/state?sid=${fresh.sid}`)).status, 403);
-  assert.ok([401, 403].includes(await rejectedWs("c", third.sid)));
+  const finalC = await new Viewer("c", third.sid, c.connectionKey).open();
+  await waitFor(
+    () => finalC.status?.clientsOnline === 3 && finalC.status?.clientsAllocated === 3,
+    "dormant session still reconnects after another session opens",
+  );
+  assert.equal((await lease("c", "c-test")).sid, third.sid);
   checks.idleBusyProtectionAndAutomaticReclaim = true;
   const result = {
     fixtureOnly: true,
     oneGatewayOwnedChrome: true,
     checks,
     clientSlots: [first.sid, second.sid],
-    maxClients: sessionCapacity,
     finalStatus: freshViewer.status,
     downloadSkipped: process.env.TWO_CLIENT_SKIP_DOWNLOAD === "1",
   };

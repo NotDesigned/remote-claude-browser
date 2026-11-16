@@ -52,8 +52,7 @@ stay inside its profile. Workbench navigation accepts HTTP, HTTPS and `about:bla
 also blocks native file navigation. Chromium remains UID 10001 with its own sandbox enabled.
 
 The legacy default Chrome state is moved into `/data/profile/browser-default`; service databases stay
-in `/data/profile`. These remain processes in one container, sharing the kernel, CPU, memory, disk and
-global session capacity. This does not provide separate VMs, protection from kernel exploits or a claim
+in `/data/profile`. These remain processes in one container, sharing the kernel, CPU, memory and disk. This does not provide separate VMs, protection from kernel exploits or a claim
 that websites cannot correlate browser fingerprints. Administrators and host operators remain trusted.
 
 All Chrome processes, including the legacy default configuration, start on demand and close after
@@ -111,7 +110,7 @@ Compose deployment.
 - scriptless replay iframe and local navigation-default containment;
 - browser-facing CSP, anti-framing, MIME-sniffing, referrer, and permissions headers;
 - bounded viewer backpressure and snapshot-based resync;
-- configurable global session capacity and memory-based session admission.
+- memory-based session admission.
 
 ## Important limitations
 

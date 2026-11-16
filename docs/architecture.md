@@ -141,7 +141,8 @@ The default Compose entrypoint runs the multi-client gateway in `clients-main.ts
 and browser profile ownership live in SQLite. Each active browser profile has its own Chrome
 process and AgentLink; sessions using that profile own separate windows through a scoped browser
 facade. Login state is shared only by sessions choosing the same profile. All profiles share the
-server container's resource limits and the global `MIRROR_CLIENTS` session capacity.
+server container's resource limits. New sessions and dormant-session resumes are admitted according to available memory,
+without a fixed session count limit. Each user can save up to eight browser profiles.
 
 Headful managed profiles also own separate authenticated Xvfb servers, isolating native clipboard
 selections and window capture. Chromium, window-control tools and X11 encoders receive the same
