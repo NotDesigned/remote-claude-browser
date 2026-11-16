@@ -712,7 +712,7 @@ async function inside() {
     "--clear-groups",
     "node",
     "-e",
-    "for(const name of ['browser-a','browser-b']){const fs=require('fs');const path='/data/'+name+'/zoom-extension';fs.mkdirSync(path,{recursive:true});fs.writeFileSync(path+'/marker-'+name,name)}",
+    "for(const name of ['browser-a','browser-b'])require('fs').mkdirSync('/data/'+name,{recursive:true,mode:0o700})",
   ]);
   const direct = createServer((_req, res) => res.end("DIRECT-LEAK"));
   await new Promise((done) => direct.listen(80, "0.0.0.0", done));
@@ -1070,9 +1070,7 @@ exec sh /acceptance/profile-network.sh "$@"
           if (
             args.includes("--inside") &&
             args.includes(profile.directory) &&
-            (await stat(
-              `/proc/${pid}/root/C:/zoom-extension/marker-${profile.directory.split("/").at(-1)}`,
-            ).then(
+            (await stat(`/proc/${pid}/root/C:/zoom-extension`).then(
               () => true,
               () => false,
             ))
@@ -1082,6 +1080,16 @@ exec sh /acceptance/profile-network.sh "$@"
         if (!browserPid) await delay(50);
       }
       assert.ok(browserPid, "isolated browser process should start");
+      await command("setpriv", [
+        "--reuid=10001",
+        "--regid=10001",
+        "--clear-groups",
+        "node",
+        "-e",
+        "require('node:fs').writeFileSync(process.argv[1]+'/zoom-extension/marker-'+process.argv[2],process.argv[2])",
+        profile.directory,
+        profile.directory.split("/").at(-1),
+      ]);
       await command("nsenter", [
         "--target",
         browserPid,

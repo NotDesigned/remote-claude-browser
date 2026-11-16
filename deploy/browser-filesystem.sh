@@ -60,8 +60,9 @@ mkdir -p "$root$profile" "$root/tmp/home"
 mount --bind "$profile" "$root$profile"
 # Windows personas parse file:////data/... as a UNC host. A drive-qualified
 # mount keeps extension file URLs local; a symlink would be undone by realpath.
-mkdir -p "$profile/zoom-extension" "$root/C:/zoom-extension"
-chown 10001:10001 "$profile/zoom-extension"
+/usr/bin/setpriv --reuid=10001 --regid=10001 --clear-groups --inh-caps=-all \
+  /bin/mkdir -p "$profile/zoom-extension"
+mkdir -p "$root/C:/zoom-extension"
 mount --bind "$profile/zoom-extension" "$root/C:/zoom-extension"
 mount -o remount,bind,ro "$root/C:/zoom-extension"
 chown 10001:10001 "$root/tmp/home"
