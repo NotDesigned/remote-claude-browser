@@ -78,19 +78,24 @@ describe("browser zoom through the extension", () => {
     ]);
   });
 
-  it("writes the extension and asks the browser to load it", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "zoom-extension-"));
-    try {
-      const sendBrowser = vi.fn(async () => ({ id: "x" }));
-      await installZoomExtension({ sendBrowser }, directory);
-      expect(sendBrowser).toHaveBeenCalledWith("Extensions.loadUnpacked", { path: directory });
-      const manifest = JSON.parse(await readFile(join(directory, "manifest.json"), "utf8")) as {
-        permissions: string[];
-      };
-      expect(manifest.permissions).toEqual(["tabs"]);
-      await expect(installZoomExtension({}, directory)).rejects.toThrow("no root session");
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
+  it.each([undefined, "/C:/zoom-extension"])(
+    "writes the extension and loads its browser path %s",
+    async (browserDirectory) => {
+      const directory = await mkdtemp(join(tmpdir(), "zoom-extension-"));
+      try {
+        const sendBrowser = vi.fn(async () => ({ id: "x" }));
+        await installZoomExtension({ sendBrowser }, directory, browserDirectory);
+        expect(sendBrowser).toHaveBeenCalledWith("Extensions.loadUnpacked", {
+          path: browserDirectory ?? directory,
+        });
+        const manifest = JSON.parse(await readFile(join(directory, "manifest.json"), "utf8")) as {
+          permissions: string[];
+        };
+        expect(manifest.permissions).toEqual(["tabs"]);
+        await expect(installZoomExtension({}, directory)).rejects.toThrow("no root session");
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
 });

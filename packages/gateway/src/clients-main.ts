@@ -42,7 +42,12 @@ import { createCpaBrokerDriver } from "./cpa/broker-client";
 import { registerCpaRoutes, registerCpaInferenceRoutes } from "./cpa/routes";
 import { createAccountDisplay, type AccountDisplay } from "./browser/display";
 import { createClaudeLoginTracker, profileSignedIn } from "./claude/signed-in";
-import { identityEnvironment, type BrowserIdentity } from "./browser/identity";
+import {
+  BROWSER_PLATFORMS,
+  identityEnvironment,
+  type BrowserIdentity,
+  type BrowserPlatform,
+} from "./browser/identity";
 import { configuredBrowserEngine, profileBrowserOptions } from "./browser/engine";
 import { connectRemoteBrowser } from "./browser/remote";
 import { createNavigationController } from "./browser/nav";
@@ -149,12 +154,31 @@ export async function startClientGateway(
   // Other accounts keep their profiles beside the default one.
   const accountsDir = process.env.MIRROR_ACCOUNTS_DIR ?? `${profile}-accounts`;
   const defaultBrowserDirectory = await separateDefaultProfile(profile);
+  const browserEngine = configuredBrowserEngine(process.env.MIRROR_BROWSER_ENGINE);
+  const platforms: readonly BrowserPlatform[] =
+    browserEngine === "aliasmode" && process.env.MIRROR_RUNTIME_SOCKET
+      ? BROWSER_PLATFORMS
+      : ["linux"];
+  const defaultPlatform = platforms[0]!;
+  const requirePlatform = (value: unknown): BrowserPlatform => {
+    if (!platforms.includes(value as BrowserPlatform))
+      throw new ClientSessionError(400, "PROFILE_PLATFORM", "请选择可用的系统身份");
+    return value as BrowserPlatform;
+  };
   const accountStore = await createProfileStore({
     file: join(profile, "accounts.json"),
     maxProfiles: Infinity,
     legacyIdentitySecret: process.env.MIRROR_AUTH_SECRET ?? "",
-    browserEngine: configuredBrowserEngine(process.env.MIRROR_BROWSER_ENGINE),
+    browserEngine,
+    fingerprintPlatform: defaultPlatform,
   });
+  const profileSystem = (id: string) => {
+    const fingerprint = accountStore.identity(id).fingerprint;
+    return {
+      platform: fingerprint?.platform ?? "linux",
+      browserEngine: fingerprint?.engine ?? "chromium",
+    };
+  };
   const userStore = await createUserStore({
     file: process.env.MIRROR_USERS_DB ?? join(profile, "users.sqlite"),
     bootstrapUsername: process.env.MIRROR_ADMIN_USERNAME ?? "admin",
@@ -169,7 +193,7 @@ export async function startClientGateway(
   const scopedExits = new Map<string, Set<string>>();
   const egressScope = (userId: string, nodeId: string) =>
     `scope-${createHash("sha256").update(`${userId}/${nodeId}`).digest("hex").slice(0, 32)}`;
-  const resetProfileNetwork = async (id: string) => {
+  const resetProfileRuntime = async (id: string) => {
     const sessions = clientSessions
       .all()
       .filter((record) => (record.profile ?? DEFAULT_PROFILE) === id);
@@ -191,7 +215,7 @@ export async function startClientGateway(
     await accountLifecycle.run(async () => {
       for (const record of accountStore.all())
         if (record.proxyId && ids.includes(record.proxyId)) {
-          await resetProfileNetwork(record.id);
+          await resetProfileRuntime(record.id);
           await accountStore.setTimeZone(record.id, undefined);
         }
       for (const id of ids) {
@@ -745,7 +769,11 @@ export async function startClientGateway(
     exit: ExitMetadata,
     display?: AccountDisplay,
   ): Promise<Account> {
-    const zoomReady = await installZoomExtension(browser, join(dir, "zoom-extension")).then(
+    const zoomReady = await installZoomExtension(
+      browser,
+      join(dir, "zoom-extension"),
+      identity.fingerprint?.platform === "windows" ? "/C:/zoom-extension" : undefined,
+    ).then(
       () => true,
       (error: unknown) => {
         console.warn("The picture will stop at CSS pixels:", (error as Error).message);
@@ -1498,6 +1526,7 @@ export async function startClientGateway(
         return {
           id: record.id,
           name: record.name,
+          ...profileSystem(record.id),
           proxyId: record.proxyId ?? null,
           proxyName: record.proxyId
             ? (proxyCatalog.listNodes(user).find((node) => node.id === record.proxyId)?.name ??
@@ -1525,11 +1554,13 @@ export async function startClientGateway(
     const sid = request.query.sid;
     return reply.header("cache-control", "no-store").send({
       accounts: describeAccounts(user),
+      platforms,
+      defaultPlatform,
       default: userStore.defaultProfile(user.id),
       current: sid && clientSessions.owns(owner, sid) ? clientSessions.profileOf(sid) : null,
     });
   });
-  app.post<{ Body: { name?: unknown; proxyId?: unknown } }>(
+  app.post<{ Body: { name?: unknown; proxyId?: unknown; platform?: unknown } }>(
     "/api/accounts",
     { bodyLimit: 1024 },
     async (request, reply) => {
@@ -1545,6 +1576,10 @@ export async function startClientGateway(
               "PROFILE_LIMIT",
               `每个用户最多 ${MAX_PROFILES} 个浏览器配置`,
             );
+          const platform =
+            request.body?.platform === undefined
+              ? defaultPlatform
+              : requirePlatform(request.body.platform);
           const proxyId = request.body?.proxyId;
           if (proxyId !== undefined) {
             if (typeof proxyId !== "string" || !proxyId)
@@ -1557,7 +1592,7 @@ export async function startClientGateway(
               );
             proxyCatalog.getNodeConfig(user, proxyId);
           }
-          const created = await accountStore.create(request.body?.name);
+          const created = await accountStore.create(request.body?.name, platform);
           try {
             if (typeof proxyId === "string") await accountStore.setProxy(created.id, proxyId);
             userStore.assignProfile(created.id, user.id);
@@ -1565,7 +1600,7 @@ export async function startClientGateway(
             await accountStore.remove(created.id);
             throw error;
           }
-          return created;
+          return { ...created, ...profileSystem(created.id) };
         });
       } catch (error) {
         if (error instanceof ProxyCatalogError)
@@ -1677,7 +1712,7 @@ export async function startClientGateway(
             proxyCatalog.getNodeConfig(user, proxyId);
           }
           if ((accountStore.get(id)!.proxyId ?? null) !== proxyId) {
-            await resetProfileNetwork(id);
+            await resetProfileRuntime(id);
             await accountStore.setProxy(id, proxyId);
           }
           return { proxyId };
@@ -1685,6 +1720,30 @@ export async function startClientGateway(
       } catch (error) {
         if (error instanceof ProxyCatalogError)
           return reply.code(error.statusCode).send({ error: error.message });
+        return clientError(reply, error, owner);
+      }
+    },
+  );
+  app.patch<{ Params: { id: string }; Body: { platform?: unknown } }>(
+    "/api/accounts/:id/platform",
+    { bodyLimit: 1024 },
+    async (request, reply) => {
+      const owner = currentOwner(request.raw);
+      if (!owner) return reply.code(401).send({ error: "请重新登录" });
+      try {
+        return await accountLifecycle.run(async () => {
+          const user = requireLiveOwner(request.raw, owner);
+          const id = request.params.id;
+          if (userStore.profileOwner(id) !== user.id)
+            throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
+          const platform = requirePlatform(request.body?.platform);
+          if (profileSystem(id).platform !== platform) {
+            await resetProfileRuntime(id);
+            await accountStore.setPlatform(id, platform);
+          }
+          return { platform };
+        });
+      } catch (error) {
         return clientError(reply, error, owner);
       }
     },

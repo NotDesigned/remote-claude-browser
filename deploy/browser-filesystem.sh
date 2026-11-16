@@ -10,6 +10,8 @@ root=$1
 profile=$2
 shift 2
 mount --make-rprivate /
+# Empty outer mount point; each namespace fills it only with its own extension.
+mkdir -p /C:
 mkdir -p "$root"
 mount -t tmpfs -o mode=0755,size=32m tmpfs "$root"
 mkdir -p "$root"/usr "$root"/etc "$root"/dev "$root"/proc "$root"/tmp "$root"/run
@@ -56,6 +58,12 @@ ln -s /proc/self/fd/2 "$root/dev/stderr"
 mount -t proc -o nosuid,nodev,noexec proc "$root/proc"
 mkdir -p "$root$profile" "$root/tmp/home"
 mount --bind "$profile" "$root$profile"
+# Windows personas parse file:////data/... as a UNC host. A drive-qualified
+# mount keeps extension file URLs local; a symlink would be undone by realpath.
+mkdir -p "$profile/zoom-extension" "$root/C:/zoom-extension"
+chown 10001:10001 "$profile/zoom-extension"
+mount --bind "$profile/zoom-extension" "$root/C:/zoom-extension"
+mount -o remount,bind,ro "$root/C:/zoom-extension"
 chown 10001:10001 "$root/tmp/home"
 if [ -n "${DISPLAY:-}" ]; then
   display_number=${DISPLAY#:}

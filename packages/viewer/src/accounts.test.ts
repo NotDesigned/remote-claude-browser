@@ -1,12 +1,28 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { createAccount, listAccounts, type AccountList } from "./accounts";
+import { createAccount, listAccounts, setAccountPlatform, type AccountList } from "./accounts";
 
 const list: AccountList = {
   default: "default",
+  platforms: ["windows", "macos", "linux"],
+  defaultPlatform: "windows",
   accounts: [
-    { id: "default", name: "默认账号", running: true, sessions: 2 },
-    { id: "p-0123456789", name: "工作", running: false, sessions: 0 },
+    {
+      id: "default",
+      name: "默认账号",
+      platform: "linux",
+      browserEngine: "chromium",
+      running: true,
+      sessions: 2,
+    },
+    {
+      id: "p-0123456789",
+      name: "工作",
+      platform: "windows",
+      browserEngine: "aliasmode",
+      running: false,
+      sessions: 0,
+    },
   ],
   current: "default",
 };
@@ -39,11 +55,50 @@ describe("browser configuration API", () => {
 
   it("creates an unbound account without switching to it", async () => {
     const { fn, calls } = fetcher({
-      "POST /api/accounts": { id: "p-aaaaaaaaaa", name: "新号" },
+      "POST /api/accounts": {
+        id: "p-aaaaaaaaaa",
+        name: "新号",
+        platform: "windows",
+        browserEngine: "aliasmode",
+      },
     });
     const made = await createAccount("新号", undefined, fn);
     expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(["POST /api/accounts"]);
     expect(calls[0]?.body).toEqual({ name: "新号" });
     expect(made.proxyId).toBeUndefined();
+    expect(made.platform).toBe("windows");
+  });
+
+  it("creates with the selected system and updates the same profile", async () => {
+    const { fn, calls } = fetcher({
+      "POST /api/accounts": {
+        id: "p-aaaaaaaaaa",
+        name: "新号",
+        platform: "macos",
+        browserEngine: "aliasmode",
+        proxyId: "proxy-a",
+      },
+      "PATCH /api/accounts/p-aaaaaaaaaa/platform": { platform: "linux" },
+    });
+    const made = await createAccount("新号", "proxy-a", fn, "macos");
+    expect(made.platform).toBe("macos");
+    await setAccountPlatform(made.id, "linux", fn);
+    expect(calls).toEqual([
+      {
+        method: "POST",
+        path: "/api/accounts",
+        body: { name: "新号", proxyId: "proxy-a", platform: "macos" },
+      },
+      { method: "PATCH", path: "/api/accounts/p-aaaaaaaaaa/platform", body: { platform: "linux" } },
+    ]);
+  });
+
+  it("reports a system change rejected by the server", async () => {
+    const { fn } = fetcher({
+      "PATCH /api/accounts/p-aaaaaaaaaa/platform": new Error("当前部署不支持此系统"),
+    });
+    await expect(setAccountPlatform("p-aaaaaaaaaa", "windows", fn)).rejects.toThrow(
+      "当前部署不支持此系统",
+    );
   });
 });

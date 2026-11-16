@@ -107,6 +107,8 @@ const server = createServer(async (request, response) => {
         accounts: [
           {
             id: "default",
+            platform: "windows",
+            browserEngine: "aliasmode",
             name: "默认配置",
             running: false,
             sessions: 0,
@@ -117,6 +119,8 @@ const server = createServer(async (request, response) => {
         ],
         current: url.searchParams.has("sid") ? "default" : null,
         default: "default",
+        platforms: ["windows", "macos", "linux"],
+        defaultPlatform: "windows",
       });
     if (url.pathname === "/api/accounts/default/proxy" && request.method === "PATCH") {
       const input = await body(request);

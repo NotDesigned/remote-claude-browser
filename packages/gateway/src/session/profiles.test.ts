@@ -64,40 +64,70 @@ describe("accounts", () => {
     expect(reopened.identity(first.id).fingerprint).toBeUndefined();
   });
 
-  it("persists independent AliasMode seeds through renaming, proxy changes and key rotation", async () => {
-    dir = await mkdtemp(join(tmpdir(), "profile-aliasmode-"));
-    const file = join(dir, "accounts.json");
-    const store = await createProfileStore({
-      file,
-      browserEngine: "aliasmode",
-      legacyIdentitySecret: "old-key",
-    });
-    const originalDefault = structuredClone(store.identity(DEFAULT_PROFILE));
-    expect(originalDefault.fingerprint).toBeUndefined();
-    const first = await store.create("第一个");
-    const second = await store.create("第二个");
-    const expected = [first, second].map((profile) => structuredClone(store.identity(profile.id)));
-    for (const identity of expected)
-      expect(identity.fingerprint).toEqual({
-        engine: "aliasmode",
-        seed: expect.stringMatching(/^[0-9a-f]{32}$/),
-        platform: "linux",
+  it.each(["linux", "windows", "macos"] as const)(
+    "persists AliasMode %s identities through renaming, proxy changes and key rotation",
+    async (platform) => {
+      dir = await mkdtemp(join(tmpdir(), "profile-aliasmode-"));
+      const file = join(dir, "accounts.json");
+      const store = await createProfileStore({
+        file,
+        browserEngine: "aliasmode",
+        legacyIdentitySecret: "old-key",
+        fingerprintPlatform: platform,
       });
-    expect(expected[0]!.fingerprint!.seed).not.toBe(expected[1]!.fingerprint!.seed);
-    await store.rename(first.id, "重命名后");
-    await store.setProxy(first.id, "proxy-first");
-    await store.setProxy(first.id, "proxy-second");
+      const originalDefault = structuredClone(store.identity(DEFAULT_PROFILE));
+      expect(originalDefault.fingerprint).toBeUndefined();
+      const first = await store.create("第一个");
+      const second = await store.create("第二个");
+      const expected = [first, second].map((profile) =>
+        structuredClone(store.identity(profile.id)),
+      );
+      for (const identity of expected)
+        expect(identity.fingerprint).toEqual({
+          engine: "aliasmode",
+          seed: expect.stringMatching(/^[0-9a-f]{32}$/),
+          platform,
+        });
+      expect(expected[0]!.fingerprint!.seed).not.toBe(expected[1]!.fingerprint!.seed);
+      await store.rename(first.id, "重命名后");
+      await store.setProxy(first.id, "proxy-first");
+      await store.setProxy(first.id, "proxy-second");
 
-    const reopened = await createProfileStore({
-      file,
-      browserEngine: "chromium",
-      legacyIdentitySecret: "rotated-key",
-    });
-    expect(reopened.identity(first.id)).toEqual(expected[0]);
-    expect(reopened.identity(second.id)).toEqual(expected[1]);
-    expect(reopened.identity(DEFAULT_PROFILE)).toEqual(originalDefault);
-    const native = await reopened.create("原生浏览器");
-    expect(reopened.identity(native.id).fingerprint).toBeUndefined();
+      const reopened = await createProfileStore({
+        file,
+        browserEngine: "chromium",
+        legacyIdentitySecret: "rotated-key",
+        fingerprintPlatform: platform === "linux" ? "windows" : "linux",
+      });
+      expect(reopened.identity(first.id)).toEqual(expected[0]);
+      expect(reopened.identity(second.id)).toEqual(expected[1]);
+      expect(reopened.identity(DEFAULT_PROFILE)).toEqual(originalDefault);
+      const native = await reopened.create("原生浏览器");
+      expect(reopened.identity(native.id).fingerprint).toBeUndefined();
+    },
+  );
+
+  it("preserves the seed and profile state when switching a native profile between platforms", async () => {
+    dir = await mkdtemp(join(tmpdir(), "profile-platform-"));
+    const file = join(dir, "accounts.json");
+    const store = await createProfileStore({ file });
+    const native = structuredClone(store.identity(DEFAULT_PROFILE));
+    await store.setProxy(DEFAULT_PROFILE, "proxy-fixed");
+    await store.setLogin(DEFAULT_PROFILE, { signedIn: true, email: "retained@example.com" });
+    const record = (await createProfileStore({ file })).get(DEFAULT_PROFILE);
+    await store.setPlatform(DEFAULT_PROFILE, "linux");
+    expect(store.identity(DEFAULT_PROFILE)).toEqual(native);
+    await store.setPlatform(DEFAULT_PROFILE, "windows");
+    const seed = store.identity(DEFAULT_PROFILE).fingerprint!.seed;
+    for (const platform of ["macos", "linux", "windows"] as const) {
+      await store.setPlatform(DEFAULT_PROFILE, platform);
+      const reopened = await createProfileStore({ file });
+      expect(reopened.identity(DEFAULT_PROFILE)).toEqual({
+        ...native,
+        fingerprint: { engine: "aliasmode", seed, platform },
+      });
+      expect(reopened.get(DEFAULT_PROFILE)).toEqual(record);
+    }
   });
 
   it("keeps each profile's selected exit across restarts and can return to the deployment default", async () => {

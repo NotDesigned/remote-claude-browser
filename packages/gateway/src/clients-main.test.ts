@@ -16,6 +16,7 @@ import { createProfileStore } from "./session/profiles";
 const hooks = vi.hoisted(() => ({
   browserMemoryBytes: 64 * 1048576,
   memoryUsedBytes: 128 * 1048576,
+  closeSession: vi.fn(),
   cpaStop: vi.fn(async (_instance: unknown) => {}),
   stopEgress: vi.fn(async (_scope: string) => {}),
   checkEgress: vi.fn(async (_scope: string) => ({
@@ -94,9 +95,10 @@ vi.mock("./session/profiles", async (importOriginal) => {
       const store = await original.createProfileStore(...args);
       return {
         ...store,
-        async create(name: unknown) {
+        async create(...createArgs: Parameters<typeof store.create>) {
+          const [name] = createArgs;
           await hooks.beforeCreate?.(name);
-          return store.create(name);
+          return store.create(...createArgs);
         },
         async remove(id: unknown) {
           await hooks.beforeRemove?.(id);
@@ -118,6 +120,21 @@ vi.mock("./auth/users", async (importOriginal) => {
         return update(id, input);
       };
       return store;
+    },
+  };
+});
+vi.mock("./ws/server", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./ws/server")>();
+  return {
+    ...original,
+    createWsServer(...args: Parameters<typeof original.createWsServer>) {
+      const server = original.createWsServer(...args);
+      const close = server.closeSession.bind(server);
+      server.closeSession = (...closeArgs) => {
+        hooks.closeSession(...closeArgs);
+        return close(...closeArgs);
+      };
+      return server;
     },
   };
 });
@@ -152,6 +169,7 @@ interface Paths {
 beforeEach(() => {
   hooks.browserMemoryBytes = 64 * 1048576;
   hooks.memoryUsedBytes = 128 * 1048576;
+  hooks.closeSession.mockClear();
   hooks.beforeCreate = undefined;
   hooks.beforeRemove = undefined;
   hooks.beforeUserUpdate = undefined;
@@ -167,6 +185,7 @@ beforeEach(() => {
   vi.stubEnv("MIRROR_PUBLIC_ORIGIN", ORIGIN);
   vi.stubEnv("BROWSER_CDP_URL", undefined);
   vi.stubEnv("MIRROR_RUNTIME_SOCKET", undefined);
+  vi.stubEnv("MIRROR_BROWSER_ENGINE", undefined);
   vi.stubEnv("CPA_BROKER_SOCKET", undefined);
   vi.stubEnv("GATEWAY_PORT", "3000");
 });
@@ -527,6 +546,115 @@ describe("multi-user management routes", () => {
     expect(await readFile(paths.sessions, "utf8")).toBe(previous);
   });
 
+  it("offers configured platforms and creates each requested identity without exposing its seed", async () => {
+    const local = await fixture();
+    const localAdmin = await login(local.app);
+    expect((await api(local.app, localAdmin, "GET", "/api/accounts")).json()).toMatchObject({
+      platforms: ["linux"],
+      defaultPlatform: "linux",
+      accounts: [expect.objectContaining({ platform: "linux", browserEngine: "chromium" })],
+    });
+    expect(
+      (
+        await api(local.app, localAdmin, "POST", "/api/accounts", {
+          name: "unsupported",
+          platform: "windows",
+        })
+      ).statusCode,
+    ).toBe(400);
+    await local.stop();
+
+    vi.stubEnv("MIRROR_BROWSER_ENGINE", "aliasmode");
+    vi.stubEnv("MIRROR_RUNTIME_SOCKET", "/fixture-runtime.sock");
+    const { app, paths } = await fixture();
+    const admin = await login(app);
+    expect((await api(app, admin, "GET", "/api/accounts")).json()).toMatchObject({
+      platforms: ["windows", "macos", "linux"],
+      defaultPlatform: "windows",
+      accounts: [expect.objectContaining({ platform: "linux", browserEngine: "chromium" })],
+    });
+    const made = [];
+    for (const platform of [undefined, "windows", "macos", "linux"] as const) {
+      const response = await api(app, admin, "POST", "/api/accounts", {
+        name: platform ?? "default",
+        ...(platform ? { platform } : {}),
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        platform: platform ?? "windows",
+        browserEngine: "aliasmode",
+      });
+      expect(response.json()).not.toHaveProperty("identity");
+      made.push(response.json());
+    }
+    const saved = JSON.parse(await readFile(paths.accounts, "utf8"));
+    for (const record of made)
+      expect(
+        saved.find((item: { id: string }) => item.id === record.id).identity.fingerprint.platform,
+      ).toBe(record.platform);
+    expect(hooks.launch).not.toHaveBeenCalled();
+    expect(hooks.brokerLaunch).not.toHaveBeenCalled();
+  });
+
+  it("changes only an owned profile platform, retains its seed and sessions, and ignores unchanged choices", async () => {
+    vi.stubEnv("MIRROR_BROWSER_ENGINE", "aliasmode");
+    vi.stubEnv("MIRROR_RUNTIME_SOCKET", "/fixture-runtime.sock");
+    const { app, paths } = await fixture(async (paths) => {
+      await writeFile(
+        paths.sessions,
+        JSON.stringify([
+          { sid: "client-1", owner: "device-platform", clientKey: "platform-tab", createdAt: 1 },
+        ]),
+      );
+    });
+    const admin = withDevice(await login(app), "device-platform");
+    await createBob(app, admin);
+    const bob = await login(app, "bob", BOB_PASSWORD);
+    const originalSessions = await readFile(paths.sessions, "utf8");
+    const before = await readFile(paths.accounts, "utf8");
+    expect(
+      (await api(app, bob, "PATCH", "/api/accounts/default/platform", { platform: "windows" }))
+        .statusCode,
+    ).toBe(403);
+    for (const platform of [null, 1, "android", "Windows"])
+      expect(
+        (await api(app, admin, "PATCH", "/api/accounts/default/platform", { platform })).statusCode,
+      ).toBe(400);
+    expect(
+      (await api(app, admin, "PATCH", "/api/accounts/default/platform", { platform: "linux" }))
+        .statusCode,
+    ).toBe(200);
+    expect(hooks.closeSession).not.toHaveBeenCalled();
+    expect(await readFile(paths.accounts, "utf8")).toBe(before);
+    let seed;
+    for (const platform of ["windows", "macos", "linux"] as const) {
+      const response = await api(app, admin, "PATCH", "/api/accounts/default/platform", {
+        platform,
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ platform });
+      const identity = JSON.parse(await readFile(paths.accounts, "utf8")).find(
+        (record: { id: string }) => record.id === "default",
+      ).identity;
+      seed ??= identity.fingerprint.seed;
+      expect(identity.fingerprint).toEqual({ engine: "aliasmode", platform, seed });
+      expect(await readFile(paths.sessions, "utf8")).toBe(originalSessions);
+    }
+    expect(hooks.closeSession.mock.calls).toEqual([
+      ["client-1", undefined],
+      ["client-1", undefined],
+      ["client-1", undefined],
+    ]);
+    await api(app, admin, "PATCH", "/api/accounts/default/platform", { platform: "linux" });
+    expect(hooks.closeSession).toHaveBeenCalledTimes(3);
+    expect((await api(app, admin, "GET", "/api/accounts")).json().accounts[0]).toMatchObject({
+      platform: "linux",
+      browserEngine: "aliasmode",
+    });
+    expect(hooks.launch).not.toHaveBeenCalled();
+    expect(hooks.brokerLaunch).not.toHaveBeenCalled();
+  });
+
   it("launches a newly created fingerprint profile through the broker with its saved seed", async () => {
     vi.stubEnv("MIRROR_BROWSER_ENGINE", "aliasmode");
     vi.stubEnv("MIRROR_RUNTIME_SOCKET", "/broker-test-boundary.sock");
@@ -549,7 +677,7 @@ describe("multi-user management routes", () => {
         executablePath: "/usr/local/lib/aliasmode/chrome",
         args: expect.arrayContaining([
           `--fingerprint=${identity.fingerprint.seed}`,
-          "--fingerprint-platform=linux",
+          "--fingerprint-platform=windows",
           `--fingerprint-screen-width=${identity.screen.width}`,
         ]),
       }),

@@ -8,7 +8,12 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { ClientSessionError } from "./clients";
 import type { ExitMetadata } from "../egress/timezone";
-import { browserIdentity, type BrowserEngine, type BrowserIdentity } from "../browser/identity";
+import {
+  browserIdentity,
+  type BrowserEngine,
+  type BrowserIdentity,
+  type BrowserPlatform,
+} from "../browser/identity";
 import type { ClaudeKyc, ClaudeLogin } from "../claude/signed-in";
 
 export const DEFAULT_PROFILE = "default";
@@ -56,6 +61,7 @@ export async function createProfileStore(
     legacyIdentitySecret?: string;
     /** Applies only to newly created profiles; saved and legacy identities are unchanged. */
     browserEngine?: BrowserEngine;
+    fingerprintPlatform?: BrowserPlatform;
   } = {},
 ) {
   const now = options.now ?? Date.now;
@@ -182,7 +188,10 @@ export async function createProfileStore(
       known(id);
       return identities.get(id)!;
     },
-    async create(name: unknown): Promise<ProfileRecord> {
+    async create(
+      name: unknown,
+      platform = options.fingerprintPlatform ?? "linux",
+    ): Promise<ProfileRecord> {
       const clean = cleanName(name);
       if (records.size >= maxProfiles)
         throw new ClientSessionError(409, "PROFILE_LIMIT", `最多 ${maxProfiles} 个浏览器配置`);
@@ -196,7 +205,7 @@ export async function createProfileStore(
         identity.fingerprint = {
           engine: "aliasmode",
           seed: randomBytes(16).toString("hex"),
-          platform: "linux",
+          platform,
         };
       identities.set(id, identity);
       try {
@@ -207,6 +216,24 @@ export async function createProfileStore(
         throw error;
       }
       return record;
+    },
+    async setPlatform(id: string, platform: BrowserPlatform): Promise<void> {
+      known(id);
+      const identity = identities.get(id)!;
+      const previous = identity.fingerprint;
+      if ((previous?.platform ?? "linux") === platform) return;
+      identity.fingerprint = {
+        engine: "aliasmode",
+        seed: previous?.seed ?? randomBytes(16).toString("hex"),
+        platform,
+      };
+      try {
+        await persist();
+      } catch (error) {
+        if (previous) identity.fingerprint = previous;
+        else delete identity.fingerprint;
+        throw error;
+      }
     },
     async rename(id: unknown, name: unknown): Promise<ProfileRecord> {
       const record = known(id);

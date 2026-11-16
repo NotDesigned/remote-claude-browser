@@ -11,6 +11,8 @@ const accounts = [
   {
     id: "default",
     name: "默认配置",
+    platform: "linux",
+    browserEngine: "chromium",
     running: false,
     sessions: 0,
     signedIn: false,
@@ -21,6 +23,8 @@ const accounts = [
   {
     id: "p-0123456789",
     name: "工作",
+    platform: "windows",
+    browserEngine: "aliasmode",
     running: true,
     sessions: 1,
     signedIn: true,
@@ -39,6 +43,11 @@ const proxies = [
   { id: "proxy-private", name: "私有出口", visibility: "private" },
 ];
 const proxyChanges = [];
+const platformChanges = [];
+const platformCapabilities = {
+  platforms: ["windows", "macos", "linux"],
+  defaultPlatform: "windows",
+};
 const creations = [];
 const proxyChecks = [];
 const admissions = [];
@@ -66,13 +75,15 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/accounts" && req.method === "POST") {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
-      const { name, proxyId } = JSON.parse(Buffer.concat(chunks).toString());
+      const { name, proxyId, platform } = JSON.parse(Buffer.concat(chunks).toString());
       const proxy = proxies.find((item) => item.id === proxyId);
       if (!proxy) return json(res, { error: "请选择出口节点" }, 400);
-      creations.push({ name, proxyId });
+      creations.push({ name, proxyId, platform });
       const account = {
         id: "p-9876543210",
         name,
+        platform,
+        browserEngine: "aliasmode",
         running: false,
         sessions: 0,
         signedIn: false,
@@ -123,6 +134,16 @@ const server = createServer(async (req, res) => {
       proxyChanges.push({ id: account.id, proxyId });
       return json(res, account);
     }
+    if (/^\/api\/accounts\/[^/]+\/platform$/.test(url.pathname) && req.method === "PATCH") {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const { platform } = JSON.parse(Buffer.concat(chunks).toString());
+      const account = accounts.find((item) => item.id === url.pathname.split("/")[3]);
+      account.platform = platform;
+      account.browserEngine = "aliasmode";
+      platformChanges.push({ id: account.id, platform });
+      return json(res, { platform });
+    }
     if (url.pathname.startsWith("/api/accounts/") && req.method === "PATCH") {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
@@ -151,6 +172,7 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname === "/api/accounts")
       return json(res, {
+        ...platformCapabilities,
         accounts: [...accounts].sort(
           (a, b) => Number(b.id === defaultAccount) - Number(a.id === defaultAccount),
         ),
@@ -370,6 +392,92 @@ async function checkExitWarnings(page, touch = false) {
   }
 }
 
+async function checkPlatformSelection(page, touch = false) {
+  const account = accounts.find((entry) => entry.id === "p-0123456789");
+  const original = { ...account };
+  const beforeAdmissions = admissions.length;
+  const press = (button) => (touch ? button.tap() : button.click());
+  const editor = page.locator("form.profile-platform-editor");
+  const select = page.getByLabel(`「${account.name}」的系统身份`, { exact: true });
+  const card = page
+    .locator(".profile-card")
+    .filter({ has: page.getByText(account.name, { exact: true }) });
+  let confirm = false;
+  const warnings = [];
+  const onDialog = (dialog) => {
+    warnings.push(dialog.message());
+    return confirm ? dialog.accept() : dialog.dismiss();
+  };
+  page.on("dialog", onDialog);
+  const open = async () => {
+    await openCardMenu(page, account.name, touch);
+    await press(page.getByRole("button", { name: "设置系统", exact: true }));
+  };
+  try {
+    await open();
+    assert.equal(await select.inputValue(), "windows");
+    assert.deepEqual(await select.locator("option").allTextContents(), [
+      "Windows",
+      "Mac",
+      "Linux（不推荐）",
+    ]);
+    if (touch) {
+      const layout = await select.evaluate((node) => ({
+        font: parseFloat(getComputedStyle(node).fontSize),
+        height: node.getBoundingClientRect().height,
+        bottom: node.getBoundingClientRect().bottom,
+        viewport: innerHeight,
+      }));
+      assert.ok(
+        layout.font >= 16 && layout.height >= 44 && layout.bottom <= layout.viewport + 1,
+        JSON.stringify(layout),
+      );
+    }
+    const before = platformChanges.length;
+    await select.selectOption("macos");
+    await press(editor.getByRole("button", { name: "保存系统", exact: true }));
+    assert.equal(platformChanges.length, before, "cancel must retain the current system");
+    assert.equal(await editor.isVisible(), true);
+    assert.equal(await select.inputValue(), "macos");
+    assert.match(warnings[0], /Windows.*Mac/);
+    assert.match(warnings[0], /所有设备上打开的页面/);
+    assert.match(warnings[0], /平台风控/);
+    confirm = true;
+    await press(editor.getByRole("button", { name: "保存系统", exact: true }));
+    await editor.waitFor({ state: "hidden" });
+    await card.getByText("系统：Mac", { exact: true }).waitFor();
+    assert.deepEqual(platformChanges.at(-1), { id: account.id, platform: "macos" });
+    await open();
+    let navigations = 0;
+    const navigated = (frame) => {
+      if (frame === page.mainFrame()) navigations++;
+    };
+    page.on("framenavigated", navigated);
+    await press(editor.getByRole("button", { name: "保存系统", exact: true }));
+    await editor.waitFor({ state: "hidden" });
+    page.off("framenavigated", navigated);
+    assert.equal(warnings.length, 2, "same system must not require confirmation");
+    assert.equal(platformChanges.length, before + 1, "same system must not send a request");
+    assert.equal(navigations, 0, "same system must not reload");
+    await open();
+    await select.selectOption("linux");
+    await press(editor.getByRole("button", { name: "保存系统", exact: true }));
+    await editor.waitFor({ state: "hidden" });
+    await card.getByText("系统：Linux（不推荐）", { exact: true }).waitFor();
+    assert.equal(account.platform, "linux");
+    assert.equal(
+      admissions.length,
+      beforeAdmissions,
+      "changing system must not allocate a session",
+    );
+  } finally {
+    page.off("dialog", onDialog);
+    Object.assign(account, original);
+    await page.reload();
+    await page.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
+  }
+}
+
 async function checkMobileKyc(page) {
   const statuses = [
     ["not_required", "当前未要求 KYC"],
@@ -391,7 +499,12 @@ async function checkMobileKyc(page) {
   const route = (request) =>
     request.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ accounts: fixtures, default: fixtures[0].id, current: null }),
+      body: JSON.stringify({
+        ...platformCapabilities,
+        accounts: fixtures,
+        default: fixtures[0].id,
+        current: null,
+      }),
     });
   const viewport = page.viewportSize();
   const before = admissions.length;
@@ -525,6 +638,7 @@ try {
   );
   assert.equal(admissions.length, 0, "binding an exit must not open the profile");
   await checkExitWarnings(page);
+  await checkPlatformSelection(page);
   await openCardMenu(page, "工作");
   await page.getByRole("button", { name: "设「工作」为默认", exact: true }).click();
   await page.waitForFunction(
@@ -553,6 +667,8 @@ try {
   accounts.push({
     id: "p-2222222222",
     name: "可删除配置",
+    platform: "windows",
+    browserEngine: "aliasmode",
     running: false,
     sessions: 0,
     signedIn: false,
@@ -677,6 +793,9 @@ try {
   await page.route("**/api/proxies", (route) => route.fulfill({ json: { proxies: [] } }));
   await page.getByRole("button", { name: "新建浏览器配置" }).click();
   await page.getByLabel("浏览器配置名称").fill("新工作");
+  const createdPlatform = page.getByLabel("系统身份", { exact: true });
+  assert.equal(await createdPlatform.inputValue(), "windows");
+  await createdPlatform.selectOption("macos");
   const createSubmit = page.getByRole("button", { name: "检查并打开", exact: true });
   assert.equal(await createSubmit.isDisabled(), true);
   await page.getByRole("button", { name: "导入节点或订阅", exact: true }).click();
@@ -716,6 +835,11 @@ try {
   assert.equal(switches.length, beforeCreate.switches);
   assert.equal(await page.getByLabel("浏览器配置名称").inputValue(), "新工作");
   assert.equal(await createdProxy.inputValue(), "proxy-private");
+  assert.equal(
+    await createdPlatform.inputValue(),
+    "macos",
+    "failed exit check retains the selected system",
+  );
   createExitFailure = false;
   const created = page.waitForResponse(
     (response) =>
@@ -728,7 +852,11 @@ try {
     (url) => url.searchParams.get("sid") === "client-1" && !url.searchParams.has("new"),
   );
   assert.equal(admissions.at(-1).account, "p-9876543210");
-  assert.deepEqual(creations.at(-1), { name: "新工作", proxyId: "proxy-private" });
+  assert.deepEqual(creations.at(-1), {
+    name: "新工作",
+    proxyId: "proxy-private",
+    platform: "macos",
+  });
   assert.equal(creations.length, beforeCreate.creations + 1);
   assert.equal(
     proxyChanges.length,
@@ -785,8 +913,9 @@ try {
   await phone.getByRole("alert").filter({ hasText: "配置暂不可用" }).waitFor();
   await phone.unroute("**/api/accounts");
   await phone.getByRole("button", { name: "重试", exact: true }).tap();
-  await phone.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
+  await phone.getByRole("button", { name: "管理「工作」", exact: true }).waitFor();
   await checkExitWarnings(phone, true);
+  await checkPlatformSelection(phone, true);
   await checkExitHealth(phone, true);
   await checkMobileKyc(phone);
   accounts[1].email = "a-very-long-email-address-to-check-mobile-layout@example.com";
@@ -806,6 +935,8 @@ try {
     accounts.push({
       id: `p-fixture-${i}`,
       name: `配置 ${i + 4}`,
+      platform: "windows",
+      browserEngine: "aliasmode",
       running: false,
       sessions: 0,
       signedIn: false,
@@ -898,6 +1029,10 @@ try {
   assert.equal(switches.length, beforePhoneRename.switches);
   await phone.getByRole("button", { name: "新建浏览器配置", exact: true }).tap();
   await phone.getByLabel("浏览器配置名称").fill("手机新配置");
+  const phonePlatform = phone.getByLabel("系统身份", { exact: true });
+  assert.equal(await phonePlatform.inputValue(), "windows");
+  await phonePlatform.selectOption({ label: "Linux（不推荐）" });
+  assert.equal(await phonePlatform.inputValue(), "linux");
   const inputLayout = await phone.getByLabel("浏览器配置名称").evaluate((input) => ({
     font: parseFloat(getComputedStyle(input).fontSize),
     bottom: input.getBoundingClientRect().bottom,
@@ -999,6 +1134,8 @@ try {
       shellCreateUsesUnifiedPicker: true,
       unboundResumeReturnsToPicker: true,
       exitWarningChecks,
+      platformDefaultCreationAndDesktopMobileSwitching: true,
+      platformChanges,
       proxyChanges,
       phoneLayout: layout,
       loadRetry: true,

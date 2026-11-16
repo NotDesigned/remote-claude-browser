@@ -13,15 +13,22 @@ import {
   setDefaultAccount,
   listProxyChoices,
   setAccountProxy,
+  setAccountPlatform,
   checkAccountExit,
   type ProxyChoice,
   type AccountInfo,
+  type BrowserPlatform,
 } from "./accounts";
 import { ExitHealthDetails } from "./exit-health";
 import { proxyApi, type ExitHealth } from "./network-api";
 import "./profile-picker.css";
 
 const LAST_ACCOUNT_KEY = "mirror.last-account";
+const PLATFORM_LABELS: Record<BrowserPlatform, string> = {
+  windows: "Windows",
+  macos: "Mac",
+  linux: "Linux（不推荐）",
+};
 
 export function rememberedAccount(): string | null {
   try {
@@ -96,6 +103,7 @@ function ProfileCard(props: {
   onDefault(): void;
   onDelete(): void;
   onProxy(): void;
+  onPlatform(): void;
 }) {
   const { account } = props;
   const signedIn = account.signedIn === true;
@@ -179,6 +187,7 @@ function ProfileCard(props: {
             </span>
           </span>
           {signedIn && <ProfileKyc account={account} />}
+          <span class="profile-exit">系统：{PLATFORM_LABELS[account.platform]}</span>
           <span class="profile-exit">
             出口：{account.proxyName ?? (account.proxyId ? "节点已移除" : "未选择（禁止打开）")}
           </span>
@@ -231,6 +240,9 @@ function ProfileCard(props: {
         <div class="profile-actions" role="group" aria-label="配置操作">
           <button type="button" disabled={props.disabled} onClick={() => action(props.onProxy)}>
             设置出口
+          </button>
+          <button type="button" disabled={props.disabled} onClick={() => action(props.onPlatform)}>
+            设置系统
           </button>
           <button
             type="button"
@@ -297,6 +309,9 @@ export function ProfilePicker(props: {
   const [busy, setBusy] = useState(false);
   const [creationProxies, setCreationProxies] = useState<ProxyChoice[] | null>(null);
   const [creationProxyId, setCreationProxyId] = useState("");
+  const [platforms, setPlatforms] = useState<BrowserPlatform[]>([]);
+  const [defaultPlatform, setDefaultPlatform] = useState<BrowserPlatform>("windows");
+  const [creationPlatform, setCreationPlatform] = useState<BrowserPlatform>("windows");
   const [proxyRefresh, setProxyRefresh] = useState(0);
   const [creationProgress, setCreationProgress] = useState("");
   const [proxyEditor, setProxyEditor] = useState<{
@@ -304,8 +319,13 @@ export function ProfilePicker(props: {
     choices: ProxyChoice[];
     value: string;
   } | null>(null);
+  const [platformEditor, setPlatformEditor] = useState<{
+    account: AccountInfo;
+    value: BrowserPlatform;
+  } | null>(null);
   const [refreshAttempt, setRefreshAttempt] = useState(0);
   const input = useRef<HTMLInputElement>(null);
+  const platformSelect = useRef<HTMLSelectElement>(null);
   const last = rememberedAccount();
 
   useEffect(() => {
@@ -339,6 +359,8 @@ export function ProfilePicker(props: {
         if (active) {
           setAccounts(list.accounts);
           setDefaultId(list.default);
+          setPlatforms(list.platforms);
+          setDefaultPlatform(list.defaultPlatform);
           setLoadError(null);
         }
       } catch (reason) {
@@ -365,6 +387,12 @@ export function ProfilePicker(props: {
       input.current!.scrollIntoView({ block: "nearest" });
     }
   }, [creating, editing, accounts === null]);
+  useEffect(() => {
+    if (platformEditor) {
+      platformSelect.current!.focus();
+      platformSelect.current!.scrollIntoView({ block: "nearest" });
+    }
+  }, [platformEditor?.account.id]);
 
   const changed = () => {
     setRefreshAttempt((value) => value + 1);
@@ -429,6 +457,7 @@ export function ProfilePicker(props: {
     setError(null);
     try {
       setProxyEditor({ account, choices: await listProxyChoices(), value: account.proxyId ?? "" });
+      setPlatformEditor(null);
       setEditing(null);
       setCreating(false);
     } catch (reason) {
@@ -470,6 +499,37 @@ export function ProfilePicker(props: {
     }
   };
 
+  const savePlatform = async (event: Event) => {
+    event.preventDefault();
+    const { account, value } = platformEditor!;
+    if (account.platform === value) {
+      setPlatformEditor(null);
+      return;
+    }
+    if (
+      !window.confirm(
+        [
+          `将「${account.name}」的系统身份从「${PLATFORM_LABELS[account.platform]}」切换为「${PLATFORM_LABELS[value]}」。`,
+          "这会改变网站看到的系统和设备特征，并关闭该配置在所有设备上打开的页面。重新连接时会按新身份启动。",
+          "频繁切换可能触发平台风控或要求重新验证。请确认你了解影响并希望继续。",
+        ].join("\n\n"),
+      )
+    )
+      return;
+    setBusy(true);
+    setError(null);
+    try {
+      await setAccountPlatform(account.id, value);
+      setPlatformEditor(null);
+      changed();
+      if (props.current === account.id) window.location.reload();
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const pick = async (id: string, name: string) => {
     setBusy(true);
     setError(null);
@@ -494,7 +554,7 @@ export function ProfilePicker(props: {
       if (health.status !== "healthy")
         throw new Error(health.error ?? "出口检查未通过，请重试或选择其他节点");
       setCreationProgress("正在创建并打开…");
-      const made = await createAccount(name.trim(), creationProxyId);
+      const made = await createAccount(name.trim(), creationProxyId, undefined, creationPlatform);
       made.proxyName = creationProxies.find((node) => node.id === creationProxyId)!.name;
       created = true;
       setAccounts((previous) => [...previous!, made]);
@@ -589,6 +649,38 @@ export function ProfilePicker(props: {
               </div>
             </form>
           )}
+          {platformEditor && (
+            <form class="profile-proxy-editor profile-platform-editor" onSubmit={savePlatform}>
+              <label for="profile-platform">「{platformEditor.account.name}」的系统身份</label>
+              <select
+                id="profile-platform"
+                ref={platformSelect}
+                disabled={busy}
+                value={platformEditor.value}
+                onChange={(event) =>
+                  setPlatformEditor({
+                    ...platformEditor,
+                    value: event.currentTarget.value as BrowserPlatform,
+                  })
+                }
+              >
+                {platforms.map((platform) => (
+                  <option key={platform} value={platform}>
+                    {PLATFORM_LABELS[platform]}
+                  </option>
+                ))}
+              </select>
+              <p>决定网站看到的操作系统。同一配置的所有会话使用相同身份。</p>
+              <div>
+                <button type="submit" disabled={busy}>
+                  {busy ? "保存中…" : "保存系统"}
+                </button>
+                <button type="button" disabled={busy} onClick={() => setPlatformEditor(null)}>
+                  取消
+                </button>
+              </div>
+            </form>
+          )}
           {accounts === null && loadError === null ? (
             <div class="profile-list" aria-busy="true">
               <div class="profile-card profile-skeleton" />
@@ -650,12 +742,21 @@ export function ProfilePicker(props: {
                       onRename={() => {
                         setError(null);
                         setCreating(false);
+                        setProxyEditor(null);
+                        setPlatformEditor(null);
                         setName(account.name);
                         setEditing(account.id);
                       }}
                       onDefault={() => void makeDefault(account.id)}
                       onDelete={() => void remove(account)}
                       onProxy={() => void editProxy(account)}
+                      onPlatform={() => {
+                        setError(null);
+                        setCreating(false);
+                        setEditing(null);
+                        setProxyEditor(null);
+                        setPlatformEditor({ account, value: account.platform });
+                      }}
                     />
                   ),
                 )}
@@ -673,6 +774,22 @@ export function ProfilePicker(props: {
                     onInput={(event) => setName((event.target as HTMLInputElement).value)}
                     onKeyDown={(event) => event.key === "Escape" && setCreating(false)}
                   />
+                  <label for="profile-create-platform">系统身份</label>
+                  <select
+                    id="profile-create-platform"
+                    value={creationPlatform}
+                    disabled={busy}
+                    onChange={(event) =>
+                      setCreationPlatform(event.currentTarget.value as BrowserPlatform)
+                    }
+                  >
+                    {platforms.map((platform) => (
+                      <option key={platform} value={platform}>
+                        {PLATFORM_LABELS[platform]}
+                        {platform === defaultPlatform ? "（默认）" : ""}
+                      </option>
+                    ))}
+                  </select>
                   <label for="profile-create-proxy">网络出口</label>
                   <select
                     id="profile-create-proxy"
@@ -760,8 +877,10 @@ export function ProfilePicker(props: {
                       setError(null);
                       setEditing(null);
                       setProxyEditor(null);
+                      setPlatformEditor(null);
                       setName("");
                       setCreationProxyId("");
+                      setCreationPlatform(defaultPlatform);
                       setCreating(true);
                     }}
                   >

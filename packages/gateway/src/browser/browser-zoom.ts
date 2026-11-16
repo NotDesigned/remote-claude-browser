@@ -45,6 +45,7 @@ export function isZoomTitle(title: string): boolean {
 export async function installZoomExtension(
   browser: { sendBrowser?: (method: string, params?: Record<string, unknown>) => Promise<unknown> },
   directory: string,
+  browserDirectory = directory,
 ): Promise<void> {
   if (!browser.sendBrowser) throw new Error("This browser has no root session");
   await mkdir(directory, { recursive: true });
@@ -59,7 +60,7 @@ export async function installZoomExtension(
     }),
   );
   await writeFile(join(directory, "worker.js"), ZOOM_EXTENSION_WORKER);
-  await browser.sendBrowser("Extensions.loadUnpacked", { path: directory });
+  await browser.sendBrowser("Extensions.loadUnpacked", { path: browserDirectory });
 }
 
 export interface BrowserZoomDeps {

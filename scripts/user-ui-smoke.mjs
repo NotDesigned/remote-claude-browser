@@ -124,7 +124,18 @@ const server = createServer(async (request, response) => {
       return json(response, 200, {
         current: "default",
         default: "default",
-        accounts: [{ id: "default", name: "默认配置", running: true, sessions: 1 }],
+        platforms: ["windows", "macos", "linux"],
+        defaultPlatform: "windows",
+        accounts: [
+          {
+            id: "default",
+            name: "默认配置",
+            running: true,
+            sessions: 1,
+            platform: "windows",
+            browserEngine: "aliasmode",
+          },
+        ],
       });
     if (url.pathname.endsWith("/theme"))
       return json(response, 200, { theme: "auto", applied: true });

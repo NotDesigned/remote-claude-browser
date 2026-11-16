@@ -4,9 +4,13 @@ import type { ExitHealth } from "./network-api";
  * mix; switching moves this session to another one, closing the pages it had open.
  */
 
+export type BrowserPlatform = "windows" | "macos" | "linux";
+
 export interface AccountInfo {
   id: string;
   name: string;
+  platform: BrowserPlatform;
+  browserEngine: "aliasmode" | "chromium";
   /** Whether its Chrome is running now. */
   running: boolean;
   /** How many sessions, on any device, use it. */
@@ -30,6 +34,8 @@ export interface AccountInfo {
 
 export interface AccountList {
   accounts: AccountInfo[];
+  platforms: BrowserPlatform[];
+  defaultPlatform: BrowserPlatform;
   /** This user's default configuration. */
   default: string;
   /** The account this session uses. */
@@ -76,6 +82,8 @@ export async function listAccounts(
   if (!Array.isArray(list) || !list.every(isAccount)) throw new Error("浏览器配置列表无法读取");
   return {
     accounts: list,
+    platforms: (value as AccountList).platforms,
+    defaultPlatform: (value as AccountList).defaultPlatform,
     default: (value as { default: string }).default,
     current: typeof current === "string" ? current : null,
   };
@@ -85,16 +93,19 @@ export async function createAccount(
   name: string,
   proxyId?: string,
   fetcher?: typeof fetch,
+  platform?: BrowserPlatform,
 ): Promise<AccountInfo> {
   const response = await call(
     "/api/accounts",
-    { method: "POST", body: JSON.stringify({ name, proxyId }) },
+    { method: "POST", body: JSON.stringify({ name, proxyId, platform }) },
     fetcher,
   );
-  const made = (await response.json()) as { id: string; name: string; proxyId?: string };
+  const made = (await response.json()) as AccountInfo;
   return {
     id: made.id,
     name: made.name,
+    platform: made.platform,
+    browserEngine: made.browserEngine,
     proxyId: made.proxyId,
     running: false,
     sessions: 0,
@@ -139,6 +150,21 @@ export async function setAccountProxy(id: string, proxyId: string | null): Promi
     method: "PATCH",
     body: JSON.stringify({ proxyId }),
   });
+}
+
+export async function setAccountPlatform(
+  id: string,
+  platform: BrowserPlatform,
+  fetcher?: typeof fetch,
+): Promise<void> {
+  await call(
+    `/api/accounts/${encodeURIComponent(id)}/platform`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ platform }),
+    },
+    fetcher,
+  );
 }
 
 export async function checkAccountExit(

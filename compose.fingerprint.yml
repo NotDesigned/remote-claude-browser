@@ -1,5 +1,6 @@
 # Optional local fingerprint engine. Download the pinned release with scripts/setup-fingerprint.sh.
-# Existing profiles retain Chromium; only newly created profiles use AliasMode.
+# Only new profiles use AliasMode: Windows persona with the isolated broker, Linux for direct launches.
+# Existing profiles retain their saved engine and platform.
 services:
   server:
     environment:

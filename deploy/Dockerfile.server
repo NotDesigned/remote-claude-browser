@@ -59,7 +59,7 @@ RUN apt-get update \
     && groupadd --gid 10001 browser \
     && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin browser \
     && install -d -o browser -g browser /data \
-    && install -d /opt/remote-browser \
+    && install -d /opt/remote-browser /C: \
     && ln -sfn /data/timezone/localtime /etc/localtime \
     && ln -sfn /data/timezone/name /etc/timezone
 

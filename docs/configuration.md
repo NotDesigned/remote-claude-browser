@@ -69,6 +69,10 @@ must select an explicit proxy node; its egress depends on that node.
 (`chromium` or `aliasmode`) selects the engine for newly created configurations only. Existing
 configurations retain their saved engine and identity. The full browser directory is mounted
 read-only from `FINGERPRINT_BROWSER_DIR`; keep that mount while AliasMode profiles exist.
+New AliasMode profiles use a Windows persona when `MIRROR_RUNTIME_SOCKET` enables the isolated
+browser broker, and a Linux persona for direct launches. The broker mounts only the profile's
+zoom extension read-only at `/C:/zoom-extension` inside its private filesystem, so Windows file-URL
+parsing can load it on Linux. Existing profiles keep their saved platform.
 See [fingerprint browser setup and acceptance](fingerprint-browser.md).
 
 Compose passes the password and signing keys as container environment variables. Anyone who can

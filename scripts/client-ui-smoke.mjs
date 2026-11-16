@@ -105,10 +105,14 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/api/accounts" && request.method === "GET") {
       json(response, 200, {
         default: "default",
+        platforms: ["windows", "macos", "linux"],
+        defaultPlatform: "windows",
         current: url.searchParams.has("sid") ? "default" : null,
         accounts: [
           {
             id: "default",
+            platform: "windows",
+            browserEngine: "aliasmode",
             name: "测试浏览器",
             running: slots.size > 0,
             sessions: slots.size,

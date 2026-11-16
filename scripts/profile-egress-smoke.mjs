@@ -130,6 +130,15 @@ async function cdpProbe(input) {
       calls.set(id, { done, fail });
       socket.write(JSON.stringify({ id, method, params, sessionId }) + "\0");
     });
+  const evaluate = async (sessionId, expression) => {
+    const response = await send(
+      "Runtime.evaluate",
+      { expression, returnByValue: true, awaitPromise: true },
+      sessionId,
+    );
+    assert.equal(response.exceptionDetails, undefined, "browser evaluation failed");
+    return response.result.value;
+  };
   const timeout = setTimeout(() => socket.destroy(new Error("CDP probe timed out")), 15000);
   try {
     const { targetId } = await send("Target.createTarget", { url: "about:blank" });
@@ -203,15 +212,77 @@ async function cdpProbe(input) {
         sessionId,
       )
     ).result.value;
-    assert.equal(platform, "Linux x86_64");
     const engine =
       process.env.PROFILE_EGRESS_ALIASMODE === "1" && input.exit === "exit-B"
         ? "aliasmode"
         : "chromium";
+    assert.equal(platform, engine === "aliasmode" ? "Win32" : "Linux x86_64");
     if (engine === "aliasmode") {
       const version = await send("Browser.getVersion");
       assert.match(version.product, /^Chrome\/155\./);
     }
+    const { installZoomExtension, createBrowserZoom } =
+      await import("/acceptance/browser-zoom.mjs");
+    const extensionDirectory = join(input.directory, "zoom-extension");
+    let extensionId;
+    await installZoomExtension(
+      {
+        sendBrowser: async (method, params) => {
+          const result = await send(method, params);
+          extensionId = result.id;
+          return result;
+        },
+      },
+      extensionDirectory,
+      engine === "aliasmode" ? "/C:/zoom-extension" : extensionDirectory,
+    );
+    await writeFile(
+      join(extensionDirectory, "probe.html"),
+      "<!doctype html><title>Extension probe</title>",
+    );
+    const { targetId: secondId } = await send("Target.createTarget", {
+      url: "http://203.0.113.10/page?second",
+    });
+    const { sessionId: secondSession } = await send("Target.attachToTarget", {
+      targetId: secondId,
+      flatten: true,
+    });
+    const { targetId: extensionTarget } = await send("Target.createTarget", {
+      url: `chrome-extension://${extensionId}/probe.html`,
+    });
+    const { sessionId: extensionSession } = await send("Target.attachToTarget", {
+      targetId: extensionTarget,
+      flatten: true,
+    });
+    for (let n = 0; n < 40; n++) {
+      if (
+        (await evaluate(extensionSession, "typeof chrome !== 'undefined' && !!chrome.tabs")) &&
+        (await evaluate(secondSession, "document.title")) === input.exit
+      )
+        break;
+      await delay(100);
+    }
+    const zoom = createBrowserZoom({ evaluate });
+    await zoom.set({ sessionId }, 2);
+    let zooms;
+    for (let n = 0; n < 40; n++) {
+      zooms = await evaluate(
+        extensionSession,
+        `chrome.tabs.query({}).then(tabs => Promise.all(
+        tabs.filter(tab => tab.url.startsWith('http://203.0.113.10/page'))
+          .map(async tab => ({ url: tab.url, zoom: await chrome.tabs.getZoom(tab.id) }))
+      ))`,
+      );
+      if (zooms.find((tab) => tab.url.endsWith("/page"))?.zoom === 2) break;
+      await delay(100);
+    }
+    assert.deepEqual(
+      zooms.sort((a, b) => a.url.localeCompare(b.url)),
+      [
+        { url: "http://203.0.113.10/page", zoom: 2 },
+        { url: "http://203.0.113.10/page?second", zoom: 1 },
+      ],
+    );
     const file = await send("Page.navigate", { url: "file:///etc/passwd" }, sessionId);
     assert.equal(file.errorText, "net::ERR_BLOCKED_BY_ADMINISTRATOR");
     await send("Browser.close");
@@ -221,6 +292,7 @@ async function cdpProbe(input) {
       screenshot: true,
       platform,
       engine,
+      extensionPerTabZoom: true,
       localFileBlocked: true,
       persistentProfile: !input.persist,
       timeZone: clocks.main.timeZone,
@@ -368,7 +440,7 @@ async function startExitFixture(exit, socksPort, targetPort, counters) {
       );
       return;
     }
-    if (req.url === "/page") {
+    if (req.url.split("?")[0] === "/page") {
       res.setHeader("content-type", "text/html");
       res.end(
         `<!doctype html><title>${exit}</title><body style="font:40px sans-serif;background:#eef">${exit}</body>`,
@@ -640,7 +712,7 @@ async function inside() {
     "--clear-groups",
     "node",
     "-e",
-    "for(const name of ['browser-a','browser-b'])require('fs').mkdirSync('/data/'+name,{recursive:true})",
+    "for(const name of ['browser-a','browser-b']){const fs=require('fs');const path='/data/'+name+'/zoom-extension';fs.mkdirSync(path,{recursive:true});fs.writeFileSync(path+'/marker-'+name,name)}",
   ]);
   const direct = createServer((_req, res) => res.end("DIRECT-LEAK"));
   await new Promise((done) => direct.listen(80, "0.0.0.0", done));
@@ -911,7 +983,7 @@ exec sh /acceptance/profile-network.sh "$@"
     const browserArgs = [
       "--no-first-run",
       "--password-store=basic",
-      "--disable-extensions",
+      "--enable-unsafe-extension-debugging",
       "--disable-dev-shm-usage",
       "--disable-background-networking",
     ];
@@ -932,7 +1004,7 @@ exec sh /acceptance/profile-network.sh "$@"
             ...(headful ? [] : ["--headless=new"]),
             ...browserArgs,
             ...(process.env.PROFILE_EGRESS_ALIASMODE === "1" && profile.exit === "exit-B"
-              ? ["--fingerprint=egress-smoke-b", "--fingerprint-platform=linux"]
+              ? ["--fingerprint=egress-smoke-b", "--fingerprint-platform=windows"]
               : []),
           ],
           env,
@@ -984,6 +1056,53 @@ exec sh /acceptance/profile-network.sh "$@"
     const initialBrowsers = await Promise.all(
       Object.values(browserProfiles).map((profile) => startBrowser(profile)),
     );
+    for (const [key, profile] of Object.entries(browserProfiles)) {
+      const other = browserProfiles[key === "A" ? "B" : "A"];
+      let browserPid;
+      for (let attempt = 0; attempt < 100 && !browserPid; attempt++) {
+        const pids = (
+          await command("ip", ["netns", "pids", networkIdentity(`browser-${profile.id}`).name])
+        )
+          .split(/\s+/)
+          .filter(Boolean);
+        for (const pid of pids) {
+          const args = (await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "")).split("\0");
+          if (
+            args.includes("--inside") &&
+            args.includes(profile.directory) &&
+            (await stat(
+              `/proc/${pid}/root/C:/zoom-extension/marker-${profile.directory.split("/").at(-1)}`,
+            ).then(
+              () => true,
+              () => false,
+            ))
+          )
+            browserPid = pid;
+        }
+        if (!browserPid) await delay(50);
+      }
+      assert.ok(browserPid, "isolated browser process should start");
+      await command("nsenter", [
+        "--target",
+        browserPid,
+        "--mount",
+        "--",
+        "setpriv",
+        "--reuid=10001",
+        "--regid=10001",
+        "--clear-groups",
+        "node",
+        "-e",
+        `const fs=require('node:fs'),assert=require('node:assert/strict');
+        const own=process.argv[1],other=process.argv[2];
+        assert.equal(fs.readFileSync('/C:/zoom-extension/marker-'+own,'utf8'),own);
+        assert.equal(fs.existsSync('/C:/zoom-extension/marker-'+other),false);
+        assert.equal(fs.existsSync('/data/'+other+'/zoom-extension'),false);
+        assert.throws(()=>fs.writeFileSync('/C:/zoom-extension/forbidden-write','x'),{code:'EROFS'});`,
+        profile.directory.split("/").at(-1),
+        other.directory.split("/").at(-1),
+      ]);
+    }
     assert.equal(counts.A.geo, beforeConcurrent.A + 1);
     assert.equal(counts.B.geo, beforeConcurrent.B + 1);
     const browserStatus = await api("/browsers/smoke-browser-b/status", "GET");
@@ -999,6 +1118,7 @@ exec sh /acceptance/profile-network.sh "$@"
         childProbe("cdp", {
           socketPath: initialBrowsers[index].socketPath,
           exit: profile.exit,
+          directory: profile.directory,
           persist: true,
         }),
       ),
@@ -1021,6 +1141,7 @@ exec sh /acceptance/profile-network.sh "$@"
         await childProbe("cdp", {
           socketPath: browser.socketPath,
           exit: profile.exit,
+          directory: profile.directory,
           persist: false,
         }),
       );
@@ -1054,6 +1175,7 @@ exec sh /acceptance/profile-network.sh "$@"
       ...(await childProbe("cdp", {
         socketPath: headful.socketPath,
         exit: "exit-B",
+        directory: browserProfiles.B.directory,
         persist: false,
       })),
       headful: true,
@@ -1088,6 +1210,8 @@ exec sh /acceptance/profile-network.sh "$@"
         pendingEgressRevoked: true,
         defaultEgressLifecycle: true,
         headfulPrivateX11: true,
+        privateReadOnlyExtensionMounts: true,
+        extensionPerTabZoom: true,
         selectedExitTimeZones: true,
         actualExitLocations: true,
         workerLocalTime: true,
@@ -1168,6 +1292,17 @@ async function host() {
     const require = createRequire(new URL("../packages/gateway/package.json", import.meta.url));
     await require("esbuild").build({
       entryPoints: [
+        fileURLToPath(new URL("../packages/gateway/src/browser/browser-zoom.ts", import.meta.url)),
+      ],
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      target: "node22",
+      outfile: join(work, "browser-zoom.mjs"),
+      logLevel: "warning",
+    });
+    await require("esbuild").build({
+      entryPoints: [
         fileURLToPath(new URL("../packages/gateway/src/egress/mihomo.ts", import.meta.url)),
       ],
       bundle: true,
@@ -1225,6 +1360,7 @@ async function host() {
       "profile-broker.mjs",
       "profile-network.sh",
       "config.mjs",
+      "browser-zoom.mjs",
     ])
       await chmod(join(work, name), 0o644);
     await chmod(join(work, "browser-filesystem.sh"), 0o755);
@@ -1265,6 +1401,7 @@ async function host() {
       ].map((cap) => `--cap-add=${cap}`),
       "--tmpfs=/tmp:rw,nosuid,nodev,size=512m,mode=1777",
       "--tmpfs=/data:rw,size=256m,uid=10001,gid=10001,mode=0700",
+      "--mount=type=tmpfs,dst=/C:,tmpfs-mode=0755,tmpfs-size=1048576",
       "--tmpfs=/run/netns:rw,size=16m",
       "--tmpfs=/run/remote-browser:rw,size=32m",
       "--mount",

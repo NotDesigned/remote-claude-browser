@@ -10,13 +10,15 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export type BrowserEngine = "chromium" | "aliasmode";
+export const BROWSER_PLATFORMS = ["windows", "macos", "linux"] as const;
+export type BrowserPlatform = (typeof BROWSER_PLATFORMS)[number];
 
 export interface BrowserIdentity {
   screen: { width: number; height: number };
   /** Optional font families this account does not have. */
   missingFonts: string[];
   rendering: { hintstyle: string; antialias: boolean; autohint: boolean };
-  fingerprint?: { engine: "aliasmode"; seed: string; platform: "linux" };
+  fingerprint?: { engine: "aliasmode"; seed: string; platform: BrowserPlatform };
 }
 
 /**
