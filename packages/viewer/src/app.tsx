@@ -520,7 +520,7 @@ export function App() {
     const entryParams = new URLSearchParams(window.location.search);
     let entryMode: "dom" | "px" | null = pendingModeRef.current;
     pendingModeRef.current = null;
-    const entryTab = entryParams.get("tab");
+    let entryTab = entryParams.get("tab");
     const presentation = createPresentationState();
     const knownModes = new Map<TabId, "dom" | "px">();
     const pageUrls = new Map<TabId, string>();
@@ -1014,6 +1014,7 @@ export function App() {
                   : { t: "mode", tab, mode: "dom" },
               );
             }
+            entryTab = null;
           }
         }
         if (message.t === "download" && !dismissedDownloadIdsRef.current.has(message.id)) {
