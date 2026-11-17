@@ -125,6 +125,7 @@ export type Down =
   /** Gateway-initiated: discard all state for the tab; a fresh snapshot follows. */
   | { t: "resync"; tab: TabId }
   | { t: "input-status"; tab: TabId; failed: boolean }
+  | { t: "cpa-oauth"; tab: TabId; status: "submitted" | "error" }
   | { t: "mode"; tab: TabId; mode: "dom" | "px" }
   /** Starts or restarts the pixel view's video stream; a keyframe follows. */
   | { t: "vid-cfg"; tab: TabId; codec: string; description: string }
@@ -281,6 +282,7 @@ const DOWN_TAGS: ReadonlySet<string> = new Set([
   "delta",
   "resync",
   "input-status",
+  "cpa-oauth",
   "mode",
   "px-capacity",
   "server-status",

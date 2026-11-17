@@ -7,7 +7,7 @@ import {
   type CpaCredential,
   type CpaInstance,
   type CpaKey,
-  type CpaOAuth,
+  type CpaPendingOAuth,
   type ProxyInfo,
 } from "./network-api";
 
@@ -69,7 +69,9 @@ export function CpaPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [oauth, setOAuth] = useState<(CpaOAuth & { proxyId: string }) | null>(null);
+  const [oauth, setOAuth] = useState<CpaPendingOAuth | null>(null);
+  const oauthRef = useRef(oauth);
+  oauthRef.current = oauth;
   const [oauthProxy, setOAuthProxy] = useState<string | null>(null);
   const [callback, setCallback] = useState("");
   const [keyName, setKeyName] = useState("");
@@ -99,15 +101,20 @@ export function CpaPanel({
   };
   const reloadDetails = async (item: CpaInstance) => {
     const request = ++detailRequest.current;
-    const [savedKeys, savedCredentials] = await Promise.all([
+    const [savedKeys, savedCredentials, pending] = await Promise.all([
       cpaApi.keys(item.id),
       item.canManage && item.status === "running"
         ? cpaApi.credentials(item.id)
         : Promise.resolve({ credentials: [] }),
+      item.canManage ? cpaApi.pendingOAuth(item.id) : Promise.resolve({ sessions: [] }),
     ]);
     if (selectedRef.current === item.id && detailRequest.current === request) {
       setKeys(savedKeys.keys);
       setCredentials(savedCredentials.credentials);
+      const saved = pending.sessions.at(-1) ?? null;
+      if (saved?.state !== oauthRef.current?.state) setCallback("");
+      setOAuth(saved);
+      if (saved) setOAuthProxy(saved.proxyId);
     }
   };
   useEffect(() => {
@@ -135,9 +142,16 @@ export function CpaPanel({
     };
   }, [selected, instance?.status]);
   useEffect(() => {
-    setOAuth(null);
-    setCallback("");
-  }, [selectedOAuthProxy]);
+    if (open && instance)
+      void reloadInstances()
+        .then((items) => {
+          const current = items.find((item) => item.id === selectedRef.current);
+          if (current) return reloadDetails(current);
+        })
+        .catch((reason: Error) => {
+          if (selectedRef.current === instance.id) setError(reason.message);
+        });
+  }, [open]);
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
     setError(null);
@@ -429,7 +443,10 @@ export function CpaPanel({
                   disabled={busy || instance.status !== "running"}
                   label="授权使用的代理"
                   placeholder="请选择代理节点"
-                  onChange={setOAuthProxy}
+                  onChange={(proxyId) => {
+                    setOAuthProxy(proxyId);
+                    setOAuth(null);
+                  }}
                 />
                 <p class="network-muted">
                   {proxies.some((proxy) => proxy.id === browserProxyId)
@@ -440,7 +457,9 @@ export function CpaPanel({
                   <button
                     type="button"
                     class="network-primary"
-                    disabled={busy || instance.status !== "running" || !selectedOAuthProxy}
+                    disabled={
+                      busy || instance.status !== "running" || !selectedOAuthProxy || !!oauth
+                    }
                     onClick={() =>
                       void run(async () => {
                         setOAuth({
@@ -476,7 +495,7 @@ export function CpaPanel({
                       </p>
                     )}
                     <p class="network-muted">
-                      在授权页完成操作后，可提交浏览器跳转的完整回调 URL 或授权码。
+                      远程浏览器会自动提交匹配的授权回调。也可在这里粘贴完整回调 URL 或授权码。
                     </p>
                     <label>
                       授权回调 URL 或授权码

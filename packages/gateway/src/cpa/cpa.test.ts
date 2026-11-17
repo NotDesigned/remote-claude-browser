@@ -301,6 +301,85 @@ describe("CPA instance and key boundaries", () => {
 });
 
 describe("CPA authorization lifecycle", () => {
+  it("restores pending forms only to the manager and captures the matching browser callback once", async () => {
+    const { store, runtime, setUpstream, calls } = await fixture();
+    const value = store.create(alice);
+    store.setDesiredState(value.id, "running");
+    const url =
+      "https://claude.ai/oauth/authorize?state=capture-state&redirect_uri=" +
+      encodeURIComponent("http://localhost:54545/callback");
+    const callback = "http://localhost:54545/callback?code=one-time-code&state=capture-state";
+    let finished = false;
+    setUpstream((_instance, input) => {
+      if (input.path.endsWith("/oauth/auth-url")) return response({ state: "capture-state", url });
+      if (input.path.endsWith("/oauth/callback")) {
+        finished = true;
+        return response({ status: "ok" });
+      }
+      if (input.path.includes("/oauth/status?"))
+        return response(finished ? { status: "ok", auth_id: "capture-auth" } : { status: "wait" });
+      return response({ files: finished ? [{ id: "capture-auth", name: "captured.json" }] : [] });
+    });
+    await runtime.startOAuth(alice, value.id, "node-a");
+    const app = Fastify();
+    registerCpaRoutes(app, {
+      runtime,
+      currentUser: (req) =>
+        req.headers.cookie === "user=alice"
+          ? alice
+          : req.headers.cookie === "user=bob"
+            ? bob
+            : null,
+    });
+    try {
+      const path = `/api/cpa/instances/${value.id}/oauth`;
+      expect((await app.inject({ url: path })).statusCode).toBe(401);
+      expect((await app.inject({ url: path, headers: { cookie: "user=bob" } })).statusCode).toBe(
+        403,
+      );
+      const restored = await app.inject({ url: path, headers: { cookie: "user=alice" } });
+      expect(restored.json()).toEqual({
+        sessions: [{ state: "capture-state", proxyId: "node-a", url }],
+      });
+      expect(runtime.browserAuthorizing(alice, "node-a", url)).toBe(true);
+      expect(runtime.browserAuthorizing(alice, "node-a", callback)).toBe(true);
+      expect(runtime.browserAuthorizing(alice, "node-a", "https://claude.ai/new")).toBe(false);
+      for (const [user, proxy, address] of [
+        [bob, "node-a", callback],
+        [admin, "node-a", callback],
+        [alice, "node-b", callback],
+        [alice, "node-a", callback.replace("localhost", "evil.example")],
+        [alice, "node-a", callback.replace("/callback?", "/other?")],
+        [alice, "node-a", callback.replace("capture-state", "foreign-state")],
+        [alice, "node-a", url],
+      ] as const)
+        expect(await runtime.captureBrowserCallback(user, proxy, address)).toBe(false);
+      expect(calls.filter((call) => call.input.path.endsWith("/oauth/callback"))).toHaveLength(0);
+      expect(
+        await Promise.all([
+          runtime.captureBrowserCallback(alice, "node-a", callback),
+          runtime.captureBrowserCallback(alice, "node-a", callback),
+        ]),
+      ).toEqual([true, true]);
+      const submitted = calls.filter((call) => call.input.path.endsWith("/oauth/callback"));
+      expect(submitted).toHaveLength(1);
+      expect(JSON.parse(String(submitted[0]!.input.body))).toEqual({
+        provider: "claude",
+        state: "capture-state",
+        redirect_url: callback,
+      });
+      await runtime.reconcileOAuth(() => alice);
+      expect(store.credentialBindings(value.id)).toEqual([
+        { name: "captured.json", proxyId: "node-a" },
+      ]);
+      expect(runtime.pendingOAuth(alice, value.id)).toEqual([]);
+      expect(runtime.browserAuthorizing(alice, "node-a", callback)).toBe(false);
+      expect(await runtime.captureBrowserCallback(alice, "node-a", callback)).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("saves completed authorization without any browser status request", async () => {
     const { store, runtime, setUpstream } = await fixture();
     const value = store.create(alice);

@@ -281,6 +281,18 @@ const server = createServer(async (request, response) => {
         return json(response, { ok: true });
       }
       if (action === "oauth") {
+        if (!detail && request.method === "GET")
+          return json(response, {
+            sessions: instance.authorizing
+              ? [
+                  {
+                    url: "https://example.com/fixture-oauth",
+                    state: "fixture-state",
+                    proxyId: oauthProxies.get(id),
+                  },
+                ]
+              : [],
+          });
         if (detail === "cancel") {
           instance.authorizing = false;
           return json(response, { instance: { ...instance, canManage: true } });
@@ -619,6 +631,33 @@ try {
       id: ownInstance.id,
       input: { provider: "claude", proxyId: "proxy-private" },
     });
+    const generated = operations.filter(
+      (item) => item.type === "cpa-oauth" && item.input.provider === "claude",
+    ).length;
+    await click(panel.getByRole("tab", { name: "代理来源", exact: true }));
+    await click(panel.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
+    await panel.getByLabel("授权回调 URL 或授权码", { exact: true }).waitFor();
+    assert.equal(await oauthProxy.inputValue(), "proxy-private");
+    await panel.getByLabel("授权回调 URL 或授权码", { exact: true }).fill("fixture-draft");
+    await click(panel.getByRole("button", { name: "关闭代理与 API 管理", exact: true }));
+    await click(page.getByRole("button", { name: "工作台", exact: true }));
+    await click(page.getByRole("button", { name: "API", exact: true }));
+    await panel.getByLabel("授权回调 URL 或授权码", { exact: true }).waitFor();
+    assert.equal(
+      await panel.getByLabel("授权回调 URL 或授权码", { exact: true }).inputValue(),
+      "fixture-draft",
+    );
+    await page.reload();
+    await page.getByRole("button", { name: /默认配置.*未登录/ }).waitFor();
+    await click(page.getByRole("button", { name: "工作台", exact: true }));
+    await click(page.getByRole("button", { name: "API", exact: true }));
+    await panel.getByLabel("授权回调 URL 或授权码", { exact: true }).waitFor();
+    assert.equal(await oauthProxy.inputValue(), "proxy-private");
+    assert.equal(
+      operations.filter((item) => item.type === "cpa-oauth" && item.input.provider === "claude")
+        .length,
+      generated,
+    );
     await panel
       .getByLabel("授权回调 URL 或授权码", { exact: true })
       .fill("http://localhost:54545/callback?code=fixture&state=fixture-state");

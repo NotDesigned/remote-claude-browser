@@ -102,6 +102,9 @@ export function registerCpaRoutes(app: FastifyInstance, options: RouteOptions) {
     (user, req) => runtime.startOAuth(user, id(req), (req.body as { proxyId: string }).proxyId),
     bodySchema({ provider: { const: "claude" }, proxyId: proxyNodeField }, ["provider", "proxyId"]),
   );
+  route("GET", "/:id/oauth", (user, req) => ({
+    sessions: runtime.pendingOAuth(user, id(req)),
+  }));
   route("POST", "/:id/oauth/cancel", async (user, req) => ({
     instance: await runtime.cancelOAuth(user, id(req)),
   }));

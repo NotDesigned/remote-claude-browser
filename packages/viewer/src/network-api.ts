@@ -74,6 +74,7 @@ export interface CpaOAuth {
   state: string;
   status: "ok";
 }
+export type CpaPendingOAuth = Omit<CpaOAuth, "status"> & { proxyId: string };
 
 export interface ProxySourceInput {
   name: string;
@@ -150,6 +151,8 @@ export const cpaApi = {
       provider: "claude",
       proxyId,
     }),
+  pendingOAuth: (id: string) =>
+    request<{ sessions: CpaPendingOAuth[] }>(`${instancePath(id)}/oauth`),
   oauthStatus: (id: string, state: string) =>
     request<{ status: "wait" | "ok" | "error"; error?: string }>(
       `${instancePath(id)}/oauth/status?${new URLSearchParams({ state })}`,

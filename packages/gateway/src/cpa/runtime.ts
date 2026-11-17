@@ -2,7 +2,13 @@ import type { ExitHealth as CpaExitHealth } from "../egress/timezone";
 import type { FrontendUser } from "../auth/users";
 import { createLifecycleLock } from "../session/lifecycle-lock";
 import { responseJson, type CpaDriver } from "./broker-client";
-import { CpaError, publicCpaInstance, type CpaInstance, type CpaStore } from "./store";
+import {
+  CpaError,
+  canManageCpa,
+  publicCpaInstance,
+  type CpaInstance,
+  type CpaStore,
+} from "./store";
 
 const UNBOUND_PROXY = "http://cpa-unbound:x@runtime-egress:8781";
 
@@ -43,6 +49,36 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
   const lifecycle = createLifecycleLock();
   const proxyStates = new Map<string, { health: CpaExitHealth }>();
   const credentialTimeZones = new Map<string, string>();
+  const browserCallbacks = new Map<string, Promise<boolean>>();
+  const browserOAuth = (
+    user: FrontendUser,
+    proxyId: string | null | undefined,
+    address: string,
+  ) => {
+    let page: URL;
+    try {
+      page = new URL(address);
+    } catch {
+      return;
+    }
+    const state = page.searchParams.get("state");
+    if (!state || !proxyId || !options.userEnabled(user.id)) return;
+    for (const value of store.listFor(user)) {
+      if (!canManageCpa(user, value) || value.desiredState !== "running") continue;
+      const session = store
+        .pendingOAuth(value.id)
+        .find((session) => session.state === state && session.proxyId === proxyId);
+      const saved = session && store.oauthUrl(value.id, state);
+      if (!saved) continue;
+      const authorization = new URL(saved);
+      const redirect = authorization.searchParams.get("redirect_uri");
+      const callback = redirect && new URL(redirect);
+      if (callback && page.origin === callback.origin && page.pathname === callback.pathname)
+        return { value, state, callback: true };
+      if (page.origin === authorization.origin && page.pathname === authorization.pathname)
+        return { value, state, callback: false };
+    }
+  };
   const binding = (id: string, name: string) => {
     const proxyId = store.credentialProxy(id, name);
     return proxyId && proxyId !== "deployment-default" ? proxyId : null;
@@ -200,6 +236,7 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
       const failures = await restorePendingOAuth(value, user);
       if (!failures.length) store.completeOAuth(value.id, state);
     }
+    if (!store.oauthUrl(value.id, state)) browserCallbacks.delete(state);
     return {
       status:
         result.status === "ok" && store.pendingOAuth(value.id).some((item) => item.state === state)
@@ -276,6 +313,43 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
     return failures;
   };
   return {
+    pendingOAuth(user: FrontendUser, id: string) {
+      managed(user, id);
+      return store.pendingOAuth(id).flatMap((session) => {
+        const url = store.oauthUrl(id, session.state);
+        return url && session.proxyId ? [{ ...session, proxyId: session.proxyId, url }] : [];
+      });
+    },
+    browserAuthorizing(user: FrontendUser, proxyId: string | null | undefined, address: string) {
+      return browserOAuth(user, proxyId, address) !== undefined;
+    },
+    captureBrowserCallback(
+      user: FrontendUser,
+      proxyId: string | null | undefined,
+      address: string,
+    ) {
+      const match = browserOAuth(user, proxyId, address);
+      const params = match?.callback ? new URL(address).searchParams : undefined;
+      if (!match?.callback || !(params?.get("code") || params?.get("error")))
+        return Promise.resolve(false);
+      const { value, state } = match;
+      let pending = browserCallbacks.get(state);
+      if (!pending) {
+        pending = lifecycle.run(async () => {
+          const current = managed(user, value.id);
+          if (!store.oauthUrl(value.id, state)) return false;
+          await management(current, "POST", "/oauth/callback", {
+            provider: "claude",
+            state,
+            redirect_url: address,
+          });
+          return true;
+        });
+        browserCallbacks.set(state, pending);
+        void pending.catch(() => browserCallbacks.delete(state));
+      }
+      return pending;
+    },
     reconcileOAuth(resolveUser: RestoreUser) {
       return lifecycle.run(async () => {
         const failures: RestoreFailure[] = [];

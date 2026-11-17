@@ -71,6 +71,7 @@ PATCH  /api/cpa/instances/:id/credentials/status   {name, disabled}
 PATCH  /api/cpa/instances/:id/credentials/proxy    {name, proxyId: string}
 DELETE /api/cpa/instances/:id/credentials?name=…
 POST   /api/cpa/instances/:id/oauth                {provider: "claude", proxyId: string}
+GET    /api/cpa/instances/:id/oauth                recover pending authorizations (manager only)
 GET    /api/cpa/instances/:id/oauth/status?state=…
 POST   /api/cpa/instances/:id/oauth/callback       {state, code? | redirectUrl?}
 POST   /api/cpa/instances/:id/oauth/cancel
@@ -178,8 +179,11 @@ docker compose -f compose.yml -f compose.proxy.yml -f compose.https.yml \
 
 1. 打开面板，用 `CPA_MANAGEMENT_KEY` 登录。
 2. 在 OAuth 登录页选择 Claude，打开 CPA 生成的授权链接，用自己的 Pro/Max 账号完成官方授权。
-3. 本机浏览器会回到 `http://localhost:54545/callback`。从其他设备登录，或回环不可达时，把浏览器地址栏中的完整回调 URL 粘贴到 CPA 面板的手动回调入口。
+3. 远程浏览器开始跳转到 `http://localhost:54545/callback` 时，工作台核对用户、`state`、回调地址和出口后自动提交给原 CPA 实例，页面显示提交结果。回环地址无须连通。使用外部浏览器时，把完整回调 URL 粘贴到 CPA 面板的手动回调入口。
 4. 确认授权文件出现、账号状态正常，然后执行 `node scripts/cpa.mjs status` 查看可用模型。
+
+关闭面板、切换管理页或刷新后，CPA 面板会从服务端恢复待完成授权及回调入口。
+待完成的 CPA 授权页在工作台切到后台时继续运行，完成或取消后恢复正常回收。
 
 也可以用 CLI 生成同一授权链接：
 

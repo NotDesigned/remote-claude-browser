@@ -137,6 +137,7 @@ export function App() {
   const [userPanelOpen, setUserPanelOpen] = useState(false);
   const [networkPanelOpen, setNetworkPanelOpen] = useState(false);
   const [networkTab, setNetworkTab] = useState<"proxies" | "cpa">("proxies");
+  const [oauthCallbacks, setOAuthCallbacks] = useState<Record<string, "submitted" | "error">>({});
   const [accountPanelOpen, setAccountPanelOpen] = useState(false);
   const [profilePickerOpen, setProfilePickerOpen] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
@@ -833,6 +834,10 @@ export function App() {
           setInputFailures((previous) => ({ ...previous, [message.tab]: message.failed }));
           return;
         }
+        if (message.t === "cpa-oauth") {
+          setOAuthCallbacks((previous) => ({ ...previous, [message.tab]: message.status }));
+          return;
+        }
 
         if (message.t === "server-status") {
           const now = Date.now();
@@ -885,6 +890,7 @@ export function App() {
         )
           inputStatus(true);
         if (message.t === "hello") {
+          setOAuthCallbacks({});
           setInputFailures({});
           setPageStates({});
           const resumed =
@@ -1306,25 +1312,48 @@ export function App() {
         )}
       </div>
       <main id="mirror-host" data-input-ready={inputReady ? "true" : "false"} ref={hostRef} />
-      {activeChrome?.failed === true && !pixelMode && (
-        // From where the mirror starts: the address bar above it is how to go somewhere else.
-        <section
-          id="page-load-failed"
-          role="alert"
-          style={{ top: `${hostRef.current?.offsetTop ?? 0}px` }}
-        >
-          <h2>这个网页打不开</h2>
-          <p>{activeChrome.url}</p>
-          <button
-            type="button"
-            onClick={() =>
-              socketRef.current?.send({ t: "nav", tab: activeChrome.tab, action: "reload" })
-            }
+      {activeChrome &&
+        (oauthCallbacks[activeChrome.tab] || (activeChrome.failed === true && !pixelMode)) && (
+          // From where the mirror starts: the address bar above it is how to go somewhere else.
+          <section
+            id="page-load-failed"
+            role="alert"
+            style={{ top: `${hostRef.current?.offsetTop ?? 0}px` }}
           >
-            重新加载
-          </button>
-        </section>
-      )}
+            <h2>
+              {oauthCallbacks[activeChrome.tab] === "submitted"
+                ? "授权回调已提交给 CPA"
+                : oauthCallbacks[activeChrome.tab] === "error"
+                  ? "授权回调自动提交失败"
+                  : "这个网页打不开"}
+            </h2>
+            <p>
+              {oauthCallbacks[activeChrome.tab] === "submitted"
+                ? "可以返回 CPA 面板查看授权结果。"
+                : activeChrome.url}
+            </p>
+            {oauthCallbacks[activeChrome.tab] && (
+              <>
+                {oauthCallbacks[activeChrome.tab] === "error" && (
+                  <p>自动提交失败，可返回 CPA 面板手动提交上面的回调地址。</p>
+                )}
+                <button type="button" onClick={() => navigateWorkspace("cpa")}>
+                  查看 CPA 授权
+                </button>
+              </>
+            )}
+            {oauthCallbacks[activeChrome.tab] !== "submitted" && (
+              <button
+                type="button"
+                onClick={() =>
+                  socketRef.current?.send({ t: "nav", tab: activeChrome.tab, action: "reload" })
+                }
+              >
+                重新加载
+              </button>
+            )}
+          </section>
+        )}
       {(clientPhase === "picking" || profilePickerOpen) && (
         <ProfilePicker
           proxyManagerOpen={networkPanelOpen && networkTab === "proxies"}

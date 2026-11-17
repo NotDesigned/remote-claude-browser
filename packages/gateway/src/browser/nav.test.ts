@@ -189,6 +189,30 @@ async function waitForMessages(messages: ChromeMsg[], count: number): Promise<vo
 }
 
 describe("createNavigationController", () => {
+  it("reports a main-frame callback before its unreachable destination finishes connecting", async () => {
+    const browser = new MockBrowser();
+    const messages: ChromeMsg[] = [];
+    const controller = createNavigationController(browser, (message) => messages.push(message));
+    browser.attach({ targetId: "tab-1", sessionId: "session-1", type: "page" });
+    await waitForMessages(messages, 1);
+    const url = "http://localhost:54545/callback?code=fixture&state=fixture-state";
+    browser.emit("Page.frameStartedNavigating", "session-1", {
+      frameId: "child-frame",
+      url,
+      loaderId: "callback",
+      navigationType: "differentDocument",
+    });
+    expect(messages).toHaveLength(1);
+    browser.emit("Page.frameStartedNavigating", "session-1", {
+      frameId: "main-frame",
+      url,
+      loaderId: "callback",
+      navigationType: "differentDocument",
+    });
+    expect(messages.at(-1)).toMatchObject({ url, loading: true });
+    controller.dispose();
+  });
+
   it("emits redirect and SPA chrome updates with live history flags and loading state", async () => {
     const browser = new MockBrowser();
     const messages: ChromeMsg[] = [];

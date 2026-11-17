@@ -57,6 +57,7 @@ export interface BrowserTargetInfo {
 export interface FlatSessionEventMap {
   "Runtime.bindingCalled": Protocol.Runtime.BindingCalledEvent;
   "Page.frameNavigated": Protocol.Page.FrameNavigatedEvent;
+  "Page.frameStartedNavigating": Protocol.Page.FrameStartedNavigatingEvent;
   "Page.navigatedWithinDocument": Protocol.Page.NavigatedWithinDocumentEvent;
   "Page.lifecycleEvent": Protocol.Page.LifecycleEventEvent;
   "Page.screencastFrame": Protocol.Page.ScreencastFrameEvent;
@@ -182,6 +183,9 @@ async function browserHandle(browser: Browser): Promise<BrowserHandle> {
     const infoCallbacks = new Set<TargetInfoCallback>();
     const bindingCalledCallbacks = new Set<BindingCalledCallback>();
     const frameNavigatedCallbacks = new Set<FrameNavigatedCallback>();
+    const frameStartedNavigatingCallbacks = new Set<
+      (sessionId: string, event: Protocol.Page.FrameStartedNavigatingEvent) => void
+    >();
     const navigatedWithinDocumentCallbacks = new Set<NavigatedWithinDocumentCallback>();
     const lifecycleEventCallbacks = new Set<LifecycleEventCallback>();
     const screencastFrameCallbacks = new Set<ScreencastFrameCallback>();
@@ -262,6 +266,9 @@ async function browserHandle(browser: Browser): Promise<BrowserHandle> {
       session.on("Page.frameNavigated", (event) => {
         for (const callback of frameNavigatedCallbacks) callback(session.id(), event);
       });
+      session.on("Page.frameStartedNavigating", (event) => {
+        for (const callback of frameStartedNavigatingCallbacks) callback(session.id(), event);
+      });
       session.on("Page.navigatedWithinDocument", (event) => {
         for (const callback of navigatedWithinDocumentCallbacks) callback(session.id(), event);
       });
@@ -322,6 +329,14 @@ async function browserHandle(browser: Browser): Promise<BrowserHandle> {
             const frameCallback = callback as FrameNavigatedCallback;
             frameNavigatedCallbacks.add(frameCallback);
             return () => frameNavigatedCallbacks.delete(frameCallback);
+          }
+          case "Page.frameStartedNavigating": {
+            const startedCallback = callback as (
+              sessionId: string,
+              event: Protocol.Page.FrameStartedNavigatingEvent,
+            ) => void;
+            frameStartedNavigatingCallbacks.add(startedCallback);
+            return () => frameStartedNavigatingCallbacks.delete(startedCallback);
           }
           case "Page.navigatedWithinDocument": {
             const withinDocumentCallback = callback as NavigatedWithinDocumentCallback;

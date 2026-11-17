@@ -185,6 +185,16 @@ export function createNavigationController(
   };
 
   unsubscribers.push(
+    browser.onSessionEvent("Page.frameStartedNavigating", (sessionId, event) => {
+      const state = pagesBySession.get(sessionId);
+      if (!state || event.frameId !== state.mainFrameId) return;
+      // An OAuth callback on localhost can spend a long time failing to connect. Expose the
+      // destination before that request finishes so its code can reach the owning CPA now.
+      state.url = event.url;
+      state.failed = false;
+      state.loading = true;
+      emitState(state);
+    }),
     browser.onSessionEvent("Page.frameNavigated", (sessionId, event) => {
       const state = pagesBySession.get(sessionId);
       if (state === undefined || event.frame.parentId !== undefined) return;

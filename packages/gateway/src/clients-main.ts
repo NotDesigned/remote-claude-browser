@@ -688,6 +688,18 @@ export async function startClientGateway(
       if (!runtime) return false;
       for (const target of runtime.targets.values()) {
         if (target.type !== "page") continue;
+        const user = userStore.getUser(userStore.profileOwner(runtime.account.id)!);
+        const address = runtime.metadata.get(target.targetId)?.url;
+        if (
+          user &&
+          address &&
+          cpaRuntime?.browserAuthorizing(
+            user,
+            accountStore.get(runtime.account.id)?.proxyId,
+            address,
+          )
+        )
+          return true;
         if (runtime.recovery.isBlocked(target.targetId)) continue;
         if (await pageGenerating(runtime, target)) return true;
       }
@@ -1117,7 +1129,20 @@ export async function startClientGateway(
       );
       if (page) input.resetTab(page.targetId);
     });
-    const navigation = createNavigationController(scoped, (message) => publish(sid, message));
+    const navigation = createNavigationController(scoped, (message) => {
+      publish(sid, message);
+      const user = userStore.getUser(userStore.profileOwner(account.id)!);
+      if (user)
+        void cpaRuntime
+          ?.captureBrowserCallback(user, accountStore.get(account.id)?.proxyId, message.url)
+          .then((captured) => {
+            if (captured) publish(sid, { t: "cpa-oauth", tab: message.tab, status: "submitted" });
+          })
+          .catch(() => {
+            publish(sid, { t: "cpa-oauth", tab: message.tab, status: "error" });
+            console.error("CPA automatic callback failed; manual submission remains available");
+          });
+    });
     const browserZoom = createBrowserZoom({
       evaluate: async (session, expression) => {
         const result = (await scoped.send(session, "Runtime.evaluate", {
