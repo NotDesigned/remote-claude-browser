@@ -417,7 +417,6 @@ export async function startClientGateway(
   const runtimePromises = new Map<string, Promise<ClientRuntime>>();
   const runtimes = new Map<string, ClientRuntime>();
   const closing = new Set<string>();
-  const backgroundSessions = new Set<string>();
   const sleepingWindows = new Map<
     string,
     { token: unknown; profile: string; urls: string[]; active: number }
@@ -505,7 +504,6 @@ export async function startClientGateway(
         authorized: () => ownsSession(request, sid),
       });
       idleReaper.touch(sid);
-      backgroundSessions.delete(sid);
       const runtime = runtimes.get(sid)!;
       // A reconnect whose replay position is still buffered keeps its geometry agreement: the
       // epoch did not change, so this viewer identity inherits the acknowledgement directly.
@@ -557,7 +555,6 @@ export async function startClientGateway(
         for (const hub of runtime.tabs.hubs()) runtime.input.resetTab(hub.tabId);
         void stopPixels(runtime).catch((error) => report("disconnected pixel cleanup", error));
       }
-      if (sid && backgroundSessions.has(sid)) void idleReaper.sweep();
       broadcastStatus();
     },
     async onUp(viewer, message, sid) {
@@ -577,11 +574,6 @@ export async function startClientGateway(
       // A valid driver is still forbidden from naming another client's CDP target.
       if ("tab" in message && message.tab !== "" && !runtime.browser.ownsTarget(message.tab))
         return;
-      if (message.t === "visibility") {
-        if (message.visible) backgroundSessions.delete(sid!);
-        else backgroundSessions.add(sid!);
-        return;
-      }
       await roles.routeUp(id, message, (forwarded) => handle(runtime, id, forwarded));
     },
   });
@@ -680,7 +672,6 @@ export async function startClientGateway(
         .map((record) => ({
           sid: record.sid,
           token: record,
-          background: backgroundSessions.has(record.sid),
         })),
     isOnline: (sid) => onlineSessions().has(sid),
     isBusy: async (sid) => {
@@ -1487,7 +1478,6 @@ export async function startClientGateway(
   /** Closes a session's windows and forgets its runtime. The caller marks it closing. */
   async function stopRuntime(sid: string, ended = false): Promise<void> {
     sleepingWindows.delete(sid);
-    backgroundSessions.delete(sid);
     ws.closeSession(sid, ended ? 4010 : undefined);
     await assetFetcher.closeSession(sid);
     for (const [id, connection] of viewers)

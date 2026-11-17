@@ -8,8 +8,6 @@ export interface IdleSession {
   sid: string;
   /** Stable record identity, replaced whenever the workspace is assigned to another owner. */
   token: unknown;
-  /** Explicitly hidden viewers can release their pages without the network-loss grace. */
-  background?: boolean;
 }
 
 export interface IdleReaperOptions {
@@ -77,7 +75,7 @@ export function createIdleReaper(options: IdleReaperOptions): {
         }
         const at = now();
         if (state.offlineSince === null || at < state.offlineSince) state.offlineSince = at;
-        if (!record.background && at - state.offlineSince < graceMs) continue;
+        if (at - state.offlineSince < graceMs) continue;
         const generation = state.generation;
         const busy = await options.isBusy(record.sid);
         if (disposed || states.get(record.sid) !== state || state.generation !== generation)

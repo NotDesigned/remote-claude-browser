@@ -328,8 +328,6 @@ export function connectGateway(
       if (visible) {
         open();
       } else {
-        if (socket?.readyState === OPEN)
-          socket.send(encodeMsg({ t: "visibility", visible: false }));
         if (reconnectTimer !== null) clearTimeout(reconnectTimer);
         reconnectTimer = null;
         dropSocket();

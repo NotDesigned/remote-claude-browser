@@ -1076,7 +1076,11 @@ export function App() {
             setClientPhase("replaced");
             return;
           }
-          if (state === "closed" && !presentation.isPixel(currentTab)) mirror.connectionLost();
+          if (state === "closed") {
+            // Capture stops offline; the returning tab reapplies its chosen view.
+            entryMode ??= currentTab === null ? null : (knownModes.get(currentTab) ?? null);
+            if (!presentation.isPixel(currentTab)) mirror.connectionLost();
+          }
           if (state === "open" && reconnected && !presentation.isPixel(currentTab)) {
             // `hello` says whether the gateway resumed this replay; recovery waits for it.
             // Content recovery does not unlock input before its viewport acknowledgement.

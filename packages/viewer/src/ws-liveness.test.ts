@@ -83,9 +83,9 @@ it("does not replay old input or acknowledgements when a connection opens", () =
   expect(sockets).toHaveLength(2);
   current().onopen?.();
   expect(current().sent).toEqual([]);
-  gateway.send({ t: "visibility", visible: true });
+  gateway.send({ t: "nav", tab: "current-tab", action: "reload" });
   expect(current().sent.map((message) => JSON.parse(message))).toEqual([
-    { t: "visibility", visible: true },
+    { t: "nav", tab: "current-tab", action: "reload" },
   ]);
   gateway.close();
 });
@@ -141,7 +141,7 @@ it("does not count a spell frozen in the background as silence", () => {
 it("disconnects hidden pages without retrying and reconnects immediately on return", () => {
   const { gateway, sockets, current } = connect();
   gateway.setVisible(false);
-  expect(JSON.parse(current().sent.at(-1)!)).toEqual({ t: "visibility", visible: false });
+  expect(current().sent).toEqual([]);
   expect(current().closed).toBe(true);
   gateway.probe();
   vi.advanceTimersByTime(10 * 60_000);

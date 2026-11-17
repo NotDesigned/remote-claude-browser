@@ -43,16 +43,14 @@ Each front-end user sees only their own browser configurations and sessions, and
 eight browser profiles. Sessions have no fixed count limit. New sessions and dormant-session resumes are admitted
 according to available container and host memory; opening another browser profile reserves additional memory.
 
-Viewer tabs disconnect when hidden. Their remote pages close once no viewer remains and no reply
-is being generated; showing the tab reconnects automatically and restores its URLs and active tab.
-An unexpected network disconnect keeps the existing 60-second grace period. A browser profile
-with no running sessions closes after another two minutes. Saved login state stays on disk.
+Viewer tabs disconnect when hidden and reconnect automatically when shown. Remote pages stay
+open for about 60 seconds after the last viewer disconnects, preserving drafts during short
+absences. After that they close unless a reply or CPA authorization is in progress; reconnecting
+restores their URLs and active tab. A browser profile with no running sessions closes after
+another two minutes. Saved login state stays on disk.
 
 Asset DNS checks use the browser profile's selected exit, including fonts, images, stylesheets
 and favicons; they do not depend on the deployment's default proxy.
-Offline sessions release their windows after about 60 seconds, and profiles with no running
-sessions close their browser process after another 120 seconds. Profile data and session ownership
-are retained for reconnecting.
 
 The server's `compose.yml` also accepts these if you add them to its `environment`:
 
