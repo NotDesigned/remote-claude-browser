@@ -57,6 +57,7 @@ export interface ProxySourceUpdate {
   name?: string;
   visibility?: ProxyVisibility;
   content?: string;
+  url?: string;
 }
 export interface ResolvedProxy {
   id: string;
@@ -176,7 +177,15 @@ export async function createProxyCatalog(options: ProxyCatalogOptions) {
         signal: AbortSignal.timeout(20_000),
         redirect: "error",
       });
-    } catch {
+    } catch (error) {
+      const failure = error as { code?: string; cause?: { code?: string } };
+      const code = failure.cause?.code ?? failure.code;
+      if (code === "ENOTFOUND" || code === "EAI_AGAIN")
+        throw new ProxyCatalogError(
+          502,
+          "PROXY_SUBSCRIPTION_DNS",
+          "订阅域名解析失败，请检查部署网络的 DNS",
+        );
       throw new ProxyCatalogError(502, "PROXY_SUBSCRIPTION_NETWORK", "无法读取订阅地址");
     }
     if (!response.ok)
@@ -253,6 +262,12 @@ export async function createProxyCatalog(options: ProxyCatalogOptions) {
     ): Promise<ProxySourceInfo> {
       return save(async () => {
         const current = sourceFor(user, id, true);
+        if (input.content !== undefined && input.url !== undefined)
+          throw new ProxyCatalogError(
+            400,
+            "PROXY_SOURCE_CONTENT",
+            "请提供订阅地址或节点内容其中一项",
+          );
         const source = {
           ...current,
           name: input.name ?? current.name,
@@ -260,7 +275,10 @@ export async function createProxyCatalog(options: ProxyCatalogOptions) {
         };
         checkSourceInput(user, source);
         source.name = source.name.trim();
-        if (input.content !== undefined)
+        if (input.url !== undefined) {
+          source.nodes = matchNodes(id, current.nodes, await loadSubscription(input.url));
+          source.url = input.url;
+        } else if (input.content !== undefined)
           source.nodes = matchNodes(id, current.nodes, parseSubscription(input.content));
         source.updatedAt = Date.now();
         return {
@@ -269,16 +287,14 @@ export async function createProxyCatalog(options: ProxyCatalogOptions) {
         };
       });
     },
-    async refreshSource(user: FrontendUser, id: string): Promise<ProxySourceInfo> {
-      const current = sourceFor(user, id, true);
-      if (!current.url)
-        throw new ProxyCatalogError(400, "PROXY_SOURCE_LOCAL", "手动导入的代理源没有订阅地址");
-      const proxies = await loadSubscription(current.url);
+    refreshSource(user: FrontendUser, id: string): Promise<ProxySourceInfo> {
       return save(async () => {
-        const latest = sourceFor(user, id, true);
+        const current = sourceFor(user, id, true);
+        if (!current.url)
+          throw new ProxyCatalogError(400, "PROXY_SOURCE_LOCAL", "手动导入的代理源没有订阅地址");
         const source = {
-          ...latest,
-          nodes: matchNodes(id, latest.nodes, proxies),
+          ...current,
+          nodes: matchNodes(id, current.nodes, await loadSubscription(current.url)),
           updatedAt: Date.now(),
         };
         return {

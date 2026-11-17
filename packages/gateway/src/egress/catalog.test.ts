@@ -222,6 +222,98 @@ describe("proxy directory", () => {
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
+  it("replaces a subscription URL and refreshes its nodes while retaining matching bindings", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ proxies: [node("A")] }))
+      .mockResolvedValueOnce(Response.json({ proxies: [node("A", "rotated-password")] }))
+      .mockResolvedValueOnce(Response.json({ proxies: [node("A", "refreshed-password")] }));
+    const onChangedNodes = vi.fn(async () => {});
+    const { store, options } = await fixture({ fetcher, onChangedNodes });
+    const source = await store.importSource(alice, {
+      name: "subscription",
+      visibility: "private",
+      url: "https://subscription.example/old",
+    });
+    const id = store.listNodes(alice)[0]!.id;
+    await store.updateSource(alice, source.id, { url: "https://subscription.example/new" });
+    expect(store.listNodes(alice)[0]!.id).toBe(id);
+    expect(store.getNodeConfig(alice, id).password).toBe("rotated-password");
+    expect(onChangedNodes).toHaveBeenCalledExactlyOnceWith([id]);
+    expect(fetcher.mock.calls[1]![0]).toBe("https://subscription.example/new");
+    await store.updateSource(alice, source.id, { name: "renamed" });
+    const reopened = await createProxyCatalog(options);
+    await reopened.refreshSource(alice, source.id);
+    expect(fetcher.mock.calls[2]![0]).toBe("https://subscription.example/new");
+    expect(reopened.listNodes(alice)[0]!.id).toBe(id);
+    expect(reopened.getNodeConfig(alice, id).password).toBe("refreshed-password");
+  });
+
+  it("checks subscription update permissions and retains the old URL and nodes on failure", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ proxies: [node("A")] }));
+    const { store, options } = await fixture({ fetcher });
+    const source = await store.importSource(alice, {
+      name: "subscription",
+      visibility: "private",
+      url: "https://subscription.example/old",
+    });
+    const previous = await readFile(options.file, "utf8");
+    await expect(
+      store.updateSource(bob, source.id, { url: "https://subscription.example/forbidden" }),
+    ).rejects.toMatchObject({ statusCode: 404 });
+    await expect(
+      store.updateSource(alice, source.id, { url: "file:///etc/passwd" }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    await expect(
+      store.updateSource(alice, source.id, {
+        url: "https://subscription.example/new",
+        content: content(node("B")),
+      }),
+    ).rejects.toMatchObject({ code: "PROXY_SOURCE_CONTENT" });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    fetcher.mockResolvedValueOnce(Response.json({ rules: ["MATCH,DIRECT"] }));
+    await expect(
+      store.updateSource(alice, source.id, {
+        name: "failed rename",
+        url: "https://subscription.example/invalid",
+      }),
+    ).rejects.toThrow("proxies");
+    expect(await readFile(options.file, "utf8")).toBe(previous);
+    expect(store.listSources(alice)[0]!.name).toBe("subscription");
+    expect(store.getNodeConfig(alice, store.listNodes(alice)[0]!.id).password).toBe(
+      "private-password",
+    );
+    fetcher.mockResolvedValueOnce(Response.json({ proxies: [node("A")] }));
+    await store.refreshSource(alice, source.id);
+    expect(fetcher.mock.calls.at(-1)![0]).toBe("https://subscription.example/old");
+  });
+
+  it.each(["ENOTFOUND", "EAI_AGAIN"])(
+    "reports %s without exposing subscription credentials",
+    async (code) => {
+      const { store } = await fixture({
+        fetcher: vi.fn(async () => {
+          throw new TypeError("fetch failed", {
+            cause: Object.assign(new Error("https://subscription.example/private-token"), { code }),
+          });
+        }),
+      });
+      await expect(
+        store.importSource(alice, {
+          name: "subscription",
+          visibility: "private",
+          url: "https://subscription.example/private-token",
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 502,
+        code: "PROXY_SUBSCRIPTION_DNS",
+        message: "订阅域名解析失败，请检查部署网络的 DNS",
+      });
+    },
+  );
+
   it("invalidates running connections when a shared source becomes private", async () => {
     const onChangedNodes = vi.fn(async () => {});
     const { store } = await fixture({ onChangedNodes });
