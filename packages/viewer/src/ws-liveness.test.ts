@@ -137,3 +137,31 @@ it("does not count a spell frozen in the background as silence", () => {
   expect(sockets[0]!.closed).toBe(false);
   gateway.close();
 });
+
+it("disconnects hidden pages without retrying and reconnects immediately on return", () => {
+  const { gateway, sockets, current } = connect();
+  gateway.setVisible(false);
+  expect(JSON.parse(current().sent.at(-1)!)).toEqual({ t: "visibility", visible: false });
+  expect(current().closed).toBe(true);
+  gateway.probe();
+  vi.advanceTimersByTime(10 * 60_000);
+  expect(sockets).toHaveLength(1);
+  gateway.setVisible(true);
+  expect(sockets).toHaveLength(2);
+  gateway.setVisible(true);
+  expect(sockets).toHaveLength(2);
+  gateway.close();
+});
+
+it("waits for a background page to become visible before its first connection", () => {
+  const socketFactory = vi.fn(fakeSocket);
+  const gateway = connectGateway("ws://example.test/ws", () => {}, {
+    visible: false,
+    socketFactory,
+  });
+  vi.advanceTimersByTime(CONNECT_MS);
+  expect(socketFactory).not.toHaveBeenCalled();
+  gateway.setVisible(true);
+  expect(socketFactory).toHaveBeenCalledOnce();
+  gateway.close();
+});

@@ -48,6 +48,8 @@ export interface GatewaySocket {
   close(): void;
   /** The page is on screen again: find out now whether the connection is still alive. */
   probe(): void;
+  /** A background page disconnects until it is visible again. */
+  setVisible(visible: boolean): void;
 }
 
 export type GatewayConnectionState = "connecting" | "open" | "closed" | "replaced" | "ended";
@@ -78,6 +80,7 @@ export interface GatewaySocketOptions {
   connectionKey?: string;
   /** Encoded resume cursors for the next (re)connect, or null to request a full rebuild. */
   resumeParam?: () => string | null;
+  visible?: boolean;
 }
 
 const OPEN = 1;
@@ -121,6 +124,7 @@ export function connectGateway(
   let connectTimer: ReturnType<typeof setTimeout> | null = null;
   let rttTimer: ReturnType<typeof setInterval> | null = null;
   let disposed = false;
+  let visible = options.visible ?? true;
   let hasOpened = false;
   let nextPingId = 1;
   const pendingPings = new Map<number, number>();
@@ -197,7 +201,7 @@ export function connectGateway(
   };
 
   const open = () => {
-    if (disposed || socket !== null) return;
+    if (disposed || !visible || socket !== null) return;
     if (reconnectTimer !== null) clearTimeout(reconnectTimer);
     reconnectTimer = null;
     notify("connecting");
@@ -292,7 +296,7 @@ export function connectGateway(
     if (disposed) return;
     if (reconnectTimer !== null) clearTimeout(reconnectTimer);
     notify("closed");
-    reconnectTimer = setTimeout(open, reconnectDelayMs);
+    if (visible) reconnectTimer = setTimeout(open, reconnectDelayMs);
   }
 
   const stored = readStoredSheets();
@@ -305,7 +309,7 @@ export function connectGateway(
       if (socket?.readyState === OPEN) socket.send(encodeMsg(msg));
     },
     probe() {
-      if (disposed || socket?.readyState === CONNECTING) return;
+      if (disposed || !visible || socket?.readyState === CONNECTING) return;
       if (socket?.readyState !== OPEN) {
         lost();
         return;
@@ -317,6 +321,20 @@ export function connectGateway(
         probeTimer = null;
         stalled(PROBE_MS);
       }, patience(PROBE_MS));
+    },
+    setVisible(next) {
+      if (disposed || visible === next) return;
+      visible = next;
+      if (visible) {
+        open();
+      } else {
+        if (socket?.readyState === OPEN)
+          socket.send(encodeMsg({ t: "visibility", visible: false }));
+        if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        dropSocket();
+        notify("closed");
+      }
     },
     close() {
       if (disposed) return;

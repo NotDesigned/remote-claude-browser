@@ -452,6 +452,7 @@ export async function startProfileBroker({
       connection: undefined,
       server: undefined,
       timeZone: exitMetadata.timeZone,
+      lookups: new Map(),
     };
     const server = socketServer((connection) => {
       if (item.connection) return connection.destroy();
@@ -542,9 +543,10 @@ export async function startProfileBroker({
   await rm(socketPath, { force: true });
   const api = httpServer(async (request, response) => {
     try {
+      const url = new URL(request.url, "http://runtime");
       const match =
-        /^\/(egress|browsers)\/([a-zA-Z0-9-]{1,64})(\/(?:start|timezone|status|check))?$/.exec(
-          request.url,
+        /^\/(egress|browsers)\/([a-zA-Z0-9-]{1,64})(\/(?:start|timezone|status|check|resolve))?$/.exec(
+          url.pathname,
         );
       if (!match) {
         response.writeHead(404);
@@ -566,6 +568,37 @@ export async function startProfileBroker({
           const item = await ensureNetwork(`node-${id}`, body.node);
           result = { proxyUrl: item.proxyUrl, externalProxyUrl: item.externalProxyUrl };
         } else result = await startBrowser(id, body);
+      } else if (request.method === "GET" && type === "browsers" && action === "/resolve") {
+        const browser = browsers.get(id);
+        const egress = networks.get(`browser-${id}`);
+        const hostname = url.searchParams.get("hostname");
+        if (!browser || !egress || !hostname) throw new Error("Browser resolver unavailable");
+        let lookup = browser.lookups.get(hostname);
+        if (!lookup || Date.now() >= lookup.expiresAt) {
+          const pending = exec(
+            "ip",
+            [
+              "netns",
+              "exec",
+              egress.info.name,
+              "setpriv",
+              "--reuid=10001",
+              "--regid=10001",
+              "--clear-groups",
+              process.execPath,
+              "-e",
+              'require("node:dns").lookup(process.argv[1],{all:true,verbatim:true},(error,addresses)=>{if(error)process.exit(1);process.stdout.write(JSON.stringify(addresses))})',
+              hostname,
+            ],
+            { timeout: 5000, env: { PATH: process.env.PATH, LANG: "C.UTF-8" } },
+          ).then(({ stdout }) => JSON.parse(stdout));
+          lookup = { pending, expiresAt: Date.now() + 30_000 };
+          browser.lookups.set(hostname, lookup);
+          void pending.catch(() => {
+            if (browser.lookups.get(hostname) === lookup) browser.lookups.delete(hostname);
+          });
+        }
+        result = await lookup.pending;
       } else if (request.method === "POST" && type === "egress" && action === "/timezone") {
         const item =
           id === "deployment-default"

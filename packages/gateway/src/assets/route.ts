@@ -44,12 +44,11 @@ export interface AssetRouteDeps {
   fetcher: AssetFetcher;
   preHandler?: AssetPreHandler;
   /** Test/deployment seam; all returned addresses are checked before fetching. */
-  lookup?: AssetTargetLookup;
+  lookup?: (hostname: string, ref: AssetRef) => Promise<readonly ResolvedAddress[]>;
 }
 
 export function registerAssetRoutes(app: FastifyInstance, deps: AssetRouteDeps): void {
   const preHandler: AssetPreHandler = deps.preHandler ?? (async () => undefined);
-  const lookup = deps.lookup ?? defaultLookup;
 
   app.get<{ Params: AssetRouteParams }>(
     // A wildcard preserves the public /:token shape while avoiding Fastify's 100-byte named
@@ -80,7 +79,9 @@ export function registerAssetRoutes(app: FastifyInstance, deps: AssetRouteDeps):
       }
 
       try {
-        await rejectPrivateAssetTarget(ref.url, lookup);
+        await rejectPrivateAssetTarget(ref.url, (hostname) =>
+          deps.lookup ? deps.lookup(hostname, ref) : defaultLookup(hostname),
+        );
       } catch (error) {
         if (error instanceof PrivateAssetTargetError) {
           return reply.code(403).send({ error: "Private asset target rejected" });

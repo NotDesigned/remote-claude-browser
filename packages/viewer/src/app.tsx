@@ -1023,6 +1023,7 @@ export function App() {
         }
       },
       {
+        visible: !document.hidden,
         connectionKey: pageKey,
         onRttSample(sample) {
           if (disposed) return;
@@ -1084,7 +1085,7 @@ export function App() {
 
   useEffect(() => {
     const report = () => {
-      // A phone in the background may have lost the connection without the page hearing of it.
+      socketRef.current?.setVisible(!document.hidden);
       if (!document.hidden) socketRef.current?.probe();
     };
     document.addEventListener("visibilitychange", report);

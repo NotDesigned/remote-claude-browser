@@ -61,5 +61,10 @@ export function createRuntimeClient(options: { socketPath?: string } = {}) {
       call<ExitHealth>("GET", `/browsers/${encodeURIComponent(id)}/status`),
     checkBrowser: (id: string) =>
       call<ExitHealth>("POST", `/browsers/${encodeURIComponent(id)}/check`),
+    resolveBrowser: (id: string, hostname: string) =>
+      call<Array<{ address: string; family: number }>>(
+        "GET",
+        `/browsers/${encodeURIComponent(id)}/resolve?hostname=${encodeURIComponent(hostname)}`,
+      ),
   };
 }

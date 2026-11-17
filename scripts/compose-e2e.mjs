@@ -241,30 +241,39 @@ async function checkNestedFrames(page, address) {
 /** Accounts are separate Chromes: a cookie set in one is not there in another, and stays in its own. */
 /** A session whose viewers are all hidden sleeps its pages, and wakes them when one shows again. */
 async function checkPageSleep(page, address) {
-  const value = () => page.evaluate(() => document.querySelector("#urlbar input")?.value ?? "");
-  const until = async (test, what) => {
-    const deadline = Date.now() + 40_000;
-    while (Date.now() < deadline) {
-      if (test(await value())) return;
-      await page.waitForTimeout(500);
-    }
-    throw new Error(`${what}; the address bar shows ${(await value()).slice(0, 80)}`);
-  };
+  const target = "https://example.com/#background-restore";
+  const sid = new URL(page.url()).searchParams.get("sid");
   const setHidden = (hidden) =>
     page.evaluate((hidden) => {
-      // As a browser does when the tab goes to the background or comes back.
       Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
       document.dispatchEvent(new Event("visibilitychange"));
       if (!hidden) delete document.hidden;
     }, hidden);
-  await address.fill("https://example.com/");
+  await address.fill(target);
   await address.press("Enter");
-  await until((url) => url.startsWith("https://example.com"), "The page did not open");
+  const restored = () =>
+    page.waitForFunction(
+      () =>
+        document.querySelector("#mirror-host iframe")?.contentDocument?.querySelector("h1")
+          ?.textContent === "Example Domain",
+    );
+  await restored();
   await setHidden(true);
-  await until((url) => url.startsWith("data:text/html"), "The hidden session's page did not sleep");
+  await page.waitForFunction(
+    async () => (await (await fetch("/healthz")).json()).clients === 0,
+    undefined,
+    { timeout: 15000 },
+  );
+  await page.waitForTimeout(1500);
+  assert.equal((await (await page.request.get(origin + "/healthz")).json()).clients, 0);
   await setHidden(false);
-  await until((url) => url.startsWith("https://example.com"), "The page did not wake");
-  console.log("A page nobody is looking at sleeps, and wakes when someone looks.");
+  await page.waitForFunction(
+    () => document.querySelector("[data-connection]")?.getAttribute("data-connection") === "open",
+  );
+  await restored();
+  assert.equal(await address.inputValue(), target);
+  assert.equal(new URL(page.url()).searchParams.get("sid"), sid);
+  console.log("Background pages release their runtime and reconnect to the same URL and session.");
 }
 
 async function checkAccounts(page) {

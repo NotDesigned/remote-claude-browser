@@ -1057,6 +1057,21 @@ exec sh /acceptance/profile-network.sh "$@"
       Object.values(browserProfiles).map((profile) => startBrowser(profile)),
     );
     for (const [key, profile] of Object.entries(browserProfiles)) {
+      const other = key === "A" ? "B" : "A";
+      const before = { own: counts[key].dns, other: counts[other].dns };
+      const path = `/browsers/${profile.id}/resolve?hostname=assets-${key.toLowerCase()}.egress.test`;
+      assert.deepEqual(await api(path, "GET"), [{ address: "203.0.113.10", family: 4 }]);
+      assert.ok(counts[key].dns > before.own, "asset DNS must cross its selected exit");
+      assert.equal(
+        counts[other].dns,
+        before.other,
+        "asset DNS must not use another profile's exit",
+      );
+      const queried = counts[key].dns;
+      await api(path, "GET");
+      assert.equal(counts[key].dns, queried, "consecutive asset requests share the DNS result");
+    }
+    for (const [key, profile] of Object.entries(browserProfiles)) {
       const other = browserProfiles[key === "A" ? "B" : "A"];
       let browserPid;
       for (let attempt = 0; attempt < 100 && !browserPid; attempt++) {
@@ -1219,6 +1234,7 @@ exec sh /acceptance/profile-network.sh "$@"
         defaultEgressLifecycle: true,
         headfulPrivateX11: true,
         privateReadOnlyExtensionMounts: true,
+        assetDnsUsesSelectedExit: true,
         extensionPerTabZoom: true,
         selectedExitTimeZones: true,
         actualExitLocations: true,

@@ -79,6 +79,20 @@ describe("idle workspace reaper", () => {
     expect(h.release).toHaveBeenCalledOnce();
   });
 
+  it("releases explicitly hidden pages immediately, while protecting a generating reply", async () => {
+    const h = setup();
+    h.replace([{ sid: "client-1", token: h.token, background: true }]);
+    h.online.add("client-1");
+    await h.reaper.sweep();
+    expect(h.busy).not.toHaveBeenCalled();
+    h.online.clear();
+    h.busy.mockResolvedValueOnce(true);
+    await h.reaper.sweep();
+    expect(h.release).not.toHaveBeenCalled();
+    await h.reaper.sweep();
+    expect(h.release).toHaveBeenCalledWith("client-1", h.token);
+  });
+
   it("coalesces overlapping sweeps and does not run duplicate releases", async () => {
     const h = setup();
     await h.reaper.sweep();

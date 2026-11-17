@@ -18,6 +18,41 @@ afterEach(async () => {
 });
 
 describe("asset route policy boundary", () => {
+  it.each(["icons.woff2", "site.css", "image.png", "favicon.ico"])(
+    "checks %s through its own session resolver and still rejects private addresses",
+    async (asset) => {
+      const app = Fastify();
+      const key = randomBytes(32);
+      const ref = { url: `https://assets.example/${asset}`, sessionId: "owned", tabId: "*" };
+      const dir = await mkdtemp(join(tmpdir(), "mirror-asset-resolver-"));
+      dirs.push(dir);
+      let address = "203.0.113.8";
+      const lookup = vi.fn(async () => [{ address, family: 4 }]);
+      const fetchAsset = vi.fn<AssetFetcher["fetch"]>(async () => ({
+        statusCode: 200,
+        headers: { "content-type": "application/octet-stream" },
+        body: Readable.from(["fixture"]),
+        lane: "cdp",
+      }));
+      registerAssetRoutes(app, {
+        serverKey: key,
+        lookup,
+        cache: createAssetCache(dir),
+        fetcher: { fetch: fetchAsset },
+      });
+      const url = `/s/owned/a/${sealAssetToken(ref, key)}`;
+      try {
+        expect((await app.inject({ url })).statusCode).toBe(200);
+        expect(lookup).toHaveBeenCalledWith("assets.example", ref);
+        address = "192.168.1.1";
+        expect((await app.inject({ url })).statusCode).toBe(403);
+        expect(fetchAsset).toHaveBeenCalledOnce();
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
   it("isolates cached private assets and CSS child tokens when a session is reused", async () => {
     const app = Fastify();
     const keyA = randomBytes(32);

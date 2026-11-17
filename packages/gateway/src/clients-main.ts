@@ -417,6 +417,11 @@ export async function startClientGateway(
   const runtimePromises = new Map<string, Promise<ClientRuntime>>();
   const runtimes = new Map<string, ClientRuntime>();
   const closing = new Set<string>();
+  const backgroundSessions = new Set<string>();
+  const sleepingWindows = new Map<
+    string,
+    { token: unknown; profile: string; urls: string[]; active: number }
+  >();
   const viewerIds = new WeakMap<ViewerConn, string>();
   const viewers = new Map<
     string,
@@ -500,6 +505,7 @@ export async function startClientGateway(
         authorized: () => ownsSession(request, sid),
       });
       idleReaper.touch(sid);
+      backgroundSessions.delete(sid);
       const runtime = runtimes.get(sid)!;
       // A reconnect whose replay position is still buffered keeps its geometry agreement: the
       // epoch did not change, so this viewer identity inherits the acknowledgement directly.
@@ -551,6 +557,7 @@ export async function startClientGateway(
         for (const hub of runtime.tabs.hubs()) runtime.input.resetTab(hub.tabId);
         void stopPixels(runtime).catch((error) => report("disconnected pixel cleanup", error));
       }
+      if (sid && backgroundSessions.has(sid)) void idleReaper.sweep();
       broadcastStatus();
     },
     async onUp(viewer, message, sid) {
@@ -570,7 +577,11 @@ export async function startClientGateway(
       // A valid driver is still forbidden from naming another client's CDP target.
       if ("tab" in message && message.tab !== "" && !runtime.browser.ownsTarget(message.tab))
         return;
-      if (message.t === "visibility") return;
+      if (message.t === "visibility") {
+        if (message.visible) backgroundSessions.delete(sid!);
+        else backgroundSessions.add(sid!);
+        return;
+      }
       await roles.routeUp(id, message, (forwarded) => handle(runtime, id, forwarded));
     },
   });
@@ -666,7 +677,11 @@ export async function startClientGateway(
       clientSessions
         .all()
         .filter((record) => runtimePromises.has(record.sid))
-        .map((record) => ({ sid: record.sid, token: record })),
+        .map((record) => ({
+          sid: record.sid,
+          token: record,
+          background: backgroundSessions.has(record.sid),
+        })),
     isOnline: (sid) => onlineSessions().has(sid),
     isBusy: async (sid) => {
       const runtime = runtimes.get(sid);
@@ -684,8 +699,17 @@ export async function startClientGateway(
         if (!current || current !== token || onlineSessions().has(sid)) return;
         closing.add(sid);
         try {
+          const runtime = runtimes.get(sid);
+          const tabs = runtime && runtime.tabs.size > 0 ? await runtime.tabs.tabsMessage() : null;
           // An offline viewer can reconnect to this identity after its windows are released.
           await stopRuntime(sid);
+          if (tabs)
+            sleepingWindows.set(sid, {
+              token,
+              profile: clientSessions.profileOf(sid),
+              urls: tabs.tabs.map((tab) => tab.url),
+              active: tabs.tabs.findIndex((tab) => tab.active),
+            });
         } finally {
           runtimes.delete(sid);
           runtimePromises.delete(sid);
@@ -728,6 +752,10 @@ export async function startClientGateway(
     serverKeyForSession: (sid) => (closing.has(sid) ? undefined : runtimes.get(sid)?.assetKey),
     cache: createAssetCache(join(profile, "asset-cache")),
     fetcher: assetFetcher,
+    lookup: process.env.MIRROR_RUNTIME_SOCKET
+      ? (hostname, ref) =>
+          networkRuntime.resolveBrowser(clientSessions.profileOf(ref.sessionId), hostname)
+      : undefined,
     preHandler: requireSession(),
   });
   registerDownloadRoutes(app, {
@@ -1218,13 +1246,23 @@ export async function startClientGateway(
       });
     runtimes.set(sid, runtime);
     try {
-      if (tabs.size === 0)
-        await tabs.handle({
-          t: "nav",
-          tab: "",
-          action: "newtab",
-          url: process.env.MIRROR_START_URL ?? "https://claude.ai/",
-        });
+      if (tabs.size === 0) {
+        const sleeping = sleepingWindows.get(sid);
+        const urls =
+          sleeping && sleeping.token === clientSessions.get(sid) && sleeping.profile === account.id
+            ? sleeping.urls
+            : [];
+        const restored: string[] = [];
+        for (const url of urls.length
+          ? urls
+          : [process.env.MIRROR_START_URL ?? "https://claude.ai/"]) {
+          await tabs.handle({ t: "nav", tab: "", action: "newtab", url });
+          restored.push(tabs.activeTabId!);
+        }
+        const active = sleeping && restored[sleeping.active];
+        if (active) await tabs.handle({ t: "nav", tab: active, action: "activate" });
+        sleepingWindows.delete(sid);
+      }
       // Resolve same-process child frame ownership for the shared download manager too.
       for (const target of targets.values())
         if (target.type === "page") {
@@ -1415,6 +1453,8 @@ export async function startClientGateway(
   );
   /** Closes a session's windows and forgets its runtime. The caller marks it closing. */
   async function stopRuntime(sid: string, ended = false): Promise<void> {
+    sleepingWindows.delete(sid);
+    backgroundSessions.delete(sid);
     ws.closeSession(sid, ended ? 4010 : undefined);
     await assetFetcher.closeSession(sid);
     for (const [id, connection] of viewers)
