@@ -20,6 +20,7 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
   const slots = { next: options.slot === undefined ? 1280 : options.slot, released: 0 };
   const encoders: { region: GrabRegion; events: VideoEncoderEvents; closed: boolean }[] = [];
   const window = {
+    pointer: vi.fn(async () => false),
     place: vi.fn(async (_target: string, _left: number, _w: number, _h: number) => {
       if (options.placeFails) throw new Error("no such window");
     }),

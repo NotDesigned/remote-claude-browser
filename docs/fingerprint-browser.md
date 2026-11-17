@@ -18,6 +18,9 @@
 上游标记为预发布。这是 Linux 内核运行的 Windows 身份模拟。扩展的文件路径兼容问题在
 隔离运行端处理，无需更换或修改内核；真正的 Windows 运行端见 [Windows VM 准备](windows-runtime.md)。
 
+运行镜像生成 `en_US.UTF-8` 系统 locale：内核会把 `LC_ALL` 固定到该语言环境，缺少它时
+中文下载名会退成 `download`。只设置 `LANG=C.UTF-8` 不足以修复。
+
 ## 安装
 
 仅支持 Linux x64。主机需要 `curl`、`tar`、`zstd`。

@@ -1108,6 +1108,10 @@ export async function startClientGateway(
       screen: account.identity.screen,
       confirmViewport: (_viewer, tab, { w, h }) => publish(sid, { t: "view-ok", tab, w, h }),
     });
+    const pixelWindow =
+      displayGrabbable && scoped.sendBrowser
+        ? createPixelWindow({ sendBrowser: scoped.sendBrowser, display: account.display?.env })
+        : undefined;
     const input = createInputRelay({
       onValueStatus: (tab, failed) => publish(sid, { t: "input-status", tab, failed }),
       agentLink: ownAgent,
@@ -1120,6 +1124,10 @@ export async function startClientGateway(
       allowsInput: (id, tab) => viewport.gate.allowsInput(id, tab),
       noteInput: (tab) => tabs.hubFor(tab)?.noteInput(),
       wheelScale: (tab) => tabs.hubFor(tab)?.pixelZoom ?? 1,
+      nativePointer: async (message, { x, y }) => {
+        const zoom = tabs.hubFor(message.tab)?.pixelZoom ?? 1;
+        return (await pixelWindow?.pointer({ ...message, vx: x * zoom, vy: y * zoom })) ?? false;
+      },
       viewportFor: (tab) => viewport.viewportFor(tab),
     });
     scoped.onSessionEvent("Page.frameNavigated", (sessionId, event) => {
@@ -1176,13 +1184,10 @@ export async function startClientGateway(
       ...(account.zoomReady ? { browserZoom } : {}),
       mobile: clientSessions.get(sid)?.phone === true,
       screen: account.identity.screen,
-      ...(displayGrabbable && scoped.sendBrowser
+      ...(pixelWindow
         ? {
             grab: {
-              window: createPixelWindow({
-                sendBrowser: scoped.sendBrowser,
-                display: account.display?.env,
-              }),
+              window: pixelWindow,
               ...(account.display
                 ? { createEncoder: grabEncoderForDisplay(account.display.env) }
                 : {}),

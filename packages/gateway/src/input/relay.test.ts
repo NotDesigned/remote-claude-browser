@@ -30,6 +30,7 @@ function harness(
     session?: string;
     rectTimeoutMs?: number;
     value?: () => Promise<CmdRes>;
+    nativePointer?: Parameters<typeof createInputRelay>[0]["nativePointer"];
   } = {},
 ) {
   const cdp: { sessionId: string; method: string; params?: Record<string, unknown> }[] = [];
@@ -77,11 +78,28 @@ function harness(
     noteInput: (tabId) => notes.push(tabId),
     viewportFor: () => ({ w: 640, h: 480 }),
     rectTimeoutMs: options.rectTimeoutMs ?? 10,
+    nativePointer: options.nativePointer,
   });
   return { relay, cdp, commands, notes, rectCalls: () => rectCalls };
 }
 
 describe("InputRelay", () => {
+  it("routes authorized pixel input to native menus while keeping DOM input on CDP", async () => {
+    const nativePointer = vi.fn(async () => true);
+    const h = harness({ nativePointer });
+    const wheel = { ...pointer("wheel"), nodeId: -1, vx: 25, vy: 60 };
+    expect(await h.relay("spectator", wheel)).toBe(false);
+    expect(nativePointer).not.toHaveBeenCalled();
+    expect(await h.relay("driver", wheel)).toBe(true);
+    expect(nativePointer).toHaveBeenCalledWith(wheel, { x: 25, y: 60 });
+    expect(h.cdp).toEqual([]);
+    await h.relay("driver", pointer("wheel"));
+    expect(nativePointer).toHaveBeenCalledTimes(1);
+    expect(h.cdp[0]?.method).toBe("Input.dispatchMouseEvent");
+    nativePointer.mockResolvedValue(false);
+    await h.relay("driver", wheel);
+    expect(h.cdp).toHaveLength(2);
+  });
   it("adds up queued wheel events so a busy page does not fall behind", async () => {
     let release!: (value: CmdRes) => void;
     const h = harness({

@@ -40,6 +40,10 @@ export interface InputRelayDeps {
   /** Current negotiated CSS-pixel viewport, used to clamp live rect coordinates. */
   /** Browser zoom divides scroll distances, unlike pointer coordinates. */
   wheelScale?(tabId: string): number;
+  nativePointer?(
+    message: Extract<Up, { t: "ptr" }>,
+    point: { x: number; y: number },
+  ): Promise<boolean>;
   viewportFor(tabId: string): { w: number; h: number } | undefined;
   rectTimeoutMs?: number;
   onValueStatus?(tabId: string, failed: boolean): void;
@@ -268,6 +272,8 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     // A finger has no hover; the viewer's pre-press move only positions a mouse.
     if (msg.pointerType === "touch" && msg.kind === "move" && msg.buttons === 0) return true;
     const { x, y } = await resolvePoint(msg);
+    if (!valid()) return false;
+    if (msg.nodeId === -1 && (await deps.nativePointer?.(msg, { x, y }))) return true;
     if (!valid()) return false;
     if (msg.pointerType === "touch" && msg.kind !== "wheel") {
       const touch = { touchPoints: [{ x, y, id: 0 }], modifiers: msg.mods };

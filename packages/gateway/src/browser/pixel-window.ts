@@ -7,6 +7,7 @@
  * strip: ordinary windows open at its left, and each picture has its own slot to the right of them.
  */
 import { execFile } from "node:child_process";
+import type { Up } from "@mirror/protocol";
 import type { DisplayEnvironment } from "./display";
 
 const LOCATE_TIMEOUT_MS = 1_000;
@@ -90,6 +91,8 @@ export interface PixelWindowDeps {
   sendBrowser(method: string, params: Record<string, unknown>): Promise<unknown>;
   listWindows?(): Promise<string>;
   raiseWindow?(id: string): Promise<void>;
+  windowType?(id: string): Promise<string>;
+  input?(args: string[]): Promise<void>;
   sleep?(ms: number): Promise<void>;
 }
 
@@ -99,6 +102,8 @@ export interface PixelWindow {
   /** Raises the window again if another browser window has opened over the picture. */
   keepOnTop(targetId: string): Promise<void>;
   restore(targetId: string): Promise<void>;
+  /** Native select menus live outside the page and do not receive CDP pointer events. */
+  pointer(message: Extract<Up, { t: "ptr" }>): Promise<boolean>;
 }
 
 const run = (
@@ -124,6 +129,11 @@ export function createPixelWindow(deps: PixelWindowDeps): PixelWindow {
       await run(deps.display, "xdotool", "windowraise", String(Number(id)));
     });
   const sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const windowType =
+    deps.windowType ?? ((id) => run(deps.display, "xprop", "-id", id, "_NET_WM_WINDOW_TYPE"));
+  const input = deps.input ?? (async (args) => void (await run(deps.display, "xdotool", ...args)));
+  const nativePresses = new Set<string>();
+  const wheelRemainders = new Map<string, number>();
   const placed = new Map<
     string,
     { windowId: number; saved: Bounds; id?: string; left: number; width: number; height: number }
@@ -152,6 +162,61 @@ export function createPixelWindow(deps: PixelWindowDeps): PixelWindow {
   };
 
   return {
+    async pointer(message) {
+      const entry = placed.get(message.tab);
+      if (!entry?.id) return false;
+      // The release opening a menu belongs to the original CDP press. Subsequent menu presses
+      // use X11 for both halves, including the release if selecting an item already closed it.
+      if (message.kind === "up" && !nativePresses.has(message.tab)) return false;
+      if (!nativePresses.has(message.tab)) {
+        const windows = parseWindows(await listWindows());
+        const own = windows.findIndex((window) => window.id === entry.id);
+        const popup = windows
+          .slice(0, Math.max(0, own))
+          .find(
+            (window) =>
+              window.title === null &&
+              window.width > 1 &&
+              window.height > 1 &&
+              window.x < entry.left + entry.width &&
+              window.x + window.width > entry.left &&
+              window.y < entry.height &&
+              window.y + window.height > 0,
+          );
+        if (!popup || !(await windowType(popup.id)).includes("_NET_WM_WINDOW_TYPE_MENU")) {
+          wheelRemainders.delete(message.tab);
+          return false;
+        }
+      }
+      const args = [
+        "mousemove",
+        String(Math.round(entry.left + message.vx)),
+        String(Math.round(message.vy)),
+      ];
+      if (message.kind === "wheel") {
+        // X11 wheels have discrete steps; retain small trackpad/finger deltas between events.
+        const distance = (wheelRemainders.get(message.tab) ?? 0) + (message.dy ?? 0);
+        const steps = Math.trunc(distance / 40);
+        wheelRemainders.set(message.tab, distance - steps * 40);
+        if (steps !== 0)
+          args.push(
+            "click",
+            "--repeat",
+            String(Math.abs(steps)),
+            "--delay",
+            "0",
+            steps < 0 ? "4" : "5",
+          );
+      } else if (message.kind === "down") {
+        nativePresses.add(message.tab);
+        args.push("mousedown", String((message.button ?? 0) + 1));
+      } else if (message.kind === "up") {
+        nativePresses.delete(message.tab);
+        args.push("mouseup", String((message.button ?? 0) + 1));
+      }
+      await input(args);
+      return true;
+    },
     async place(targetId, left, width, height) {
       let entry = placed.get(targetId);
       if (!entry) {
@@ -199,6 +264,8 @@ export function createPixelWindow(deps: PixelWindowDeps): PixelWindow {
       const entry = placed.get(targetId);
       if (!entry) return;
       placed.delete(targetId);
+      nativePresses.delete(targetId);
+      wheelRemainders.delete(targetId);
       await deps.sendBrowser("Browser.setWindowBounds", {
         windowId: entry.windowId,
         bounds: {

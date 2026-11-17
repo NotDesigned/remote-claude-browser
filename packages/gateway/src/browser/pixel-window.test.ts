@@ -17,13 +17,17 @@ function setup() {
     return {};
   });
   const raiseWindow = vi.fn(async () => {});
+  const input = vi.fn(async (_args: string[]) => {});
+  const windowType = vi.fn(async () => "_NET_WM_WINDOW_TYPE_MENU");
   const window = createPixelWindow({
     sendBrowser,
     raiseWindow,
+    input,
+    windowType,
     listWindows: async () => listing.current.join("\n"),
     sleep: async () => {},
   });
-  return { sendBrowser, raiseWindow, window, listing };
+  return { sendBrowser, raiseWindow, window, listing, input, windowType };
 }
 
 const OWN = line("0x200006", "Claude - Google Chrome", "1800x1287+1280+-87");
@@ -56,6 +60,60 @@ describe("createGrabSlots", () => {
 });
 
 describe("createPixelWindow", () => {
+  const pointer = (kind: "move" | "down" | "up" | "wheel", dy = 0) =>
+    ({
+      t: "ptr",
+      tab: "t",
+      kind,
+      nodeId: -1,
+      rx: 0,
+      ry: 0,
+      vx: 100,
+      vy: 200,
+      buttons: kind === "down" ? 1 : 0,
+      mods: 0,
+      dy,
+    }) as const;
+
+  it("scrolls and selects a native menu, retaining small touch deltas", async () => {
+    const { window, listing, input } = setup();
+    listing.current = [OWN];
+    await window.place("t", 1280, 1800, 1200);
+    listing.current = [line("0x9", null, "300x600+1350+80"), OWN];
+    expect(await window.pointer(pointer("up"))).toBe(false);
+    await window.pointer(pointer("wheel", 20));
+    await window.pointer(pointer("wheel", 25));
+    expect(input.mock.calls.at(-1)?.[0]).toEqual([
+      "mousemove",
+      "1380",
+      "200",
+      "click",
+      "--repeat",
+      "1",
+      "--delay",
+      "0",
+      "5",
+    ]);
+    await window.pointer(pointer("down"));
+    listing.current = [OWN];
+    expect(await window.pointer(pointer("up"))).toBe(true);
+    expect(input.mock.calls.at(-1)?.[0]).toEqual(["mousemove", "1380", "200", "mouseup", "1"]);
+    expect(await window.pointer(pointer("wheel", 40))).toBe(false);
+    await window.restore("t");
+    expect(await window.pointer(pointer("down"))).toBe(false);
+  });
+
+  it("leaves other sessions' menus and native tooltips outside its input path", async () => {
+    const { window, listing, input, windowType } = setup();
+    listing.current = [OWN];
+    await window.place("t", 1280, 1800, 1200);
+    listing.current = [line("0x9", null, "300x600+5120+80"), OWN];
+    expect(await window.pointer(pointer("wheel", 40))).toBe(false);
+    listing.current = [line("0x9", null, "300x600+1350+80"), OWN];
+    windowType.mockResolvedValue("_NET_WM_WINDOW_TYPE_TOOLTIP");
+    expect(await window.pointer(pointer("down"))).toBe(false);
+    expect(input).not.toHaveBeenCalled();
+  });
   it("hides the browser's own bars above the screen and raises the window", async () => {
     const { window, sendBrowser, raiseWindow, listing } = setup();
     listing.current = [OWN];

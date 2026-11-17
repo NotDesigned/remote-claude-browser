@@ -149,7 +149,16 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
 
     const Observer = doc.defaultView?.MutationObserver;
     if (Observer !== undefined) {
+      const root = doc.documentElement;
       const observer = new Observer((records) => {
+        // rrweb can rebuild an iframe long after its load event. document.open() keeps the
+        // Document but clears its input listeners, so renew them when its root is replaced.
+        if (doc.documentElement !== root) {
+          documents.get(doc)?.();
+          documents.delete(doc);
+          attachDocument(doc);
+          return;
+        }
         for (const record of records) {
           for (const node of record.addedNodes) discoverFrames(node);
         }

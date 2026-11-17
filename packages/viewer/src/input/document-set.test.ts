@@ -7,9 +7,15 @@ import { attachMirrorInput } from ".";
 type Listener = (event: never) => void;
 
 class FakeMutationObserver {
+  target?: FakeDocument;
   constructor(readonly callback: MutationCallback) {}
-  observe() {}
-  disconnect() {}
+  observe(target: FakeDocument) {
+    this.target = target;
+    target.observers.add(this);
+  }
+  disconnect() {
+    this.target?.observers.delete(this);
+  }
 }
 
 class FakeElement {
@@ -87,6 +93,7 @@ class FakeElement {
 }
 
 class FakeDocument {
+  readonly observers = new Set<FakeMutationObserver>();
   readonly nodeType = 9;
   readonly listeners = new Map<string, Set<Listener>>();
   readonly elements: FakeElement[] = [];
@@ -187,6 +194,35 @@ function keyboard(target: FakeElement) {
 }
 
 describe("mirror input document set", () => {
+  it("restores clicks after a late iframe rebuild without a load event", () => {
+    const root = new FakeDocument();
+    const frame = new FakeElement(root, 10, "IFRAME");
+    const child = new FakeDocument(frame);
+    frame.contentDocument = child;
+    root.add(frame);
+    const button = new FakeElement(child, 41, "BUTTON");
+    const sent: Up[] = [];
+    const detach = attachMirrorInput({
+      replayer: {
+        iframe: { contentDocument: root },
+        getMirror: () => ({ getId: (node: FakeElement) => node.nodeId }),
+      } as unknown as Replayer,
+      tab: "T1",
+      send: (message) => sent.push(message),
+    });
+    for (let i = 0; i < 60; i++) root.flushAnimationFrame();
+    child.listeners.clear();
+    child.documentElement = new FakeElement(child, 1, "HTML");
+    for (const observer of [...child.observers]) observer.callback([], observer as never);
+    child.fire("mousedown", mouse(button));
+    child.fire("mouseup", mouse(button, { buttons: 0 }));
+    expect(sent).toMatchObject([
+      { t: "ptr", kind: "down", nodeId: 41 },
+      { t: "ptr", kind: "up", nodeId: 41 },
+    ]);
+    detach();
+    expect(child.observers.size).toBe(0);
+  });
   it("keeps a child touch drag across frame-listener refreshes", () => {
     const root = new FakeDocument();
     const frame = new FakeElement(root, 10, "IFRAME", {

@@ -49,12 +49,14 @@ RUN apt-get update \
         fonts-noto-core \
         iproute2 \
         iptables \
+        locales \
         procps \
         tzdata \
         x11-utils \
         xauth \
         xdotool \
         xvfb \
+    && localedef -i en_US -f UTF-8 en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 browser \
     && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin browser \
@@ -94,6 +96,7 @@ RUN chmod 0755 /opt/remote-browser/server-entrypoint.sh /opt/remote-browser/serv
 
 # Without a UTF-8 locale Chromium can't name a download in Chinese, which comes out as "download", and
 # xwininfo can't print such a window's title, which picture mode finds the window by.
+# AliasMode pins LC_ALL to en_US.UTF-8 internally, so that locale is generated above as well.
 ENV LANG=C.UTF-8
 ENV NODE_ENV=production
 ENV VIEWER_DIST_ROOT=/app/viewer
