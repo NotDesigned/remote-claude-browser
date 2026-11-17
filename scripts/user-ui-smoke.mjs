@@ -49,6 +49,7 @@ const browserSessions = [
     profileId: "default",
     profileName: "默认配置",
     currentDevice: true,
+    online: true,
     createdAt: 1,
   },
   {
@@ -57,6 +58,7 @@ const browserSessions = [
     profileId: "work",
     profileName: "工作配置",
     currentDevice: false,
+    online: false,
     createdAt: 2,
   },
 ];
@@ -110,7 +112,7 @@ const server = createServer(async (request, response) => {
             }
           : { ...users.get(id), ...changes };
       users.set(saved.id, saved);
-      return json(response, 200, { user: saved });
+      return json(response, 200, saved);
     }
     if (url.pathname === "/api/client/session") {
       browserAdmissions++;
@@ -132,6 +134,7 @@ const server = createServer(async (request, response) => {
             name: "默认配置",
             running: true,
             sessions: 1,
+            onlineSessions: 1,
             platform: "windows",
             browserEngine: "aliasmode",
           },
@@ -229,9 +232,9 @@ try {
   await panel.getByRole("button", { name: /fixture-renamed.*已停用/ }).click();
   await Promise.all([
     page.waitForResponse((response) => response.request().method() === "DELETE"),
-    panel.getByRole("button", { name: "删除用户", exact: true }).click(),
+    panel.getByRole("button", { name: "删除用户与数据", exact: true }).click(),
   ]);
-  await panel.getByText("用户已删除。", { exact: true }).waitFor();
+  await panel.getByText("用户及其数据已删除。", { exact: true }).waitFor();
   assert.equal(users.has(createdId), false);
   checks.adminDelete = true;
   const persisted = await page.evaluate(() =>
@@ -284,7 +287,7 @@ try {
   await phone.getByRole("button", { name: "工作台", exact: true }).tap();
   await phone.getByRole("button", { name: "我的账号", exact: true }).tap();
   const phoneAccount = phone.getByRole("dialog", { name: "我的账号", exact: true });
-  await phoneAccount.getByText("工作配置 · 其他设备", { exact: true }).waitFor();
+  await phoneAccount.getByText("工作配置 · 休眠 · 其他设备", { exact: true }).waitFor();
   assert.equal(
     await phoneAccount.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
     true,

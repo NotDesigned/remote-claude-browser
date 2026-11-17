@@ -1,7 +1,8 @@
-import { useLayoutEffect, useRef } from "preact/hooks";
+import { useDialog } from "./dialog";
 import type { FrontendUser } from "./users";
 import { ProxyPanel } from "./network-proxy-panel";
 import { CpaPanel } from "./network-cpa-panel";
+import type { CpaBrowserAuthorization } from "./network-api";
 import "./network-panel.css";
 
 export function NetworkPanel({
@@ -12,7 +13,9 @@ export function NetworkPanel({
   tab,
   onTabChange,
   onOpenBrowser,
+  onChooseBrowser,
   onClose,
+  error,
 }: {
   user: FrontendUser;
   browserProxyId?: string | null;
@@ -21,46 +24,11 @@ export function NetworkPanel({
   tab: "proxies" | "cpa";
   onTabChange(tab: "proxies" | "cpa"): void;
   onOpenBrowser(): void;
+  onChooseBrowser(authorization: CpaBrowserAuthorization): void;
   onClose(): void;
+  error: string | null;
 }) {
-  const panel = useRef<HTMLElement>(null);
-  const close = useRef<HTMLButtonElement>(null);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  useLayoutEffect(() => {
-    if (!open) return;
-    const previous = document.activeElement;
-    close.current!.focus();
-    const onKey = (event: KeyboardEvent) => {
-      if (event.isComposing) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        closeRef.current();
-      }
-      if (event.key === "Tab") {
-        const controls = [
-          ...panel.current!.querySelectorAll<HTMLElement>(
-            "button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href]",
-          ),
-        ].filter((element) => element.getClientRects().length > 0);
-        const first = controls[0]!,
-          last = controls.at(-1)!;
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first.focus();
-        }
-      }
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("keydown", onKey, true);
-      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
-    };
-  }, [open]);
+  const panel = useDialog(open, onClose);
   return (
     <div
       class="network-panel-backdrop"
@@ -83,7 +51,6 @@ export function NetworkPanel({
           </div>
           <button
             type="button"
-            ref={close}
             class="network-close"
             aria-label="关闭代理与 API 管理"
             onClick={onClose}
@@ -91,6 +58,11 @@ export function NetworkPanel({
             ×
           </button>
         </header>
+        {error && (
+          <p class="network-message network-error" role="alert">
+            {error}
+          </p>
+        )}
         <div class="network-tabs" role="tablist" aria-label="网络与 API 设置">
           <button
             id="network-proxies-tab"
@@ -111,21 +83,18 @@ export function NetworkPanel({
             CPA 授权与 Key
           </button>
         </div>
-        <div
-          role="tabpanel"
-          aria-labelledby={tab === "proxies" ? "network-proxies-tab" : "network-cpa-tab"}
-        >
-          {tab === "proxies" ? (
-            <ProxyPanel user={user} />
-          ) : (
-            <CpaPanel
-              open={open}
-              user={user}
-              browserProxyId={browserProxyId}
-              browserSessionId={browserSessionId}
-              onOpenBrowser={onOpenBrowser}
-            />
-          )}
+        <div role="tabpanel" aria-labelledby="network-proxies-tab" hidden={tab !== "proxies"}>
+          <ProxyPanel user={user} />
+        </div>
+        <div role="tabpanel" aria-labelledby="network-cpa-tab" hidden={tab !== "cpa"}>
+          <CpaPanel
+            open={open && tab === "cpa"}
+            user={user}
+            browserProxyId={browserProxyId}
+            browserSessionId={browserSessionId}
+            onOpenBrowser={onOpenBrowser}
+            onChooseBrowser={onChooseBrowser}
+          />
         </div>
       </section>
     </div>

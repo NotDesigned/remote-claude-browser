@@ -8,6 +8,7 @@ import {
   type CpaInstance,
   type CpaKey,
   type CpaPendingOAuth,
+  type CpaBrowserAuthorization,
   type ProxyInfo,
 } from "./network-api";
 
@@ -53,12 +54,14 @@ export function CpaPanel({
   open,
   browserSessionId,
   onOpenBrowser,
+  onChooseBrowser,
 }: {
   user: FrontendUser;
   browserProxyId?: string | null;
   open: boolean;
   browserSessionId?: string;
   onOpenBrowser(): void;
+  onChooseBrowser(authorization: CpaBrowserAuthorization): void;
 }) {
   const [instances, setInstances] = useState<CpaInstance[]>([]);
   const [selected, setSelected] = useState("");
@@ -73,13 +76,20 @@ export function CpaPanel({
   const oauthRef = useRef(oauth);
   oauthRef.current = oauth;
   const [oauthProxy, setOAuthProxy] = useState<string | null>(null);
-  const [callback, setCallback] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [keyName, setKeyName] = useState("");
   const [issuedKey, setIssuedKey] = useState<(CpaKey & { token: string }) | null>(null);
   useLayoutEffect(() => {
     if (!open) setIssuedKey(null);
   }, [open, issuedKey]);
   const instance = instances.find((item) => item.id === selected);
+  const draftKey = `mirror-cpa-callback:${user.id}:${selected}:${oauth?.state ?? ""}`;
+  const callback = drafts[draftKey] ?? sessionStorage.getItem(draftKey) ?? "";
+  const setCallback = (value: string) => {
+    setDrafts((previous) => ({ ...previous, [draftKey]: value }));
+    if (value) sessionStorage.setItem(draftKey, value);
+    else sessionStorage.removeItem(draftKey);
+  };
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const detailRequest = useRef(0);
@@ -112,24 +122,28 @@ export function CpaPanel({
       setKeys(savedKeys.keys);
       setCredentials(savedCredentials.credentials);
       const saved = pending.sessions.at(-1) ?? null;
-      if (saved?.state !== oauthRef.current?.state) setCallback("");
+      if (!saved && oauthRef.current) setCallback("");
       setOAuth(saved);
       if (saved) setOAuthProxy(saved.proxyId);
     }
   };
   useEffect(() => {
+    if (!open) return;
     void Promise.all([
       reloadInstances(),
       proxyApi.proxies().then((result) => setProxies(result.proxies)),
     ])
+      .then(([items]) => {
+        const current = items.find((item) => item.id === selectedRef.current);
+        if (current) return reloadDetails(current);
+      })
       .catch((reason: Error) => setError(reason.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [open]);
   useLayoutEffect(() => {
     setCredentials([]);
     setKeys([]);
     setOAuth(null);
-    setCallback("");
     setIssuedKey(null);
     setError(null);
     setNotice(null);
@@ -141,17 +155,6 @@ export function CpaPanel({
       detailRequest.current++;
     };
   }, [selected, instance?.status]);
-  useEffect(() => {
-    if (open && instance)
-      void reloadInstances()
-        .then((items) => {
-          const current = items.find((item) => item.id === selectedRef.current);
-          if (current) return reloadDetails(current);
-        })
-        .catch((reason: Error) => {
-          if (selectedRef.current === instance.id) setError(reason.message);
-        });
-  }, [open]);
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
     setError(null);
@@ -283,7 +286,7 @@ export function CpaPanel({
               }
             </p>
             {instance.authorizing && (
-              <p class="network-muted">正在添加授权，推理调用暂停。完成或取消授权后恢复。</p>
+              <p class="network-muted">正在添加授权，已有授权可继续调用。</p>
             )}
             {instance.canManage && instance.status === "running" && (
               <div class="network-actions">
@@ -490,9 +493,20 @@ export function CpaPanel({
                       在远程浏览器中打开授权页
                     </button>
                     {(!browserSessionId || browserProxyId !== oauth.proxyId) && (
-                      <p class="network-muted">
-                        请先打开与授权节点出口一致的浏览器配置，再打开授权页。
-                      </p>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() =>
+                          onChooseBrowser({
+                            userId: user.id,
+                            instanceId: instance.id,
+                            state: oauth.state,
+                            proxyId: oauth.proxyId,
+                          })
+                        }
+                      >
+                        选择同出口浏览器
+                      </button>
                     )}
                     <p class="network-muted">
                       远程浏览器会自动提交匹配的授权回调。也可在这里粘贴完整回调 URL 或授权码。
@@ -536,6 +550,7 @@ export function CpaPanel({
                             if (status.status === "error")
                               throw new Error(status.error || "授权未完成。");
                             if (status.status === "ok") {
+                              setCallback("");
                               await credentialsChanged();
                               setOAuth(null);
                               setNotice("Claude 授权已完成。");

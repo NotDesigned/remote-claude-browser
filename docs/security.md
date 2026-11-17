@@ -40,9 +40,9 @@ configurations, and website cookies remain shared between sessions that select t
 
 Front-end users are separate from accounts on visited sites. New users start with their own Chrome
 profiles and choose which websites to sign into. Existing profiles are assigned once to the bootstrap
-administrator during migration; they are not copied to new users. Deleting a front-end user revokes
-their logins and removes profile ownership, but retains the browser data on disk. Treat retained data
-and backups as sensitive even when the corresponding user no longer exists.
+administrator during migration; they are not copied to new users. Disabling a front-end user revokes their logins and retains their data for re-enabling. Deleting
+a user removes their browser profiles, private proxy sources, private CPA container/volumes and
+calling keys. Shared resources and other users remain. Backups are managed separately by the operator.
 
 With `compose.runtime.yml`, each browser configuration has its own Chrome process, profile directory,
 network, mount and PID namespaces. The launcher exposes only that profile, its authenticated X display,

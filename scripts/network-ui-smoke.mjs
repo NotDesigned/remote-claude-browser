@@ -98,6 +98,8 @@ const server = createServer(async (request, response) => {
       ? { id: "reader", username: "reader", role: "user" }
       : { id: "admin", username: "admin", role: "admin" };
     const manage = (item) => user.role === "admin" || item.ownerId === user.id;
+    const manageCpa = (item) =>
+      item.ownerId === user.id || (item.scope === "shared" && user.role === "admin");
     const visibleProxy = (id) =>
       typeof id === "string" &&
       proxies.some((item) => item.id === id && (item.visibility === "shared" || manage(item)));
@@ -112,6 +114,7 @@ const server = createServer(async (request, response) => {
             name: "默认配置",
             running: false,
             sessions: 0,
+            onlineSessions: 0,
             signedIn: false,
             proxyId: profileProxyId,
             proxyName: proxies.find((item) => item.id === profileProxyId)?.name ?? null,
@@ -204,8 +207,8 @@ const server = createServer(async (request, response) => {
       if (request.method === "GET")
         return json(response, {
           instances: instances
-            .filter((item) => item.scope === "shared" || manage(item))
-            .map((item) => ({ ...item, canManage: manage(item) })),
+            .filter((item) => item.scope === "shared" || item.ownerId === user.id)
+            .map((item) => ({ ...item, canManage: manageCpa(item) })),
         });
       const input = await body(request);
       const instance = {
@@ -237,7 +240,7 @@ const server = createServer(async (request, response) => {
     if (url.pathname.startsWith("/api/cpa/instances/")) {
       const [, , , , id, action, detail] = url.pathname.split("/");
       const instance = instances.find((item) => item.id === id);
-      if (!(manage(instance) || (action === "keys" && instance.scope === "shared")))
+      if (!(manageCpa(instance) || (action === "keys" && instance.scope === "shared")))
         return json(response, { error: "CPA_FORBIDDEN", message: "没有管理此实例的权限" }, 403);
       const input =
         request.method === "GET" || request.method === "DELETE" ? {} : await body(request);
@@ -639,6 +642,9 @@ try {
     await panel.getByLabel("授权回调 URL 或授权码", { exact: true }).waitFor();
     assert.equal(await oauthProxy.inputValue(), "proxy-private");
     await panel.getByLabel("授权回调 URL 或授权码", { exact: true }).fill("fixture-draft");
+    await click(panel.getByRole("tab", { name: "代理来源", exact: true }));
+    await click(panel.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
+    assert.equal(await panel.getByLabel("授权回调 URL 或授权码").inputValue(), "fixture-draft");
     await click(panel.getByRole("button", { name: "关闭代理与 API 管理", exact: true }));
     await click(page.getByRole("button", { name: "工作台", exact: true }));
     await click(page.getByRole("button", { name: "API", exact: true }));
@@ -653,6 +659,7 @@ try {
     await click(page.getByRole("button", { name: "API", exact: true }));
     await panel.getByLabel("授权回调 URL 或授权码", { exact: true }).waitFor();
     assert.equal(await oauthProxy.inputValue(), "proxy-private");
+    assert.equal(await panel.getByLabel("授权回调 URL 或授权码").inputValue(), "fixture-draft");
     assert.equal(
       operations.filter((item) => item.type === "cpa-oauth" && item.input.provider === "claude")
         .length,

@@ -211,8 +211,12 @@ function ProfileCard(props: {
           ) : (
             props.last && <span class="profile-badge">上次使用</span>
           )}
-          {account.sessions > 0 && <span class="profile-badge">{account.sessions} 个会话</span>}
-          {account.running && <span class="profile-badge">运行中</span>}
+          {account.sessions > 0 && (
+            <span class="profile-badge profile-session-badge">
+              {account.onlineSessions} 在线 · {account.sessions - account.onlineSessions} 休眠
+            </span>
+          )}
+          {account.running && <span class="profile-badge profile-session-badge">运行中</span>}
         </span>
       </button>
       {exitCheck && (
@@ -294,6 +298,7 @@ export function ProfilePicker(props: {
   onDeleted?(): void;
   workspace?: WorkspaceMenuProps;
   proxyManagerOpen?: boolean;
+  requiredProxyId?: string;
   dark: boolean;
   onTheme(): void;
 
@@ -333,11 +338,14 @@ export function ProfilePicker(props: {
     let active = true;
     setCreationProxies(null);
     void listProxyChoices()
-      .then((choices) => {
+      .then((available) => {
         if (!active) return;
+        const choices = available.filter(
+          (node) => !props.requiredProxyId || node.id === props.requiredProxyId,
+        );
         setCreationProxies(choices);
         setCreationProxyId((previous) =>
-          choices.some((node) => node.id === previous) ? previous : "",
+          choices.some((node) => node.id === previous) ? previous : (props.requiredProxyId ?? ""),
         );
       })
       .catch((reason: Error) => {
@@ -346,7 +354,7 @@ export function ProfilePicker(props: {
     return () => {
       active = false;
     };
-  }, [creating, props.proxyManagerOpen, proxyRefresh]);
+  }, [creating, props.proxyManagerOpen, proxyRefresh, props.requiredProxyId]);
 
   useEffect(() => {
     let active = true;
@@ -580,7 +588,7 @@ export function ProfilePicker(props: {
           {props.workspace && <WorkspaceMenu {...props.workspace} />}
           {props.onBack && (
             <button type="button" disabled={busy} onClick={props.onBack}>
-              返回会话
+              {props.requiredProxyId ? "返回 API" : "返回会话"}
             </button>
           )}
           <button type="button" onClick={props.onTheme} aria-label="切换外观">
@@ -592,11 +600,19 @@ export function ProfilePicker(props: {
         <section class="profile-panel" aria-labelledby="profile-picker-title">
           <header>
             <span class="profile-eyebrow">独立浏览器</span>
-            <h1 id="profile-picker-title">选择浏览器配置</h1>
+            <h1 id="profile-picker-title">
+              {props.requiredProxyId ? "选择授权浏览器" : "选择浏览器配置"}
+            </h1>
             <p>
-              选择一个配置，继续上次的工作。
-              <br />
-              不同配置的网站登录互相独立。
+              {props.requiredProxyId ? (
+                "选择与授权使用相同出口的配置，打开后继续授权；也可以新建。"
+              ) : (
+                <>
+                  选择一个配置，继续上次的工作。
+                  <br />
+                  不同配置的网站登录互相独立。
+                </>
+              )}
             </p>
           </header>
           {props.logoutError && (
@@ -689,6 +705,9 @@ export function ProfilePicker(props: {
           ) : (
             <div class="profile-list">
               {[...(accounts ?? [])]
+                .filter(
+                  (account) => !props.requiredProxyId || account.proxyId === props.requiredProxyId,
+                )
                 .sort((a, b) => Number(b.id === defaultId) - Number(a.id === defaultId))
                 .map((account) =>
                   editing === account.id ? (
@@ -879,7 +898,7 @@ export function ProfilePicker(props: {
                       setProxyEditor(null);
                       setPlatformEditor(null);
                       setName("");
-                      setCreationProxyId("");
+                      setCreationProxyId(props.requiredProxyId ?? "");
                       setCreationPlatform(defaultPlatform);
                       setCreating(true);
                     }}

@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import { useDialog } from "./dialog";
+import { useEffect, useRef, useState } from "preact/hooks";
 import {
   createUser,
   deleteUser,
@@ -36,8 +37,7 @@ export function UserPanel({
   onClose(): void;
   onChanged(): void;
 }) {
-  const panel = useRef<HTMLElement>(null);
-  const close = useRef<HTMLButtonElement>(null);
+  const panel = useDialog(true, onClose);
   const baseline = useRef<ManagedUser | null>(null);
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [fields, setFields] = useState<UserFields>(emptyUser);
@@ -45,50 +45,6 @@ export function UserPanel({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-
-  useLayoutEffect(() => {
-    const previous = document.activeElement;
-    close.current?.focus();
-    const onKey = (event: KeyboardEvent) => {
-      if (event.isComposing) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        closeRef.current();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const focusable = [
-        ...(panel.current?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex="0"]',
-        ) ?? []),
-      ].filter((element) => element.getClientRects().length > 0);
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      if (!first || !last) return;
-      if (
-        event.shiftKey &&
-        (document.activeElement === first || !panel.current?.contains(document.activeElement))
-      ) {
-        event.preventDefault();
-        last.focus();
-      } else if (
-        !event.shiftKey &&
-        (document.activeElement === last || !panel.current?.contains(document.activeElement))
-      ) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("keydown", onKey, true);
-      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
-    };
-  }, []);
-
   useEffect(() => {
     let active = true;
     void listUsers()
@@ -152,7 +108,7 @@ export function UserPanel({
       !fields.id ||
       pending ||
       !window.confirm(
-        `删除用户「${fields.username}」？所有浏览器会话和私有 CPA 将停止，个人 API Key 将失效。浏览器数据及 CPA 授权凭据会保留在服务器，但该用户无法再登录。`,
+        `删除用户「${fields.username}」及其数据？这会永久删除浏览器资料、私有代理来源、私有 CPA 授权和个人 API Key，无法恢复。需要保留资料时，请改用停用。`,
       )
     )
       return;
@@ -163,7 +119,7 @@ export function UserPanel({
       await deleteUser(fields.id);
       baseline.current = null;
       setFields(emptyUser());
-      setNotice("用户已删除。");
+      setNotice("用户及其数据已删除。");
       onChanged();
       await reload();
     } catch (failure) {
@@ -196,7 +152,6 @@ export function UserPanel({
           <button
             class="user-panel-close"
             type="button"
-            ref={close}
             aria-label="关闭用户管理"
             onClick={onClose}
           >
@@ -316,7 +271,7 @@ export function UserPanel({
             {fields.id !== null && (
               <p class="user-panel-muted">
                 停用会立即结束所有浏览器会话、停止私有 CPA，并使该用户的个人 API Key
-                无法调用；浏览器数据和授权凭据保留。
+                无法调用；浏览器数据和授权凭据保留，重新启用后可继续使用。私有 CPA 需要手动启动。
               </p>
             )}
             <footer class="user-panel-actions">
@@ -334,7 +289,7 @@ export function UserPanel({
                   disabled={pending}
                   onClick={() => void remove()}
                 >
-                  删除用户
+                  删除用户与数据
                 </button>
               )}
             </footer>

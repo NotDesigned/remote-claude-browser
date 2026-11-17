@@ -932,7 +932,7 @@ exec sh /acceptance/profile-network.sh "$@"
     counts.B.failGeo = true;
     const failedCheck = await api("/egress/fixture-b/check", "POST");
     assert.equal(failedCheck.status, "error");
-    assert.equal(failedCheck.error, "出口检查失败，请检查所选节点后重试");
+    assert.equal(failedCheck.error, "出口地区查询服务返回 HTTP 429，请稍后重试");
     assert.equal(failedCheck.exitIp, undefined);
     delete counts.B.failGeo;
     const healthyAgain = await api("/egress/fixture-b/check", "POST");
@@ -1052,7 +1052,7 @@ exec sh /acceptance/profile-network.sh "$@"
         },
         503,
       );
-      assert.equal(failed.code, "EXIT_TIMEZONE");
+      assert.equal(failed.code, "EXIT_LOOKUP");
       assert.ok(!(await command("ip", ["netns", "list"])).includes(failedNetwork.name));
       await assert.rejects(stat(`/run/remote-browser/${failedNetwork.name}`), { code: "ENOENT" });
       assert.equal(

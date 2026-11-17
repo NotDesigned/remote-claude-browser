@@ -1,10 +1,12 @@
+import { ApiError } from "./api";
 /** Viewer shell layout. */
 import { listAccounts, switchAccount, type AccountList } from "./accounts";
-import { currentUser, logout, myBrowserSessions, UserApiError, type FrontendUser } from "./users";
+import { currentUser, logout, myBrowserSessions, type FrontendUser } from "./users";
 import { UserPanel } from "./user-panel";
 import { AccountPanel } from "./account-panel";
 import type { WorkspaceDestination, WorkspaceMenuProps } from "./workspace-menu";
 import { NetworkPanel } from "./network-panel";
+import { cpaApi, type CpaBrowserAuthorization } from "./network-api";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import type { AgentMsg, Down, eventWithTime, TabId } from "@mirror/protocol";
 import { EventType, encodeResumeCursors } from "@mirror/protocol";
@@ -140,6 +142,9 @@ export function App() {
   const [oauthCallbacks, setOAuthCallbacks] = useState<Record<string, "submitted" | "error">>({});
   const [accountPanelOpen, setAccountPanelOpen] = useState(false);
   const [profilePickerOpen, setProfilePickerOpen] = useState(false);
+  const [browserAuthorization, setBrowserAuthorization] = useState<CpaBrowserAuthorization | null>(
+    () => JSON.parse(sessionStorage.getItem("mirror-cpa-browser") ?? "null"),
+  );
   const [logoutPending, setLogoutPending] = useState(false);
   const [userError, setUserError] = useState<string | null>(null);
   /** The configuration this tab's picker chose; a reload resumes without one. */
@@ -305,7 +310,7 @@ export function App() {
         if (loaded.role !== "admin") setUserPanelOpen(false);
       })
       .catch((error) => {
-        if (error instanceof UserApiError && error.status === 401) window.location.assign("/gate");
+        if (error instanceof ApiError && error.status === 401) window.location.assign("/gate");
       });
   }, [fixturePath]);
   useEffect(refreshUser, [refreshUser]);
@@ -315,6 +320,8 @@ export function App() {
     setUserError(null);
     try {
       await logout();
+      for (const key of Object.keys(sessionStorage))
+        if (key.startsWith("mirror-cpa-")) sessionStorage.removeItem(key);
       runtimeCleanupRef.current?.();
       window.location.assign("/gate");
     } catch (error) {
@@ -1184,6 +1191,11 @@ export function App() {
   };
 
   const navigateWorkspace = (destination: WorkspaceDestination) => {
+    setUserError(null);
+    if (destination === "profiles") {
+      sessionStorage.removeItem("mirror-cpa-browser");
+      setBrowserAuthorization(null);
+    }
     setUserPanelOpen(destination === "users");
     setAccountPanelOpen(destination === "account");
     setNetworkPanelOpen(destination === "proxies" || destination === "cpa");
@@ -1193,6 +1205,34 @@ export function App() {
       else if (clientPhase !== "picking") window.location.assign("/?new=1");
     }
   };
+  useEffect(() => {
+    if (
+      !browserAuthorization ||
+      browserAuthorization.userId !== user?.id ||
+      profilePickerOpen ||
+      clientPhase !== "ready" ||
+      !clientSession
+    )
+      return;
+    const current = accountList?.accounts.find((account) => account.id === accountList.current);
+    if (current?.proxyId !== browserAuthorization.proxyId) return;
+    sessionStorage.removeItem("mirror-cpa-browser");
+    setBrowserAuthorization(null);
+    void cpaApi
+      .openOAuth(clientSession.sid, browserAuthorization.instanceId, browserAuthorization.state)
+      .catch((error: Error) => {
+        setUserError(error.message);
+        setNetworkTab("cpa");
+        setNetworkPanelOpen(true);
+      });
+  }, [
+    browserAuthorization,
+    profilePickerOpen,
+    clientPhase,
+    clientSession?.sid,
+    accountList,
+    user?.id,
+  ]);
   const workspace: WorkspaceMenuProps | undefined = user
     ? {
         user,
@@ -1267,6 +1307,7 @@ export function App() {
         <NetworkPanel
           key={user.id}
           open={networkPanelOpen}
+          error={userError}
           tab={networkTab}
           onTabChange={setNetworkTab}
           user={user}
@@ -1280,6 +1321,13 @@ export function App() {
           onOpenBrowser={() => {
             setNetworkPanelOpen(false);
             setProfilePickerOpen(false);
+          }}
+          onChooseBrowser={(authorization) => {
+            setUserError(null);
+            sessionStorage.setItem("mirror-cpa-browser", JSON.stringify(authorization));
+            setBrowserAuthorization(authorization);
+            setNetworkPanelOpen(false);
+            setProfilePickerOpen(clientPhase === "ready");
           }}
         />
       )}
@@ -1356,6 +1404,7 @@ export function App() {
         )}
       {(clientPhase === "picking" || profilePickerOpen) && (
         <ProfilePicker
+          requiredProxyId={browserAuthorization?.proxyId}
           proxyManagerOpen={networkPanelOpen && networkTab === "proxies"}
           onPick={async (id, name) => {
             if (!profilePickerOpen) {
@@ -1371,7 +1420,19 @@ export function App() {
             window.location.reload();
           }}
           current={profilePickerOpen ? accountList?.current : null}
-          onBack={profilePickerOpen ? () => setProfilePickerOpen(false) : undefined}
+          onBack={
+            profilePickerOpen || browserAuthorization
+              ? () => {
+                  setProfilePickerOpen(false);
+                  sessionStorage.removeItem("mirror-cpa-browser");
+                  setBrowserAuthorization(null);
+                  if (browserAuthorization) {
+                    setNetworkTab("cpa");
+                    setNetworkPanelOpen(true);
+                  }
+                }
+              : undefined
+          }
           onChanged={refreshAccounts}
           onDeleted={() => window.location.reload()}
           workspace={workspace}

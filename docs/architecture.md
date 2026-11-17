@@ -1,178 +1,138 @@
 # Architecture
 
-Remote Browser separates the authoritative browser from an inert semantic viewer. Chromium is the
-only place where visited-site scripts execute, cookies live, network requests originate, and
-trusted input is applied.
+The gateway serves one workbench for browser configurations, proxy sources and CPA. The browser
+executes visited-site scripts and owns website cookies. The viewer reconstructs its pages or shows
+its captured display. Public ingress is configured by the deployer.
 
-## Runtime components
+## System flow
 
-### Chromium
+```mermaid
+flowchart TB
+  Device[Desktop or phone] --> Entry[Same-host or VPS reverse proxy]
+  Entry --> Gateway[Gateway and workbench]
+  Gateway --> Store[Users, profiles, proxy catalog and CPA metadata]
+  Gateway --> Broker[Private browser runtime broker]
+  Broker --> Browser[Per-profile browser, filesystem and display]
+  Browser --> Exit[Per-profile Mihomo network namespace]
+  Exit --> Node[Selected IPv4 or IPv6 proxy server]
+  Node --> Site[Visited websites]
+  Browser -->|DOM, assets and captured frames| Gateway
+  Gateway --> Device
+  Client[External API client] -->|API key at /v1| Gateway
+  Gateway --> CPA[Key-selected private or shared CPA]
+  CPA --> Credential[Credential-bound Mihomo exit]
+  Credential --> Upstream[Upstream model service]
+```
 
-The Compose deployment runs Debian Chromium as uid/gid `10001` under Xvfb, in the same container as
-the gateway, which starts it and drives it over a private pipe. No debugging port is open. The
-profile is kept in the `data` volume.
+Each profile owns a browser process, profile directory, private authenticated Xvfb display, network,
+mount and PID namespaces. Same-profile sessions share website login and fingerprint identity,
+while owning separate windows. Profiles still share the container, kernel, CPU, memory and disk.
+The optional AliasMode engine supplies Windows, macOS or Linux identities on the Linux runtime;
+it does not create a Windows or macOS VM.
 
-Chromium runs headfully because canvas/video capture and compositor behavior differ in headless
-mode. Back/forward cache is disabled so history traversal produces a new injectible document.
-The browser sandbox remains enabled; the container never uses `--no-sandbox`.
+The root broker exposes fixed browser/network operations on a private Unix socket. Chrome runs
+as UID 10001 with its sandbox enabled and a private CDP pipe. Browser filesystems expose their own
+profile, display, temporary storage, `/proc` and read-only dependencies. Other profiles, service
+databases and management sockets are absent. HTTP, HTTPS and `about:blank` are accepted navigation
+schemes; native file navigation is blocked.
 
-### In-page agent
+Mihomo may connect to proxy servers over IPv4 or IPv6. Browser traffic, DNS, WebRTC and gateway
+asset downloads use the selected exit. Browsers cannot use the upstream IPv6 link directly.
+An unassigned or failed exit blocks startup; it never selects another node or deployment default.
+Deployment-level Xray remains available for legacy service traffic, separately from profile exits.
 
-The bundled agent is installed into every attached page and iframe target. rrweb records a full
-snapshot and ordered mutations. A randomized isolated-world bridge and CDP `Runtime.addBinding`
-move chunked messages out of the renderer without opening a page WebSocket or depending on page
-CSP.
+## Ownership and management
 
-The recorder runs where it can observe DOM, shadow DOM, canvas, CSS, and input changes. Password
-inputs remain masked. Recorder and replay packages are pinned to the same exact rrweb version;
-`scripts/check-rrweb-versions.mjs` enforces that invariant.
+```mermaid
+flowchart TB
+  Operator[Host operator] --> Infrastructure[Ingress, containers, volumes and backups]
+  Admin[Workbench administrator] --> Users[Users, roles and account status]
+  Admin --> Sources[All private and shared proxy sources]
+  Admin --> Shared[Shared CPA credentials and shared-key revocation]
+  User[Each workbench user] --> Profiles[Own browser profiles and device sessions]
+  User --> Private[Own private CPA and proxy sources]
+  User --> Keys[Own private and shared calling keys]
+  User -->|Use| SharedPool[Shared proxy nodes and CPA pool]
+  Key[API key holder] -->|Inference only| Instance[One corresponding CPA instance]
+```
 
-Phone viewers keep Chromium's native user agent and Client Hints; touch and viewport emulation
-adapt the layout. Per-session CDP screen metrics keep the wide Xvfb placement canvas out of the
-page's screen dimensions.
+Profile operations require ownership. Session control additionally requires the current device;
+“My account” can list and end that user's sessions across devices. Workbench administrators have
+no direct cross-user profile or private CPA access. Private proxy sources are an explicit exception:
+their owner and administrators may use and manage them. Administrators can reset workbench
+passwords; host operators can access persistent data and remain trusted.
 
-Chromium is launched with an explicit, short argument list rather than Puppeteer's defaults, which
-disable features a real Chrome has; `--disable-features=MediaRouter` alone makes fingerprint.com
-classify the browser as automation.
+Every enabled user may own one private CPA and issue keys for the shared CPA. Administrators
+manage the shared instance and its credentials, and may revoke any shared key. External keys
+select an instance by their stored digest; they grant no management access. All instances use the
+same `/v1` path. Browser cookies, Claude OAuth credentials and external calling keys are separate.
+CPA containers have distinct configuration/auth/static volumes, no published ports, and only an
+internal network. A fixed broker manages their containers and volumes. Each credential uses its
+own explicitly bound exit; unbound credentials are disabled. Adding OAuth does not stop existing
+inference, and the selected OAuth proxy is saved with the new credential before it becomes usable.
 
-Each browser account has an identity of its own (`browser/identity.ts`): a screen size, a subset of
-the installed fonts and a font-rendering setting. New accounts draw a random identity and save the
-result in `accounts.json`, independently of `MIRROR_AUTH_SECRET`. On upgrade, startup saves all
-legacy accounts' existing identities using the current authentication secret, including accounts
-that are not running. Complete this migration before rotating that secret. Renaming an account,
-restarting it, or subsequently rotating the authentication secret keeps its identity. The fonts
-reach Chromium through a per-account
-`FONTCONFIG_FILE`, so the font list, canvas text, element sizes and text metrics differ between
-accounts because their environments really differ. Nothing adds noise to canvas or audio reads;
-detectors such as who.1ms.dog recognise noise as tampering. Audio, WebGL (SwiftShader), CPU and
-memory readings come from the shared machine and stay the same.
+Disabling a user revokes workbench logins, closes sessions and stops the private CPA, retaining
+profiles, credentials and keys for re-enabling. The private CPA then needs an explicit start.
+“Delete user and data” permanently removes that user's profiles, private proxy sources, private CPA
+container/volumes and calling keys. Shared resources and other users remain. Cleanup failure leaves
+the user disabled so deletion can be retried. The last enabled administrator cannot be disabled or
+deleted, and an administrator cannot delete their own account.
 
-The voice bridge carries each client's audio independently, while device enumeration, permission
-queries and EME stay Chromium's own APIs. The recorder still wraps some APIs (shadow DOM,
-clipboard), so this is not an unmodified page environment.
+## Frontend flow
 
-### Gateway
+```mermaid
+flowchart TD
+  Login[Workbench login] --> Picker[Browser configuration picker]
+  Picker --> New[Name, explicit exit and system identity]
+  New --> Check[Check exit and open]
+  Picker --> Browser[Browser workspace]
+  Check --> Browser
+  Picker --> Menu[Workbench menu]
+  Browser --> Menu
+  Menu --> Picker
+  Menu --> Proxy[Proxy sources and node checks]
+  Menu --> API[Private/shared CPA, authorization and calling keys]
+  Menu --> Account[Password and all own device sessions]
+  Menu --> Users[User management: administrator only]
+  API --> Choose[Choose a browser with the OAuth exit]
+  Choose --> Picker
+  Browser -->|Matching callback capture| API
+```
 
-The Fastify gateway is the composition root:
+Profile card menus contain exit/system settings, exit checks, rename, default and deletion. Default
+profiles cannot be deleted. Same-name profiles remain separate IDs. Cards distinguish connected
+sessions from sleeping records and show whether the browser process is running.
 
-- CDP target lifecycle and agent injection;
-- a canonical full snapshot plus ordered delta tail per tab;
-- WebSocket fan-out with slow-viewer drop-and-resync behavior;
-- node-aware input resolution and trusted CDP dispatch;
-- URL navigation, tab lifecycle, viewport agreement, uploads, and downloads;
-- access password, signed session invites, roles, and driver transfer;
-- sealed asset URLs, private-address rejection, credential-aware fetch, and caching;
-- WebRTC signaling and CDP screencast fallback.
+Proxy and API sections retain their forms when switched. OAuth callback drafts are scoped by user,
+instance and OAuth state in tab session storage, surviving profile selection and page reloads.
+Submitting, completing or cancelling that authorization clears its draft. Full newly issued API
+keys are never persisted and disappear when leaving the API section. OAuth selection only lists
+profiles bound to its chosen node; selecting one opens the saved authorization without changing any
+existing profile's exit. Mobile uses the same navigation with single-column management panels.
 
-The built viewer is served from the same origin. This simplifies cookies, WebSocket routing, asset
-URLs, and production reverse proxies.
+## Browser data and recovery
 
-### Viewer
+The agent records rrweb snapshots and ordered mutations in each document. An isolated-world CDP
+bridge transports them to the tab hub; authenticated WebSockets deliver snapshots and deltas to the
+viewer. Input uses node IDs and relative coordinates, resolves the authoritative node and dispatches
+trusted CDP input. Passwords remain masked; local editing echo is reconciled with the remote page.
+The scriptless replay iframe inherits CSP blocking visited-site scripts, forms, popups and local
+navigation. This is a markup/CSS/font parsing boundary, not pixel-only isolation.
 
-The Preact viewer reconstructs rrweb events into a sandboxed iframe with `allow-same-origin` and
-`allow-scripts`, as required by the replay interaction lane. The inherited CSP sets
-`script-src 'none'`, so visited-site scripts and inline handlers still cannot execute. The sandbox
-does not allow forms, popups, top navigation or direct downloads. The parent attaches input
-handlers and addresses mirror nodes.
+Resource URLs are encrypted, runtime/session-bound gateway tokens. Rewrites carry each document's
+own URL and base, including embedded frames. Fetches use that frame's browser context or the same
+exit with browser cookies, UA and a normal Referer. Range/fallback HTTP/TLS pools are per-session;
+release destroys them. Private/link-local destinations are blocked in both address families.
+WebRTC signaling stays in isolated worlds. Pixel mode captures X11 including native menus, with
+CDP screencast as its fallback, and keeps the DOM recorder running.
 
-The viewer cancels navigation-bearing local defaults. Links and form actions are forwarded as
-input to remote Chromium, while local selection, find, hover, scroll, and optimistic editable
-state stay responsive.
+There is no fixed session count limit. New or resumed windows require available memory, and a new
+profile reserves additional browser/display headroom. Each user may save eight profiles. Hidden
+viewer tabs disconnect; their windows can be reclaimed on the next sweep. Unexpected disconnects
+have a 60-second grace. Active generation and matching CPA authorization defer reclamation.
+A profile with no active session closes its browser after 120 seconds. Persistent website login
+survives; dormant window recovery restores URLs rather than unsaved page/form state.
 
-## Data flows
-
-### Page to viewer
-
-1. Site JavaScript changes the authoritative page.
-2. rrweb observes the change and emits an event.
-3. The agent chunks the event through a CDP binding with document and message identity.
-4. The gateway reassembles it, validates ordering, and updates the tab hub.
-5. WebSocket fan-out sends one serialized event to every healthy viewer.
-6. Each viewer applies it to the scriptless replay tree.
-
-A new viewer receives the latest snapshot plus the ordered tail. Sequence gaps, replay errors,
-viewport changes, and bounded-buffer trimming can request a fresh epoch.
-
-### Viewer to page
-
-1. A viewer interacts directly with a mirrored node.
-2. The viewer sends its rrweb node id, relative coordinates, and input details.
-3. The gateway asks the current agent realm to resolve the authoritative node and rectangle.
-4. The gateway dispatches `Input.*` through CDP.
-5. Resulting authoritative mutations return through the normal capture path.
-
-Local echo makes typing and scrolling responsive, but remote Chromium remains authoritative and
-eventually reconciles viewer state.
-
-### Assets
-
-Resource-bearing rrweb values are rewritten to sealed gateway URLs. The gateway verifies the
-session and token, resolves the destination, rejects private/link-local targets, and loads bytes
-through Chromium where possible so site credentials are preserved. The direct range/fallback lane
-copies the browser cookie and user agent. Viewers should not contact visited origins for mirrored
-assets.
-
-### Media and pixel fallback
-
-Ordinary DOM remains semantic. Canvas and capturable video can negotiate viewer-scoped WebRTC
-tracks, with signaling carried over the authenticated WebSocket. If capture is unavailable or the
-mirror diverges, a tab can switch to `Page.startScreencast` pixels. Pixel input uses the same
-authorized control path.
-
-The recorder's media peers and their SDP/ICE live in the gateway's private isolated world. Only
-node-id resolution crosses into the MAIN recorder; signaling never travels through DOM events or
-rrweb's legacy frame `postMessage` transport. Site scripts cannot observe the viewer's signaling by
-replacing MAIN-world WebRTC prototypes. The viewer/tab/generation checks still apply independently.
-
-## State and recovery
-
-Each tab has document identity, epoch, sequence, snapshot, and delta-tail state. The system favors
-bounded state and cheap recovery:
-
-- stale document messages are dropped;
-- missing sequence numbers trigger resync;
-- slow viewers stop receiving deltas instead of growing an unbounded queue;
-- a fresh snapshot resets a diverged replay;
-- pixel mode provides a user-visible fallback.
-
-## Current deployment boundary
-
-The default Compose entrypoint runs the multi-client gateway in `clients-main.ts`. Front-end users
-and browser profile ownership live in SQLite. Each active browser profile has its own Chrome
-process and AgentLink; sessions using that profile own separate windows through a scoped browser
-facade. Login state is shared only by sessions choosing the same profile. All profiles share the
-server container's resource limits. New sessions and dormant-session resumes are admitted according to available memory,
-without a fixed session count limit. Each user can save up to eight browser profiles.
-
-Headful managed profiles also own separate authenticated Xvfb servers, isolating native clipboard
-selections and window capture. Chromium, window-control tools and X11 encoders receive the same
-profile-specific `DISPLAY` and `XAUTHORITY`. Failure to start that display fails the profile launch;
-there is no fallback to the shared bootstrap display. Displays close with their browser account.
-An externally connected CDP browser remains operator-managed and does not gain this display boundary.
-
-Asset Range/fallback requests use a separate HTTP/TLS agent for each workspace, rather than Node's
-global pool. Release, profile switches and shutdown destroy the corresponding connections and TLS
-state. An in-flight credential lookup cannot reopen a revoked workspace's pool. Gateway cache lookup
-keys remain scoped to sealed session/runtime tokens, even when identical bodies share disk blobs.
-
-These are storage, connection and device boundaries, not a guarantee that websites cannot correlate
-accounts: profiles still share a container, kernel, hardware (audio, WebGL, CPU) and the one
-configured `EGRESS_PROXY`. A stronger boundary would run one browser container per account, each with its own
-profile volume, display and egress, behind the same authenticating gateway.
-
-## Optional CPA
-
-`compose.cpa.yml` adds an unmodified CLIProxyAPI process, its own configuration/OAuth/static
-volumes and an independent Xray SOCKS service. It follows ClaudeBox's container/credential
-separation, while CPA performs protocol translation rather than spawning Claude CLI processes.
-No Chrome cookies or gateway session tokens are used for CPA authentication.
-
-CPA only joins an internal Docker network. Xray joins that network and a separate exit network,
-so CPA cannot reach the internet directly. The egress service also forwards the two host-loopback
-TCP ports to CPA; this gives Docker Desktop NAT traffic a return route without giving CPA an
-external network. The bytes, including authentication and the OAuth callback, are passed through.
-
-For single-host HTTPS, `compose.cpa.https.yml` installs `deploy/Caddyfile.cpa`: `/v1/*` and CPA's
-panel/management paths go directly to CPA, while all other paths retain the browser gateway.
-Management and inference use different CPA bearer keys; the browser gateway's user cookie does
-not authorize either API. See [CPA deployment](cpa.md).
+Slow viewers, sequence gaps or replay errors request a fresh snapshot. Renderer crashes use bounded
+reload recovery. Exit errors distinguish connection, DNS, timeout, upstream HTTP and invalid location
+data, without returning proxy credentials or internal diagnostics to the client.

@@ -1,3 +1,4 @@
+import { apiRequest } from "./api";
 import type { ExitHealth } from "./network-api";
 /**
  * The accounts a session can use. Each is a Chrome of its own on the server, so their logins never
@@ -15,6 +16,7 @@ export interface AccountInfo {
   running: boolean;
   /** How many sessions, on any device, use it. */
   sessions: number;
+  onlineSessions: number;
   /** Whether it is signed in to Claude. */
   signedIn?: boolean;
   /** The Claude account it is signed in as, once seen. */
@@ -42,51 +44,15 @@ export interface AccountList {
   current: string | null;
 }
 
-async function call(path: string, init: RequestInit = {}, fetcher: typeof fetch = fetch) {
-  const response = await fetcher(path, {
-    ...init,
-    credentials: "same-origin",
-    cache: "no-store",
-    headers: init.body === undefined ? init.headers : { "content-type": "application/json" },
-  });
-  if (response.ok) return response;
-  const body: unknown = await response.json().catch(() => null);
-  const message =
-    typeof body === "object" &&
-    body !== null &&
-    typeof (body as { error?: unknown }).error === "string"
-      ? (body as { error: string }).error
-      : `请求失败（${response.status}）`;
-  throw new Error(message);
-}
+const accountPath = (id: string) => `/api/accounts/${encodeURIComponent(id)}`;
 
-function isAccount(value: unknown): value is AccountInfo {
-  if (typeof value !== "object" || value === null) return false;
-  const item = value as Record<string, unknown>;
-  return (
-    typeof item.id === "string" &&
-    typeof item.name === "string" &&
-    typeof item.running === "boolean" &&
-    Number.isSafeInteger(item.sessions)
+export function listAccounts(sid: string | null, fetcher?: typeof fetch): Promise<AccountList> {
+  return apiRequest(
+    `/api/accounts${sid === null ? "" : `?sid=${encodeURIComponent(sid)}`}`,
+    "GET",
+    undefined,
+    fetcher,
   );
-}
-
-export async function listAccounts(
-  sid: string | null,
-  fetcher?: typeof fetch,
-): Promise<AccountList> {
-  const query = sid === null ? "" : `?sid=${encodeURIComponent(sid)}`;
-  const value: unknown = await (await call(`/api/accounts${query}`, {}, fetcher)).json();
-  const list = (value as { accounts?: unknown })?.accounts;
-  const current = (value as { current?: unknown })?.current;
-  if (!Array.isArray(list) || !list.every(isAccount)) throw new Error("浏览器配置列表无法读取");
-  return {
-    accounts: list,
-    platforms: (value as AccountList).platforms,
-    defaultPlatform: (value as AccountList).defaultPlatform,
-    default: (value as { default: string }).default,
-    current: typeof current === "string" ? current : null,
-  };
 }
 
 export async function createAccount(
@@ -95,44 +61,29 @@ export async function createAccount(
   fetcher?: typeof fetch,
   platform?: BrowserPlatform,
 ): Promise<AccountInfo> {
-  const response = await call(
+  const made = await apiRequest<AccountInfo>(
     "/api/accounts",
-    { method: "POST", body: JSON.stringify({ name, proxyId, platform }) },
+    "POST",
+    { name, proxyId, platform },
     fetcher,
   );
-  const made = (await response.json()) as AccountInfo;
-  return {
-    id: made.id,
-    name: made.name,
-    platform: made.platform,
-    browserEngine: made.browserEngine,
-    proxyId: made.proxyId,
-    running: false,
-    sessions: 0,
-    signedIn: false,
-    email: null,
-  };
+  return { ...made, running: false, sessions: 0, onlineSessions: 0, signedIn: false, email: null };
 }
 
-export async function renameAccount(
+export function renameAccount(
   id: string,
   name: string,
   fetcher?: typeof fetch,
 ): Promise<{ name: string }> {
-  const response = await call(
-    `/api/accounts/${encodeURIComponent(id)}`,
-    { method: "PATCH", body: JSON.stringify({ name }) },
-    fetcher,
-  );
-  return response.json();
+  return apiRequest(accountPath(id), "PATCH", { name }, fetcher);
 }
 
-export async function setDefaultAccount(id: string): Promise<void> {
-  await call(`/api/accounts/${encodeURIComponent(id)}/default`, { method: "POST" });
+export function setDefaultAccount(id: string): Promise<void> {
+  return apiRequest(`${accountPath(id)}/default`, "POST");
 }
 
-export async function deleteAccount(id: string, fetcher?: typeof fetch): Promise<void> {
-  await call(`/api/accounts/${encodeURIComponent(id)}`, { method: "DELETE" }, fetcher);
+export function deleteAccount(id: string, fetcher?: typeof fetch): Promise<void> {
+  return apiRequest(accountPath(id), "DELETE", undefined, fetcher);
 }
 
 export interface ProxyChoice {
@@ -142,47 +93,32 @@ export interface ProxyChoice {
 }
 
 export async function listProxyChoices(): Promise<ProxyChoice[]> {
-  return (await (await call("/api/proxies")).json()).proxies;
+  return (await apiRequest<{ proxies: ProxyChoice[] }>("/api/proxies")).proxies;
 }
 
-export async function setAccountProxy(id: string, proxyId: string | null): Promise<void> {
-  await call(`/api/accounts/${encodeURIComponent(id)}/proxy`, {
-    method: "PATCH",
-    body: JSON.stringify({ proxyId }),
-  });
+export function setAccountProxy(id: string, proxyId: string | null): Promise<void> {
+  return apiRequest(`${accountPath(id)}/proxy`, "PATCH", { proxyId });
 }
 
-export async function setAccountPlatform(
+export function setAccountPlatform(
   id: string,
   platform: BrowserPlatform,
   fetcher?: typeof fetch,
 ): Promise<void> {
-  await call(
-    `/api/accounts/${encodeURIComponent(id)}/platform`,
-    {
-      method: "PATCH",
-      body: JSON.stringify({ platform }),
-    },
-    fetcher,
-  );
+  return apiRequest(`${accountPath(id)}/platform`, "PATCH", { platform }, fetcher);
 }
 
-export async function checkAccountExit(
+export function checkAccountExit(
   id: string,
 ): Promise<{ scope: "browser" | "node"; health: ExitHealth }> {
-  return (
-    await call(`/api/accounts/${encodeURIComponent(id)}/exit/check`, { method: "POST" })
-  ).json();
+  return apiRequest(`${accountPath(id)}/exit/check`, "POST");
 }
 
-export async function switchAccount(
-  sid: string,
-  id: string,
-  fetcher?: typeof fetch,
-): Promise<void> {
-  await call(
+export function switchAccount(sid: string, id: string, fetcher?: typeof fetch): Promise<void> {
+  return apiRequest(
     `/api/client/session/${encodeURIComponent(sid)}/account`,
-    { method: "POST", body: JSON.stringify({ account: id }) },
+    "POST",
+    { account: id },
     fetcher,
   );
 }

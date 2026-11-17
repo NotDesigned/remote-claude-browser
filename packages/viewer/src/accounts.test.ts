@@ -14,6 +14,7 @@ const list: AccountList = {
       browserEngine: "chromium",
       running: true,
       sessions: 2,
+      onlineSessions: 1,
     },
     {
       id: "p-0123456789",
@@ -22,6 +23,7 @@ const list: AccountList = {
       browserEngine: "aliasmode",
       running: false,
       sessions: 0,
+      onlineSessions: 0,
     },
   ],
   current: "default",

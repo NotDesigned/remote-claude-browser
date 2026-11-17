@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import { useDialog } from "./dialog";
+import { useEffect, useState } from "preact/hooks";
 import {
   changeMyPassword,
   endMyBrowserSession,
@@ -20,46 +21,13 @@ export function AccountPanel({
   onClose(): void;
   onSessionEnded(sid: string): void;
 }) {
-  const panel = useRef<HTMLElement>(null);
-  const close = useRef<HTMLButtonElement>(null);
+  const panel = useDialog(true, onClose);
   const [sessions, setSessions] = useState<MyBrowserSession[] | null>(null);
   const [currentPassword, setCurrentPassword] = useState("");
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  useLayoutEffect(() => {
-    const previous = document.activeElement;
-    close.current!.focus();
-    const onKey = (event: KeyboardEvent) => {
-      if (event.isComposing) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        onClose();
-      }
-      if (event.key !== "Tab") return;
-      const controls = [
-        ...panel.current!.querySelectorAll<HTMLElement>(
-          "button:not([disabled]),input:not([disabled])",
-        ),
-      ];
-      const first = controls[0]!,
-        last = controls.at(-1)!;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("keydown", onKey, true);
-      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
-    };
-  }, []);
   useEffect(() => {
     let active = true;
     void myBrowserSessions()
@@ -119,7 +87,6 @@ export function AccountPanel({
             type="button"
             class="user-panel-close"
             aria-label="关闭我的账号"
-            ref={close}
             onClick={onClose}
           >
             ×
@@ -165,7 +132,7 @@ export function AccountPanel({
                   <div>
                     <strong>{session.label}</strong>
                     <p class="user-panel-muted">
-                      {session.profileName} ·{" "}
+                      {session.profileName} · {session.online ? "在线" : "休眠"} ·{" "}
                       {session.sid === currentSid
                         ? "当前页面"
                         : session.currentDevice

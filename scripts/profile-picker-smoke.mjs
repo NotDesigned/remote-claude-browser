@@ -15,6 +15,7 @@ const accounts = [
     browserEngine: "chromium",
     running: false,
     sessions: 0,
+    onlineSessions: 0,
     signedIn: false,
     email: null,
     proxyId: null,
@@ -27,6 +28,7 @@ const accounts = [
     browserEngine: "aliasmode",
     running: true,
     sessions: 1,
+    onlineSessions: 1,
     signedIn: true,
     email: null,
     kyc: {
@@ -86,6 +88,7 @@ const server = createServer(async (req, res) => {
         browserEngine: "aliasmode",
         running: false,
         sessions: 0,
+        onlineSessions: 0,
         signedIn: false,
         email: null,
         proxyId,
@@ -671,6 +674,7 @@ try {
     browserEngine: "aliasmode",
     running: false,
     sessions: 0,
+    onlineSessions: 0,
     signedIn: false,
     email: null,
   });
@@ -939,6 +943,7 @@ try {
       browserEngine: "aliasmode",
       running: false,
       sessions: 0,
+      onlineSessions: 0,
       signedIn: false,
       email: null,
     });

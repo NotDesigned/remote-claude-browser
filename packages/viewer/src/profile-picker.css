@@ -587,10 +587,9 @@ button.profile-card:hover .profile-arrow {
   .profile-badge {
     display: none;
   }
-  .profile-current-badge {
-    display: inline-block;
-  }
-  .profile-default-badge {
+  .profile-current-badge,
+  .profile-default-badge,
+  .profile-session-badge {
     display: inline-block;
   }
 }

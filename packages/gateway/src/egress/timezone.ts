@@ -16,11 +16,10 @@ export interface ExitHealth extends Partial<ExitMetadata> {
 }
 
 export class ExitTimeZoneError extends Error {
-  constructor(
-    public readonly code = "EXIT_CONNECT",
-    message = "无法通过所选代理连接外网，请检查节点连通性",
-  ) {
+  readonly code: string;
+  constructor(code = "EXIT_CONNECT", message = "无法通过所选代理连接外网，请检查节点连通性") {
     super(message);
+    this.code = code;
     this.name = "ExitTimeZoneError";
   }
 }
