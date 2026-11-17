@@ -293,6 +293,14 @@ export async function createProxyCatalog(options: ProxyCatalogOptions) {
         return { next: sources.filter((source) => source.id !== id), result: undefined };
       });
     },
+    removePrivateSources(userId: string): Promise<void> {
+      return save(async () => ({
+        next: sources.filter(
+          (source) => source.ownerId !== userId || source.visibility === "shared",
+        ),
+        result: undefined,
+      }));
+    },
     getNodeConfig(user: FrontendUser, id: string): MihomoProxy {
       return structuredClone(nodeFor(user, id).config);
     },

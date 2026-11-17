@@ -49,6 +49,30 @@ async function fixture(extra: Partial<ProxyCatalogOptions> = {}) {
 }
 
 describe("proxy directory", () => {
+  it("deletes a user's private sources and invalidates only their nodes", async () => {
+    const onRemovedNodes = vi.fn();
+    const { store } = await fixture({ onRemovedNodes });
+    await store.importSource(alice, {
+      name: "Alice",
+      visibility: "private",
+      content: content(node("Alice")),
+    });
+    await store.importSource(bob, {
+      name: "Bob",
+      visibility: "private",
+      content: content(node("Bob")),
+    });
+    await store.importSource(admin, {
+      name: "Team",
+      visibility: "shared",
+      content: content(node("Team")),
+    });
+    const own = store.listNodes(alice).find((node) => node.name === "Alice")!.id;
+    await store.removePrivateSources(alice.id);
+    expect(store.listSources(admin).map((source) => source.name)).toEqual(["Bob", "Team"]);
+    expect(onRemovedNodes).toHaveBeenCalledExactlyOnceWith([own]);
+  });
+
   it("separates shared and private sources without exposing server settings or subscription credentials", async () => {
     const { store } = await fixture({
       fetcher: vi.fn(async () => Response.json({ proxies: [node("Shared")] })),

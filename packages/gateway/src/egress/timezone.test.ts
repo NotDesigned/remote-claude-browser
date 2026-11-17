@@ -1,7 +1,14 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as undici from "undici";
 import { detectExitMetadata, detectExitTimeZone, ExitTimeZoneError } from "./timezone";
+
+vi.mock("undici", async (load) => {
+  const actual = await load<typeof import("undici")>();
+  return { ...actual, request: vi.fn(actual.request) };
+});
+afterEach(() => vi.restoreAllMocks());
 
 async function listen(server: Server) {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -110,9 +117,10 @@ describe("exit time zone", () => {
     await withProxy(
       { timezone: { id: "Asia/Tokyo" } },
       async (proxyUrl, url, requests) => {
-        await expect(detectExitTimeZone({ proxyUrl, url })).rejects.toThrow(
-          "无法获取所选出口的时区，请检查代理后重试",
-        );
+        await expect(detectExitTimeZone({ proxyUrl, url })).rejects.toMatchObject({
+          code: "EXIT_LOOKUP",
+          message: "出口地区查询服务返回 HTTP 429，请稍后重试",
+        });
         expect(requests()).toBe(0);
       },
       429,
@@ -124,9 +132,28 @@ describe("exit time zone", () => {
       detectExitTimeZone({ proxyUrl: "invalid://private-user:private-secret@proxy.invalid" }),
     ).rejects.toMatchObject({
       name: "ExitTimeZoneError",
-      message: "无法获取所选出口的时区，请检查代理后重试",
+      code: "EXIT_CONNECT",
+      message: "无法通过所选代理连接外网，请检查节点连通性",
     });
   });
+
+  it.each([
+    [{ code: "ECONNREFUSED" }, "EXIT_CONNECT"],
+    [{ cause: { code: "ENOTFOUND" } }, "EXIT_DNS"],
+    [{ cause: { code: "UND_ERR_CONNECT_TIMEOUT" } }, "EXIT_TIMEOUT"],
+    [{ name: "TimeoutError" }, "EXIT_TIMEOUT"],
+  ])(
+    "distinguishes transport failures without exposing node credentials: %j",
+    async (failure, code) => {
+      vi.mocked(undici.request).mockRejectedValueOnce(
+        Object.assign(new Error("http://private-user:private-secret@node.invalid"), failure),
+      );
+      await expect(detectExitMetadata()).rejects.toMatchObject({ code });
+      await expect(
+        detectExitMetadata({ proxyUrl: "invalid://private-user:private-secret@node.invalid" }),
+      ).rejects.not.toThrow("private-secret");
+    },
+  );
 
   it("uses the process route for deployments without a broker proxy", async () => {
     const origin = createServer((_request, response) => {

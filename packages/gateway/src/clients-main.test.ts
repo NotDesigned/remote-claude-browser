@@ -41,6 +41,7 @@ vi.mock("./cpa/broker-client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./cpa/broker-client")>()),
   createCpaBrokerDriver: () => ({
     ensure: async () => {},
+    remove: async () => {},
     stop: hooks.cpaStop,
     status: async () => "running",
     request: async () =>
@@ -960,6 +961,11 @@ describe("multi-user management routes", () => {
     });
     const admin = withDevice(await login(app), "device-here");
     const away = withDevice(await login(app), "device-away");
+    const sleeping = (await api(app, admin, "GET", "/api/accounts")).json().accounts;
+    expect(sleeping.find((account: { id: string }) => account.id === removedId)).toMatchObject({
+      sessions: 2,
+      onlineSessions: 0,
+    });
     await bindExit(app, admin, selectedId);
     expect((await api(app, admin, "POST", `/api/accounts/${selectedId}/default`)).statusCode).toBe(
       200,
@@ -1000,7 +1006,7 @@ describe("multi-user management routes", () => {
     const adminAccounts = (await api(app, admin, "GET", "/api/accounts")).json().accounts;
     const bobAccounts = (await api(app, bobCookie, "GET", "/api/accounts")).json().accounts;
     expect(adminAccounts).toEqual([
-      expect.objectContaining({ id: "default", running: false, sessions: 0 }),
+      expect.objectContaining({ id: "default", running: false, sessions: 0, onlineSessions: 0 }),
     ]);
     expect(bobAccounts).toHaveLength(1);
     expect(bobAccounts[0].id).not.toBe("default");
@@ -1136,7 +1142,7 @@ describe("multi-user management routes", () => {
     expect(hooks.launch).not.toHaveBeenCalled();
   });
 
-  it("revokes disabled users and never reassigns a deleted user's profiles after restart", async () => {
+  it("restores disabled users and deletes only their private sources and browser data", async () => {
     const gateway = await fixture();
     const { app } = gateway;
     const admin = await login(app);
@@ -1154,8 +1160,27 @@ describe("multi-user management routes", () => {
     expect((await api(app, reenabled, "GET", "/api/accounts")).json().accounts[0].id).toBe(
       bobProfile,
     );
+    const directory = join(gateway.paths.profile, "browsers", bobProfile);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "Cookies"), "private-site-session");
+    expect((await api(app, bobCookie, "GET", "/api/accounts")).statusCode).toBe(401);
+    const source = await api(app, reenabled, "POST", "/api/proxy-sources", {
+      name: "Bob private source",
+      visibility: "private",
+      content: JSON.stringify({
+        proxies: [{ name: "Bob", type: "socks5", server: "proxy.invalid", port: 1080 }],
+      }),
+    });
+    expect(source.statusCode).toBe(200);
     expect((await api(app, admin, "DELETE", `/api/users/${bob.id}`)).statusCode).toBe(204);
     expect((await api(app, reenabled, "GET", "/api/me")).statusCode).toBe(401);
+    await expect(stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      JSON.parse(await readFile(gateway.paths.accounts, "utf8")).some(
+        (p: { id: string }) => p.id === bobProfile,
+      ),
+    ).toBe(false);
+    expect((await api(app, admin, "GET", "/api/proxy-sources")).json().sources).toEqual([]);
     await gateway.stop();
     const restarted = await startClientGateway({ listen: false, signals: false });
     gateways.push(restarted);
@@ -1183,6 +1208,31 @@ describe("multi-user management routes", () => {
       ).statusCode,
     ).toBe(403);
     expect(hooks.launch).not.toHaveBeenCalled();
+  });
+
+  it("keeps a failed user deletion disabled and lets the administrator retry cleanup", async () => {
+    const { app } = await fixture();
+    const admin = await login(app);
+    const bob = await createBob(app, admin);
+    const cookie = await login(app, "bob", BOB_PASSWORD);
+    const profile = (await api(app, cookie, "GET", "/api/accounts")).json().accounts[0].id;
+    hooks.beforeRemove = async (id) => {
+      if (id === profile) throw new Error("temporary disk failure");
+    };
+    expect((await api(app, admin, "DELETE", `/api/users/${bob.id}`)).statusCode).toBe(503);
+    expect((await api(app, cookie, "GET", "/api/me")).statusCode).toBe(401);
+    expect(
+      (await api(app, admin, "GET", "/api/users"))
+        .json()
+        .users.find((u: FrontendUser) => u.id === bob.id).enabled,
+    ).toBe(false);
+    hooks.beforeRemove = undefined;
+    expect((await api(app, admin, "DELETE", `/api/users/${bob.id}`)).statusCode).toBe(204);
+    expect(
+      (await api(app, admin, "GET", "/api/users"))
+        .json()
+        .users.some((u: FrontendUser) => u.id === bob.id),
+    ).toBe(false);
   });
 
   it("rechecks a queued request's login after an administrator disables that user", async () => {

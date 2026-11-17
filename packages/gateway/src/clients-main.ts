@@ -1596,6 +1596,10 @@ export async function startClientGateway(
         const unavailable = live ? !!live.unavailable : hasCookie && !!record.unavailable;
         const signedIn =
           hasCookie && !unavailable && (live ? live.signedIn : record.signedIn !== false);
+        const sessions = clientSessions
+          .all()
+          .filter((session) => (session.profile ?? DEFAULT_PROFILE) === record.id);
+        const online = onlineSessions();
         return {
           id: record.id,
           name: record.name,
@@ -1615,9 +1619,8 @@ export async function startClientGateway(
           unavailable,
           email: signedIn ? (live ? live.email : (record.email ?? null)) : null,
           kyc: signedIn ? (live ? live.kyc : record.kyc) : undefined,
-          sessions: clientSessions
-            .all()
-            .filter((session) => (session.profile ?? DEFAULT_PROFILE) === record.id).length,
+          sessions: sessions.length,
+          onlineSessions: sessions.filter((session) => online.has(session.sid)).length,
         };
       });
   app.get<{ Querystring: { sid?: string } }>("/api/accounts", async (request, reply) => {
@@ -2031,6 +2034,7 @@ export async function startClientGateway(
     currentOwner,
     userIdForOwner,
     profileName: (id) => accountStore.all().find((record) => record.id === id)?.name ?? id,
+    onlineSessions,
     stopSession: releaseClientLocked,
     onPasswordChanged: (userId) => {
       for (const connection of viewers.values())
@@ -2097,16 +2101,26 @@ export async function startClientGateway(
   });
   app.delete<{ Params: { id: string } }>("/api/users/:id", async (request, reply) => {
     try {
-      return await accountLifecycle.run(async () => {
+      const id = request.params.id;
+      await accountLifecycle.run(async () => {
         const admin = requireAdmin(request.raw);
-        if (admin.id === request.params.id)
+        if (admin.id === id)
           throw new UserStoreError(409, "USER_SELF_DELETE", "请使用另一个管理员账户删除此用户");
-        const profiles = userStore.listOwnedProfiles(request.params.id);
-        userStore.deleteUser(request.params.id);
-        await closeUserWorkspacesLocked(request.params.id, profiles);
-        // Chrome directories are retained for deliberate administrator recovery; no user can claim them.
-        return reply.code(204).send();
+        await userStore.updateUser(id, { enabled: false });
+        await closeUserWorkspacesLocked(id, userStore.listOwnedProfiles(id));
       });
+      // Catalog invalidation owns the same lifecycle lock; run its cleanup between sections.
+      await cpaRuntime?.removeUser(id);
+      await proxyCatalog.removePrivateSources(id);
+      await accountLifecycle.run(async () => {
+        for (const profileId of userStore.listOwnedProfiles(id)) {
+          await rm(accountDir(profileId), { recursive: true, force: true });
+          await accountStore.remove(profileId);
+          userStore.unassignProfile(profileId);
+        }
+        userStore.deleteUser(id);
+      });
+      return reply.code(204).send();
     } catch (error) {
       return clientError(reply, error);
     }

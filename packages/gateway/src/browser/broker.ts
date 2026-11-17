@@ -1,43 +1,8 @@
-import { request } from "node:http";
 import { connect as connectSocket } from "node:net";
 import type { ConnectionTransport } from "puppeteer-core";
 import { chromiumLaunchArgs, connectBrowserTransport, type LaunchOpts } from "./launch";
-import { ClientSessionError } from "../session/clients";
+import { runtimeRequest } from "../egress/runtime-client";
 import type { ExitMetadata } from "../egress/timezone";
-
-export async function runtimeRequest<T>(path: string, method: string, body?: unknown): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const req = request(
-      {
-        socketPath: process.env.MIRROR_RUNTIME_SOCKET,
-        path,
-        method,
-        headers: { "content-type": "application/json" },
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        response.on("data", (chunk: Buffer) => chunks.push(chunk));
-        response.on("error", reject);
-        response.on("end", () => {
-          try {
-            const body = JSON.parse(Buffer.concat(chunks).toString());
-            if (response.statusCode !== 200)
-              return reject(
-                body.code === "EXIT_TIMEZONE" || body.code === "BROWSER_ENGINE_MISSING"
-                  ? new ClientSessionError(503, body.code, body.error)
-                  : new Error("浏览器网络运行时未就绪"),
-              );
-            resolve(body as T);
-          } catch (error) {
-            reject(error);
-          }
-        });
-      },
-    );
-    req.on("error", reject);
-    req.end(body === undefined ? undefined : JSON.stringify(body));
-  });
-}
 
 export async function pipeTransport(path: string): Promise<ConnectionTransport> {
   const socket = connectSocket(path);

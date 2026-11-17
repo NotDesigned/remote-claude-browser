@@ -366,7 +366,7 @@ export async function startProfileBroker({
   };
   const metadataForNetwork = (item, fresh = false) => {
     if (item.child.exitCode !== null || item.child.signalCode !== null)
-      return Promise.reject(new ExitTimeZoneError());
+      return Promise.reject(new ExitTimeZoneError("EXIT_STOPPED", "出口进程已停止，请重新打开"));
     if (fresh && !item.checking) item.exitMetadata = undefined;
     if (!item.exitMetadata) {
       item.target.health = { status: "checking" };
@@ -378,7 +378,7 @@ export async function startProfileBroker({
             item.child.exitCode !== null ||
             item.child.signalCode !== null
           )
-            throw new ExitTimeZoneError();
+            throw new ExitTimeZoneError("EXIT_CHANGED", "出口在检查期间已变化，请重新检查");
           item.target.health = { status: "healthy", ...metadata };
           return metadata;
         })
@@ -393,7 +393,7 @@ export async function startProfileBroker({
             item.target.health = {
               status: "error",
               checkedAt: Date.now(),
-              error: "出口检查失败，请检查所选节点后重试",
+              error: error.message,
             };
           throw error;
         })
@@ -652,7 +652,7 @@ export async function startProfileBroker({
       response.end(
         JSON.stringify(
           timeZoneError
-            ? { error: error.message, code: "EXIT_TIMEZONE" }
+            ? { error: error.message, code: error.code }
             : engineError
               ? { error: error.message, code: error.code }
               : { error: "Browser network runtime failed" },

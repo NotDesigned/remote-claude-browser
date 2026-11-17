@@ -14,6 +14,7 @@ export function registerAccountRoutes(
     currentOwner(request: IncomingMessage): string | undefined;
     userIdForOwner(owner: string): string | undefined;
     profileName(id: string): string;
+    onlineSessions(): ReadonlySet<string>;
     stopSession(owner: string, sid: string): Promise<void>;
     onPasswordChanged(userId: string): void;
   },
@@ -58,6 +59,7 @@ export function registerAccountRoutes(
   app.get("/api/me/sessions", async (request, reply) => {
     try {
       const user = userFor(request.raw);
+      const online = options.onlineSessions();
       const sessions = options.sessions
         .all()
         .filter((record) => options.userIdForOwner(record.owner) === user.id)
@@ -68,6 +70,7 @@ export function registerAccountRoutes(
             profileId,
             profileName: options.profileName(profileId),
             currentDevice: record.owner === options.currentOwner(request.raw),
+            online: online.has(record.sid),
             createdAt: record.createdAt,
           };
         });

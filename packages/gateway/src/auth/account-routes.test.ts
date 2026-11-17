@@ -38,6 +38,7 @@ async function fixture() {
     currentOwner: () => `${user.id}/device-one`,
     userIdForOwner: (owner) => owner.split("/")[0],
     profileName: () => "默认浏览器",
+    onlineSessions: () => new Set([local.sid]),
     stopSession,
     onPasswordChanged,
   });
@@ -61,8 +62,13 @@ it("lists and ends the user's sessions across devices without exposing another u
   expect(response.statusCode).toBe(200);
   expect(response.headers["cache-control"]).toBe("no-store");
   expect(response.json().sessions).toEqual([
-    expect.objectContaining({ sid: local.sid, currentDevice: true, profileName: "默认浏览器" }),
-    expect.objectContaining({ sid: remote.sid, currentDevice: false }),
+    expect.objectContaining({
+      sid: local.sid,
+      currentDevice: true,
+      profileName: "默认浏览器",
+      online: true,
+    }),
+    expect.objectContaining({ sid: remote.sid, currentDevice: false, online: false }),
   ]);
   expect(response.body).not.toContain("device-one");
   expect(response.body).not.toContain("clientKey");

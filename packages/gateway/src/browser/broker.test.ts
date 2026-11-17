@@ -1,9 +1,39 @@
 import { createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test, expect } from "vitest";
 import { pipeTransport } from "./broker";
+import { createRuntimeClient, runtimeRequest } from "../egress/runtime-client";
+
+test("browser startup and node checks keep sanitized exit failures across the broker socket", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mirror-runtime-test-"));
+  const path = join(dir, "runtime.sock");
+  let failure = { code: "EXIT_TIMEOUT", error: "通过所选代理检查出口超时，请检查节点连通性" };
+  const server = createHttpServer((_req, res) => {
+    res.writeHead(503, { "content-type": "application/json" });
+    res.end(JSON.stringify(failure));
+  });
+  await new Promise<void>((done) => server.listen(path, done));
+  try {
+    await expect(runtimeRequest("/browsers/test/start", "POST", {}, path)).rejects.toMatchObject({
+      statusCode: 503,
+      code: failure.code,
+      message: failure.error,
+    });
+    await expect(
+      createRuntimeClient({ socketPath: path }).timeZoneForEgress("test"),
+    ).rejects.toMatchObject({ code: "EXIT_TIMEOUT", message: failure.error });
+    failure = { code: "PRIVATE_RUNTIME_ERROR", error: "secret://user:password@node.invalid" };
+    await expect(runtimeRequest("/browsers/test/start", "POST", {}, path)).rejects.toThrow(
+      "网络运行时请求失败（503）",
+    );
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("private CDP bridge preserves messages across chunks, Unicode and adjacent frames", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mirror-pipe-test-"));
