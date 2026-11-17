@@ -1,5 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
-import { createFlvReader, ffmpegArguments, ffmpegGrabArguments, multipartFrame } from "./px-video";
+import {
+  createFlvReader,
+  createJpegReader,
+  ffmpegArguments,
+  ffmpegGrabArguments,
+  multipartFrame,
+} from "./px-video";
+
+it.each([1, 17, 4096])("reads complete JPEG frames across %i-byte pipe chunks", (size) => {
+  const onFrame = vi.fn();
+  const read = createJpegReader(onFrame);
+  const frames = [Buffer.from([255, 216, 1, 255, 217]), Buffer.from([255, 216, 2, 3, 255, 217])];
+  const stream = Buffer.concat(frames.map(multipartFrame));
+  for (let i = 0; i < stream.length; i += size) read(stream.subarray(i, i + size));
+  expect(onFrame.mock.calls.map(([frame]) => frame)).toEqual(frames);
+});
 
 const tag = (type: number, body: Buffer) => {
   const header = Buffer.alloc(11);

@@ -45,6 +45,40 @@ export type GrabEncoderFactory = (
   events: VideoEncoderEvents,
 ) => VideoEncoder;
 
+export interface JpegGrabEvents {
+  onFrame(jpeg: Buffer): void;
+  onFailure(error: Error): void;
+}
+
+export type JpegGrabFactory = (
+  region: GrabRegion,
+  events: JpegGrabEvents,
+) => Pick<VideoEncoder, "close">;
+
+/** ffmpeg's multipart output includes a byte length, including when a JPEG spans pipe reads. */
+export function createJpegReader(onFrame: JpegGrabEvents["onFrame"]): (chunk: Buffer) => void {
+  let buffered: Buffer = Buffer.alloc(0);
+  let length: number | undefined;
+  return (chunk) => {
+    buffered = buffered.length ? Buffer.concat([buffered, chunk]) : chunk;
+    while (buffered.length) {
+      if (length === undefined) {
+        const end = buffered.indexOf("\r\n\r\n");
+        if (end < 0) return;
+        const header = buffered.toString("ascii", 0, end);
+        const match = /Content-length:\s*(\d+)/i.exec(header);
+        if (!match) throw new Error("JPEG capture has no frame length");
+        length = Number(match[1]);
+        buffered = buffered.subarray(end + 4);
+      }
+      if (buffered.length < length) return;
+      onFrame(Buffer.from(buffered.subarray(0, length)));
+      buffered = buffered.subarray(length);
+      length = undefined;
+    }
+  };
+}
+
 /** Splits an FLV stream into its configuration and one H.264 frame per video tag. */
 export function createFlvReader(
   events: Pick<VideoEncoderEvents, "onConfig" | "onChunk">,
@@ -126,7 +160,8 @@ export function ffmpegGrabArguments(crf: number, region: GrabRegion, display: st
 
 const startFfmpeg = (
   args: string[],
-  events: VideoEncoderEvents,
+  read: (chunk: Buffer) => void,
+  onFailure: (error: Error) => void,
   env?: NodeJS.ProcessEnv,
 ): VideoEncoder => {
   let closed = false;
@@ -139,9 +174,8 @@ const startFfmpeg = (
     if (closed) return;
     closed = true;
     process.kill("SIGKILL");
-    events.onFailure(error);
+    onFailure(error);
   };
-  const read = createFlvReader(events);
   process.stdout.on("data", (chunk: Buffer) => {
     if (closed) return;
     try {
@@ -169,16 +203,58 @@ const startFfmpeg = (
 };
 
 export const createFfmpegEncoder: VideoEncoderFactory = (crf, events) =>
-  startFfmpeg(ffmpegArguments(crf), events);
+  startFfmpeg(ffmpegArguments(crf), createFlvReader(events), events.onFailure);
 
 export const createGrabEncoder: GrabEncoderFactory = (crf, region, events) => {
   const display = globalThis.process.env.DISPLAY;
   if (!display) throw new Error("Grabbing the screen needs a display");
-  return startFfmpeg(ffmpegGrabArguments(crf, region, display), events);
+  return startFfmpeg(
+    ffmpegGrabArguments(crf, region, display),
+    createFlvReader(events),
+    events.onFailure,
+  );
 };
 
 /** X11 capture must use the same account authorization as its browser/window controller. */
 export const grabEncoderForDisplay =
   (env: { DISPLAY: string; XAUTHORITY: string }): GrabEncoderFactory =>
   (crf, region, events) =>
-    startFfmpeg(ffmpegGrabArguments(crf, region, env.DISPLAY), events, env);
+    startFfmpeg(
+      ffmpegGrabArguments(crf, region, env.DISPLAY),
+      createFlvReader(events),
+      events.onFailure,
+      env,
+    );
+
+/** JPEG viewers read the same display as H.264 viewers, including native browser menus. */
+export const jpegGrabForDisplay =
+  (env: { DISPLAY?: string; XAUTHORITY?: string }): JpegGrabFactory =>
+  (region, events) => {
+    return startFfmpeg(
+      [
+        ...["-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay"],
+        ...["-f", "x11grab", "-draw_mouse", "0", "-framerate", "8"],
+        ...[
+          "-video_size",
+          `${region.width}x${region.height}`,
+          "-i",
+          `${env.DISPLAY}+${region.left},0`,
+        ],
+        ...["-vf", "mpdecimate=hi=0:lo=0:frac=0:max=0", "-c:v", "mjpeg", "-q:v", "3"],
+        ...[
+          "-threads",
+          "1",
+          "-fps_mode",
+          "passthrough",
+          "-flush_packets",
+          "1",
+          "-f",
+          "mpjpeg",
+          "-",
+        ],
+      ],
+      createJpegReader(events.onFrame),
+      events.onFailure,
+      env,
+    );
+  };

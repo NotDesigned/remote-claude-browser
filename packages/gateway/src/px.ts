@@ -2,10 +2,9 @@
  * Gateway side of the pixel fallback.
  * (Viewer half P2-PX-V = viewer/src/pxview.tsx, viewer domain.)
  *
- * Per-tab mode toggle. A viewer that can decode H.264 gets `vid` Down msgs read straight off the X
- * display, which leaves the page at full speed. Only one client's window can be on the display, so
- * the others use Page.startScreencast (JPEG) -> `vid`, or `px` JPEG frames where H.264 cannot be
- * decoded. A still screencast also gets one sharp `px` frame.
+ * Per-tab mode toggle. H.264 and JPEG viewers both read the X display, including native browser
+ * menus. Each active picture has its own window slot. When a window cannot be placed, use
+ * Page.startScreencast (JPEG) -> `vid`, or `px` JPEG frames. A still screencast also gets a sharp frame.
  * ALWAYS ack frames (Page.screencastFrameAck) or the screencast stalls. Keep the recorder
  * running in px mode (cheap; makes flip-back instant via fresh snapshot). Backpressure: drop
  * frames for stalled viewers, never queue (D4 rule applies to px too).
@@ -21,6 +20,8 @@ import { GRAB_MAX_HEIGHT, type PixelWindow } from "./browser/pixel-window";
 import {
   createFfmpegEncoder,
   createGrabEncoder,
+  jpegGrabForDisplay,
+  type JpegGrabFactory,
   type GrabEncoderFactory,
   type VideoEncoder,
   type VideoEncoderEvents,
@@ -79,6 +80,7 @@ export interface ScreenGrab {
   release(): void;
   available(): boolean;
   createEncoder?: GrabEncoderFactory;
+  createJpeg?: JpegGrabFactory;
 }
 
 export interface ScreencastOpts {
@@ -149,6 +151,7 @@ interface TabState {
   lastSharpAt: number;
   sharpInFlight: boolean;
   video?: VideoStream;
+  jpeg?: Pick<VideoEncoder, "close">;
   /** Left edge of the held slot, from when it is claimed until the window is back. */
   grabLeft?: number | undefined;
   /** What the running grab shows. Absent when pictures come from the screencast. */
@@ -339,6 +342,8 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     }
   };
   const stopVideo = (state: TabState): void => {
+    state.jpeg?.close();
+    delete state.jpeg;
     const video = state.video;
     if (!video) return;
     state.video = undefined;
@@ -444,7 +449,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   /** A viewer that joined or lost its place needs a new stream beginning with a keyframe. */
   const restartVideo = (state: TabState): void => {
     if (state.grabbing) {
-      startVideo(state, state.grabbing.w, state.grabbing.h);
+      if (videoWanted && !videoBroken) startVideo(state, state.grabbing.w, state.grabbing.h);
       return;
     }
     if (!videoWanted || videoBroken || !state.lastJpeg || !state.lastFrame) return;
@@ -539,8 +544,6 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     return !!(
       opts.grab &&
       viewport &&
-      videoWanted &&
-      !videoBroken &&
       !grabBroken &&
       viewport.w * zoomWanted(state) <= MAX_FRAME_SIDE &&
       viewport.h * zoomWanted(state) <= GRAB_MAX_HEIGHT
@@ -571,7 +574,39 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     delete state.lastFrame;
     delete state.lastJpeg;
     state.grabbing = { w: viewport.w, h: viewport.h, zoom };
-    startVideo(state, viewport.w, viewport.h);
+    if (videoWanted && !videoBroken) {
+      startVideo(state, viewport.w, viewport.h);
+    } else {
+      const jpeg = (opts.grab!.createJpeg ?? jpegGrabForDisplay(process.env))(
+        { left, ...grabSize(viewport.w, viewport.h, zoom) },
+        {
+          onFrame(data) {
+            if (!current(state) || state.jpeg !== jpeg) return;
+            state.lastFrame = {
+              t: "px",
+              tab: target,
+              data: data.toString("base64"),
+              w: viewport.w,
+              h: viewport.h,
+            };
+            state.stats.captured++;
+            if (opts.backlogged?.()) state.stats.dropped++;
+            else {
+              state.stats.encoded++;
+              opts.publish(state.lastFrame);
+            }
+          },
+          onFailure(error) {
+            if (state.jpeg !== jpeg) return;
+            delete state.jpeg;
+            report(error);
+            grabBroken = true;
+            reapply(state);
+          },
+        },
+      );
+      state.jpeg = jpeg;
+    }
   };
   const beginCapture = async (state: TabState): Promise<void> => {
     if (canGrab(state)) state.grabLeft ??= opts.grab!.acquire() ?? undefined;
@@ -868,7 +903,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     for (const state of tabs.values()) {
       const { captured, encoded, dropped } = state.stats;
       state.stats = { captured: 0, encoded: 0, dropped: 0 };
-      if (state.hub.mode !== "px" || !state.video) continue;
+      if (state.hub.mode !== "px" || (!state.video && !state.jpeg)) continue;
       opts.publish({
         t: "px-stats",
         tab: state.target.targetId,

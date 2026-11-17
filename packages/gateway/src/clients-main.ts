@@ -60,7 +60,7 @@ import { createViewportAgreement } from "./hub/viewport";
 import { createInputRelay, type InputMsg } from "./input/relay";
 import { createScreencast } from "./px";
 import { createPixelCapacity } from "./px-capacity";
-import { grabEncoderForDisplay } from "./px-video";
+import { grabEncoderForDisplay, jpegGrabForDisplay } from "./px-video";
 import { ANY_SESSION_TAB } from "./assets/token";
 import { createRtcSignalRelay } from "./rtcsig";
 import { createClaudeTheme, createThemeCopies, isClaudeTheme } from "./claude/theme";
@@ -1189,7 +1189,10 @@ export async function startClientGateway(
             grab: {
               window: pixelWindow,
               ...(account.display
-                ? { createEncoder: grabEncoderForDisplay(account.display.env) }
+                ? {
+                    createEncoder: grabEncoderForDisplay(account.display.env),
+                    createJpeg: jpegGrabForDisplay(account.display.env),
+                  }
                 : {}),
               acquire: () => grabSlots.acquire(sid),
               release: () => grabSlots.release(sid),

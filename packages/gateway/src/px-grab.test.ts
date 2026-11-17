@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FlatSessionEventMap } from "./browser/launch";
 import { TabHub } from "./hub/tabhub";
 import { createScreencast } from "./px";
-import type { GrabRegion, VideoEncoderEvents } from "./px-video";
+import type { GrabRegion, VideoEncoderEvents, JpegGrabEvents } from "./px-video";
 import type { TargetRef } from "./types";
 
 const PX = { t: "mode", tab: "tab-1", mode: "px", quality: "smooth", video: true } as const;
@@ -19,6 +19,9 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
   hub.viewport = { w: 1441, h: 900, dpr: options.dpr ?? 1 };
   const slots = { next: options.slot === undefined ? 1280 : options.slot, released: 0 };
   const encoders: { region: GrabRegion; events: VideoEncoderEvents; closed: boolean }[] = [];
+  const jpegs: { region: GrabRegion; events: JpegGrabEvents; closed: boolean }[] = [];
+  let navigation:
+    ((session: string, event: FlatSessionEventMap["Page.frameNavigated"]) => void) | undefined;
   const window = {
     pointer: vi.fn(async () => false),
     place: vi.fn(async (_target: string, _left: number, _w: number, _h: number) => {
@@ -41,7 +44,10 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
       }) as never,
       onAttached: (callback: (target: TargetRef) => void) => void (attached = callback),
       onDetached: () => {},
-      onSessionEvent: (() => () => {}) as unknown as <K extends keyof FlatSessionEventMap>(
+      onSessionEvent: ((method: string, callback: typeof navigation) => {
+        if (method === "Page.frameNavigated") navigation = callback;
+        return () => {};
+      }) as unknown as <K extends keyof FlatSessionEventMap>(
         method: K,
         callback: (sessionId: string, event: FlatSessionEventMap[K]) => void,
       ) => () => void,
@@ -71,6 +77,15 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
         slots.next = 1280;
       },
       available: () => slots.next !== null,
+      createJpeg: (region, events) => {
+        const jpeg = { region, events, closed: false };
+        jpegs.push(jpeg);
+        return {
+          close: () => {
+            jpeg.closed = true;
+          },
+        };
+      },
       createEncoder: (_crf, region, events) => {
         const encoder = { region, events, closed: false };
         encoders.push(encoder);
@@ -94,6 +109,8 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
     hub,
     slots,
     encoders,
+    jpegs,
+    navigate: () => navigation?.("cdp-1", { frame: { id: "tab-1" } } as never),
     window,
     published,
     errors,
@@ -106,6 +123,42 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
 
 describe("screen grab", () => {
   afterEach(() => vi.useRealTimers());
+
+  it("captures native menus for JPEG viewers and keeps capturing after navigation", async () => {
+    const { controller, encoders, jpegs, started, published, backlog, navigate } = setup();
+    await controller.handle({ ...PX, video: false });
+    expect(started()).toBe(0);
+    expect(encoders).toHaveLength(0);
+    const jpeg = jpegs[0]!;
+    jpeg.events.onFrame(Buffer.from("first"));
+    expect(published.at(-1)).toMatchObject({
+      t: "px",
+      data: Buffer.from("first").toString("base64"),
+    });
+    backlog.value = true;
+    jpeg.events.onFrame(Buffer.from("drop"));
+    expect(published.at(-1)).toMatchObject({ data: Buffer.from("first").toString("base64") });
+    backlog.value = false;
+    navigate();
+    jpeg.events.onFrame(Buffer.from("next page"));
+    expect(published.at(-1)).toMatchObject({ data: Buffer.from("next page").toString("base64") });
+    await controller.handle(DOM);
+    expect(jpeg.closed).toBe(true);
+    const count = published.length;
+    jpeg.events.onFrame(Buffer.from("late"));
+    expect(published).toHaveLength(count);
+    controller.dispose();
+  });
+
+  it("releases the display and resumes CDP capture when JPEG capture fails", async () => {
+    const { controller, jpegs, slots, started } = setup();
+    await controller.handle({ ...PX, video: false });
+    jpegs[0]!.events.onFailure(new Error("JPEG capture stopped"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(started()).toBe(1);
+    expect(slots.released).toBe(1);
+    controller.dispose();
+  });
 
   it("reads the page off the display, in its slot, with no screencast", async () => {
     const { controller, window, encoders, started, published } = setup();
