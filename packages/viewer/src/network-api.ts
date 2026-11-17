@@ -102,7 +102,7 @@ export const proxyApi = {
     request<{ health: ExitHealth }>(`/api/proxies/${encodeURIComponent(id)}/check`, "POST"),
   create: (source: ProxySourceInput) =>
     request<{ source: ProxySourceInfo }>("/api/proxy-sources", "POST", source),
-  update: (id: string, source: Omit<ProxySourceInput, "url">) =>
+  update: (id: string, source: ProxySourceInput) =>
     request<{ source: ProxySourceInfo }>(sourcePath(id), "PATCH", source),
   refresh: (id: string) =>
     request<{ source: ProxySourceInfo }>(`${sourcePath(id)}/refresh`, "POST"),

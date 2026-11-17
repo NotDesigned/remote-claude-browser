@@ -82,7 +82,7 @@ export function ProxyPanel({ user }: { user: FrontendUser }) {
     void run(async () => {
       if (editing) {
         if (
-          (visibility !== editing.visibility || content.trim()) &&
+          (visibility !== editing.visibility || content.trim() || url.trim()) &&
           !(await confirmChange(editing, "update"))
         )
           return;
@@ -90,6 +90,7 @@ export function ProxyPanel({ user }: { user: FrontendUser }) {
           name: name.trim(),
           visibility,
           ...(content.trim() ? { content } : {}),
+          ...(url.trim() ? { url: url.trim() } : {}),
         });
       } else
         await proxyApi.create({
@@ -243,14 +244,15 @@ export function ProxyPanel({ user }: { user: FrontendUser }) {
               </select>
             </label>
           )}
-          {!editing && mode === "url" ? (
+          {(editing ? editing.subscription : mode === "url") ? (
             <label>
-              订阅 URL
+              {editing ? "替换订阅 URL（留空保留）" : "订阅 URL"}
               <input
                 type="url"
                 value={url}
-                required
+                required={!editing}
                 disabled={busy}
+                spellcheck={false}
                 placeholder="https://…"
                 onInput={(event) => setUrl(event.currentTarget.value)}
               />
@@ -269,6 +271,7 @@ export function ProxyPanel({ user }: { user: FrontendUser }) {
               />
             </label>
           )}
+          {editing?.subscription && <p class="network-muted">填写新地址并保存后，立即更新节点。</p>}
           <div class="network-actions">
             <button class="network-primary" type="submit" disabled={busy || name.trim() === ""}>
               {busy ? "处理中…" : editing ? "保存来源" : "导入来源"}

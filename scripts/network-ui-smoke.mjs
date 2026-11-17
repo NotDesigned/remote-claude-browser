@@ -200,7 +200,13 @@ const server = createServer(async (request, response) => {
         sources.splice(sources.indexOf(source), 1);
         return response.writeHead(204).end();
       }
-      if (request.method === "PATCH") Object.assign(source, await body(request));
+      if (request.method === "PATCH") {
+        const input = await body(request);
+        operations.at(-1).input = input;
+        const { url: subscriptionUrl, content: _content, ...metadata } = input;
+        Object.assign(source, metadata);
+        if (subscriptionUrl) source.subscription = true;
+      }
       return json(response, { source: { ...source, canManage: true } });
     }
     if (url.pathname === "/api/cpa/instances") {
@@ -509,6 +515,21 @@ try {
       .fill("https://example.com/fixture-subscription");
     await click(panel.getByRole("button", { name: "导入来源", exact: true }));
     await panel.getByText("代理来源已导入。", { exact: true }).waitFor();
+    await click(panel.getByRole("button", { name: `编辑来源「${sourceName}订阅」`, exact: true }));
+    const subscriptionUrl = panel.getByLabel("替换订阅 URL（留空保留）", { exact: true });
+    assert.equal(await subscriptionUrl.inputValue(), "");
+    assert.equal(await panel.getByLabel("替换节点内容（留空保留）").count(), 0);
+    const dialogsBeforeRename = dialogs.length;
+    await click(panel.getByRole("button", { name: "保存来源", exact: true }));
+    await panel.getByText("来源已更新。", { exact: true }).waitFor();
+    assert.equal(dialogs.length, dialogsBeforeRename);
+    assert.equal(operations.at(-1).input.url, undefined);
+    await click(panel.getByRole("button", { name: `编辑来源「${sourceName}订阅」`, exact: true }));
+    await subscriptionUrl.fill("https://example.com/updated-subscription");
+    await click(panel.getByRole("button", { name: "保存来源", exact: true }));
+    await panel.getByText("来源已更新。", { exact: true }).waitFor();
+    assert.equal(operations.at(-1).input.url, "https://example.com/updated-subscription");
+    assert.match(dialogs.at(-1), /2 个浏览器配置、1 个 CPA 授权/);
     await click(panel.getByRole("button", { name: `刷新订阅「${sourceName}订阅」`, exact: true }));
     await panel.getByText("订阅已刷新。", { exact: true }).waitFor();
     assert.match(dialogs.at(-1), /2 个浏览器配置、1 个 CPA 授权/);
