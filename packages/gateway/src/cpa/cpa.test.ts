@@ -35,6 +35,7 @@ async function fixture() {
   stores.push(store);
   const calls: { instance: CpaInstance; input: CpaRequest }[] = [];
   const states = new Map<string, "running" | "stopped" | "missing">();
+  const removed: string[] = [];
   const proxies: { userId: string; proxyId: string | undefined }[] = [];
   const users = new Map([alice, bob, admin].map((user) => [user.id, user]));
   let health: CpaExitHealth = {
@@ -51,6 +52,10 @@ async function fixture() {
     },
     async stop(value) {
       states.set(value.id, "stopped");
+    },
+    async remove(value) {
+      removed.push(value.id);
+      states.delete(value.id);
     },
     async status(value) {
       return states.get(value.id) ?? "missing";
@@ -100,8 +105,10 @@ async function fixture() {
     store,
     runtime,
     calls,
+    driver,
     users,
     states,
+    removed,
     proxies,
     setHealth(value: CpaExitHealth) {
       health = value;
@@ -297,6 +304,39 @@ describe("CPA instance and key boundaries", () => {
     expect(runtime.inference(key.token).id).toBe(value.id);
     store.revokeUserKeys(alice.id);
     expect(() => runtime.inference(key.token)).toThrow();
+  });
+  it("removes only a deleted user's CPA data after its container and volumes are removed", async () => {
+    const { store, runtime, driver, removed, users } = await fixture();
+    const own = store.create(alice),
+      other = store.create(bob),
+      shared = store.create(admin, "shared");
+    const privateKey = store.issueKey(own.id, "private", alice.id);
+    const sharedKey = store.issueKey(shared.id, "shared", alice.id);
+    const otherKey = store.issueKey(shared.id, "other", bob.id);
+    store.setCredentialProxy(own.id, "private.json", "node-a");
+    store.recordOAuth(own.id, "private-oauth", "claude", "node-a");
+    store.setCredentialProxy(shared.id, "shared.json", "node-shared");
+    users.set(alice.id, { ...alice, enabled: false });
+    const remove = driver.remove;
+    driver.remove = async () => {
+      throw new Error("volume still in use");
+    };
+    await expect(runtime.removeUser(alice.id)).rejects.toThrow("volume still in use");
+    expect(store.get(own.id)).toEqual(own);
+    expect(store.resolveKey(sharedKey.token)?.userId).toBe(alice.id);
+    driver.remove = remove;
+    await runtime.removeUser(alice.id);
+    expect(removed).toEqual([own.id]);
+    expect(store.get(own.id)).toBeUndefined();
+    expect(store.credentialBindings(own.id)).toEqual([]);
+    expect(store.pendingOAuth(own.id)).toEqual([]);
+    expect(store.resolveKey(privateKey.token)).toBeUndefined();
+    expect(store.resolveKey(sharedKey.token)).toBeUndefined();
+    expect(store.resolveKey(otherKey.token)?.userId).toBe(bob.id);
+    expect(store.get(other.id)).toEqual(other);
+    expect(store.credentialProxy(shared.id, "shared.json")).toBe("node-shared");
+    await runtime.removeUser(alice.id);
+    expect(removed).toEqual([own.id]);
   });
 });
 
@@ -765,27 +805,33 @@ describe("CPA v8 contract", () => {
     expect(proxies.length).toBe(resolved);
   });
 
-  it("pauses inference while OAuth is pending and restores it after cancellation or expiry reconciliation", async () => {
-    const { store, runtime, setUpstream } = await fixture();
-    const value = store.create(alice);
-    await runtime.start(alice, value.id);
+  it("keeps shared-pool inference available while an administrator adds another authorization", async () => {
+    const { store, runtime, calls, setUpstream } = await fixture();
+    const value = store.create(admin, "shared");
+    await runtime.start(admin, value.id);
+    store.setCredentialProxy(value.id, "existing.json", "node-existing");
     const key = runtime.issueKey(alice, value.id, "client");
     let expired = false;
     setUpstream((_value, input) => {
       if (input.path.endsWith("/oauth/auth-url"))
         return response({ state: expired ? "expired" : "pending", url: "https://claude.ai/oauth" });
       if (input.path.includes("/oauth/status?")) return response({ status: "error" });
-      if (input.path.endsWith("/credentials")) return response({ files: [] });
+      if (input.path.endsWith("/credentials"))
+        return response({ files: [{ name: "existing.json" }] });
       return response({ status: "ok" });
     });
-    await runtime.startOAuth(alice, value.id, "node-a");
-    expect(() => runtime.inference(key.token)).toThrow("授权处理中");
-    expect(runtime.inference(key.token, true).id).toBe(value.id);
-    await runtime.cancelOAuth(alice, value.id);
+    await runtime.startOAuth(admin, value.id, "node-a");
+    expect(runtime.inference(key.token).id).toBe(value.id);
+    expect(store.credentialProxy(value.id, "existing.json")).toBe("node-existing");
+    expect(JSON.parse(String(calls.at(-1)?.input.body))).toEqual({
+      provider: "claude",
+      proxy_url: "http://admin:x@runtime-egress:8781",
+    });
+    await runtime.cancelOAuth(admin, value.id);
     expect(runtime.inference(key.token).id).toBe(value.id);
     expired = true;
-    await runtime.startOAuth(alice, value.id, "node-a");
-    await runtime.reconcileOAuth(() => alice);
+    await runtime.startOAuth(admin, value.id, "node-a");
+    await runtime.reconcileOAuth(() => admin);
     expect(runtime.inference(key.token).id).toBe(value.id);
   });
 

@@ -11,6 +11,7 @@ export interface CpaRequest {
 export interface CpaDriver {
   ensure(instance: CpaInstance, proxyUrl: string): Promise<void>;
   stop(instance: CpaInstance): Promise<void>;
+  remove(instance: CpaInstance): Promise<void>;
   status(instance: CpaInstance): Promise<"running" | "stopped" | "missing">;
   request(instance: CpaInstance, input: CpaRequest): Promise<IncomingMessage>;
 }
@@ -62,6 +63,9 @@ export function createCpaBrokerDriver(socketPath: string): CpaDriver {
     },
     async stop(instance) {
       await action(instance, "stop");
+    },
+    async remove(instance) {
+      await responseJson(await send(`/instances/${instance.id}`, { method: "DELETE" }));
     },
     async status(instance) {
       const result = await responseJson(await send(`/instances/${instance.id}`, { method: "GET" }));

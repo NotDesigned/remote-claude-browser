@@ -285,6 +285,17 @@ export async function createCpaStore(options: {
     revokeUserKeys(userId: string) {
       db.prepare("DELETE FROM cpa_api_keys WHERE user_id=?").run(userId);
     },
+    removeUser(userId: string) {
+      db.exec("BEGIN");
+      try {
+        db.prepare("DELETE FROM cpa_api_keys WHERE user_id=?").run(userId);
+        db.prepare("DELETE FROM cpa_instances WHERE owner_id=?").run(userId);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
     setCredentialProxy(instanceId: string, name: string, proxyId: string) {
       db.prepare(
         "INSERT INTO cpa_credential_proxies VALUES(?,?,?) ON CONFLICT(instance_id,name) DO UPDATE SET proxy_id=excluded.proxy_id",

@@ -4,7 +4,13 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDockerClient, containerSpec, initializerSpec } from "../deploy/cpa-broker.mjs";
+import { request } from "node:http";
+import {
+  createDockerClient,
+  containerSpec,
+  initializerSpec,
+  createCpaBroker,
+} from "../deploy/cpa-broker.mjs";
 if (process.env.CPA_TENANCY_SMOKE !== "1")
   throw new Error("Set CPA_TENANCY_SMOKE=1 to create disposable test CPA instances");
 const docker = createDockerClient();
@@ -32,7 +38,7 @@ execFileSync(
     "-subj",
     "/CN=api.anthropic.com",
     "-addext",
-    "subjectAltName=DNS:api.anthropic.com",
+    "subjectAltName=DNS:api.anthropic.com,DNS:platform.claude.com",
     "-keyout",
     join(certificates, "key.pem"),
     "-out",
@@ -49,6 +55,8 @@ const http = require('node:http'), https = require('node:https'), net = require(
 const {spawn} = require('node:child_process');
 fs.writeFileSync('/tmp/cpa-fixture.crt', process.env.FIXTURE_CERT);
 const api = https.createServer({cert:process.env.FIXTURE_CERT,key:process.env.FIXTURE_KEY},async(req,res)=>{
+ if(req.url==='/v1/oauth/token'){res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({access_token:'sk-ant-oat-new-fixture',refresh_token:'new-fixture-refresh',expires_in:86400,account:{uuid:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',email_address:'new@tenancy.test'}}));return;}
+ if(req.url==='/api/oauth/profile'){res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({account:{uuid:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',email:'new@tenancy.test'}}));return;}
  if(!req.url.startsWith('/v1/messages')){res.writeHead(200,{'content-type':'application/json'}).end('{}');return;}
  let raw='';for await(const chunk of req)raw+=chunk;
  const body=JSON.parse(raw);fs.writeFileSync('/tmp/cpa-wire.json',JSON.stringify(body));
@@ -175,6 +183,15 @@ try {
     query(0, "/v1/models", undefined, undefined, values[0].apiKey).body,
   ).data.find((item) => item.id.startsWith("claude-")).id;
   const dates = [];
+  const oauth = query(
+    0,
+    "/v8/management/oauth/auth-url",
+    { provider: "claude", proxy_url: "http://127.0.0.1:18080" },
+    "POST",
+  );
+  assert.equal(oauth.status, 200, "oauth auth-url failed");
+  const session = JSON.parse(oauth.body);
+  assert.ok(session.state && session.url);
   for (const timezone of ["Etc/GMT+12", "Pacific/Kiritimati"]) {
     assert.equal(
       query(
@@ -215,29 +232,78 @@ try {
     "opposing exit timezones must generate different local dates",
   );
   assert.equal(
+    query(
+      0,
+      "/v8/management/oauth/callback",
+      { provider: "claude", state: session.state, code: "fixture-code" },
+      "POST",
+    ).status,
+    200,
+  );
+  let authorized;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    authorized = JSON.parse(
+      query(0, "/v8/management/oauth/status?state=" + encodeURIComponent(session.state)).body,
+    );
+    if (authorized.status !== "wait") break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  assert.equal(authorized.status, "ok", "fixture OAuth did not finish");
+  const added = JSON.parse(query(0, "/v8/management/credentials").body).files.find(
+    (entry) => entry.email === "new@tenancy.test",
+  );
+  assert.ok(added, "OAuth did not publish its credential");
+  const persistedOAuth = JSON.parse(
+    query(0, "/v8/management/credentials/download?name=" + encodeURIComponent(added.name)).body,
+  );
+  assert.equal(
+    persistedOAuth.proxy_url,
+    "http://127.0.0.1:18080",
+    "new credentials must carry their OAuth exit before gateway reconciliation",
+  );
+  assert.equal(
+    query(
+      0,
+      "/v8/management/credentials?name=" + encodeURIComponent(added.name),
+      undefined,
+      "DELETE",
+    ).status,
+    200,
+  );
+  assert.equal(
     query(0, "/v8/management/credentials/status", { name: "alice.json", disabled: true }, "PATCH")
       .status,
     200,
   );
   assert.equal(JSON.parse(query(0, "/v8/management/credentials").body).files[0].disabled, true);
-  const oauth = query(
-    0,
-    "/v8/management/oauth/auth-url",
-    { provider: "claude", proxy_url: values[0].proxyUrl },
-    "POST",
-  );
-  assert.equal(oauth.status, 200, "oauth auth-url failed");
-  const session = JSON.parse(oauth.body);
-  assert.ok(session.state && session.url);
-  assert.equal(
-    query(0, "/v8/management/oauth/status?state=" + encodeURIComponent(session.state)).status,
-    200,
-  );
   assert.equal(
     query(0, "/v8/management/credentials?name=alice.json", undefined, "DELETE").status,
     200,
   );
   assert.equal(JSON.parse(query(0, "/v8/management/credentials").body).files.length, 0);
+  const broker = createCpaBroker({ ...options, socketGid: process.getgid() });
+  const socketPath = join(certificates, "broker.sock");
+  await broker.listen(socketPath);
+  try {
+    for (const id of ids) {
+      const response = await new Promise((resolve, reject) => {
+        const req = request({ socketPath, method: "DELETE", path: `/instances/${id}` }, resolve);
+        req.once("error", reject);
+        req.end();
+      });
+      for await (const _chunk of response) {
+        /* consume response */
+      }
+      assert.equal(response.statusCode, 200, "managed CPA removal failed");
+      const container = containers.shift();
+      await assert.rejects(() => docker("GET", `/containers/${container}/json`), { status: 404 });
+      for (const volume of volumes.splice(0, 3))
+        await assert.rejects(() => docker("GET", `/volumes/${volume}`), { status: 404 });
+      if (containers.length) assert.ok(await docker("GET", `/containers/${containers[0]}/json`));
+    }
+  } finally {
+    await new Promise((resolve) => broker.server.close(resolve));
+  }
   console.log(
     JSON.stringify({
       passed: true,
@@ -249,6 +315,9 @@ try {
       proxyPatchPersisted: true,
       credentialTimezoneOnWire: true,
       oauthV8Routes: true,
+      inferenceDuringOAuth: true,
+      oauthExitPersistedBeforePublication: true,
+      managedContainerAndVolumesRemoved: true,
       credentialStatusAndDelete: true,
     }),
   );

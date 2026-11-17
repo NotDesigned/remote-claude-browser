@@ -393,6 +393,18 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
         await driver.stop(value);
       });
     },
+    removeUser(userId: string) {
+      return lifecycle.run(async () => {
+        const value = store.ownedBy(userId);
+        if (value) {
+          await driver.remove(value);
+          for (const cache of [proxyStates, credentialTimeZones])
+            for (const key of cache.keys()) if (key.startsWith(`${value.id}:`)) cache.delete(key);
+          for (const { state } of store.pendingOAuth(value.id)) browserCallbacks.delete(state);
+        }
+        store.removeUser(userId);
+      });
+    },
     drain() {
       return lifecycle.run(async () => {});
     },
@@ -617,7 +629,7 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
         throw new CpaError(403, "CPA_KEY_FORBIDDEN", "无权撤销这个调用密钥");
       store.revokeKey(id, keyId);
     },
-    inference(token: string, allowPending = false) {
+    inference(token: string) {
       const resolved = store.resolveKey(token);
       if (!resolved || !options.userEnabled(resolved.userId))
         throw new CpaError(401, "CPA_API_KEY", "调用密钥无效");
@@ -626,8 +638,6 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
         throw new CpaError(401, "CPA_API_KEY", "调用密钥无效");
       if (value.desiredState !== "running")
         throw new CpaError(503, "CPA_STOPPED", "CPA 实例已停止");
-      if (!allowPending && store.pendingOAuth(value.id).length)
-        throw new CpaError(409, "CPA_AUTHORIZING", "授权处理中，请完成或取消授权后再调用");
       return value;
     },
     driver,

@@ -215,18 +215,21 @@ export function createCpaBroker(options) {
       throw error;
     }
   };
+  const volume = async (id, name) => {
+    try {
+      const value = await docker("GET", `/volumes/${name}`);
+      if (value.Labels?.[MANAGED] !== "true" || value.Labels?.[INSTANCE] !== id)
+        throw new BrokerError(409, "Volume name belongs to another service");
+      return value;
+    } catch (error) {
+      if (error.status === 404) return null;
+      throw error;
+    }
+  };
   const initialize = async (id, input) => {
     for (const name of Object.values(volumeNames(id))) {
-      let volume;
-      try {
-        volume = await docker("GET", `/volumes/${name}`);
-      } catch (error) {
-        if (error.status !== 404) throw error;
-      }
-      if (volume) {
-        if (volume.Labels?.[MANAGED] !== "true" || volume.Labels?.[INSTANCE] !== id)
-          throw new BrokerError(409, "Volume name belongs to another service");
-      } else await docker("POST", "/volumes/create", { Name: name, Labels: labels(id) });
+      if (!(await volume(id, name)))
+        await docker("POST", "/volumes/create", { Name: name, Labels: labels(id) });
     }
     const created = await docker("POST", "/containers/create", initializerSpec(id, options, input));
     try {
@@ -299,6 +302,17 @@ export function createCpaBroker(options) {
         return send(200, {
           status: value ? (value.State.Running ? "running" : "stopped") : "missing",
         });
+      }
+      if (request.method === "DELETE" && !action) {
+        await serialized(id, async () => {
+          const value = await inspect(id);
+          const volumes = await Promise.all(
+            Object.values(volumeNames(id)).map((name) => volume(id, name)),
+          );
+          if (value) await docker("DELETE", `/containers/remote-browser-${id}?force=1`);
+          for (const item of volumes) if (item) await docker("DELETE", `/volumes/${item.Name}`);
+        });
+        return send(200, { ok: true });
       }
       if (request.method === "POST" && action === "ensure") {
         const input = await jsonBody(request);

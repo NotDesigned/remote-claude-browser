@@ -169,10 +169,7 @@ export function registerCpaInferenceRoutes(app: FastifyInstance, runtime: CpaRun
           typeof auth === "string" && auth.startsWith("Bearer ")
             ? auth.slice(7)
             : request.headers["x-api-key"];
-        const instance = runtime.inference(
-          typeof token === "string" ? token : "",
-          request.method === "GET" && request.url.split("?")[0] === "/v1/models",
-        );
+        const instance = runtime.inference(typeof token === "string" ? token : "");
         const headers: IncomingHttpHeaders = {
           ...request.headers,
           authorization: `Bearer ${instance.apiKey}`,

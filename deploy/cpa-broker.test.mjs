@@ -189,3 +189,63 @@ test("broker refuses a network that permits direct Internet egress", async () =>
   const broker = createCpaBroker({ ...options, docker: async () => ({ Internal: false }) });
   await assert.rejects(() => broker.listen("/tmp/not-created-cpa.sock"), /internal Docker network/);
 });
+
+test("removal deletes only its labelled container and volumes, and retries partially completed cleanup", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "cpa-remove-"));
+  const tagged = (id) => ({
+    "dev.remote-browser.cpa-managed": "true",
+    "dev.remote-browser.cpa-instance": id,
+  });
+  const resources = new Map();
+  const container = `/containers/remote-browser-${one}`;
+  resources.set(container, { Config: { Labels: tagged(one) }, State: { Running: true } });
+  for (const kind of ["config", "auth", "static"]) {
+    const Name = `remote-browser-${one}-${kind}`;
+    resources.set(`/volumes/${Name}`, { Name, Labels: tagged(one) });
+  }
+  const foreign = resources.get(`/volumes/remote-browser-${one}-static`);
+  foreign.Labels = tagged(two);
+  const removed = [];
+  let busy = true;
+  const broker = createCpaBroker({
+    ...options,
+    socketGid: process.getgid(),
+    async docker(method, path) {
+      if (path.startsWith("/networks/")) return { Internal: true };
+      const name = path.replace(/\/json$|\?force=1$/, "");
+      if (!resources.has(name)) throw Object.assign(new Error("missing"), { status: 404 });
+      if (method === "GET") return resources.get(name);
+      if (name.endsWith("-auth") && busy) throw Object.assign(new Error("busy"), { status: 409 });
+      assert.equal(method, "DELETE");
+      resources.delete(name);
+      removed.push(name);
+    },
+  });
+  const socketPath = join(directory, "broker.sock");
+  await broker.listen(socketPath);
+  t.after(async () => {
+    await new Promise((resolve) => broker.server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  });
+  const remove = async () => {
+    const response = await new Promise((resolve, reject) => {
+      const req = request({ socketPath, method: "DELETE", path: `/instances/${one}` }, resolve);
+      req.once("error", reject);
+      req.end();
+    });
+    for await (const _chunk of response) {
+      /* consume response */
+    }
+    return response.statusCode;
+  };
+  assert.equal(await remove(), 409);
+  assert.deepEqual(removed, [], "validate every volume before removing anything");
+  foreign.Labels = tagged(one);
+  assert.equal(await remove(), 500);
+  assert.deepEqual(removed, [container, `/volumes/remote-browser-${one}-config`]);
+  busy = false;
+  assert.equal(await remove(), 200);
+  assert.equal(resources.size, 0);
+  assert.equal(await remove(), 200);
+  assert.equal(removed.length, 4);
+});
