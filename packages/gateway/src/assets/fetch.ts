@@ -147,7 +147,7 @@ async function fetchBrowserObject(
 ): Promise<AssetFetchResponse> {
   const frameId = deps.frameFor
     ? await deps.frameFor(ref, sessionId)
-    : await mainFrameId(deps.send, sessionId);
+    : await resourceFrameId(deps.send, sessionId, ref.documentUrl);
   const world = (await deps.send(sessionId, "Page.createIsolatedWorld", {
     frameId,
     worldName: "mirror-assets",
@@ -223,7 +223,7 @@ async function fetchThroughCdp(
 ): Promise<AssetFetchResponse> {
   const frameId = deps.frameFor
     ? await deps.frameFor(ref, cdpSessionId)
-    : await mainFrameId(deps.send, cdpSessionId);
+    : await resourceFrameId(deps.send, cdpSessionId, ref.documentUrl);
   const loaded = (await deps.send(cdpSessionId, "Network.loadNetworkResource", {
     frameId,
     url: ref.url,
@@ -291,6 +291,20 @@ async function fetchDirect(
   const cookie = cookieHeader(cookiesResult);
   if (cookie !== "") headers.cookie = cookie;
   if (request.range !== undefined) headers.range = request.range;
+  if (request.ref.documentUrl) {
+    const source = new URL(request.ref.documentUrl);
+    const target = new URL(request.ref.url);
+    // Match the browser's default strict-origin-when-cross-origin policy.
+    if (
+      /^https?:$/.test(source.protocol) &&
+      !(source.protocol === "https:" && target.protocol === "http:")
+    ) {
+      source.username = "";
+      source.password = "";
+      source.hash = "";
+      headers.referer = source.origin === target.origin ? source.href : `${source.origin}/`;
+    }
+  }
 
   const response = await directRequest(request.ref.url, { headers });
   return {
@@ -310,10 +324,29 @@ const defaultDirectRequest: DirectRequest = async (url, options) => {
   };
 };
 
-async function mainFrameId(send: CdpSend, cdpSessionId: string): Promise<string> {
+async function resourceFrameId(
+  send: CdpSend,
+  cdpSessionId: string,
+  documentUrl?: string,
+): Promise<string> {
+  interface FrameTree {
+    frame: { id: string; url?: string };
+    childFrames?: FrameTree[];
+  }
   const result = (await send(cdpSessionId, "Page.getFrameTree")) as {
-    frameTree?: { frame?: { id?: unknown } };
+    frameTree?: FrameTree;
   };
+  const find = (tree: FrameTree): string | undefined => {
+    if (tree.frame.url === documentUrl) return tree.frame.id;
+    for (const child of tree.childFrames ?? []) {
+      const id = find(child);
+      if (id) return id;
+    }
+  };
+  if (documentUrl && result.frameTree) {
+    const owner = find(result.frameTree);
+    if (owner) return owner;
+  }
   const frameId = result.frameTree?.frame?.id;
   if (typeof frameId !== "string" || frameId === "") {
     throw new Error("CDP did not return a valid main frame id");

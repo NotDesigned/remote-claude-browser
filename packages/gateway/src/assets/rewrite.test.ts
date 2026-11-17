@@ -101,6 +101,80 @@ describe("srcset parsing", () => {
 });
 
 describe("rrweb RewriteStage", () => {
+  it("keeps a late iframe's resource context in links, mutations and CSSOM changes", () => {
+    const stage = createRewriteStage(KEY);
+    const sheet = {
+      type: 2,
+      id: 4,
+      tagName: "link",
+      attributes: { rel: "stylesheet", href: "fonts.css" },
+    };
+    stage(
+      fullSnapshot({
+        type: 0,
+        id: 1,
+        documentUrl: "https://icloud.example/",
+        childNodes: [{ type: 2, id: 2, tagName: "iframe", attributes: {}, childNodes: [] }],
+      }),
+      CTX,
+    );
+    const added = stage(
+      event({
+        type: EventType.IncrementalSnapshot,
+        data: {
+          source: IncrementalSource.Mutation,
+          adds: [
+            {
+              parentId: 2,
+              node: {
+                type: 0,
+                id: 3,
+                documentUrl: "https://appleid.example/widget/",
+                baseUrl: "https://cdn.example/form/",
+                childNodes: [sheet],
+              },
+            },
+          ],
+        },
+      }),
+      CTX,
+    ) as unknown as { data: { adds: { node: { childNodes: (typeof sheet)[] } }[] } };
+    expect(proxiedRef(added.data.adds[0]!.node.childNodes[0]!.attributes.href)).toEqual({
+      ...PROXIED,
+      url: "https://cdn.example/form/fonts.css",
+      documentUrl: "https://appleid.example/widget/",
+    });
+    const mutation = stage(
+      event({
+        type: EventType.IncrementalSnapshot,
+        data: {
+          source: IncrementalSource.Mutation,
+          attributes: [{ id: 4, attributes: { href: "other.css" } }],
+        },
+      }),
+      CTX,
+    ) as unknown as { data: { attributes: { attributes: { href: string } }[] } };
+    expect(proxiedRef(mutation.data.attributes[0]!.attributes.href)).toMatchObject({
+      url: "https://cdn.example/form/other.css",
+      documentUrl: "https://appleid.example/widget/",
+    });
+    const rules = stage(
+      event({
+        type: EventType.IncrementalSnapshot,
+        data: {
+          source: IncrementalSource.StyleSheetRule,
+          id: 4,
+          adds: [{ rule: "a{background:url(icon.svg)}", index: 0 }],
+        },
+      }),
+      CTX,
+    ) as unknown as { data: { adds: { rule: string }[] } };
+    expect(refsIn(rules.data.adds[0]!.rule)[0]).toMatchObject({
+      url: "https://cdn.example/form/icon.svg",
+      documentUrl: "https://appleid.example/widget/",
+    });
+  });
+
   it("keeps the viewer's spell checker out of a mirrored editor", () => {
     const stage = createRewriteStage(KEY);
     const snapshot = stage(

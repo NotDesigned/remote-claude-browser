@@ -13,6 +13,8 @@ export interface AssetRef {
   url: string;
   sessionId: string;
   tabId: string;
+  /** Original document URL, including an embedded document's own origin. */
+  documentUrl?: string;
 }
 
 const VERSION = 1;

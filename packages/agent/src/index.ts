@@ -36,6 +36,7 @@ import {
 } from "./canvas-sampler";
 import { record } from "@rrweb/record";
 import { addFontsToSnapshot, installFontCapture } from "./font-capture";
+import { captureDocumentContext } from "./document-context";
 import {
   broadcastStitchSync,
   createReturnedDocumentCheck,
@@ -244,6 +245,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
             crossOriginIframeMirror = mirrors.crossOriginIframeMirror;
           },
           eventProcessor: (event) => {
+            captureDocumentContext(event, mirrorNode);
             // rrweb processes this initial snapshot in both top-level and cross-origin child
             // recorders. Waiting snapshot commands resume in a microtask, after rrweb finishes the
             // current startup call stack and flips its internal recording flag.

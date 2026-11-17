@@ -14,6 +14,43 @@ const ref: AssetRef = {
 };
 
 describe("asset fetch lanes", () => {
+  it("loads protected iframe resources in their owning frame and keeps Referer in fallback", async () => {
+    const documentUrl = "https://appleid.example/widget/account/?private=1#form";
+    const send = vi.fn<CdpSend>(async (_session, method, params) => {
+      if (method === "Page.getFrameTree")
+        return {
+          frameTree: {
+            frame: { id: "top", url: "https://icloud.example/" },
+            childFrames: [{ frame: { id: "registration", url: documentUrl } }],
+          },
+        };
+      if (method === "Network.loadNetworkResource") {
+        expect(params?.frameId).toBe("registration");
+        throw new Error("CDP unavailable");
+      }
+      if (method === "Network.getCookies") return { cookies: [] };
+      throw new Error(method);
+    });
+    const directRequest = vi.fn<DirectRequest>(async (_url, options) => {
+      expect(options.headers.referer).toBe("https://appleid.example/");
+      return directResponse("@font-face{}", { "content-type": "text/css" });
+    });
+    const fetcher = createAssetFetcher({
+      send,
+      sessionFor: () => "cdp",
+      userAgentFor: () => "UA",
+      directRequest,
+    });
+    try {
+      const result = await fetcher.fetch({ ref: { ...ref, documentUrl } });
+      expect(result.headers["content-type"]).toBe("text/css");
+      expect(await readBody(result.body)).toBe("@font-face{}");
+      expect(directRequest).toHaveBeenCalledOnce();
+    } finally {
+      await fetcher.close();
+    }
+  });
+
   it("sends range and CDP fallback bytes through the profile's actual HTTP proxy", async () => {
     const seen: string[] = [];
     const proxy = createServer((request, response) => {

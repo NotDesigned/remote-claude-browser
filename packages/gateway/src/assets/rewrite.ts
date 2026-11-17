@@ -32,14 +32,17 @@ interface RewriteContext {
   sessionId: string;
   tabId: string;
   baseUrl?: string;
-  assetUrl?: (url: string) => string;
+  documentUrl?: string;
+  assetUrl?: (url: string, ctx: RewriteContext) => string;
   rewriteSheet?: (
     css: string,
     baseUrl: string | undefined,
     toProxy: (url: string) => string,
+    documentUrl?: string,
   ) => string;
   tags?: Map<number, string>;
   styleTextIds?: Set<number>;
+  nodeContexts?: Map<number, Pick<RewriteContext, "baseUrl" | "documentUrl">>;
 }
 
 interface Replacement {
@@ -60,14 +63,19 @@ export function createRewriteStage(serverKey: Buffer): RewriteStage {
   const documentUrls = new Map<string, string>();
   const tags = new Map<number, string>();
   const styleTextIds = new Set<number>();
+  const nodeContexts = new Map<number, Pick<RewriteContext, "baseUrl" | "documentUrl">>();
   // One live tab owns this stage. Bound memoization while making repeated DOM references
   // (preload + visible image, mutations, resnapshots) share the browser's HTTP cache key.
   const assetUrls = new Map<string, string>();
-  const assetUrl = (url: string, ctx: { sessionId: string; tabId: string }): string => {
-    const id = JSON.stringify([ctx.sessionId, ctx.tabId, url]);
+  const assetUrl = (url: string, ctx: RewriteContext): string => {
+    const id = JSON.stringify([ctx.sessionId, ctx.tabId, ctx.documentUrl, url]);
     const existing = assetUrls.get(id);
     if (existing !== undefined) return existing;
-    const result = proxyUrl(url, key, ctx);
+    const result = proxyUrl(url, key, {
+      sessionId: ctx.sessionId,
+      tabId: ctx.tabId,
+      documentUrl: ctx.documentUrl,
+    });
     if (assetUrls.size >= 4096) assetUrls.delete(assetUrls.keys().next().value!);
     assetUrls.set(id, result);
     return result;
@@ -80,10 +88,12 @@ export function createRewriteStage(serverKey: Buffer): RewriteStage {
     css: string,
     baseUrl: string | undefined,
     toProxy: (url: string) => string,
+    documentUrl?: string,
   ) => {
     if (css.length < MEMOIZED_SHEET_LENGTH) return rewriteCssText(css, toProxy, baseUrl);
-    if (sheetBase !== baseUrl) sheets.clear();
-    sheetBase = baseUrl;
+    const contextKey = JSON.stringify([baseUrl, documentUrl]);
+    if (sheetBase !== contextKey) sheets.clear();
+    sheetBase = contextKey;
     const known = sheets.get(css);
     if (known !== undefined) return known;
     const rewritten = rewriteCssText(css, toProxy, baseUrl);
@@ -96,6 +106,7 @@ export function createRewriteStage(serverKey: Buffer): RewriteStage {
     if (event.type === EventType.FullSnapshot) {
       tags.clear();
       styleTextIds.clear();
+      nodeContexts.clear();
     }
     const documentKey = JSON.stringify([ctx.sessionId, ctx.tabId]);
     if (event.type === EventType.Meta) {
@@ -110,10 +121,11 @@ export function createRewriteStage(serverKey: Buffer): RewriteStage {
       sessionId: ctx.sessionId,
       tabId: ctx.tabId,
       baseUrl: documentUrls.get(documentKey),
-      assetUrl: (url) => assetUrl(url, ctx),
+      assetUrl,
       rewriteSheet,
       tags,
       styleTextIds,
+      nodeContexts,
     });
   };
 }
@@ -133,13 +145,13 @@ function rewriteEvent(event: eventWithTime, key: Buffer, ctx: RewriteContext): e
     return rewriteMutationEvent(event, key, ctx);
   }
   if (data.source === IncrementalSource.StyleSheetRule) {
-    return rewriteStyleSheetRuleEvent(event, key, ctx);
+    return rewriteStyleSheetRuleEvent(event, key, contextFor(ctx, data.id));
   }
   if (data.source === IncrementalSource.AdoptedStyleSheet) {
-    return rewriteAdoptedStyleSheetEvent(event, key, ctx);
+    return rewriteAdoptedStyleSheetEvent(event, key, contextFor(ctx, data.id));
   }
   if (data.source === IncrementalSource.StyleDeclaration) {
-    return rewriteStyleDeclarationEvent(event, key, ctx);
+    return rewriteStyleDeclarationEvent(event, key, contextFor(ctx, data.id));
   }
   // GOTCHA (P2-FONTS): CSS @font-face reaches the stylesheet paths above, but rrweb
   // collectFonts records a string-backed JS FontFace constructor through this separate event.
@@ -170,7 +182,7 @@ function rewriteMutationEvent(
         const rewritten = rewriteAttributes(
           item.attributes,
           key,
-          ctx,
+          contextFor(ctx, item.id),
           ctx.tags?.get(item.id as number),
         );
         if (rewritten === item.attributes) return mutation;
@@ -183,7 +195,12 @@ function rewriteMutationEvent(
     ? data.adds.map((addition) => {
         const item = record(addition);
         const insideStyle = ctx.tags?.get(item.parentId as number) === "style";
-        const node = rewriteSerializedNode(item.node, key, ctx, insideStyle);
+        const node = rewriteSerializedNode(
+          item.node,
+          key,
+          contextFor(ctx, item.parentId),
+          insideStyle,
+        );
         if (node === item.node) return addition;
         changed = true;
         return { ...item, node };
@@ -195,7 +212,12 @@ function rewriteMutationEvent(
         const item = record(mutation);
         if (!ctx.styleTextIds?.has(item.id as number) || typeof item.value !== "string")
           return mutation;
-        const value = rewriteCssText(item.value, (url) => proxyUrl(url, key, ctx), ctx.baseUrl);
+        const nodeCtx = contextFor(ctx, item.id);
+        const value = rewriteCssText(
+          item.value,
+          (url) => proxyUrl(url, key, nodeCtx),
+          nodeCtx.baseUrl,
+        );
         if (value === item.value) return mutation;
         changed = true;
         return { ...item, value };
@@ -280,6 +302,16 @@ function rewriteSerializedNode(
   insideStyle: boolean,
 ): unknown {
   const node = record(value);
+  if (node.type === 0 && typeof node.documentUrl === "string") {
+    ctx = {
+      ...ctx,
+      documentUrl: node.documentUrl,
+      baseUrl: typeof node.baseUrl === "string" ? node.baseUrl : node.documentUrl,
+    };
+  }
+  if (typeof node.id === "number") {
+    ctx.nodeContexts?.set(node.id, { baseUrl: ctx.baseUrl, documentUrl: ctx.documentUrl });
+  }
   const tag = typeof node.tagName === "string" ? node.tagName.toLowerCase() : undefined;
   if (node.type === NODE_ELEMENT && typeof node.id === "number" && tag) ctx.tags?.set(node.id, tag);
   if (node.type === NODE_TEXT && typeof node.id === "number") {
@@ -389,7 +421,7 @@ function rewriteAttributes(
 function rewriteSheetIn(ctx: RewriteContext, css: string, key: Buffer): string {
   const toProxy = (url: string) => proxyUrl(url, key, ctx);
   return ctx.rewriteSheet
-    ? ctx.rewriteSheet(css, ctx.baseUrl, toProxy)
+    ? ctx.rewriteSheet(css, ctx.baseUrl, toProxy, ctx.documentUrl)
     : rewriteCssText(css, toProxy, ctx.baseUrl);
 }
 
@@ -614,12 +646,20 @@ function rewriteUrlPreservingSpace(
 }
 
 function proxyUrl(url: string, key: Buffer, ctx: RewriteContext): string {
-  if (ctx.assetUrl !== undefined) return ctx.assetUrl(url);
+  if (ctx.assetUrl !== undefined) return ctx.assetUrl(url, ctx);
   // A blob belongs to its page. Everything else keeps its address, and so its cached copy, when
   // the session gets a new tab.
   const tabId = url.startsWith("blob:") ? ctx.tabId : ANY_SESSION_TAB;
-  const token = sealAssetToken({ url, sessionId: ctx.sessionId, tabId }, key);
+  const token = sealAssetToken(
+    { url, sessionId: ctx.sessionId, tabId, documentUrl: ctx.documentUrl },
+    key,
+  );
   return `/s/${encodeURIComponent(ctx.sessionId)}/a/${token}`;
+}
+
+function contextFor(ctx: RewriteContext, nodeId: unknown): RewriteContext {
+  const document = ctx.nodeContexts?.get(nodeId as number);
+  return document ? { ...ctx, ...document } : ctx;
 }
 
 function absoluteUrl(value: string, baseUrl?: string): string | null {
