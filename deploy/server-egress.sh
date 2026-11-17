@@ -65,8 +65,7 @@ for address in $extra; do
 done
 finish iptables
 
-# compose.yml turns IPv6 off in this container. If it is on anyway, it gets the same treatment, and
-# failing to set that up stops the browser from starting.
+# IPv6 gets the same private-network and tunnel restrictions as IPv4.
 if [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo 1)" = 0 ]; then
   prepare ip6tables
   for resolver in $resolvers; do

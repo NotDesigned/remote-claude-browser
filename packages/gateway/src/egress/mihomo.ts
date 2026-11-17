@@ -30,7 +30,9 @@ export function createMihomoConfig(node: MihomoExit, options: MihomoConfigOption
     "mixed-port": options.port,
     "bind-address": options.listenAddress,
     "allow-lan": options.listenAddress !== "127.0.0.1",
-    ipv6: false,
+    // The proxy server can be reachable only over IPv6. Browser DNS remains IPv4-only;
+    // the namespace firewall separately prevents the browser from using the upstream link.
+    ipv6: true,
     mode: "rule",
     "log-level": "silent",
     "find-process-mode": "off",
@@ -74,6 +76,15 @@ export function createMihomoConfig(node: MihomoExit, options: MihomoConfigOption
         "224.0.0.0/4",
         "240.0.0.0/4",
       ].map((range) => `IP-CIDR,${range},REJECT,no-resolve`),
+      ...[
+        "::/128",
+        "::1/128",
+        "::ffff:0:0/96",
+        "64:ff9b::/96",
+        "fc00::/7",
+        "fe80::/10",
+        "ff00::/8",
+      ].map((range) => `IP-CIDR6,${range},REJECT,no-resolve`),
       ...(options.block ?? []).map((address) => {
         const ipv6 = address.includes(":");
         const range = address.includes("/") ? address : `${address}/${ipv6 ? 128 : 32}`;

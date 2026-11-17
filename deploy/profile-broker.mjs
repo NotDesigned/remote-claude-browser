@@ -22,12 +22,16 @@ export function networkIdentity(id, offset = 0) {
   const slot = ((hash.readUInt16BE(0) + offset) % 16382) + 1;
   const base = slot * 4;
   const prefix = `10.253.${base >> 8}`;
+  const prefix6 = `fd4d:6972:726f:${slot.toString(16)}`;
   return {
     name: `rb-${hash.toString("hex").slice(0, 12)}`,
     hostIf: `rbh${hash.toString("hex").slice(0, 10)}`,
     hostIp: `${prefix}.${(base & 255) + 1}`,
     peerIp: `${prefix}.${(base & 255) + 2}`,
     subnet: `${prefix}.${base & 255}/30`,
+    hostIp6: `${prefix6}::1`,
+    peerIp6: `${prefix6}::2`,
+    subnet6: `${prefix6}::/126`,
   };
 }
 
@@ -159,6 +163,9 @@ export async function startProfileBroker({
       info.hostIp,
       info.peerIp,
       info.subnet,
+      info.hostIp6,
+      info.peerIp6,
+      info.subnet6,
     ]);
   const destroyNetwork = async (id) => {
     const item = networks.get(id);

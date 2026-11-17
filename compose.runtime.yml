@@ -15,6 +15,7 @@ services:
       - cpa-control:/run/cpa:ro
     sysctls:
       net.ipv4.ip_forward: "1"
+      net.ipv6.conf.all.forwarding: "1"
     networks:
       browser: {}
       cpa-runtime:

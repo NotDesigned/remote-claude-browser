@@ -7,6 +7,9 @@ host_if=$3
 host_ip=$4
 peer_ip=$5
 subnet=$6
+host_ip6=$7
+peer_ip6=$8
+subnet6=$9
 browser_uid=${BROWSER_UID:-10001}
 
 case "$action" in
@@ -20,12 +23,24 @@ case "$action" in
     ip -n "$name" link set eth0 up
     ip -n "$name" route add default via "$host_ip"
     # Root Mihomo uses eth0; browser sockets use its TUN, including interface-bound UDP.
-    # Docker mounts /proc/sys read-only; netlink and namespace-local IPv6 filtering suffice.
     ip -n "$name" link set eth0 addrgenmode none
     ip -n "$name" -6 addr flush dev eth0
+    ip -6 addr add "$host_ip6/126" dev "$host_if" nodad
+    ip -n "$name" -6 addr add "$peer_ip6/126" dev eth0 nodad
+    ip -n "$name" -6 route add default via "$host_ip6"
     for chain in INPUT OUTPUT FORWARD; do
       ip netns exec "$name" ip6tables -P "$chain" DROP
     done
+    # Only neighbor discovery and Mihomo's root sockets may use the upstream IPv6 link.
+    for chain in INPUT OUTPUT; do
+      for type in neighbor-solicitation neighbor-advertisement; do
+        ip netns exec "$name" ip6tables -A "$chain" -p ipv6-icmp --icmpv6-type "$type" -m hl --hl-eq 255 -j ACCEPT
+      done
+      ip netns exec "$name" ip6tables -A "$chain" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    done
+    ip netns exec "$name" ip6tables -A INPUT -i lo -j ACCEPT
+    ip netns exec "$name" ip6tables -A OUTPUT -o lo -j ACCEPT
+    ip netns exec "$name" ip6tables -A OUTPUT -m owner --uid-owner "$browser_uid" -j REJECT
     ip netns exec "$name" iptables -A OUTPUT -m owner --uid-owner "$browser_uid" -o lo -j ACCEPT
     ip netns exec "$name" iptables -A OUTPUT -m owner --uid-owner "$browser_uid" ! -o profile0 -j REJECT
     # User-imported proxy hosts must not turn root Mihomo into a route to host/LAN services.
@@ -40,7 +55,16 @@ case "$action" in
         case "$address" in *:*) ;; *) ip netns exec "$name" iptables -A PROFILE-UPSTREAM -d "$address" -j REJECT ;; esac
       done
       ip netns exec "$name" iptables -A OUTPUT -m owner --uid-owner 0 -j PROFILE-UPSTREAM
+      ip netns exec "$name" ip6tables -N PROFILE-UPSTREAM
+      for network in ::/128 ::1/128 ::ffff:0:0/96 64:ff9b::/96 fc00::/7 fe80::/10 ff00::/8; do
+        ip netns exec "$name" ip6tables -A PROFILE-UPSTREAM -d "$network" -j REJECT
+      done
+      for address in $(printf '%s' "${EGRESS_BLOCK:-}" | tr ',' ' '); do
+        case "$address" in *:*) ip netns exec "$name" ip6tables -A PROFILE-UPSTREAM -d "$address" -j REJECT ;; esac
+      done
+      ip netns exec "$name" ip6tables -A OUTPUT -m owner --uid-owner 0 -j PROFILE-UPSTREAM
     fi
+    ip netns exec "$name" ip6tables -A OUTPUT -m owner --uid-owner 0 -j ACCEPT
     for protocol in udp tcp; do
       ip netns exec "$name" iptables -t nat -A OUTPUT -m owner --uid-owner "$browser_uid" \
         -p "$protocol" --dport 53 -j REDIRECT --to-ports 1053
@@ -55,6 +79,9 @@ case "$action" in
     iptables -t nat -A POSTROUTING -s "$subnet" ! -o "$host_if" -j MASQUERADE
     iptables -I FORWARD 1 -i "$host_if" -s "$peer_ip" -j ACCEPT
     iptables -I FORWARD 1 -o "$host_if" -d "$peer_ip" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    ip6tables -t nat -A POSTROUTING -s "$subnet6" ! -o "$host_if" -j MASQUERADE
+    ip6tables -I FORWARD 1 -i "$host_if" -s "$peer_ip6" -j ACCEPT
+    ip6tables -I FORWARD 1 -o "$host_if" -d "$peer_ip6" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
     # Override the legacy whole-gateway Xray rule for this one internal proxy address.
     ip rule add priority 100 to "$peer_ip/32" lookup main
     iptables -I OUTPUT 1 -m owner --uid-owner "$browser_uid" -d "$peer_ip" -p tcp --dport 8780 -j ACCEPT
@@ -64,6 +91,9 @@ case "$action" in
     ip -n "$name" rule add priority 100 uidrange "$browser_uid-$browser_uid" lookup 201
     ;;
   stop)
+    ip6tables -D FORWARD -i "$host_if" -s "$peer_ip6" -j ACCEPT 2>/dev/null || true
+    ip6tables -D FORWARD -o "$host_if" -d "$peer_ip6" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+    ip6tables -t nat -D POSTROUTING -s "$subnet6" ! -o "$host_if" -j MASQUERADE 2>/dev/null || true
     iptables -D OUTPUT -m owner --uid-owner "$browser_uid" -d "$peer_ip" -p tcp --dport 8780 -j ACCEPT 2>/dev/null || true
     ip rule del priority 100 to "$peer_ip/32" lookup main 2>/dev/null || true
     iptables -D FORWARD -i "$host_if" -s "$peer_ip" -j ACCEPT 2>/dev/null || true

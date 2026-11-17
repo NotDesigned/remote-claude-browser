@@ -460,8 +460,15 @@ async function startExitFixture(exit, socksPort, targetPort, counters) {
   const udp = createSocket("udp4");
   udp.on("message", (message, remote) => {
     const dns = message.length > 16 && message.readUInt16BE(4) === 1 && (message[2] & 0x80) === 0;
-    if (dns) counters.dns++;
-    else counters.udp++;
+    if (dns) {
+      counters.dns++;
+      const labels = [];
+      for (let offset = 12; message[offset]; offset += message[offset] + 1)
+        labels.push(message.subarray(offset + 1, offset + 1 + message[offset]).toString());
+      const name = labels.join(".");
+      counters.dnsNames ??= {};
+      counters.dnsNames[name] = (counters.dnsNames[name] ?? 0) + 1;
+    } else counters.udp++;
     udp.send(
       dns ? dnsAnswer(message) : Buffer.from(`${exit}:${message}`),
       remote.port,
@@ -471,7 +478,7 @@ async function startExitFixture(exit, socksPort, targetPort, counters) {
   await new Promise((done) => udp.bind(targetPort, "127.0.0.1", done));
   const config = {
     log: { loglevel: "warning", access: "none" },
-    inbounds: [{ listen: "0.0.0.0", port: socksPort, protocol: "socks", settings: { udp: true } }],
+    inbounds: [{ listen: "::", port: socksPort, protocol: "socks", settings: { udp: true } }],
     outbounds: [{ protocol: "freedom", settings: { redirect: `127.0.0.1:${targetPort}` } }],
   };
   const configPath = `/tmp/fixture-${exit}.json`;
@@ -731,7 +738,7 @@ async function inside() {
       B: {
         name: "B",
         type: "socks5",
-        server: networkIdentity("node-fixture-b").hostIp,
+        server: networkIdentity("node-fixture-b").hostIp6,
         port: 11081,
         udp: true,
       },
@@ -743,6 +750,9 @@ async function inside() {
       diagnosticNetwork.hostIp,
       diagnosticNetwork.peerIp,
       diagnosticNetwork.subnet,
+      diagnosticNetwork.hostIp6,
+      diagnosticNetwork.peerIp6,
+      diagnosticNetwork.subnet6,
     ];
     await command("sh", ["/acceptance/profile-network.sh", "start", ...diagnosticArgs]);
     await command("sh", ["/acceptance/profile-network.sh", "stop", ...diagnosticArgs]);
@@ -864,6 +874,8 @@ exec sh /acceptance/profile-network.sh "$@"
     results.push(await childProbe("range", { exit: "exit-A", proxyUrl: startedA.proxyUrl }));
     results.push(await childProbe("network", { exit: "exit-A" }, nsA.name));
     results.push(await childProbe("network", { exit: "exit-B" }, nsB.name));
+    // The IPv6-only B proxy works for Mihomo, while the browser cannot use the same link directly.
+    results.push(await childProbe("blocked", { url: `http://[${nsB.hostIp6}]:11081/` }, nsB.name));
     results.push(await childProbe("range", { exit: "exit-A", proxyUrl: startedA.proxyUrl }));
     results.push(
       await childProbe("range", { exit: "exit-B", proxyUrl: startedB.externalProxyUrl }),
@@ -993,7 +1005,12 @@ exec sh /acceptance/profile-network.sh "$@"
     };
     const startBrowser = async (profile, env = {}, headful = false) => {
       const value = await api(`/browsers/${profile.id}/start`, "POST", {
-        node: { ...profile.node, server: networkIdentity(`browser-${profile.id}`).hostIp },
+        node: {
+          ...profile.node,
+          server: networkIdentity(`browser-${profile.id}`)[
+            profile.node.server.includes(":") ? "hostIp6" : "hostIp"
+          ],
+        },
         options: {
           userDataDir: profile.directory,
           engine:
@@ -1058,18 +1075,16 @@ exec sh /acceptance/profile-network.sh "$@"
     );
     for (const [key, profile] of Object.entries(browserProfiles)) {
       const other = key === "A" ? "B" : "A";
-      const before = { own: counts[key].dns, other: counts[other].dns };
-      const path = `/browsers/${profile.id}/resolve?hostname=assets-${key.toLowerCase()}.egress.test`;
+      const hostname = `assets-${key.toLowerCase()}.egress.test`;
+      const queries = (exit) => counts[exit].dnsNames?.[hostname] ?? 0;
+      const before = { own: queries(key), other: queries(other) };
+      const path = `/browsers/${profile.id}/resolve?hostname=${hostname}`;
       assert.deepEqual(await api(path, "GET"), [{ address: "203.0.113.10", family: 4 }]);
-      assert.ok(counts[key].dns > before.own, "asset DNS must cross its selected exit");
-      assert.equal(
-        counts[other].dns,
-        before.other,
-        "asset DNS must not use another profile's exit",
-      );
-      const queried = counts[key].dns;
+      assert.ok(queries(key) > before.own, "asset DNS must cross its selected exit");
+      assert.equal(queries(other), before.other, "asset DNS must not use another profile's exit");
+      const queried = queries(key);
       await api(path, "GET");
-      assert.equal(counts[key].dns, queried, "consecutive asset requests share the DNS result");
+      assert.equal(queries(key), queried, "consecutive asset requests share the DNS result");
     }
     for (const [key, profile] of Object.entries(browserProfiles)) {
       const other = browserProfiles[key === "A" ? "B" : "A"];
@@ -1403,6 +1418,7 @@ async function host() {
       "--cap-drop=ALL",
       "--security-opt=no-new-privileges:true",
       "--sysctl=net.ipv4.ip_forward=1",
+      "--sysctl=net.ipv6.conf.all.forwarding=1",
       "--device=/dev/net/tun",
       "--memory=1g",
       "--cpus=1.5",
