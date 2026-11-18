@@ -167,6 +167,8 @@ docker compose up -d
 
 原 `compose.cpa.yml` 和 `compose.cpa.https.yml` 的独立服务继续保留。它使用 `/management.html` 面板和部署级 `CPA_API_KEY`，不会自动导入到新的用户实例。未迁移的同入口部署可以增加 `compose.runtime.https.yml` 按新 Key 前缀临时分流。旧授权和调用 Key 迁入指定用户私有实例后，应把整个 `/v1/*` 交给工作台按 Key 归属路由。完整说明见 [CPA 部署](cpa.md)。
 
+迁移后，入口还需将 `/management.html` 和 `/api/cpa/instances/*` 转发到工作台。阻止公开访问原始管理接口的规则只匹配 `/v0/management`、`/v8/management` 及其子路径。
+
 ## 兼容：独立入口机和 SSH 隧道
 
 `client/` 是可选的入口部署模板，适用于已有的 Caddy 加 SSH 隧道方案；它不是浏览器服务必须安装的客户端。下面的 Compose 命令只作用于 `client/`，不会运行浏览器或保存网站登录状态。

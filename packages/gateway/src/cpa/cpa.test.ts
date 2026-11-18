@@ -3,6 +3,7 @@ import type { IncomingMessage } from "node:http";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { gzipSync, gunzipSync } from "node:zlib";
 import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import type { FrontendUser } from "../auth/users";
@@ -894,7 +895,7 @@ describe("CPA v8 contract", () => {
 });
 
 it("opens instance-scoped native management using workbench authorization without exposing management keys", async () => {
-  const { store, runtime, calls } = await fixture();
+  const { store, runtime, calls, setUpstream } = await fixture();
   const own = store.create(alice),
     other = store.create(bob),
     shared = store.create(admin, "shared");
@@ -945,6 +946,18 @@ it("opens instance-scoped native management using workbench authorization withou
     });
     expect(calls.at(-1)?.input.headers?.cookie).toBeUndefined();
     expect(String(calls.at(-1)?.input.body)).toBe("true");
+    const listing = { files: [{ name: "claude-fixture.json" }] };
+    setUpstream(
+      () =>
+        Object.assign(Readable.from([gzipSync(JSON.stringify(listing))]), {
+          statusCode: 200,
+          headers: { "content-encoding": "gzip", vary: "Accept-Encoding" },
+        }) as unknown as IncomingMessage,
+    );
+    const files = await get(root + "/v8/management/credentials");
+    expect(files.headers["content-encoding"]).toBe("gzip");
+    expect(files.headers.vary).toBe("Accept-Encoding");
+    expect(JSON.parse(gunzipSync(files.rawPayload).toString())).toEqual(listing);
     expect((await get(root + "/containers/json")).statusCode).toBe(404);
     store.setDesiredState(own.id, "stopped");
     expect((await get(root + "/management.html")).statusCode).toBe(409);

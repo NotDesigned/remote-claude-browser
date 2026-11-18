@@ -123,7 +123,9 @@ export function registerCpaManagementRoutes(
           reply.code(response.statusCode ?? 502).header("cache-control", "no-store");
           for (const name of [
             "content-type",
+            "content-encoding",
             "content-disposition",
+            "vary",
             "x-cpa-version",
             "x-cpa-build-date",
             "x-cpa-support-plugin",
