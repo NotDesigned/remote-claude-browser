@@ -313,6 +313,16 @@ export function createCpaRuntime(options: CpaRuntimeOptions) {
     return failures;
   };
   return {
+    managementInstance(user: FrontendUser, id: string) {
+      return publicCpaInstance(running(managed(user, id)), user);
+    },
+    managementRequest(user: FrontendUser, id: string, input: import("./broker-client").CpaRequest) {
+      const value = running(managed(user, id));
+      return driver.request(value, {
+        ...input,
+        headers: { ...input.headers, authorization: `Bearer ${value.managementKey}` },
+      });
+    },
     pendingOAuth(user: FrontendUser, id: string) {
       managed(user, id);
       return store.pendingOAuth(id).flatMap((session) => {

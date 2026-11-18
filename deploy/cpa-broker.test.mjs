@@ -43,19 +43,19 @@ test("CPA fixed templates isolate volumes, remove privileges and permit no host 
   assert.equal(config.management["secret-key"], input.managementKey);
 });
 
-test("broker allowlist includes verified v8 paths and excludes arbitrary management and Docker routes", () => {
+test("broker allows CPA management and inference paths and excludes unrelated routes", () => {
   assert.ok(allowedUpstream("POST", "/v8/management/oauth/auth-url"));
   assert.ok(allowedUpstream("GET", "/v8/management/oauth/status?state=one"));
   assert.ok(allowedUpstream("PATCH", "/v8/management/credentials/fields"));
   assert.ok(allowedUpstream("PUT", "/v8/management/config/requests/proxy-url"));
-  assert.ok(!allowedUpstream("PUT", "/v8/management/config/requests"));
+  assert.ok(allowedUpstream("PUT", "/v8/management/config/requests"));
   assert.ok(allowedUpstream("GET", "/v8/management/credentials/download?name=one.json"));
   assert.ok(allowedUpstream("POST", "/v1/messages"));
-  assert.ok(!allowedUpstream("GET", "/v8/management/config.yaml"));
+  assert.ok(allowedUpstream("GET", "/v8/management/config.yaml"));
   assert.ok(!allowedUpstream("POST", "/containers/create"));
   assert.ok(!allowedUpstream("POST", "http://other/v1/messages"));
   assert.ok(!allowedUpstream("POST", "//other/v1/messages"));
-  assert.ok(!allowedUpstream("GET", "/v1/../v8/management/config.yaml"));
+  assert.ok(!allowedUpstream("GET", "/v8/management/../../containers/json"));
 });
 
 test("broker authenticates the managed container identity and rejects unrelated names", async (t) => {
@@ -103,11 +103,7 @@ test("broker authenticates the managed container identity and rejects unrelated 
     400,
   );
   assert.equal(
-    (
-      await get(
-        `/instances/${two}/request?path=${encodeURIComponent("/v8/management/config.yaml")}`,
-      )
-    ).status,
+    (await get(`/instances/${two}/request?path=${encodeURIComponent("/containers/json")}`)).status,
     403,
   );
   assert.ok(!calls.some((call) => call.method === "POST"));

@@ -38,6 +38,7 @@ import { createRuntimeClient } from "./egress/runtime-client";
 import type { ExitMetadata } from "./egress/timezone";
 import { CpaError, createCpaStore } from "./cpa/store";
 import { createCpaRuntime } from "./cpa/runtime";
+import { registerCpaManagementRoutes } from "./cpa/management";
 import { createCpaBrokerDriver } from "./cpa/broker-client";
 import { registerCpaRoutes, registerCpaInferenceRoutes } from "./cpa/routes";
 import { createAccountDisplay, type AccountDisplay } from "./browser/display";
@@ -406,6 +407,7 @@ export async function startClientGateway(
   });
   if (cpaRuntime) {
     registerCpaRoutes(app, { runtime: cpaRuntime, currentUser });
+    registerCpaManagementRoutes(app, { runtime: cpaRuntime, currentUser });
     registerCpaInferenceRoutes(app, cpaRuntime);
   }
   await registerViewerStatic(app);

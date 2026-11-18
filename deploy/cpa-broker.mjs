@@ -156,18 +156,10 @@ export function allowedUpstream(method, path) {
   if (!path.startsWith("/") || path.startsWith("//") || url.origin !== "http://cpa.invalid")
     return false;
   if (url.pathname.startsWith("/v1/")) return true;
-  const permitted = {
-    "/v8/management/config/requests/proxy-url": ["PUT"],
-    "/v8/management/credentials": ["GET", "POST", "DELETE"],
-    "/v8/management/credentials/download": ["GET"],
-    "/v8/management/credentials/status": ["PATCH"],
-    "/v8/management/credentials/fields": ["PATCH"],
-    "/v8/management/oauth/auth-url": ["POST"],
-    "/v8/management/oauth/status": ["GET"],
-    "/v8/management/oauth/callback": ["POST"],
-    "/v8/management/oauth/session": ["DELETE"],
-  };
-  return permitted[url.pathname]?.includes(method) === true;
+  return (
+    ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"].includes(method) &&
+    /^\/v(8|0)\/management\//.test(url.pathname)
+  );
 }
 async function jsonBody(request) {
   const chunks = [];

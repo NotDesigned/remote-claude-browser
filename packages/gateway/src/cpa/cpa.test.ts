@@ -1,6 +1,6 @@
 import { Readable } from "node:stream";
 import type { IncomingMessage } from "node:http";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import Fastify from "fastify";
@@ -11,6 +11,7 @@ import { createCpaRuntime } from "./runtime";
 import type { ExitHealth as CpaExitHealth } from "../egress/timezone";
 import type { CpaDriver, CpaRequest } from "./broker-client";
 import { registerCpaInferenceRoutes, registerCpaRoutes } from "./routes";
+import { registerCpaManagementRoutes } from "./management";
 
 const alice: FrontendUser = {
   id: "alice",
@@ -890,4 +891,65 @@ describe("CPA v8 contract", () => {
     expect(calls.at(-1)?.input.headers).not.toHaveProperty("x-api-key");
     await app.close();
   });
+});
+
+it("opens instance-scoped native management using workbench authorization without exposing management keys", async () => {
+  const { store, runtime, calls } = await fixture();
+  const own = store.create(alice),
+    other = store.create(bob),
+    shared = store.create(admin, "shared");
+  for (const value of [own, other, shared]) store.setDesiredState(value.id, "running");
+  const dir = await mkdtemp(join(tmpdir(), "native-cpa-"));
+  const panelFile = join(dir, "management.html");
+  await writeFile(panelFile, "<!doctype html><html><head></head><body>Native panel</body></html>");
+  const app = Fastify();
+  registerCpaManagementRoutes(app, {
+    runtime,
+    panelFile,
+    currentUser: (req) =>
+      [alice, bob, admin].find((user) => req.headers.cookie === `user=${user.id}`),
+  });
+  const get = (url: string, user = alice) =>
+    app.inject({ url, headers: { cookie: `user=${user.id}` } });
+  const root = `/api/cpa/instances/${own.id}/manage`;
+  try {
+    const page = await get(root + "/management.html");
+    expect(page.statusCode).toBe(200);
+    expect(page.body).toContain("Native panel");
+    expect(page.body).toContain(root);
+    expect(page.body).not.toContain(own.managementKey);
+    expect((await get(root + "/management.html", bob)).statusCode).toBe(403);
+    expect((await get(root + "/management.html", admin)).statusCode).toBe(403);
+    expect((await app.inject({ url: root + "/management.html" })).statusCode).toBe(401);
+    expect(
+      (await get(`/api/cpa/instances/${shared.id}/manage/management.html`, admin)).statusCode,
+    ).toBe(200);
+    expect(
+      (await get(`/api/cpa/instances/${shared.id}/manage/management.html`, bob)).statusCode,
+    ).toBe(403);
+    expect((await get("/management.html")).headers.location).toBe(root + "/management.html");
+    const proxied = await app.inject({
+      method: "PUT",
+      url: root + "/v8/management/config/observability/logs/debug",
+      headers: {
+        cookie: "user=alice",
+        authorization: "Bearer browser-value",
+        "content-type": "application/json",
+      },
+      payload: "true",
+    });
+    expect(proxied.statusCode).toBe(200);
+    expect(calls.at(-1)?.input).toMatchObject({
+      path: "/v8/management/config/observability/logs/debug",
+      headers: { authorization: `Bearer ${own.managementKey}` },
+    });
+    expect(calls.at(-1)?.input.headers?.cookie).toBeUndefined();
+    expect(String(calls.at(-1)?.input.body)).toBe("true");
+    expect((await get(root + "/containers/json")).statusCode).toBe(404);
+    store.setDesiredState(own.id, "stopped");
+    expect((await get(root + "/management.html")).statusCode).toBe(409);
+  } finally {
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

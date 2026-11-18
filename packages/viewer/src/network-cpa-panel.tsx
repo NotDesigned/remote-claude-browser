@@ -292,6 +292,18 @@ export function CpaPanel({
               <div class="network-actions">
                 <button
                   type="button"
+                  onClick={() =>
+                    window.open(
+                      `/api/cpa/instances/${encodeURIComponent(instance.id)}/manage/management.html`,
+                      "_blank",
+                      "noopener,noreferrer",
+                    )
+                  }
+                >
+                  打开原生管理页面
+                </button>
+                <button
+                  type="button"
                   disabled={busy}
                   onClick={() =>
                     void run(async () => {
@@ -565,6 +577,12 @@ export function CpaPanel({
                 )}
               </section>
             </>
+          )}
+          {instance.canManage && (
+            <p class="network-muted">
+              原生管理页用于实例配置、统计和诊断。对外调用 Key、Claude
+              授权和出口绑定在此工作台管理。
+            </p>
           )}
           <section class="network-card network-form" aria-labelledby="cpa-keys-title">
             <h3 id="cpa-keys-title">
