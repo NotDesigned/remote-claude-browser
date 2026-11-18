@@ -86,8 +86,8 @@ function ProfileCard(props: {
   current: boolean;
   isDefault: boolean;
   disabled: boolean;
-  selected: boolean;
-  onSelect(): void;
+  onPick(): void;
+  onDetails(): void;
   onRename(): void;
   onDefault(): void;
   onDelete(): void;
@@ -95,6 +95,7 @@ function ProfileCard(props: {
   onPlatform(): void;
 }) {
   const { account } = props;
+  const exitRequired = !account.proxyId || account.proxyName === null;
   const signedIn = account.signedIn === true;
   const [menuOpen, setMenuOpen] = useState(false);
   const [exitCheck, setExitCheck] = useState<{
@@ -144,10 +145,9 @@ function ProfileCard(props: {
         class="profile-card"
         data-last={props.last}
         data-current={props.current}
-        data-exit-required={!account.proxyId}
-        disabled={props.disabled}
-        aria-pressed={props.selected}
-        onClick={props.onSelect}
+        data-exit-required={exitRequired}
+        disabled={props.disabled || exitRequired}
+        onClick={props.onPick}
       >
         <span class="profile-text">
           <span class="profile-name">{account.name}</span>
@@ -175,7 +175,9 @@ function ProfileCard(props: {
         </span>
         <span class="profile-meta">
           <span class="profile-platform">{PLATFORM_LABELS[account.platform]}</span>
-          {!account.proxyId && <span class="profile-pending">待绑定</span>}
+          {exitRequired && (
+            <span class="profile-pending">{account.proxyId ? "出口已移除" : "待绑定"}</span>
+          )}
           {props.isDefault && <span class="profile-badge profile-default-badge">默认</span>}
           {props.current ? (
             <span class="profile-badge profile-current-badge">当前使用</span>
@@ -215,10 +217,13 @@ function ProfileCard(props: {
           </button>
           <button
             type="button"
-            disabled={props.disabled || !account.proxyId || exitCheck?.health.status === "checking"}
+            disabled={props.disabled || exitRequired || exitCheck?.health.status === "checking"}
             onClick={() => action(() => void checkExit())}
           >
             检查出口
+          </button>
+          <button type="button" disabled={props.disabled} onClick={() => action(props.onDetails)}>
+            查看详情
           </button>
           <button
             type="button"
@@ -256,7 +261,7 @@ function ProfileCard(props: {
 }
 
 export function ProfilePicker(props: {
-  onPick(id: string, name: string): Promise<void | false>;
+  onPick(id: string): Promise<void>;
   current?: string | null;
   onBack?(): void;
   onChanged?(): void;
@@ -512,11 +517,16 @@ export function ProfilePicker(props: {
     }
   };
 
-  const pick = async (id: string, name: string) => {
+  const open = async (id: string) => {
+    await props.onPick(id);
+    remember(id);
+  };
+
+  const pick = async (id: string) => {
     setBusy(true);
     setError(null);
     try {
-      if ((await props.onPick(id, name)) !== false) remember(id);
+      await open(id);
     } catch (reason) {
       setError((reason as Error).message);
     } finally {
@@ -543,7 +553,7 @@ export function ProfilePicker(props: {
       changed();
       setCreating(false);
       setName("");
-      if ((await props.onPick(made.id, made.name)) !== false) remember(made.id);
+      await open(made.id);
     } catch (reason) {
       setError((created ? "配置已创建，打开失败，可从列表重试：" : "") + (reason as Error).message);
     } finally {
@@ -602,7 +612,7 @@ export function ProfilePicker(props: {
             <p>
               {props.requiredProxyId
                 ? "选择与授权使用相同出口的配置，打开后继续授权；也可以新建。"
-                : "选择浏览器查看详情，或点选出口查看共用它的配置。"}
+                : "点浏览器直接打开。通过「⋯」设置出口，或点出口查看共用它的配置。"}
             </p>
           </header>
           {props.logoutError && (
@@ -759,8 +769,8 @@ export function ProfilePicker(props: {
                               current={account.id === props.current}
                               isDefault={account.id === defaultId}
                               disabled={busy}
-                              selected={selected?.id === account.id}
-                              onSelect={() => selectNode({ profile: account.id })}
+                              onPick={() => void pick(account.id)}
+                              onDetails={() => selectNode({ profile: account.id })}
                               onRename={() => {
                                 setError(null);
                                 setCreating(false);
@@ -830,19 +840,9 @@ export function ProfilePicker(props: {
                     )}
                     {selected.running && <span>运行中</span>}
                   </div>
-                  <div class="map-controls">
-                    <button type="button" disabled={busy} onClick={() => void editProxy(selected)}>
-                      {selected.proxyId ? "更换出口" : "绑定出口"}
-                    </button>
-                    <button
-                      type="button"
-                      class="map-open"
-                      disabled={busy || !selected.proxyId || selected.proxyName === null}
-                      onClick={() => void pick(selected.id, selected.name)}
-                    >
-                      打开浏览器
-                    </button>
-                  </div>
+                  <button type="button" onClick={() => setSelection({})}>
+                    关闭详情
+                  </button>
                 </section>
               )}
               {selectedGroup && !editing && !creating && !proxyEditor && !platformEditor && (

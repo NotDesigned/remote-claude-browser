@@ -551,7 +551,6 @@ try {
   });
   await firstPage.goto(`${origin}/?new=1`);
   await firstPage.locator("button.profile-card[data-exit-required]").click();
-  await firstPage.getByRole("button", { name: "打开浏览器", exact: true }).click();
   const firstRequest = await firstCreateObserved.promise;
   await firstPage.waitForTimeout(250);
   assert.equal(
@@ -571,7 +570,6 @@ try {
   const secondPage = await context.newPage();
   await secondPage.goto(`${origin}/?new=1`);
   await secondPage.locator("button.profile-card[data-exit-required]").click();
-  await secondPage.getByRole("button", { name: "打开浏览器", exact: true }).click();
   await ready(secondPage, "client-2");
   const secondRequest = creates.find((request) => request.clientKey !== firstRequest.clientKey);
   assert(secondRequest, "The second tab reused the first client key");
@@ -677,7 +675,6 @@ try {
   const thirdPage = await context.newPage();
   await thirdPage.goto(`${origin}/?new=1`);
   await thirdPage.locator("button.profile-card[data-exit-required]").click();
-  await thirdPage.getByRole("button", { name: "打开浏览器", exact: true }).click();
   await thirdPage.getByRole("heading", { name: "暂时无法打开会话" }).waitFor();
   assert.equal(
     await thirdPage.locator("#client-session-overlay").getAttribute("data-phase"),
@@ -820,7 +817,6 @@ try {
   memoryPressure = false;
   await firstPage.locator("#client-session-reopen").click();
   await firstPage.locator("button.profile-card[data-exit-required]").click();
-  await firstPage.getByRole("button", { name: "打开浏览器", exact: true }).click();
   await ready(firstPage, "client-1");
   assert.equal(creates.length, closedCreates + 1);
   assert.notEqual(creates.at(-1).clientKey, firstRequest.clientKey);

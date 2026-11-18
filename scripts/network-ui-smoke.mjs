@@ -413,9 +413,7 @@ try {
     const sessionsBeforeExit = sessions.length;
     const profileCard = page.getByRole("button", { name: /默认配置.*未登录/ });
     await profileCard.waitFor();
-    await click(profileCard);
-    const openBrowser = page.getByRole("button", { name: "打开浏览器", exact: true });
-    assert.equal(await openBrowser.isDisabled(), true);
+    assert.equal(await profileCard.isDisabled(), true);
     await mkdir("artifacts", { recursive: true });
     await page.screenshot({
       path: `artifacts/exit-required-picker-${engine}-${mobile ? "phone" : "desktop"}.png`,
@@ -462,7 +460,7 @@ try {
           .getByText(proxyId === "proxy-shared" ? "共享出口" : "私有出口", { exact: true })
           .waitFor();
       else await page.getByText("待绑定", { exact: true }).waitFor();
-      assert.equal(await openBrowser.isDisabled(), proxyId === "");
+      assert.equal(await profileCard.isDisabled(), proxyId === "");
     }
     assert.equal(sessions.length, sessionsBeforeExit);
     // A configured default profile is not a current browser session.
@@ -761,7 +759,6 @@ try {
     assert.match(dialogs.at(-1), /IP.*风控/);
     assert.equal(sessions.length, sessionsBeforeExit);
     await click(page.getByRole("button", { name: /默认配置.*未登录/ }));
-    await click(openBrowser);
     await page.waitForURL((url) => url.searchParams.has("sid"));
     await click(page.getByRole("button", { name: "工作台", exact: true }));
     await click(page.getByRole("button", { name: "浏览器配置", exact: true }));

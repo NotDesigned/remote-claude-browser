@@ -1415,7 +1415,7 @@ export function App() {
         <ProfilePicker
           requiredProxyId={browserAuthorization?.proxyId}
           proxyManagerOpen={networkPanelOpen && networkTab === "proxies"}
-          onPick={async (id, name) => {
+          onPick={async (id) => {
             if (!profilePickerOpen) {
               setPickedAccount(id);
               return;
@@ -1424,7 +1424,6 @@ export function App() {
               setProfilePickerOpen(false);
               return;
             }
-            if (!window.confirm(`切换到「${name}」？当前会话打开的页面会关闭。`)) return false;
             await switchAccount(clientSession!.sid, id);
             window.location.reload();
           }}

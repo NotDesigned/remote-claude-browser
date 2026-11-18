@@ -243,7 +243,7 @@
 .map-exit[aria-pressed="true"],
 .map-exit[data-linked="true"],
 .map-group[data-highlight="true"] .profile-entry > .profile-card,
-.profile-entry > .profile-card[aria-pressed="true"] {
+.map-member[data-highlight="true"] .profile-entry > .profile-card {
   border-color: var(--accent);
 }
 .profile-platform {
@@ -273,12 +273,7 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.map-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.map-controls button {
+.map-detail button {
   min-height: 44px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -287,14 +282,6 @@
   color: var(--ink);
   font: inherit;
   cursor: pointer;
-}
-.map-controls .map-open {
-  background: var(--ink);
-  color: var(--surface);
-}
-.map-controls button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 .profile-list {
   display: grid;
@@ -419,6 +406,9 @@ button.profile-card:disabled {
   cursor: wait;
   opacity: 0.65;
   transform: none;
+}
+button.profile-card[data-exit-required="true"]:disabled {
+  cursor: not-allowed;
 }
 button.profile-card:focus-visible {
   outline: 2px solid var(--focus);
