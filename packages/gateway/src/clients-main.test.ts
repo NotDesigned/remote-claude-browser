@@ -289,6 +289,69 @@ async function bindExit(app: FastifyInstance, cookie: string, profileId: string)
 }
 
 describe("multi-user management routes", () => {
+  it("lets admins inspect and end sessions across devices while enforcing per-user creation limits", async () => {
+    const { app } = await fixture(async (paths) => {
+      vi.stubEnv("MIRROR_RUNTIME_SOCKET", "/fixture-runtime.sock");
+      await writeFile(
+        paths.sessions,
+        JSON.stringify([
+          { sid: "client-7", owner: "device-a", clientKey: "first", createdAt: 1 },
+          { sid: "client-8", owner: "device-b", clientKey: "second", createdAt: 2 },
+        ]),
+      );
+    });
+    const admin = withDevice(await login(app), "device-a");
+    const current = (await api(app, admin, "GET", "/api/me")).json().user;
+    await bindExit(app, admin, "default");
+    const bob = await createBob(app, admin);
+    const bobCookie = await login(app, "bob", BOB_PASSWORD);
+    const initial = await api(app, admin, "GET", "/api/admin/overview");
+    expect(initial.statusCode).toBe(200);
+    expect(
+      initial.json().users.find((user: { id: string }) => user.id === current.id),
+    ).toMatchObject({ profileCount: 1, sessionCount: 2, onlineSessions: 0, maxSessions: null });
+    expect(initial.json().sessions).toHaveLength(2);
+    expect(initial.json().sessions[0]).toMatchObject({
+      username: "admin",
+      online: false,
+      running: false,
+    });
+    expect(initial.body).not.toMatch(/clientKey|password_hash|"owner"/);
+    expect((await api(app, bobCookie, "GET", "/api/admin/overview")).statusCode).toBe(403);
+    expect((await api(app, bobCookie, "DELETE", "/api/admin/sessions/client-7")).statusCode).toBe(
+      403,
+    );
+    expect(
+      (await api(app, bobCookie, "PATCH", `/api/users/${bob.id}`, { maxSessions: null }))
+        .statusCode,
+    ).toBe(403);
+    expect(
+      (await api(app, admin, "PATCH", `/api/users/${current.id}`, { maxSessions: 1 })).statusCode,
+    ).toBe(200);
+    const blocked = await api(app, withDevice(admin, "device-new"), "POST", "/api/client/session", {
+      clientKey: "new",
+      account: "default",
+    });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json().code).toBe("USER_SESSION_LIMIT");
+    // Resuming an existing session still reaches the browser boundary despite a lower quota.
+    const resumed = await api(app, admin, "POST", "/api/client/session", {
+      clientKey: "first",
+      sid: "client-7",
+    });
+    expect(resumed.statusCode).toBe(503);
+    expect(resumed.json().code).toBe("BROWSER_TEST_BOUNDARY");
+    expect((await api(app, admin, "GET", "/api/admin/overview")).json().sessions).toHaveLength(2);
+    for (const sid of ["client-7", "client-8"])
+      expect((await api(app, admin, "DELETE", `/api/admin/sessions/${sid}`)).statusCode).toBe(204);
+    const admitted = await api(app, admin, "POST", "/api/client/session", {
+      clientKey: "new",
+      account: "default",
+    });
+    expect(admitted.json().code).toBe("BROWSER_TEST_BOUNDARY");
+    expect((await api(app, admin, "GET", "/api/admin/overview")).json().sessions).toHaveLength(0);
+  });
+
   it("binds remote OAuth opening to the owning session and exit, and suspends CPA with its owner", async () => {
     hooks.cpaStop.mockClear();
     hooks.stopEgress.mockClear();
@@ -1001,7 +1064,14 @@ describe("multi-user management routes", () => {
     const me = (await api(app, admin, "GET", "/api/me")).json().user;
     expect(me).toMatchObject({ username: "admin", role: "admin" });
     const bob = await createBob(app, admin);
-    expect(Object.keys(bob).sort()).toEqual(["createdAt", "enabled", "id", "role", "username"]);
+    expect(Object.keys(bob).sort()).toEqual([
+      "createdAt",
+      "enabled",
+      "id",
+      "maxSessions",
+      "role",
+      "username",
+    ]);
     const bobCookie = await login(app, "bob", BOB_PASSWORD);
     const adminAccounts = (await api(app, admin, "GET", "/api/accounts")).json().accounts;
     const bobAccounts = (await api(app, bobCookie, "GET", "/api/accounts")).json().accounts;

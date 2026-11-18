@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
-import { chromium } from "playwright";
+import { chromium, webkit } from "playwright";
+const engine = process.env.USER_UI_BROWSER ?? "chromium";
 
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use scripts/limited-run.sh");
 const watchdog = setTimeout(() => process.exit(124), 120000);
@@ -13,6 +14,7 @@ const admin = {
   username: "admin",
   role: "admin",
   enabled: true,
+  maxSessions: null,
   createdAt: 1,
 };
 const regular = {
@@ -20,6 +22,7 @@ const regular = {
   username: "reader",
   role: "user",
   enabled: true,
+  maxSessions: null,
   createdAt: 2,
 };
 const users = new Map([[admin.id, { ...admin }]]);
@@ -41,6 +44,7 @@ const bodyJson = async (request) => {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 };
 let browserAdmissions = 0;
+let adminSessionEnded = false;
 let accountPasswordChanged = false;
 const browserSessions = [
   {
@@ -87,6 +91,62 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/logout") return response.writeHead(204).end();
     if (url.pathname === "/gate")
       return response.writeHead(200, { "content-type": "text/html" }).end("<h1>登录</h1>");
+    if (url.pathname === "/api/admin/overview") {
+      if (current.role !== "admin") return json(response, 403, { error: "需要管理员权限" });
+      return json(response, 200, {
+        users: [...users.values()].map((user) => ({
+          ...user,
+          profileCount: 1,
+          sessionCount: user.id === admin.id ? browserSessions.length : 0,
+          onlineSessions:
+            user.id === admin.id ? browserSessions.filter((session) => session.online).length : 0,
+        })),
+        sessions: [
+          ...browserSessions,
+          ...(adminSessionEnded
+            ? []
+            : [
+                {
+                  sid: "client-admin-test",
+                  label: "待结束的会话",
+                  profileId: "default",
+                  profileName: "默认配置",
+                  online: false,
+                  running: false,
+                  createdAt: 3,
+                },
+              ]),
+        ].map((session) => ({
+          ...session,
+          userId: admin.id,
+          username: admin.username,
+          running: session.online,
+        })),
+        runningProfiles: 1,
+        resources: {
+          sampledAt: Date.now(),
+          cpuPercent: 12,
+          cpuCount: 8,
+          memoryUsedBytes: 8 * 1024 ** 3,
+          memoryTotalBytes: 48 * 1024 ** 3,
+          browserMemoryBytes: 2 * 1024 ** 3,
+          browserMemoryLimitBytes: 12 * 1024 ** 3,
+        },
+      });
+    }
+    if (url.pathname.startsWith("/api/admin/sessions/") && request.method === "DELETE") {
+      if (current.role !== "admin") return json(response, 403, { error: "需要管理员权限" });
+      if (url.pathname.endsWith("/client-admin-test")) {
+        adminSessionEnded = true;
+        return response.writeHead(204).end();
+      }
+      const index = browserSessions.findIndex(
+        (session) => session.sid === url.pathname.split("/").at(-1),
+      );
+      if (index < 0) return json(response, 404, { error: "会话已结束" });
+      browserSessions.splice(index, 1);
+      return response.writeHead(204).end();
+    }
     if (url.pathname === "/api/users" || url.pathname.startsWith("/api/users/")) {
       if (current.role !== "admin") return json(response, 403, { error: "没有管理用户的权限" });
       if (request.method === "GET") return json(response, 200, { users: [...users.values()] });
@@ -108,6 +168,7 @@ const server = createServer(async (request, response) => {
               username: body.username,
               role: body.role,
               enabled: true,
+              maxSessions: body.maxSessions ?? null,
               createdAt: Date.now(),
             }
           : { ...users.get(id), ...changes };
@@ -171,15 +232,19 @@ let browser;
 try {
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  browser = await chromium.launch({
-    executablePath: process.env.CHROME_PATH ?? "/opt/claude-test-chrome/chrome",
+  browser = await (engine === "webkit" ? webkit : chromium).launch({
     headless: true,
-    args: [
-      "--no-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      "--renderer-process-limit=1",
-    ],
+    ...(engine === "chromium"
+      ? {
+          executablePath: process.env.CHROME_PATH ?? "/opt/claude-test-chrome/chrome",
+          args: [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--renderer-process-limit=1",
+          ],
+        }
+      : {}),
   });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const page = await context.newPage();
@@ -187,8 +252,8 @@ try {
   page.on("dialog", (dialog) => dialog.accept());
   await page.goto(origin);
   await page.getByRole("button", { name: "工作台", exact: true }).click();
-  await page.getByRole("button", { name: "用户管理", exact: true }).click();
-  const panel = page.getByRole("dialog", { name: "用户管理", exact: true });
+  await page.getByRole("button", { name: "管理后台", exact: true }).click();
+  const panel = page.getByRole("dialog", { name: "管理后台", exact: true });
   await panel.getByLabel("用户名", { exact: true }).fill("fixture-reader");
   await panel.getByLabel("初始密码", { exact: true }).fill("fixture-only-password");
   await Promise.all([
@@ -201,6 +266,17 @@ try {
   const createdId = [...users.values()].find((user) => user.username === "fixture-reader").id;
   assert.equal(users.get(createdId).role, "user");
   checks.adminCreate = true;
+  await panel.getByLabel("会话上限（留空不限）", { exact: true }).fill("3");
+  await panel.getByRole("button", { name: "保存更改", exact: true }).click();
+  await panel.getByText("更改已保存。", { exact: true }).waitFor();
+  assert.equal(users.get(createdId).maxSessions, 3);
+  assert.deepEqual(lastChangeKeys, ["maxSessions"]);
+  await panel.getByLabel("会话上限（留空不限）", { exact: true }).fill("");
+  await panel.getByRole("button", { name: "保存更改", exact: true }).click();
+  await panel.getByText("更改已保存。", { exact: true }).waitFor();
+  assert.equal(users.get(createdId).maxSessions, null);
+  checks.sessionLimitAndUnlimited = true;
+
   await panel.getByLabel("用户名", { exact: true }).fill("fixture-renamed");
   await panel.getByLabel("新密码（留空则保持）", { exact: true }).fill("fixture-new-password");
   await Promise.all([
@@ -237,6 +313,18 @@ try {
   await panel.getByText("用户及其数据已删除。", { exact: true }).waitFor();
   assert.equal(users.has(createdId), false);
   checks.adminDelete = true;
+  await panel.getByRole("button", { name: "资源", exact: true }).click();
+  await panel.getByText("2.0 GB / 12.0 GB", { exact: true }).waitFor();
+  await panel.getByRole("button", { name: "会话", exact: true }).click();
+  await panel.getByLabel("所属用户", { exact: true }).selectOption(admin.id);
+  await panel.getByText("admin · 手机上的会话", { exact: true }).waitFor();
+  const ending = panel.locator(".admin-session-list li").filter({ hasText: "待结束的会话" });
+  await ending.getByRole("button", { name: "结束会话", exact: true }).click();
+  await ending.waitFor({ state: "hidden" });
+  assert.equal(adminSessionEnded, true);
+  checks.adminEndSession = true;
+  checks.adminOverviewAndSessionFilter = true;
+
   const persisted = await page.evaluate(() =>
     JSON.stringify([Object.values(localStorage), Object.values(sessionStorage)]),
   );
@@ -265,8 +353,8 @@ try {
   phone.on("pageerror", (error) => pageErrors.push(error.message));
   await phone.goto(origin);
   await phone.getByRole("button", { name: "工作台", exact: true }).tap();
-  await phone.getByRole("button", { name: "用户管理", exact: true }).tap();
-  const phonePanel = phone.getByRole("dialog", { name: "用户管理", exact: true });
+  await phone.getByRole("button", { name: "管理后台", exact: true }).tap();
+  const phonePanel = phone.getByRole("dialog", { name: "管理后台", exact: true });
   await phonePanel.getByLabel("用户名", { exact: true }).tap();
   await phonePanel.getByLabel("用户名", { exact: true }).fill("手机用户");
   const layout = await phonePanel.evaluate((element) => {
@@ -282,8 +370,19 @@ try {
   assert.ok(layout.left >= 0 && layout.right <= layout.viewport + 1);
   assert.ok(layout.scrollWidth <= layout.clientWidth + 1);
   assert.equal(await phonePanel.getByLabel("用户名", { exact: true }).inputValue(), "手机用户");
-  await phonePanel.getByRole("button", { name: "关闭用户管理", exact: true }).tap();
+  await phonePanel.getByRole("button", { name: "资源", exact: true }).tap();
+  await phonePanel.getByText("2.0 GB / 12.0 GB", { exact: true }).waitFor();
+  assert.ok(await phonePanel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1));
+  await mkdir("artifacts", { recursive: true });
+  await phone.screenshot({ path: `artifacts/admin-resources-${engine}-phone.png` });
+  await phonePanel.getByRole("button", { name: "会话", exact: true }).tap();
+  await phonePanel.getByLabel("所属用户", { exact: true }).selectOption(admin.id);
+  assert.ok(await phonePanel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1));
+  await phonePanel.getByRole("button", { name: "用户", exact: true }).tap();
+  assert.equal(await phonePanel.getByLabel("用户名", { exact: true }).inputValue(), "手机用户");
+  await phonePanel.getByRole("button", { name: "关闭管理后台", exact: true }).tap();
   checks.phoneTouchAndLayout = true;
+
   await phone.getByRole("button", { name: "工作台", exact: true }).tap();
   await phone.getByRole("button", { name: "我的账号", exact: true }).tap();
   const phoneAccount = phone.getByRole("dialog", { name: "我的账号", exact: true });
@@ -306,8 +405,9 @@ try {
     .getByRole("navigation", { name: "工作台导航", exact: true })
     .getByText("reader", { exact: false })
     .waitFor();
-  assert.equal(await reader.getByRole("button", { name: "用户管理", exact: true }).count(), 0);
+  assert.equal(await reader.getByRole("button", { name: "管理后台", exact: true }).count(), 0);
   assert.equal(await reader.evaluate(async () => (await fetch("/api/users")).status), 403);
+  assert.equal(await reader.evaluate(async () => (await fetch("/api/admin/overview")).status), 403);
   checks.regularUserNoAdminEntry = true;
   await reader.getByRole("button", { name: "我的账号", exact: true }).click();
   const account = reader.getByRole("dialog", { name: "我的账号", exact: true });

@@ -40,7 +40,7 @@ profile ownership; website credentials remain in Chrome's profiles. A remembered
 Browser profiles with `proxyId: null` are unassigned. Creating or resuming a session, or switching to an unassigned profile, returns `409 EXIT_REQUIRED` before allocating a new session or launching Chrome. Enable `compose.runtime.yml`, import a shared or private node, then bind it to the profile. New CPA authorizations default to the current browser profile's visible proxy node and require an explicit node; changing a credential proxy also requires a node. Existing unbound credentials and internal instance startup retain their deployment exit.
 
 Each front-end user sees only their own browser configurations and sessions, and can save up to
-eight browser profiles. Sessions have no fixed count limit. New sessions and dormant-session resumes are admitted
+eight browser profiles. Sessions have no global count limit. Admins can set a per-user limit on registered sessions, including dormant ones; null means unlimited and zero blocks new sessions. Lowering a limit leaves existing sessions and reconnects intact. New sessions and dormant-session resumes are admitted
 according to available container and host memory; opening another browser profile reserves additional memory.
 
 Viewer tabs disconnect when hidden and reconnect automatically when shown. Remote pages stay

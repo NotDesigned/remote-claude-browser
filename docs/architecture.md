@@ -46,7 +46,8 @@ Deployment-level Xray remains available for legacy service traffic, separately f
 ```mermaid
 flowchart TB
   Operator[Host operator] --> Infrastructure[Ingress, containers, volumes and backups]
-  Admin[Workbench administrator] --> Users[Users, roles and account status]
+  Admin[Workbench administrator] --> Users[Users, roles, account status and session limits]
+  Admin --> Sessions[All users' session status and session termination]
   Admin --> Sources[All private and shared proxy sources]
   Admin --> Shared[Shared CPA credentials and shared-key revocation]
   User[Each workbench user] --> Profiles[Own browser profiles and device sessions]
@@ -57,7 +58,8 @@ flowchart TB
 ```
 
 Profile operations require ownership. Session control additionally requires the current device;
-“My account” can list and end that user's sessions across devices. Workbench administrators have
+“My account” can list and end that user's sessions across devices. The admin panel lists session
+ownership, profile names, connected/running state and totals, and can end a chosen session. Workbench administrators have
 no direct cross-user profile or private CPA access. Private proxy sources are an explicit exception:
 their owner and administrators may use and manage them. Administrators can reset workbench
 passwords; host operators can access persistent data and remain trusted.
@@ -93,7 +95,7 @@ flowchart TD
   Menu --> Proxy[Proxy sources and node checks]
   Menu --> API[Private/shared CPA, authorization and calling keys]
   Menu --> Account[Password and all own device sessions]
-  Menu --> Users[User management: administrator only]
+  Menu --> Admin[Admin panel: users, sessions and resources]
   API --> Choose[Choose a browser with the OAuth exit]
   Choose --> Picker
   Browser -->|Matching callback capture| API
@@ -126,10 +128,9 @@ release destroys them. Private/link-local destinations are blocked in both addre
 WebRTC signaling stays in isolated worlds. Pixel mode captures X11 including native menus, with
 CDP screencast as its fallback, and keeps the DOM recorder running.
 
-There is no fixed session count limit. New or resumed windows require available memory, and a new
+There is no global session count limit. Admins can set per-user limits on registered sessions, including dormant ones. Existing sessions can reconnect even after the limit is lowered. New or resumed windows require available memory, and a new
 profile reserves additional browser/display headroom. Each user may save eight profiles. Hidden
-viewer tabs disconnect; their windows can be reclaimed on the next sweep. Unexpected disconnects
-have a 60-second grace. Active generation and matching CPA authorization defer reclamation.
+viewer tabs disconnect; offline windows have a 60-second grace. Active generation and matching CPA authorization defer reclamation.
 A profile with no active session closes its browser after 120 seconds. Persistent website login
 survives; dormant window recovery restores URLs rather than unsaved page/form state.
 

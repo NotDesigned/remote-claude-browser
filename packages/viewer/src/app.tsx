@@ -2,7 +2,7 @@ import { ApiError } from "./api";
 /** Viewer shell layout. */
 import { listAccounts, switchAccount, type AccountList } from "./accounts";
 import { currentUser, logout, myBrowserSessions, type FrontendUser } from "./users";
-import { UserPanel } from "./user-panel";
+import { AdminPanel } from "./admin-panel";
 import { AccountPanel } from "./account-panel";
 import type { WorkspaceDestination, WorkspaceMenuProps } from "./workspace-menu";
 import { NetworkPanel } from "./network-panel";
@@ -1201,7 +1201,7 @@ export function App() {
       sessionStorage.removeItem("mirror-cpa-browser");
       setBrowserAuthorization(null);
     }
-    setUserPanelOpen(destination === "users");
+    setUserPanelOpen(destination === "admin");
     setAccountPanelOpen(destination === "account");
     setNetworkPanelOpen(destination === "proxies" || destination === "cpa");
     if (destination === "proxies" || destination === "cpa") setNetworkTab(destination);
@@ -1295,7 +1295,11 @@ export function App() {
         />
       </ShellBar>
       {userPanelOpen && user?.role === "admin" && (
-        <UserPanel current={user} onClose={() => setUserPanelOpen(false)} onChanged={refreshUser} />
+        <AdminPanel
+          current={user}
+          onClose={() => setUserPanelOpen(false)}
+          onChanged={refreshUser}
+        />
       )}
       {accountPanelOpen && user && (
         <AccountPanel

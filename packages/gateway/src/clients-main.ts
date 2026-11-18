@@ -1432,6 +1432,17 @@ export async function startClientGateway(
             request.body?.sid,
           );
           const existing = previous !== undefined;
+          if (
+            !existing &&
+            user.maxSessions != null &&
+            clientSessions.all().filter((record) => userIdForOwner(record.owner) === user.id)
+              .length >= user.maxSessions
+          )
+            throw new ClientSessionError(
+              409,
+              "USER_SESSION_LIMIT",
+              `已达到会话上限（${user.maxSessions} 个），请先结束不再使用的会话`,
+            );
           const profileId =
             previous && userStore.profileOwner(previous.profile ?? DEFAULT_PROFILE) === user.id
               ? (previous.profile ?? DEFAULT_PROFILE)
@@ -2039,34 +2050,88 @@ export async function startClientGateway(
       return clientError(reply, error);
     }
   });
-  app.post<{ Body: { username?: unknown; password?: unknown; role?: unknown } }>(
-    "/api/users",
-    { bodyLimit: 4096 },
-    async (request, reply) => {
-      try {
-        return await accountLifecycle.run(async () => {
-          requireAdmin(request.raw);
-          const user = await userStore.createUser({
-            username: request.body?.username,
-            password: request.body?.password,
-            role: request.body?.role,
-          });
-          try {
-            await defaultProfileFor(user);
-          } catch (error) {
-            userStore.deleteUser(user.id);
-            throw error;
-          }
-          return reply.code(201).send(user);
+  app.get("/api/admin/overview", async (request, reply) => {
+    try {
+      requireAdmin(request.raw);
+      const online = onlineSessions();
+      const users = userStore.listUsers();
+      const sessions = clientSessions.all().map((record) => {
+        const userId = userIdForOwner(record.owner);
+        const profileId = clientSessions.profileOf(record.sid);
+        return {
+          ...clientSessions.describe(record.sid),
+          userId,
+          username: users.find((user) => user.id === userId)?.username ?? "已删除用户",
+          profileId,
+          profileName: accountStore.get(profileId)?.name ?? profileId,
+          online: online.has(record.sid),
+          running: runtimes.has(record.sid),
+          currentDevice: record.owner === currentOwner(request.raw),
+          createdAt: record.createdAt,
+        };
+      });
+      return reply.header("cache-control", "no-store").send({
+        users: users.map((user) => ({
+          ...user,
+          profileCount: userStore.listOwnedProfiles(user.id).length,
+          sessionCount: sessions.filter((session) => session.userId === user.id).length,
+          onlineSessions: sessions.filter((session) => session.userId === user.id && session.online)
+            .length,
+        })),
+        sessions,
+        resources: status(),
+        runningProfiles: accounts.size,
+      });
+    } catch (error) {
+      return clientError(reply, error);
+    }
+  });
+  app.delete<{ Params: { sid: string } }>("/api/admin/sessions/:sid", async (request, reply) => {
+    try {
+      await accountLifecycle.run(async () => {
+        requireAdmin(request.raw);
+        const record = clientSessions.get(request.params.sid);
+        if (!record) throw new ClientSessionError(404, "CLIENT_UNKNOWN", "这个会话已结束");
+        await releaseClientLocked(record.owner, record.sid);
+      });
+      return reply.code(204).send();
+    } catch (error) {
+      return clientError(reply, error);
+    }
+  });
+  app.post<{
+    Body: { username?: unknown; password?: unknown; role?: unknown; maxSessions?: unknown };
+  }>("/api/users", { bodyLimit: 4096 }, async (request, reply) => {
+    try {
+      return await accountLifecycle.run(async () => {
+        requireAdmin(request.raw);
+        const user = await userStore.createUser({
+          username: request.body?.username,
+          password: request.body?.password,
+          role: request.body?.role,
+          maxSessions: request.body?.maxSessions,
         });
-      } catch (error) {
-        return clientError(reply, error);
-      }
-    },
-  );
+        try {
+          await defaultProfileFor(user);
+        } catch (error) {
+          userStore.deleteUser(user.id);
+          throw error;
+        }
+        return reply.code(201).send(user);
+      });
+    } catch (error) {
+      return clientError(reply, error);
+    }
+  });
   app.patch<{
     Params: { id: string };
-    Body: { username?: unknown; password?: unknown; role?: unknown; enabled?: unknown };
+    Body: {
+      username?: unknown;
+      password?: unknown;
+      role?: unknown;
+      enabled?: unknown;
+      maxSessions?: unknown;
+    };
   }>("/api/users/:id", { bodyLimit: 4096 }, async (request, reply) => {
     try {
       return await accountLifecycle.run(async () => {

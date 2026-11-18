@@ -15,6 +15,7 @@ export interface FrontendUser {
   role: UserRole;
   enabled: boolean;
   createdAt: number;
+  maxSessions?: number | null;
 }
 
 export interface UserSession {
@@ -28,6 +29,7 @@ export interface CreateUserInput {
   username: unknown;
   password: unknown;
   role?: unknown;
+  maxSessions?: unknown;
 }
 
 export interface UpdateUserInput {
@@ -35,6 +37,7 @@ export interface UpdateUserInput {
   password?: unknown;
   role?: unknown;
   enabled?: unknown;
+  maxSessions?: unknown;
 }
 
 export interface UserStoreOptions {
@@ -69,6 +72,7 @@ interface UserRow {
   role: UserRole;
   enabled: number;
   created_at: number;
+  max_sessions: number | null;
 }
 
 export interface UserStore {
@@ -144,6 +148,15 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
         value TEXT NOT NULL
       );
     `);
+    if (
+      !db
+        .prepare("PRAGMA table_info(users)")
+        .all()
+        .some((column) => column.name === "max_sessions")
+    )
+      db.exec(
+        "ALTER TABLE users ADD COLUMN max_sessions INTEGER CHECK (max_sessions IS NULL OR max_sessions >= 0)",
+      );
 
     // Dummy verification follows the same scrypt path for an unknown username.
     const dummyHash = `scrypt-v1$${randomBytes(16).toString("hex")}$${randomBytes(64).toString("hex")}`;
@@ -275,12 +288,13 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
       async createUser(input) {
         const username = cleanUsername(input.username);
         const role = cleanRole(input.role ?? "user");
+        const maxSessions = cleanSessionLimit(input.maxSessions ?? null);
         const hash = await hashPassword(input.password);
         const id = `user-${randomUUID()}`;
         try {
           db.prepare(
-            "INSERT INTO users (id, username, username_key, password_hash, role, enabled, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)",
-          ).run(id, username.name, username.key, hash, role, now());
+            "INSERT INTO users (id, username, username_key, password_hash, role, enabled, created_at, max_sessions) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+          ).run(id, username.name, username.key, hash, role, now(), maxSessions);
         } catch (error) {
           if (isUsernameConflict(error)) throw duplicateUsername();
           throw error;
@@ -291,6 +305,8 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
         requireUser(id);
         const username = input.username === undefined ? undefined : cleanUsername(input.username);
         const role = input.role === undefined ? undefined : cleanRole(input.role);
+        const maxSessions =
+          input.maxSessions === undefined ? undefined : cleanSessionLimit(input.maxSessions);
         if (input.enabled !== undefined && typeof input.enabled !== "boolean")
           throw new UserStoreError(400, "USER_ENABLED", "用户状态无效");
         const hash = input.password === undefined ? undefined : await hashPassword(input.password);
@@ -302,13 +318,14 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
               input.enabled === undefined ? current.enabled === 1 : (input.enabled as boolean);
             protectLastAdmin(current, nextRole, enabled);
             db.prepare(
-              "UPDATE users SET username = ?, username_key = ?, password_hash = ?, role = ?, enabled = ? WHERE id = ?",
+              "UPDATE users SET username = ?, username_key = ?, password_hash = ?, role = ?, enabled = ?, max_sessions = ? WHERE id = ?",
             ).run(
               username?.name ?? current.username,
               username?.key ?? current.username_key,
               hash ?? current.password_hash,
               nextRole,
               enabled ? 1 : 0,
+              maxSessions === undefined ? current.max_sessions : maxSessions,
               id,
             );
             if (hash !== undefined || nextRole !== current.role || !enabled)
@@ -435,6 +452,7 @@ function publicUser(row: UserRow): FrontendUser {
     role: row.role,
     enabled: row.enabled === 1,
     createdAt: row.created_at,
+    maxSessions: row.max_sessions,
   };
 }
 
@@ -453,6 +471,13 @@ function cleanRole(role: unknown): UserRole {
   if (role !== "admin" && role !== "user")
     throw new UserStoreError(400, "USER_ROLE", "用户权限无效");
   return role;
+}
+
+function cleanSessionLimit(value: unknown): number | null {
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+    throw new UserStoreError(400, "USER_SESSION_LIMIT", "会话上限需要填写非负整数，或留空表示不限");
+  return value;
 }
 
 function validPassword(value: unknown): value is string {

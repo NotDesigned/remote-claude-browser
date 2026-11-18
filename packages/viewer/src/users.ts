@@ -1,4 +1,5 @@
 import { apiRequest } from "./api";
+import type { ServerStatusMsg } from "@mirror/protocol";
 /** Frontend identities. Browser-site credentials stay inside each user's Chrome profile. */
 export type UserRole = "admin" | "user";
 
@@ -11,6 +12,7 @@ export interface FrontendUser {
 export interface ManagedUser extends FrontendUser {
   enabled: boolean;
   createdAt: number;
+  maxSessions: number | null;
 }
 
 export interface UserChanges {
@@ -18,6 +20,7 @@ export interface UserChanges {
   password?: string;
   role?: UserRole;
   enabled?: boolean;
+  maxSessions?: number | null;
 }
 
 export async function currentUser(fetcher?: typeof fetch): Promise<FrontendUser> {
@@ -30,7 +33,7 @@ export async function listUsers(fetcher?: typeof fetch): Promise<ManagedUser[]> 
 }
 
 export function createUser(
-  details: { username: string; password: string; role: UserRole },
+  details: { username: string; password: string; role: UserRole; maxSessions?: number | null },
   fetcher?: typeof fetch,
 ): Promise<ManagedUser> {
   return apiRequest("/api/users", "POST", details, fetcher);
@@ -51,6 +54,30 @@ export function deleteUser(id: string, fetcher?: typeof fetch): Promise<void> {
 export function logout(fetcher?: typeof fetch): Promise<void> {
   return apiRequest("/logout", "POST", undefined, fetcher);
 }
+
+export interface AdminSession {
+  sid: string;
+  label: string;
+  userId: string;
+  username: string;
+  profileId: string;
+  profileName: string;
+  online: boolean;
+  running: boolean;
+  currentDevice: boolean;
+  createdAt: number;
+}
+
+export interface AdminOverview {
+  users: (ManagedUser & { profileCount: number; sessionCount: number; onlineSessions: number })[];
+  sessions: AdminSession[];
+  resources: ServerStatusMsg;
+  runningProfiles: number;
+}
+
+export const adminOverview = () => apiRequest<AdminOverview>("/api/admin/overview");
+export const endAdminSession = (sid: string) =>
+  apiRequest<void>(`/api/admin/sessions/${encodeURIComponent(sid)}`, "DELETE");
 
 export interface MyBrowserSession {
   sid: string;

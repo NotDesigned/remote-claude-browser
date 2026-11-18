@@ -34,6 +34,7 @@ describe("front-end users", () => {
       role: "admin",
       enabled: true,
       createdAt: 42,
+      maxSessions: null,
     });
     expect(await store.authenticate("ADMIN", PASSWORD)).toEqual(store.bootstrapAdmin);
     expect(await store.authenticate("admin", "incorrect-password")).toBeNull();
@@ -318,4 +319,23 @@ describe("front-end users", () => {
         .every((row) => !Object.keys(row).some((key) => /hash|password|token/.test(key))),
     ).toBe(true);
   });
+});
+
+it("stores session limits without revoking logins and rejects invalid quotas", async () => {
+  const store = await memoryStore();
+  const user = await store.createUser({
+    username: "quota",
+    password: "quota-password",
+    maxSessions: 3,
+  });
+  expect(user.maxSessions).toBe(3);
+  const login = store.issueSession(user.id);
+  await store.updateUser(user.id, { maxSessions: 0 });
+  expect(store.session(login.token)?.maxSessions).toBe(0);
+  for (const maxSessions of [-1, 1.5, "2", true])
+    await expect(store.updateUser(user.id, { maxSessions })).rejects.toMatchObject({
+      code: "USER_SESSION_LIMIT",
+    });
+  await store.updateUser(user.id, { maxSessions: null });
+  expect(store.getUser(user.id)?.maxSessions).toBeNull();
 });

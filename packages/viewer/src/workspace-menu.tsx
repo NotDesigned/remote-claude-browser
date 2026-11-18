@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import type { FrontendUser } from "./users";
 import "./workspace-menu.css";
 
-export type WorkspaceDestination = "profiles" | "proxies" | "cpa" | "users" | "account";
+export type WorkspaceDestination = "profiles" | "proxies" | "cpa" | "admin" | "account";
 export interface WorkspaceMenuProps {
   user: FrontendUser;
   onNavigate(destination: WorkspaceDestination): void;
@@ -42,7 +42,7 @@ export function WorkspaceMenu(props: WorkspaceMenuProps) {
     ["proxies", "代理"],
     ["cpa", "API"],
     ...(props.user.role === "admin"
-      ? [["users", "用户管理"] as [WorkspaceDestination, string]]
+      ? [["admin", "管理后台"] as [WorkspaceDestination, string]]
       : []),
     ["account", "我的账号"],
   ];
