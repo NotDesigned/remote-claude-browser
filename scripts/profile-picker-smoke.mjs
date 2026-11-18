@@ -448,7 +448,7 @@ async function checkPlatformSelection(page, touch = false) {
     confirm = true;
     await press(editor.getByRole("button", { name: "保存系统", exact: true }));
     await editor.waitFor({ state: "hidden" });
-    await card.getByText("系统：Mac", { exact: true }).waitFor();
+    await card.getByText("Mac", { exact: true }).waitFor();
     assert.deepEqual(platformChanges.at(-1), { id: account.id, platform: "macos" });
     await open();
     let navigations = 0;
@@ -466,7 +466,7 @@ async function checkPlatformSelection(page, touch = false) {
     await select.selectOption("linux");
     await press(editor.getByRole("button", { name: "保存系统", exact: true }));
     await editor.waitFor({ state: "hidden" });
-    await card.getByText("系统：Linux（不推荐）", { exact: true }).waitFor();
+    await card.getByText("Linux（不推荐）", { exact: true }).waitFor();
     assert.equal(account.platform, "linux");
     assert.equal(
       admissions.length,
@@ -514,11 +514,20 @@ async function checkMobileKyc(page) {
   await page.route("**/api/accounts", route);
   await page.setViewportSize({ width: 320, height: 568 });
   await page.reload();
+  const sharedExit = page.locator(".map-exit").filter({ hasText: "私有出口" });
+  await sharedExit.click();
+  assert.equal(await sharedExit.count(), 1);
+  assert.equal(
+    await page.locator('.map-group[data-highlight="true"] .map-member').count(),
+    fixtures.length,
+  );
+  await page.getByRole("region", { name: "出口详情" }).waitFor();
   for (const [index, [, label]] of statuses.entries()) {
     const card = page.locator(".profile-card").filter({
       has: page.getByText(fixtures[index].name, { exact: true }),
     });
-    const hint = card.locator(".profile-kyc");
+    await card.click();
+    const hint = page.locator(".map-detail .profile-kyc");
     await hint.getByText(label, { exact: true }).waitFor();
     await hint.scrollIntoViewIfNeeded();
     assert.match(await hint.textContent(), /当前组织/);
@@ -531,14 +540,8 @@ async function checkMobileKyc(page) {
     } else assert.ok(await hint.getByText("打开浏览器后获取", { exact: true }).isVisible());
     assert.ok(await card.evaluate((node) => node.scrollWidth <= node.clientWidth + 1));
   }
-  assert.equal(
-    await page
-      .locator(".profile-card")
-      .filter({ hasText: "已退出验证账号" })
-      .locator(".profile-kyc")
-      .count(),
-    0,
-  );
+  await page.getByRole("button", { name: /已退出验证账号.*未登录/ }).click();
+  assert.equal(await page.locator(".map-detail .profile-kyc").count(), 0);
   assert.equal(admissions.length, before, "reading KYC must not open browser sessions");
   await page.unroute("**/api/accounts", route);
   await page.setViewportSize(viewport);
@@ -565,8 +568,12 @@ try {
   assert.equal(admissions.length, 0, "choosing a configuration must not allocate a session");
   await checkExitHealth(page);
   assert.equal(await page.locator("#shell-bar").isVisible(), false);
-  assert.equal(await page.getByRole("button", { name: /默认配置.*未登录/ }).isDisabled(), true);
-  await page.getByText("请通过 ⋯ 设置出口并绑定节点后打开", { exact: true }).waitFor();
+  await page.getByRole("button", { name: /默认配置.*未登录/ }).click();
+  assert.equal(
+    await page.getByRole("button", { name: "打开浏览器", exact: true }).isDisabled(),
+    true,
+  );
+  await page.getByRole("button", { name: "绑定出口", exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "管理「默认配置」" }).isEnabled(), true);
   await openCardMenu(page, "默认配置");
   await page.getByRole("button", { name: "重命名「默认配置」", exact: true }).waitFor();
@@ -635,7 +642,10 @@ try {
   );
   await defaultProxy.selectOption("proxy-shared");
   await page.getByRole("button", { name: "保存出口", exact: true }).click();
-  await page.getByRole("button", { name: /默认配置.*共享出口/ }).waitFor();
+  await page
+    .getByRole("group", { name: "共享出口", exact: true })
+    .getByRole("button", { name: /默认配置.*未登录/ })
+    .waitFor();
   await page.waitForFunction(
     () => !document.querySelector('button.profile-card[data-exit-required="true"]'),
   );
@@ -724,6 +734,7 @@ try {
     page.waitForResponse((response) => new URL(response.url()).pathname === "/s/client-1/theme"),
   ]);
   await page.getByRole("button", { name: /工作.*work@example.com/ }).click();
+  await page.getByRole("button", { name: "打开浏览器", exact: true }).click();
   await page.waitForURL(/sid=client-1/);
   await initialized;
   assert.equal(admissions.at(-1).account, "p-0123456789");
@@ -760,6 +771,7 @@ try {
   await page.getByRole("button", { name: "浏览器配置", exact: true }).click();
   page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: /默认配置.*未登录/ }).click();
+  await page.getByRole("button", { name: "打开浏览器", exact: true }).click();
   assert.equal(switches.length, 0);
   await page.route("**/api/client/session/client-1/account", (route) =>
     route.fulfill({
@@ -770,6 +782,7 @@ try {
   );
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: /默认配置.*未登录/ }).click();
+  await page.getByRole("button", { name: "打开浏览器", exact: true }).click();
   await page.getByRole("alert").filter({ hasText: "切换暂不可用" }).waitFor();
   await page.waitForResponse((response) => new URL(response.url()).pathname === "/api/accounts");
   await page.waitForTimeout(100);
@@ -788,6 +801,7 @@ try {
     page.waitForResponse((response) => new URL(response.url()).pathname === "/s/client-1/theme"),
   ]);
   await page.getByRole("button", { name: /默认配置.*未登录/ }).click();
+  await page.getByRole("button", { name: "打开浏览器", exact: true }).click();
   await moved;
   await page.locator(".profile-picker").waitFor({ state: "hidden" });
   await switchInitialized;
@@ -1092,6 +1106,7 @@ try {
     .locator(".profile-card")
     .filter({ has: phone.getByText(accounts[1].email, { exact: true }) })
     .tap();
+  await phone.getByRole("button", { name: "打开浏览器", exact: true }).tap();
   await phoneSession;
   await phone.getByRole("button", { name: "工作台", exact: true }).tap();
   await phone.getByRole("button", { name: "浏览器配置", exact: true }).tap();
@@ -1104,6 +1119,7 @@ try {
     new URL(response.url()).pathname.endsWith("/account"),
   );
   await phone.getByRole("button", { name: /默认配置.*未登录/ }).tap();
+  await phone.getByRole("button", { name: "打开浏览器", exact: true }).tap();
   await phoneMoved;
   await phone.getByRole("button", { name: "工作台", exact: true }).tap();
   await phone.getByRole("button", { name: "浏览器配置", exact: true }).tap();

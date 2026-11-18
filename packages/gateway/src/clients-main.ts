@@ -1587,12 +1587,14 @@ export async function startClientGateway(
     }
     return created.id;
   }
-  const describeAccounts = (user: FrontendUser) =>
-    accountStore
+  const describeAccounts = (user: FrontendUser) => {
+    const nodes = new Map(proxyCatalog.listNodes(user).map((node) => [node.id, node]));
+    return accountStore
       .all()
       .filter((record) => userStore.profileOwner(record.id) === user.id)
       .map((record) => {
         const account = accounts.get(record.id);
+        const node = record.proxyId ? nodes.get(record.proxyId) : undefined;
         const live = account?.login.current();
         const exit = account ?? record;
         const hasCookie = live ? live.signedIn : profileSignedIn(accountDir(record.id));
@@ -1608,10 +1610,8 @@ export async function startClientGateway(
           name: record.name,
           ...profileSystem(record.id),
           proxyId: record.proxyId ?? null,
-          proxyName: record.proxyId
-            ? (proxyCatalog.listNodes(user).find((node) => node.id === record.proxyId)?.name ??
-              null)
-            : null,
+          proxyName: node?.name ?? null,
+          proxyVisibility: node?.visibility,
           timeZone: exit.timeZone,
           exitCity: exit.exitCity,
           exitCountry: exit.exitCountry,
@@ -1626,6 +1626,7 @@ export async function startClientGateway(
           onlineSessions: sessions.filter((session) => online.has(session.sid)).length,
         };
       });
+  };
   app.get<{ Querystring: { sid?: string } }>("/api/accounts", async (request, reply) => {
     const owner = currentOwner(request.raw);
     const user = currentUser(request.raw);

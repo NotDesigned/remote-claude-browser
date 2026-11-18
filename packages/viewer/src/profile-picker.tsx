@@ -46,18 +46,6 @@ function remember(id: string) {
   }
 }
 
-/** A stable hue per configuration, so its avatar keeps its colour; the golden angle spreads them. */
-function hue(text: string): number {
-  let value = 0;
-  for (const char of text) value = (value * 31 + char.codePointAt(0)!) >>> 0;
-  return Math.round((value * 137.508) % 360);
-}
-
-function initial(account: AccountInfo): string {
-  const source = account.email ?? account.name;
-  return [...source.trim()][0]?.toUpperCase() ?? "?";
-}
-
 const KYC_LABELS = new Map([
   ["not_required", "当前未要求 KYC"],
   ["created", "KYC 流程已创建"],
@@ -98,7 +86,8 @@ function ProfileCard(props: {
   current: boolean;
   isDefault: boolean;
   disabled: boolean;
-  onPick(): void;
+  selected: boolean;
+  onSelect(): void;
   onRename(): void;
   onDefault(): void;
   onDelete(): void;
@@ -156,13 +145,10 @@ function ProfileCard(props: {
         data-last={props.last}
         data-current={props.current}
         data-exit-required={!account.proxyId}
-        disabled={props.disabled || !account.proxyId}
-        onClick={props.onPick}
-        style={{ "--avatar-hue": hue(account.id) }}
+        disabled={props.disabled}
+        aria-pressed={props.selected}
+        onClick={props.onSelect}
       >
-        <span class="profile-avatar" aria-hidden="true">
-          {initial(account)}
-        </span>
         <span class="profile-text">
           <span class="profile-name">{account.name}</span>
           <span
@@ -186,37 +172,16 @@ function ProfileCard(props: {
                   : "未登录"}
             </span>
           </span>
-          {signedIn && <ProfileKyc account={account} />}
-          <span class="profile-exit">系统：{PLATFORM_LABELS[account.platform]}</span>
-          <span class="profile-exit">
-            出口：{account.proxyName ?? (account.proxyId ? "节点已移除" : "未选择（禁止打开）")}
-          </span>
-          <span class="profile-exit" title={account.timeZone}>
-            时区：{account.timeZone ?? "按出口自动确定"}
-          </span>
-          {account.exitIp && (
-            <span
-              class="profile-exit"
-              title={account.checkedAt ? new Date(account.checkedAt).toLocaleString() : undefined}
-            >
-              启动时 IP：{account.exitIp}
-            </span>
-          )}
-          {!account.proxyId && <span class="profile-exit">请通过 ⋯ 设置出口并绑定节点后打开</span>}
         </span>
         <span class="profile-meta">
+          <span class="profile-platform">{PLATFORM_LABELS[account.platform]}</span>
+          {!account.proxyId && <span class="profile-pending">待绑定</span>}
           {props.isDefault && <span class="profile-badge profile-default-badge">默认</span>}
           {props.current ? (
             <span class="profile-badge profile-current-badge">当前使用</span>
           ) : (
             props.last && <span class="profile-badge">上次使用</span>
           )}
-          {account.sessions > 0 && (
-            <span class="profile-badge profile-session-badge">
-              {account.onlineSessions} 在线 · {account.sessions - account.onlineSessions} 休眠
-            </span>
-          )}
-          {account.running && <span class="profile-badge profile-session-badge">运行中</span>}
         </span>
       </button>
       {exitCheck && (
@@ -307,6 +272,7 @@ export function ProfilePicker(props: {
   const [accounts, setAccounts] = useState<AccountInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [selection, setSelection] = useState<{ profile?: string; exit?: string }>({});
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [defaultId, setDefaultId] = useState<string | null>(null);
@@ -330,6 +296,7 @@ export function ProfilePicker(props: {
   } | null>(null);
   const [refreshAttempt, setRefreshAttempt] = useState(0);
   const input = useRef<HTMLInputElement>(null);
+  const proxySelect = useRef<HTMLSelectElement>(null);
   const platformSelect = useRef<HTMLSelectElement>(null);
   const last = rememberedAccount();
 
@@ -401,6 +368,13 @@ export function ProfilePicker(props: {
       platformSelect.current!.scrollIntoView({ block: "nearest" });
     }
   }, [platformEditor?.account.id]);
+
+  useEffect(() => {
+    if (proxyEditor) {
+      proxySelect.current!.focus();
+      proxySelect.current!.scrollIntoView({ block: "nearest" });
+    }
+  }, [proxyEditor?.account.id]);
 
   const changed = () => {
     setRefreshAttempt((value) => value + 1);
@@ -578,6 +552,28 @@ export function ProfilePicker(props: {
     }
   };
 
+  const groups = new Map<string | null, [AccountInfo, ...AccountInfo[]]>();
+  const visible = (accounts ?? []).filter(
+    (account) => !props.requiredProxyId || account.proxyId === props.requiredProxyId,
+  );
+  visible.sort((a, b) => Number(b.id === defaultId) - Number(a.id === defaultId));
+  for (const account of visible) {
+    const exit = account.proxyId ?? null;
+    const group = groups.get(exit);
+    if (group) group.push(account);
+    else groups.set(exit, [account]);
+  }
+  const selectNode = (next: typeof selection) => {
+    setSelection(next);
+    setEditing(null);
+    setCreating(false);
+    setProxyEditor(null);
+    setPlatformEditor(null);
+    setError(null);
+  };
+  const selected = visible.find((account) => account.id === selection.profile);
+  const selectedGroup = selection.exit ? groups.get(selection.exit) : undefined;
+  const editingAccount = visible.find((account) => account.id === editing);
   return (
     <main class="profile-picker">
       <div class="profile-topbar">
@@ -604,15 +600,9 @@ export function ProfilePicker(props: {
               {props.requiredProxyId ? "选择授权浏览器" : "选择浏览器配置"}
             </h1>
             <p>
-              {props.requiredProxyId ? (
-                "选择与授权使用相同出口的配置，打开后继续授权；也可以新建。"
-              ) : (
-                <>
-                  选择一个配置，继续上次的工作。
-                  <br />
-                  不同配置的网站登录互相独立。
-                </>
-              )}
+              {props.requiredProxyId
+                ? "选择与授权使用相同出口的配置，打开后继续授权；也可以新建。"
+                : "选择浏览器查看详情，或点选出口查看共用它的配置。"}
             </p>
           </header>
           {props.logoutError && (
@@ -638,6 +628,7 @@ export function ProfilePicker(props: {
               <label for="profile-proxy">「{proxyEditor.account.name}」的网络出口</label>
               <select
                 id="profile-proxy"
+                ref={proxySelect}
                 disabled={busy}
                 value={proxyEditor.value}
                 onChange={(event) =>
@@ -704,81 +695,164 @@ export function ProfilePicker(props: {
             </div>
           ) : (
             <div class="profile-list">
-              {[...(accounts ?? [])]
-                .filter(
-                  (account) => !props.requiredProxyId || account.proxyId === props.requiredProxyId,
-                )
-                .sort((a, b) => Number(b.id === defaultId) - Number(a.id === defaultId))
-                .map((account) =>
-                  editing === account.id ? (
-                    <form
-                      key={account.id}
-                      class="profile-card profile-create profile-rename-form"
-                      onSubmit={rename}
-                    >
-                      <label class="profile-editor-label" for="profile-rename-name">
-                        重命名「{account.name}」
-                      </label>
-                      <input
-                        id="profile-rename-name"
-                        ref={input}
-                        aria-label="配置新名称"
-                        value={name}
-                        maxLength={40}
-                        disabled={busy}
-                        onInput={(event) => setName(event.currentTarget.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Escape") {
-                            setEditing(null);
-                            setError(null);
-                          }
-                        }}
-                      />
-                      <button type="submit" disabled={busy || name.trim() === ""}>
-                        {busy ? "保存中…" : "保存"}
-                      </button>
-                      <button
-                        type="button"
-                        class="profile-cancel"
-                        disabled={busy}
-                        onClick={() => {
-                          setEditing(null);
-                          setError(null);
-                        }}
-                      >
-                        取消
-                      </button>
-                    </form>
-                  ) : (
-                    <ProfileCard
-                      key={account.id}
-                      account={account}
-                      last={account.id === last}
-                      current={account.id === props.current}
-                      isDefault={account.id === defaultId}
-                      disabled={busy}
-                      onPick={() => void pick(account.id, account.name)}
-                      onRename={() => {
-                        setError(null);
-                        setCreating(false);
-                        setProxyEditor(null);
-                        setPlatformEditor(null);
-                        setName(account.name);
-                        setEditing(account.id);
-                      }}
-                      onDefault={() => void makeDefault(account.id)}
-                      onDelete={() => void remove(account)}
-                      onProxy={() => void editProxy(account)}
-                      onPlatform={() => {
-                        setError(null);
-                        setCreating(false);
+              {editingAccount && (
+                <form class="profile-card profile-create profile-rename-form" onSubmit={rename}>
+                  <label class="profile-editor-label" for="profile-rename-name">
+                    重命名「{editingAccount.name}」
+                  </label>
+                  <input
+                    id="profile-rename-name"
+                    ref={input}
+                    aria-label="配置新名称"
+                    value={name}
+                    maxLength={40}
+                    disabled={busy}
+                    onInput={(event) => setName(event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
                         setEditing(null);
-                        setProxyEditor(null);
-                        setPlatformEditor({ account, value: account.platform });
-                      }}
-                    />
-                  ),
-                )}
+                        setError(null);
+                      }
+                    }}
+                  />
+                  <button type="submit" disabled={busy || name.trim() === ""}>
+                    {busy ? "保存中…" : "保存"}
+                  </button>
+                  <button
+                    type="button"
+                    class="profile-cancel"
+                    disabled={busy}
+                    onClick={() => {
+                      setEditing(null);
+                      setError(null);
+                    }}
+                  >
+                    取消
+                  </button>
+                </form>
+              )}
+              {accounts !== null && (
+                <div class="profile-map" aria-label="浏览器与网络出口">
+                  <div class="map-head">
+                    <span>浏览器配置</span>
+                    <span>网络出口</span>
+                  </div>
+                  {Array.from(groups, ([exit, members]) => (
+                    <div
+                      class="map-group"
+                      role="group"
+                      aria-label={exit ? (members[0].proxyName ?? "节点已移除") : "待绑定出口"}
+                      key={exit ?? "unbound"}
+                      data-bound={Boolean(exit)}
+                      data-highlight={Boolean(exit && selection.exit === exit)}
+                    >
+                      <div class="map-members">
+                        {members.map((account) => (
+                          <div
+                            class="map-member"
+                            key={account.id}
+                            data-highlight={selected?.id === account.id}
+                          >
+                            <ProfileCard
+                              account={account}
+                              last={account.id === last}
+                              current={account.id === props.current}
+                              isDefault={account.id === defaultId}
+                              disabled={busy}
+                              selected={selected?.id === account.id}
+                              onSelect={() => selectNode({ profile: account.id })}
+                              onRename={() => {
+                                setError(null);
+                                setCreating(false);
+                                setProxyEditor(null);
+                                setPlatformEditor(null);
+                                setName(account.name);
+                                setEditing(account.id);
+                              }}
+                              onDefault={() => void makeDefault(account.id)}
+                              onDelete={() => void remove(account)}
+                              onProxy={() => void editProxy(account)}
+                              onPlatform={() => {
+                                setError(null);
+                                setCreating(false);
+                                setEditing(null);
+                                setProxyEditor(null);
+                                setPlatformEditor({ account, value: account.platform });
+                              }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      {exit && (
+                        <button
+                          type="button"
+                          class="map-exit"
+                          aria-pressed={selection.exit === exit}
+                          data-linked={selected?.proxyId === exit}
+                          disabled={busy}
+                          onClick={() => selectNode({ exit })}
+                        >
+                          <strong>{members[0].proxyName ?? "节点已移除"}</strong>
+                          <span>
+                            {members[0].proxyVisibility === "shared"
+                              ? "共享 · "
+                              : members[0].proxyVisibility === "private"
+                                ? "私有 · "
+                                : ""}
+                            {members.length} 个配置
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {props.requiredProxyId && !visible.length && (
+                    <p class="profile-footnote">暂时没有绑定此出口的浏览器配置。</p>
+                  )}
+                </div>
+              )}
+              {selected && !editing && !creating && !proxyEditor && !platformEditor && (
+                <section class="map-detail" aria-label="配置详情">
+                  <div class="map-summary">
+                    <strong>{selected.name}</strong>
+                    <span>
+                      {PLATFORM_LABELS[selected.platform]} ·{" "}
+                      {selected.proxyName ?? (selected.proxyId ? "节点已移除" : "未绑定出口")}
+                    </span>
+                    {selected.signedIn && selected.email && <span>{selected.email}</span>}
+                    {selected.signedIn && <ProfileKyc account={selected} />}
+                    {selected.timeZone && <span>时区：{selected.timeZone}</span>}
+                    {selected.exitIp && <span>启动时 IP：{selected.exitIp}</span>}
+                    {selected.sessions > 0 && (
+                      <span>
+                        {selected.onlineSessions} 在线 ·{" "}
+                        {selected.sessions - selected.onlineSessions} 休眠
+                      </span>
+                    )}
+                    {selected.running && <span>运行中</span>}
+                  </div>
+                  <div class="map-controls">
+                    <button type="button" disabled={busy} onClick={() => void editProxy(selected)}>
+                      {selected.proxyId ? "更换出口" : "绑定出口"}
+                    </button>
+                    <button
+                      type="button"
+                      class="map-open"
+                      disabled={busy || !selected.proxyId || selected.proxyName === null}
+                      onClick={() => void pick(selected.id, selected.name)}
+                    >
+                      打开浏览器
+                    </button>
+                  </div>
+                </section>
+              )}
+              {selectedGroup && !editing && !creating && !proxyEditor && !platformEditor && (
+                <section class="map-detail" aria-label="出口详情">
+                  <div class="map-summary">
+                    <strong>{selectedGroup[0].proxyName ?? "节点已移除"}</strong>
+                    <span>{selectedGroup.map((account) => account.name).join("、")}</span>
+                  </div>
+                </section>
+              )}
               {creating ? (
                 <form class="profile-card profile-create profile-new-form" onSubmit={create}>
                   <label for="profile-create-name">配置名称</label>

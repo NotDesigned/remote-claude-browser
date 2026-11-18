@@ -46,15 +46,6 @@
   margin-left: auto;
 }
 
-.profile-exit {
-  display: block;
-  margin-top: 4px;
-  color: var(--muted);
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .profile-exit-health {
   padding: 12px 16px;
   color: var(--muted);
@@ -130,7 +121,7 @@
 }
 
 .profile-panel {
-  width: min(560px, 100%);
+  width: min(780px, 100%);
 }
 
 .profile-panel header {
@@ -161,6 +152,150 @@
   line-height: 1.6;
 }
 
+.profile-map {
+  --wire-gap: clamp(24px, 10vw, 108px);
+  --map-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  --wire: color-mix(in srgb, var(--muted) 60%, var(--line));
+  display: grid;
+  gap: 12px;
+  border-block: 1px solid var(--line);
+  padding: 14px 0;
+  background-image: radial-gradient(var(--line) 0.75px, transparent 0.75px);
+  background-size: 14px 14px;
+}
+.map-head,
+.map-group {
+  display: grid;
+  grid-template-columns: var(--map-columns);
+  column-gap: var(--wire-gap);
+}
+.map-head {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.map-members {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.map-member,
+.map-exit {
+  position: relative;
+}
+.map-group[data-bound="true"] .map-member::after,
+.map-exit::before {
+  content: "";
+  position: absolute;
+  width: calc(var(--wire-gap) / 2 + 1px);
+  top: 50%;
+  border-top: 1.5px solid var(--wire);
+  pointer-events: none;
+}
+.map-member::after {
+  left: 100%;
+}
+.map-exit::before {
+  right: 100%;
+}
+.map-group[data-bound="true"] .map-member:not(:only-child)::before {
+  position: absolute;
+  content: "";
+  left: calc(100% + var(--wire-gap) / 2);
+  top: 0;
+  bottom: -10px;
+  border-left: 1.5px solid var(--wire);
+  pointer-events: none;
+}
+.map-group[data-bound="true"] .map-member:first-child:not(:only-child)::before {
+  top: 50%;
+}
+.map-group[data-bound="true"] .map-member:last-child:not(:only-child)::before {
+  bottom: 50%;
+}
+.map-group[data-highlight="true"],
+.map-member[data-highlight="true"] {
+  --wire: var(--accent);
+}
+.map-exit {
+  align-self: center;
+  min-height: 58px;
+  min-width: 0;
+  text-align: left;
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 9px 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.map-exit span,
+.map-summary > span,
+.profile-pending {
+  font-size: 12px;
+  color: var(--muted);
+}
+.map-exit[aria-pressed="true"],
+.map-exit[data-linked="true"],
+.map-group[data-highlight="true"] .profile-entry > .profile-card,
+.profile-entry > .profile-card[aria-pressed="true"] {
+  border-color: var(--accent);
+}
+.profile-platform {
+  font-size: 12px;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+.map-detail {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 11px 14px;
+}
+.map-summary {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.map-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.map-controls button {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+.map-controls .map-open {
+  background: var(--ink);
+  color: var(--surface);
+}
+.map-controls button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .profile-list {
   display: grid;
   gap: 10px;
@@ -170,15 +305,17 @@
   position: relative;
 }
 .profile-entry[data-menu-open="true"] {
-  z-index: 1;
+  z-index: 3;
 }
 .profile-entry > .profile-card {
-  padding-right: 64px;
+  display: grid;
+  gap: 5px;
+  padding: 10px 44px 10px 12px;
 }
 .profile-menu-toggle {
   position: absolute;
-  right: 8px;
-  top: 14px;
+  right: 0;
+  top: 0;
   display: grid;
   place-items: center;
   width: 44px;
@@ -206,7 +343,7 @@
 .profile-actions {
   position: absolute;
   right: 8px;
-  top: 60px;
+  top: 42px;
   z-index: 1;
   display: flex;
   flex-direction: column;
@@ -283,22 +420,6 @@ button.profile-card:disabled {
   opacity: 0.65;
   transform: none;
 }
-button.profile-card[data-exit-required="true"]:disabled {
-  cursor: not-allowed;
-}
-button.profile-card[data-exit-required="true"] {
-  display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
-}
-button.profile-card[data-exit-required="true"] .profile-meta {
-  grid-column: 2;
-  flex-wrap: wrap;
-}
-button.profile-card[data-exit-required="true"] .profile-exit {
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
 button.profile-card:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
@@ -318,15 +439,9 @@ button.profile-card:focus-visible {
   width: 42px;
   height: 42px;
   border-radius: 12px;
-  background: hsl(var(--avatar-hue, 20) 30% 91%);
-  color: hsl(var(--avatar-hue, 20) 45% 30%);
+  background: var(--sunken);
+  color: var(--muted);
   font-size: 18px;
-  font-weight: 600;
-}
-
-:root[data-theme="dark"] .profile-avatar {
-  background: hsl(var(--avatar-hue, 20) 30% 28%);
-  color: hsl(var(--avatar-hue, 20) 60% 82%);
 }
 
 .profile-text {
@@ -394,6 +509,7 @@ button.profile-card:focus-visible {
 
 .profile-meta {
   display: flex;
+  flex-wrap: wrap;
   flex: none;
   align-items: center;
   gap: 6px;
@@ -408,27 +524,10 @@ button.profile-card:focus-visible {
   white-space: nowrap;
 }
 
-.profile-arrow {
-  margin-left: 4px;
-  color: var(--muted);
-  transition: transform 120ms ease;
-}
-
-button.profile-card:hover .profile-arrow {
-  color: var(--accent);
-  transform: translateX(2px);
-}
-
 .profile-new {
   border: 1px dashed var(--line);
   background: transparent;
   box-shadow: none;
-}
-
-.profile-picker .profile-new .profile-avatar {
-  background: var(--sunken);
-  color: var(--muted);
-  font-weight: 400;
 }
 
 .profile-create {
@@ -571,32 +670,14 @@ button.profile-card:hover .profile-arrow {
   .profile-panel h1 {
     font-size: 24px;
   }
-  .profile-entry > .profile-card {
-    display: grid;
-    grid-template-columns: 42px minmax(0, 1fr);
-    gap: 10px;
-  }
-  .profile-meta {
-    grid-column: 2;
-    flex-wrap: wrap;
-  }
-  .profile-exit {
-    white-space: normal;
-    overflow-wrap: anywhere;
-  }
-  .profile-badge {
-    display: none;
-  }
-  .profile-current-badge,
-  .profile-default-badge,
-  .profile-session-badge {
-    display: inline-block;
+  .profile-actions {
+    left: 0;
+    right: auto;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .profile-card,
-  .profile-arrow {
+  .profile-card {
     transition: none;
   }
   .profile-skeleton {

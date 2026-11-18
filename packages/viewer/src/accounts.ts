@@ -27,6 +27,7 @@ export interface AccountInfo {
   unavailable?: boolean;
   proxyId?: string | null;
   proxyName?: string | null;
+  proxyVisibility?: ProxyChoice["visibility"];
   timeZone?: string;
   exitCity?: string;
   exitCountry?: string;

@@ -413,22 +413,9 @@ try {
     const sessionsBeforeExit = sessions.length;
     const profileCard = page.getByRole("button", { name: /默认配置.*未登录/ });
     await profileCard.waitFor();
-    assert.equal(await profileCard.isDisabled(), true);
-    const unboundText = await profileCard.locator(".profile-exit").evaluateAll((lines) =>
-      lines.map((line) => ({
-        scrollWidth: line.scrollWidth,
-        clientWidth: line.clientWidth,
-        scrollHeight: line.scrollHeight,
-        clientHeight: line.clientHeight,
-      })),
-    );
-    assert.ok(
-      unboundText.every(
-        (line) =>
-          line.scrollWidth <= line.clientWidth + 1 && line.scrollHeight <= line.clientHeight + 1,
-      ),
-      JSON.stringify(unboundText),
-    );
+    await click(profileCard);
+    const openBrowser = page.getByRole("button", { name: "打开浏览器", exact: true });
+    assert.equal(await openBrowser.isDisabled(), true);
     await mkdir("artifacts", { recursive: true });
     await page.screenshot({
       path: `artifacts/exit-required-picker-${engine}-${mobile ? "phone" : "desktop"}.png`,
@@ -469,19 +456,19 @@ try {
         type: "profile-proxy",
         input: { proxyId: proxyId || null },
       });
-      await page
-        .getByText(
-          `出口：${proxyId === "proxy-shared" ? "共享出口" : proxyId === "proxy-private" ? "私有出口" : "未选择（禁止打开）"}`,
-          { exact: true },
-        )
-        .waitFor();
-      assert.equal(await profileCard.isDisabled(), proxyId === "");
+      if (proxyId)
+        await page
+          .locator(".map-exit")
+          .getByText(proxyId === "proxy-shared" ? "共享出口" : "私有出口", { exact: true })
+          .waitFor();
+      else await page.getByText("待绑定", { exact: true }).waitFor();
+      assert.equal(await openBrowser.isDisabled(), proxyId === "");
     }
     assert.equal(sessions.length, sessionsBeforeExit);
     // A configured default profile is not a current browser session.
     profileProxyId = "proxy-shared";
     await page.reload();
-    await page.getByText("出口：共享出口", { exact: true }).waitFor();
+    await page.locator(".map-exit").getByText("共享出口", { exact: true }).waitFor();
     await click(page.getByRole("button", { name: "工作台", exact: true }));
     await click(page.getByRole("button", { name: "代理", exact: true }));
     const panel = page.getByRole("dialog", { name: "代理与 API", exact: true });
@@ -769,11 +756,12 @@ try {
     await openExit.selectOption("proxy-private");
     const dialogsBeforeOpenExit = dialogs.length;
     await click(page.getByRole("button", { name: "保存出口", exact: true }));
-    await page.getByText("出口：私有出口", { exact: true }).waitFor();
+    await page.locator(".map-exit").getByText("私有出口", { exact: true }).waitFor();
     assert.equal(dialogs.length, dialogsBeforeOpenExit + 1);
     assert.match(dialogs.at(-1), /IP.*风控/);
     assert.equal(sessions.length, sessionsBeforeExit);
     await click(page.getByRole("button", { name: /默认配置.*未登录/ }));
+    await click(openBrowser);
     await page.waitForURL((url) => url.searchParams.has("sid"));
     await click(page.getByRole("button", { name: "工作台", exact: true }));
     await click(page.getByRole("button", { name: "浏览器配置", exact: true }));
