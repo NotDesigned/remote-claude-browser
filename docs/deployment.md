@@ -97,6 +97,8 @@ docker compose -f compose.yml -f compose.runtime.yml up -d --build
 
 代理服务器支持 IPv4 和 IPv6。Docker 的 `browser` 网络启用双栈，IPv6 子网由 Docker 分配（需要 Docker 27+）；宿主机需要可用的 IPv6 出站路由。配置命名空间只允许 Mihomo 使用上游 IPv6，浏览器的 IPv6 直连仍被阻断，网站 DNS 查询继续经过所选代理。已有 IPv4 网络升级时需要停止连接该网络的服务并重建 `browser` 网络，数据卷与 CPA 内部网络保留。
 
+使用 Docker Desktop 时，保留镜像下载代理，并清空容器透明代理的端口列表：通过 Docker Desktop 设置接口将 `proxy.containers.transparentPorts` 设为 `""`，对应 `settings-store.json` 中的 `ContainersOverrideProxyTransparentPorts`。这样镜像下载继续使用代理，容器的 TCP 80/443 连接则不再被透明代理接管，避免干扰 Mihomo 的 VLESS/REALITY 建链。容器中的浏览器和 CPA 仍通过各自选定的 Mihomo 节点出站。镜像下载依赖代理时，不要直接把 **Containers proxy** 设为 **No proxy**，因为它也会让镜像拉取改为直连。
+
 节点列表和配置卡片提供「检查出口」，显示实测 IP、地区、时区、检查时间和失败状态。运行中的浏览器从自己的网络检测；尚未打开的配置只检查绑定节点，不分配会话。CPA 出口进程异常退出后按 1、2、4 秒有限重试，恢复后保留内部代理地址；故障期间不会直连，更换或删除节点会取消旧恢复任务。重试耗尽后修复节点并手动检查即可重试。浏览器出口进程退出会关闭相应 Chrome，由现有会话恢复流程重新打开。
 
 订阅只提供节点，不接管运行时的规则、端口或管理接口。公开列表仅返回来源与节点的元数据，不返回订阅 URL、节点密码和服务端连接配置。来源与节点保存在 `data` 卷的 `/data/profile/proxy-sources.json`，同样需要按密钥保护。
@@ -106,7 +108,7 @@ docker compose -f compose.yml -f compose.runtime.yml up -d --build
 ```text
 GET    /api/proxy-sources
 POST   /api/proxy-sources                {name, visibility, content 或 url}
-PATCH  /api/proxy-sources/:id             {name?, visibility?, content?}
+PATCH  /api/proxy-sources/:id             {name?, visibility?, content? 或 url?}
 POST   /api/proxy-sources/:id/refresh
 DELETE /api/proxy-sources/:id
 GET    /api/proxies
