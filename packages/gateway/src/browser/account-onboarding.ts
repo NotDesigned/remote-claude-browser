@@ -8,6 +8,7 @@ import type {
 } from "fastify";
 import type { Protocol } from "puppeteer-core";
 import type { TargetRef } from "../types";
+import type { AppleAccountState, AppleAccountStore } from "../auth/apple-accounts";
 import { createAppleAttempts, untilCanceled } from "./account-onboarding-attempts";
 import {
   createVerification,
@@ -20,6 +21,7 @@ const ICLOUD = "https://www.icloud.com/";
 const APPLE_SIGN_IN = "https://idmsa.apple.com/appleauth/auth/authorize/signin";
 const APPLE_ACCOUNT = "https://account.apple.com/account";
 const APPLE_FORM = "https://appleid.apple.com/widget/account/";
+const APPLE_TERMS = [ICLOUD, APPLE_FORM, APPLE_SIGN_IN, APPLE_ACCOUNT];
 const CLAUDE_LOGIN = "https://claude.ai/login";
 const ICLOUD_FLOW_MS = 35_000;
 const APPLE_REGISTRATION_MS = 30_000;
@@ -28,11 +30,13 @@ type Browser = Pick<ClientBrowserScope, "send" | "targets">;
 interface OnboardingSession {
   browser: Browser;
   open(url: string, background?: boolean): Promise<string>;
+  profileId?: string;
 }
 
 interface OnboardingOptions {
   currentUserId(request: IncomingMessage): string | undefined;
   mailbox?: OnboardingMailbox;
+  accounts?: AppleAccountStore;
 }
 
 interface MailAddress {
@@ -105,6 +109,20 @@ export function registerAccountOnboarding(
       return reply.code(409).send({ error: "请先连接当前浏览器" });
   };
   const userId = (request: FastifyRequest) => options.currentUserId(request.raw);
+  const archive = (request: FastifyRequest, sid: string) => {
+    const user = userId(request);
+    const profile = session(sid)?.profileId;
+    if (user && profile && options.accounts) return { user, profile, accounts: options.accounts };
+  };
+  const archiveState = (
+    request: FastifyRequest,
+    sid: string,
+    id: string,
+    state: AppleAccountState,
+  ) => {
+    const entry = archive(request, sid);
+    entry?.accounts.setState(entry.user, entry.profile, id.toLowerCase(), state);
+  };
   const mailboxService = options.mailbox?.enabled ? options.mailbox : undefined;
   const verification = createVerification(mailboxService);
   const attempts = createAppleAttempts();
@@ -119,7 +137,13 @@ export function registerAccountOnboarding(
   const appleAttempt = (sid: string, tab: string, id: string) => {
     const attempt = attempts.get(sid, id);
     const browser = session(sid)?.browser;
-    if (attempt?.tab === tab && browser === attempt.browser && findPage(browser, tab))
+    if (
+      attempt?.tab === tab &&
+      browser === attempt.browser &&
+      (attempt.termsOutcome ||
+        findPage(browser, tab) ||
+        (attempt.guided && attempt.startTab && findPage(browser, attempt.startTab)))
+    )
       return attempt;
   };
   const performApple = async <T>(
@@ -177,6 +201,27 @@ export function registerAccountOnboarding(
     return true;
   };
   const route = "/api/client/session/:sid/onboarding";
+  app.get<{ Params: SessionParams }>(
+    `${route}/apple/accounts`,
+    { preHandler },
+    async (request, reply) => {
+      reply.header("cache-control", "no-store");
+      const entry = archive(request, request.params.sid);
+      return { accounts: entry ? await entry.accounts.list(entry.user, entry.profile) : [] };
+    },
+  );
+  app.get<{ Params: SessionParams & { record: string } }>(
+    `${route}/apple/accounts/:record`,
+    { preHandler },
+    async (request, reply) => {
+      reply.header("cache-control", "no-store");
+      const entry = archive(request, request.params.sid);
+      const account =
+        entry && (await entry.accounts.get(entry.user, entry.profile, request.params.record));
+      if (!account) return reply.code(404).send({ error: "没有这条 Apple 账户记录" });
+      return account;
+    },
+  );
   app.post<{ Params: SessionParams; Querystring: AppleQuery }>(
     `${route}/apple`,
     { preHandler: applePreHandler, schema: { querystring: attemptQuery } },
@@ -199,6 +244,7 @@ export function registerAccountOnboarding(
           if (session(sid)?.browser !== current.browser || !findPage(current.browser, activeTab))
             return appleGone(reply);
           attempt.tab = activeTab;
+          attempt.startTab = tab;
           attempt.guided = guided;
         }
         return { tab: activeTab, options: registration?.value ?? null };
@@ -251,7 +297,24 @@ export function registerAccountOnboarding(
           if (!appleAttempt(sid, tab, id)) return appleGone(reply);
           attempts.refresh(sid, id);
         }
-        if (attempt && result?.value === true) attempt.email = details.email;
+        if (attempt && result?.value === true) {
+          const entry = attempt.guided && archive(request, sid);
+          if (entry && id && request.body.password !== undefined) {
+            const { firstName, lastName, country, birthday, phoneCode, phone, password } =
+              request.body;
+            await entry.accounts.save(entry.user, entry.profile, id.toLowerCase(), {
+              firstName,
+              lastName,
+              country,
+              birthday,
+              phoneCode,
+              phone,
+              email: details.email,
+              password,
+            });
+          }
+          attempt.email = details.email;
+        }
         return {
           filled: result?.value === true,
           watching: watch("apple", details, current, sid, tab, since, signal),
@@ -303,14 +366,28 @@ export function registerAccountOnboarding(
         if (provider === "apple" && id && !attempt) return appleGone(reply);
         const status = verification.status(provider, request.params, userId(request));
         if (!attempt?.guided || !attempt.email) return status;
-        return performApple(reply, attempt.control.signal, async () => ({
-          ...status,
-          challenge: await readAppleChallenge(session(sid)!.browser, tab, attempt.control.signal),
-        }));
+        const { signal } = attempt.control;
+        return performApple(reply, signal, async () => {
+          if (attempt.termsOutcome) return { ...status, challenge: { kind: attempt.termsOutcome } };
+          const browser = session(sid)!.browser;
+          const challenge = await readAppleChallenge(browser, tab, signal);
+          if (challenge.kind === "waiting" || challenge.kind === "complete") {
+            const terms = await findAppleTerms(browser, attempt.startTab ?? tab, signal);
+            if (terms || challenge.kind === "complete") archiveState(request, sid, id!, "created");
+            if (terms) return { ...status, challenge: { kind: "terms", tab: terms.tab } };
+          }
+          return { ...status, challenge };
+        });
       },
     );
   }
-  app.post<{ Params: TabParams; Querystring: AppleQuery; Body: { kind: string; code: string } }>(
+  app.post<{
+    Params: TabParams;
+    Querystring: AppleQuery;
+    Body:
+      | { kind: "captcha" | "email" | "sms"; code: string }
+      | { kind: "terms"; choice: "agree" | "disagree" };
+  }>(
     `${route}/apple/:tab/verification`,
     {
       preHandler: applePreHandler,
@@ -318,10 +395,20 @@ export function registerAccountOnboarding(
       schema: {
         querystring: { ...attemptQuery, required: ["attempt"] },
         body: {
-          type: "object",
-          required: ["kind", "code"],
-          additionalProperties: false,
-          properties: { kind: { enum: ["captcha", "email", "sms"] }, code: requiredText(20) },
+          anyOf: [
+            {
+              type: "object",
+              required: ["kind", "code"],
+              additionalProperties: false,
+              properties: { kind: { enum: ["captcha", "email", "sms"] }, code: requiredText(20) },
+            },
+            {
+              type: "object",
+              required: ["kind", "choice"],
+              additionalProperties: false,
+              properties: { kind: { const: "terms" }, choice: { enum: ["agree", "disagree"] } },
+            },
+          ],
         },
       },
     },
@@ -329,14 +416,41 @@ export function registerAccountOnboarding(
       const { sid, tab } = request.params;
       const attempt = appleAttempt(sid, tab, request.query.attempt!);
       if (!attempt?.guided || !attempt.email) return appleGone(reply);
-      const { kind, code } = request.body;
-      if ((kind !== "captcha" && !/^\d{6}$/.test(code)) || attempt.submitting)
-        return reply.code(409).send({ error: "请检查验证码后重试" });
+      const body = request.body;
+      if (attempt.submitting) return reply.code(409).send({ error: "请等待 Apple 处理上一次提交" });
       const signal = attempt.control.signal;
       const browser = session(sid)!.browser;
       attempt.submitting = true;
       try {
         return await performApple(reply, signal, async () => {
+          if (body.kind === "terms") {
+            if (attempt.termsOutcome) return { challenge: { kind: attempt.termsOutcome } };
+            const root = attempt.startTab ?? tab;
+            if (!(await findAppleTerms(browser, root, signal, body.choice)))
+              return reply
+                .code(409)
+                .send({ error: "未找到可操作的 iCloud 条款，请在 Apple 页面查看" });
+            for (let retry = 0; retry < 8; retry++) {
+              await pause(250, undefined, { signal });
+              if (!(await findAppleTerms(browser, root, signal))) {
+                attempt.termsOutcome = body.choice === "agree" ? "complete" : "declined";
+                archiveState(
+                  request,
+                  sid,
+                  request.query.attempt!,
+                  body.choice === "agree" ? "accepted" : "declined",
+                );
+                attempts.refresh(sid, request.query.attempt!);
+                return { challenge: { kind: attempt.termsOutcome } };
+              }
+            }
+            return reply
+              .code(409)
+              .send({ error: "Apple 的条款页面仍然打开，请在 Apple 页面查看是否需要确认" });
+          }
+          const { kind, code } = body;
+          if (kind !== "captcha" && !/^\d{6}$/.test(code))
+            return reply.code(409).send({ error: "请输入六位验证码" });
           if (kind === "captcha") {
             const focused = await checkForm<boolean>(
               browser,
@@ -706,7 +820,48 @@ interface FormScope {
   mainFrameOnly?: boolean;
   includePopups?: boolean;
   userGesture?: boolean;
+  originOnly?: boolean;
   signal?: AbortSignal;
+}
+
+function findAppleTerms(
+  browser: Browser,
+  tab: string,
+  signal: AbortSignal,
+  choice?: "agree" | "disagree",
+) {
+  return checkForm<boolean>(
+    browser,
+    tab,
+    APPLE_TERMS,
+    `
+    const choice = ${JSON.stringify(choice)};
+    const visible = (element) => element.getClientRects().length &&
+      getComputedStyle(element).visibility === "visible" && !element.closest('[inert], [aria-hidden="true"]');
+    const heading = [...document.querySelectorAll('h1,h2,h3,[role="heading"]')].find((element) =>
+      visible(element) && /^iCloud Terms (?:and|&) Conditions$/i.test(element.innerText.trim()));
+    if (!heading) return null;
+    const findActions = (scope) => {
+      const buttons = [...scope.querySelectorAll('button,[role="button"],input[type="submit"]')].filter(visible);
+      const matching = (label) => buttons.filter((button) =>
+        [button.getAttribute("aria-label"), button.matches("input") ? button.value : button.innerText]
+          .some((text) => text?.trim().toLowerCase() === label));
+      const agree = matching("agree");
+      const disagree = matching("disagree");
+      if (agree.length === 1 && disagree.length === 1) return { agree: agree[0], disagree: disagree[0] };
+    };
+    const scope = heading.closest('dialog,[role="dialog"]') ?? document;
+    const actions = findActions(scope) ?? (scope !== document && findActions(document));
+    if (!actions) return null;
+    if (choice) {
+      const button = actions[choice];
+      if (button.matches(':disabled,[aria-disabled="true"]')) return null;
+      button.click();
+    }
+    return true;
+  `,
+    { includePopups: true, originOnly: true, userGesture: !!choice, signal },
+  );
 }
 
 function findPage(browser: Browser, tab: string) {
@@ -728,7 +883,7 @@ function descendsFrom(page: TargetRef, tab: string, targets: Map<string, TargetR
 async function waitForForm<T>(
   browser: Browser,
   tab: string,
-  form: string,
+  form: string | readonly string[],
   source: string,
   scope?: FormScope,
   deadline = Date.now() + 10_000,
@@ -744,15 +899,17 @@ async function waitForForm<T>(
 async function checkForm<T>(
   browser: Browser,
   tab: string,
-  form: string,
+  form: string | readonly string[],
   source: string,
   scope: FormScope = {},
 ): Promise<{ tab: string; value: T; sessionId: string; frameId: string } | null> {
   const { signal } = scope;
   signal?.throwIfAborted();
-  const { origin, pathname } = new URL(form);
+  const allowed = (typeof form === "string" ? [form] : form).map((url) =>
+    scope.originOnly ? new URL(url).origin : url,
+  );
   const expression = `(async () => {
-    if (location.origin !== ${JSON.stringify(origin)} || location.pathname !== ${JSON.stringify(pathname)}) return null;
+    if (!${JSON.stringify(allowed)}.includes(location.origin ${scope.originOnly ? "" : "+ location.pathname"})) return null;
     ${source}
   })()`;
   const targets = new Map(browser.targets().map((target) => [target.targetId, target]));
@@ -774,7 +931,8 @@ async function checkForm<T>(
       const frames = [frameTree];
       for (const { frame, childFrames } of frames) {
         if (!scope.mainFrameOnly) frames.push(...(childFrames ?? []));
-        if (frame.url.split(/[?#]/, 1)[0] !== form) continue;
+        const url = scope.originOnly ? new URL(frame.url).origin : frame.url.split(/[?#]/, 1)[0]!;
+        if (!allowed.includes(url)) continue;
         const { executionContextId } = (await browser.send(sessionId, "Page.createIsolatedWorld", {
           frameId: frame.id,
           worldName: "workbenchAccountOnboarding",

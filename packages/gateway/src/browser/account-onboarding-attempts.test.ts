@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { setImmediate } from "node:timers/promises";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
+import type { CdpSend } from "../types";
 import type { OnboardingMailbox } from "./account-onboarding-mail";
 import { registerAccountOnboarding } from "./account-onboarding";
 
@@ -31,7 +32,7 @@ function fixture() {
   const listMessages = vi.fn<OnboardingMailbox["listMessages"]>(() => []);
   const readMessage = vi.fn<OnboardingMailbox["readMessage"]>(async () => undefined);
   let browserAvailable = true;
-  const send = vi.fn(async (_sid: string, method: string, params?: Record<string, unknown>) => {
+  const send = vi.fn<CdpSend>(async (_sid, method, params) => {
     if (method === "Page.getFrameTree") {
       return {
         frameTree: {
@@ -99,6 +100,45 @@ function fixture() {
 }
 
 describe("Apple attempt cancellation", () => {
+  it.each([
+    ["agree", "complete"],
+    ["disagree", "declined"],
+  ])("submits the user's iCloud terms choice %s and reports %s", async (choice, outcome) => {
+    const fx = fixture();
+    const send = fx.send.getMockImplementation()!;
+    const url = route + "/tab/verification" + fx.query;
+    const choices: string[] = [];
+    fx.send.mockImplementation(async (sid, method, params) => {
+      if (method === "Runtime.evaluate") {
+        const expression = String(params?.expression);
+        if (expression.includes("iCloud Terms")) {
+          if (params?.contextId !== "home" || choices.length) return { result: { value: null } };
+          const selected = /const choice = "(agree|disagree)"/.exec(expression)?.[1];
+          if (selected) choices.push(selected);
+          return { result: { value: true } };
+        }
+        if (expression.includes('const action = "read"')) return { result: { value: null } };
+      }
+      return send(sid, method, params);
+    });
+    try {
+      expect((await fx.request("POST", route + fx.query + "&guided=true")).statusCode).toBe(200);
+      expect((await fx.fill()).statusCode).toBe(200);
+      expect((await fx.request("GET", url)).json().challenge).toEqual({
+        kind: "terms",
+        tab: "tab",
+      });
+      expect(choices).toEqual([]);
+      expect((await fx.request("POST", url, { kind: "terms", choice })).json().challenge).toEqual({
+        kind: outcome,
+      });
+      expect((await fx.request("GET", url)).json().challenge).toEqual({ kind: outcome });
+      expect(choices).toEqual([choice]);
+    } finally {
+      await fx.app.close();
+    }
+  });
+
   it("aborts an opening wait even with CDP busy and leaves the existing Apple tab", async () => {
     const fx = fixture();
     const pending = deferred<object>();

@@ -18,6 +18,7 @@ try {
   const errors = [];
   const submissions = [];
   const codes = [];
+  const archiveId = "saved-example";
   let stage = "captcha";
   let allowSms = false;
   const image = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
@@ -27,7 +28,32 @@ try {
   );
   await page.route(/\/onboarding\/apple(?:\/|\?)/, (route) => {
     const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/accounts"))
+      return route.fulfill({
+        json: {
+          accounts: [
+            {
+              id: archiveId,
+              firstName: "Preview",
+              lastName: "User",
+              email: "preview@example.com",
+              state: "declined",
+            },
+          ],
+        },
+      });
+    if (url.pathname.endsWith("/accounts/" + archiveId))
+      return route.fulfill({
+        json: {
+          birthday: "2000-01-02",
+          country: "USA",
+          phoneCode: "CN",
+          phone: "2025550100",
+          password: "ExamplePass123!",
+        },
+      });
     if (url.pathname.endsWith("/apple")) {
+      if (route.request().method() === "DELETE") return route.fulfill({ status: 204 });
       assert.equal(url.searchParams.get("guided"), "true");
       return route.fulfill({
         json: {
@@ -40,7 +66,11 @@ try {
       if (route.request().method() === "POST") {
         const body = route.request().postDataJSON();
         codes.push(body);
-        stage = body.kind === "captcha" ? "email" : "complete";
+        if (body.kind === "terms") {
+          stage = "declined";
+          return route.fulfill({ json: { challenge: { kind: stage } } });
+        }
+        stage = body.kind === "captcha" ? "email" : "terms";
         return route.fulfill({ json: { submitted: true } });
       }
       const kind = stage === "email" && allowSms ? "sms" : stage;
@@ -70,11 +100,22 @@ try {
   allowSms = true;
   await page.getByLabel("短信验证码").fill("123456");
   await page.getByRole("button", { name: "验证", exact: true }).click();
-  await page.getByRole("heading", { name: "Apple 账户已创建" }).waitFor();
+  await page.getByRole("heading", { name: "iCloud 条款与条件" }).waitFor();
+  assert.equal(codes.length, 2);
+  await page.getByRole("button", { name: "不同意", exact: true }).click();
+  await page.getByRole("heading", { name: "未接受 iCloud 条款" }).waitFor();
   assert.deepEqual(codes, [
     { kind: "captcha", code: "ABCD" },
     { kind: "sms", code: "123456" },
+    { kind: "terms", choice: "disagree" },
   ]);
+  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await page.getByRole("button", { name: "已保存的 Apple 账户" }).click();
+  await page.getByRole("button", { name: /preview@example.com/ }).click();
+  await page.getByText("出生日期 2000-01-02 · 地区 USA").waitFor();
+  await page.getByRole("button", { name: "复制密码", exact: true }).waitFor();
+  await page.getByRole("button", { name: "用此邮箱登录 Claude", exact: true }).click();
+  assert.equal(await page.getByLabel("邮箱").inputValue(), "preview@example.com");
   assert.equal(submissions.length, 1);
   assert.equal(submissions[0].lastName, generatedLastName);
   assert.equal(submissions[0].firstName, generatedFirstName);

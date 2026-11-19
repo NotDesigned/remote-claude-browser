@@ -1,11 +1,11 @@
 /**
- * Front-end identities and remembered logins. Site credentials stay in Chrome's own profiles;
- * this database stores only service users, password hashes, login-token hashes and profile owners.
+ * Front-end identities, profile ownership, and the encrypted Apple registration archive.
  */
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
 import { chmod, mkdir, open } from "node:fs/promises";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { createAppleAccountStore, type AppleAccountStore } from "./apple-accounts";
 
 export type UserRole = "admin" | "user";
 
@@ -76,6 +76,7 @@ interface UserRow {
 }
 
 export interface UserStore {
+  readonly appleAccounts: AppleAccountStore;
   readonly bootstrapAdmin: FrontendUser;
   authenticate(username: unknown, password: unknown): Promise<FrontendUser | null>;
   issueSession(userId: string, ttlMs?: number): UserSession;
@@ -196,6 +197,10 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
     };
 
     const store: UserStore = {
+      appleAccounts: createAppleAccountStore(
+        db,
+        persistent ? `${options.file}.apple.key` : undefined,
+      ),
       get bootstrapAdmin() {
         const initial = db
           .prepare("SELECT value FROM user_store_meta WHERE key = 'bootstrap_user_id'")

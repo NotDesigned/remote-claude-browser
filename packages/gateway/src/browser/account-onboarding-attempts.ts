@@ -2,9 +2,11 @@ export interface AppleAttempt {
   browser: object;
   control: AbortController;
   tab?: string;
+  startTab?: string;
   guided?: boolean;
   email?: string;
   submitting?: boolean;
+  termsOutcome?: "complete" | "declined";
 }
 
 const ATTEMPT_MS = 10 * 60_000;

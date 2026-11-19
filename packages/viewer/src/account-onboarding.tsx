@@ -24,8 +24,34 @@ interface AppleAttempt {
   seenTabs: Set<string>;
 }
 
+const appleAccountStates = {
+  pending: "待验证",
+  created: "已创建",
+  accepted: "已同意条款",
+  declined: "未同意条款",
+};
+interface SavedAppleAccount {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  state: keyof typeof appleAccountStates;
+}
+interface SavedAppleDetails {
+  birthday: string;
+  country: string;
+  phoneCode: string;
+  phone: string;
+  password: string;
+}
+
 type Step =
   | { name: "start" }
+  | {
+      name: "saved";
+      accounts: SavedAppleAccount[];
+      selected?: SavedAppleAccount & SavedAppleDetails;
+    }
   | { name: "claude"; email?: string }
   | { name: "apple"; apple: AppleRegistration }
   | {
@@ -43,7 +69,9 @@ interface Verification {
   expired: boolean;
   submitted?: boolean;
   challenge?:
-    { kind: "captcha"; image: string } | { kind: "email" | "sms" | "complete" | "waiting" };
+    | { kind: "captcha"; image: string }
+    | { kind: "terms"; tab: string }
+    | { kind: "email" | "sms" | "complete" | "declined" | "waiting" };
 }
 
 interface AccountOnboardingProps {
@@ -83,6 +111,7 @@ export function AccountOnboarding({
   const [showPassword, setShowPassword] = useState(false);
   const [passwordCopied, setPasswordCopied] = useState(false);
   const close = () => {
+    if (step.name === "saved") goTo({ name: "start" });
     setShowPassword(false);
     if (!appleAttempt.current?.controller.signal.aborted) setError(null);
     onClose();
@@ -156,7 +185,12 @@ export function AccountOnboarding({
     const attempt = appleAttempt.current;
     if (!attempt || !browserConnected || !tabs.length) return;
     for (const tab of tabs) attempt.seenTabs.add(tab.id);
-    if (appleTab && attempt.seenTabs.has(appleTab) && !tabs.some(({ id }) => id === appleTab))
+    if (
+      appleTab &&
+      step.name === "apple" &&
+      attempt.seenTabs.has(appleTab) &&
+      !tabs.some(({ id }) => id === appleTab)
+    )
       resetApple(APPLE_TAB_CLOSED);
   }, [appleTab, browserConnected, pending, tabs]);
 
@@ -191,7 +225,9 @@ export function AccountOnboarding({
       !open ||
       !verificationRoute ||
       (guided
-        ? verification.challenge?.kind === "complete"
+        ? pending ||
+          verification.challenge?.kind === "complete" ||
+          verification.challenge?.kind === "declined"
         : !watching || verification.ready || verification.expired)
     )
       return;
@@ -228,6 +264,7 @@ export function AccountOnboarding({
   }, [
     open,
     verificationRoute,
+    pending,
     watching,
     verification.ready,
     verification.expired,
@@ -356,6 +393,18 @@ export function AccountOnboarding({
   const needsAppleDetails =
     step.name === "apple-verification" && !step.filled && !verification.ready;
   const challenge = verification.challenge;
+  const appleEnded = challenge?.kind === "complete" || challenge?.kind === "declined";
+  const decideTerms = (choice: "agree" | "disagree") => {
+    void perform(async () => {
+      const result = await apiRequest<Pick<Verification, "challenge">>(
+        verificationRoute!,
+        "POST",
+        { kind: "terms", choice },
+        appleVerification?.fetcher,
+      );
+      setVerification((value) => ({ ...value, ...result }));
+    }, appleVerification ?? undefined);
+  };
   const manualChallenge =
     challenge?.kind === "captcha" ||
     challenge?.kind === "sms" ||
@@ -441,8 +490,101 @@ export function AccountOnboarding({
               <button type="button" disabled={busy} onClick={() => goTo({ name: "claude" })}>
                 登录 Claude
               </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() =>
+                  void perform(async () => {
+                    const { accounts } = await apiRequest<{ accounts: SavedAppleAccount[] }>(
+                      `${route}/apple/accounts`,
+                    );
+                    goTo({ name: "saved", accounts });
+                  })
+                }
+              >
+                已保存的 Apple 账户
+              </button>
               {appleAttempt.current && cancelAppleButton}
             </div>
+          </section>
+        )}
+        {step.name === "saved" && (
+          <section class="user-panel-form">
+            <h3>已保存的 Apple 账户</h3>
+            {step.selected ? (
+              <>
+                <div>
+                  {step.selected.firstName} {step.selected.lastName}
+                </div>
+                <div class="account-onboarding-address">{step.selected.email}</div>
+                <div>
+                  出生日期 {step.selected.birthday} · 地区 {step.selected.country}
+                </div>
+                <div>
+                  手机号 {step.selected.phone} · 区号地区 {step.selected.phoneCode}
+                </div>
+                <div>{appleAccountStates[step.selected.state]}</div>
+                <div class="user-panel-actions">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const { password } = step.selected!;
+                      void writeLocalClipboard(password).then(
+                        () => setPasswordCopied(true),
+                        (failure: Error) => setError(failure.message),
+                      );
+                    }}
+                  >
+                    {passwordCopied ? "已复制密码" : "复制密码"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const { email } = step.selected!;
+                      goTo({ name: "claude", email });
+                      setMailboxValue(
+                        mailboxes?.addresses.find((address) => address.address === email)?.id ??
+                          PERSONAL_ADDRESS,
+                      );
+                    }}
+                  >
+                    用此邮箱登录 Claude
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => goTo({ name: "saved", accounts: step.accounts })}
+                  >
+                    返回列表
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                {step.accounts.length === 0 && <p>此配置还没有保存的 Apple 账户。</p>}
+                {step.accounts.map((account) => (
+                  <button
+                    type="button"
+                    key={account.id}
+                    disabled={busy}
+                    onClick={() =>
+                      void perform(async () => {
+                        const details = await apiRequest<SavedAppleDetails>(
+                          `${route}/apple/accounts/${encodeURIComponent(account.id)}`,
+                        );
+                        goTo({ ...step, selected: { ...account, ...details } });
+                      })
+                    }
+                  >
+                    {account.email} · {appleAccountStates[account.state]}
+                  </button>
+                ))}
+                <div class="user-panel-actions">
+                  <button type="button" onClick={() => goTo({ name: "start" })}>
+                    返回
+                  </button>
+                </div>
+              </>
+            )}
           </section>
         )}
         {step.name === "apple" &&
@@ -508,7 +650,7 @@ export function AccountOnboarding({
                     {passwordCopied ? "已复制" : "复制"}
                   </button>
                 </div>
-                <p class="user-panel-muted">继续前请保存密码。</p>
+                <p class="user-panel-muted">注册资料和密码会保存到此配置。</p>
               </div>
               <p class="user-panel-muted">接下来完成图形验证码、邮箱和手机验证。</p>
               <div class="user-panel-actions">
@@ -541,9 +683,32 @@ export function AccountOnboarding({
                 ? "请在 Apple 页面补全资料"
                 : challenge?.kind === "complete"
                   ? "Apple 账户已创建"
-                  : "验证 Apple 账户"}
+                  : challenge?.kind === "declined"
+                    ? "未接受 iCloud 条款"
+                    : challenge?.kind === "terms"
+                      ? "iCloud 条款与条件"
+                      : "验证 Apple 账户"}
             </h3>
             <p class="user-panel-muted account-onboarding-address">{step.email}</p>
+            {challenge?.kind === "terms" && (
+              <div class="user-panel-actions">
+                <button
+                  type="button"
+                  class="user-panel-save"
+                  disabled={busy}
+                  onClick={() => decideTerms("agree")}
+                >
+                  同意
+                </button>
+                <button type="button" disabled={busy} onClick={() => decideTerms("disagree")}>
+                  不同意
+                </button>
+                <button type="button" disabled={busy} onClick={() => openTab(challenge.tab)}>
+                  查看 Apple 条款原文
+                </button>
+              </div>
+            )}
+            {challenge?.kind === "declined" && <p role="status">向导已结束。账户资料已保存。</p>}
             {!needsAppleDetails && challenge?.kind === "email" && !manualChallenge && (
               <div role="status" class="account-onboarding-progress">
                 <span>
@@ -614,30 +779,42 @@ export function AccountOnboarding({
                 </div>
               </form>
             )}
-            <div class="user-panel-actions">
-              <button type="button" disabled={busy} onClick={() => openTab(step.tab)}>
-                {needsAppleDetails ? "前往 Apple 补填" : "在 Apple 页面继续"}
-              </button>
-              <button
-                type="button"
-                class={challenge?.kind === "complete" ? "user-panel-save" : undefined}
-                disabled={busy}
-                onClick={() => {
-                  stopApple();
-                  goTo({ name: "claude", email: step.email });
-                  setMailboxValue(step.mailboxId ?? PERSONAL_ADDRESS);
-                  void perform(() =>
-                    openClaude(
-                      step.mailboxId ? { mailboxId: step.mailboxId } : { email: step.email },
-                      step.email,
-                    ),
-                  );
-                }}
-              >
-                用此邮箱登录 Claude
-              </button>
-              {cancelAppleButton}
-            </div>
+            {challenge?.kind !== "terms" && (
+              <div class="user-panel-actions">
+                {!appleEnded && (
+                  <button type="button" disabled={busy} onClick={() => openTab(step.tab)}>
+                    {needsAppleDetails ? "前往 Apple 补填" : "在 Apple 页面继续"}
+                  </button>
+                )}
+                {challenge?.kind !== "declined" && (
+                  <button
+                    type="button"
+                    class={challenge?.kind === "complete" ? "user-panel-save" : undefined}
+                    disabled={busy}
+                    onClick={() => {
+                      stopApple();
+                      goTo({ name: "claude", email: step.email });
+                      setMailboxValue(step.mailboxId ?? PERSONAL_ADDRESS);
+                      void perform(() =>
+                        openClaude(
+                          step.mailboxId ? { mailboxId: step.mailboxId } : { email: step.email },
+                          step.email,
+                        ),
+                      );
+                    }}
+                  >
+                    用此邮箱登录 Claude
+                  </button>
+                )}
+                {appleEnded ? (
+                  <button type="button" onClick={() => resetApple()}>
+                    完成
+                  </button>
+                ) : (
+                  cancelAppleButton
+                )}
+              </div>
+            )}
           </section>
         )}
         {step.name === "claude" && (

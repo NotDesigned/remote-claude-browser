@@ -1920,13 +1920,14 @@ export async function startClientGateway(
       if (!runtime) return;
       return {
         browser: runtime.browser,
+        profileId: runtime.account.id,
         async open(url, background) {
           if (!background) await stopPixels(runtime);
           return runtime.tabs.open(url, background);
         },
       };
     },
-    { currentUserId, mailbox },
+    { currentUserId, mailbox, accounts: userStore.appleAccounts },
   );
   app.get<{ Params: { sid: string } }>(
     "/s/:sid/theme",
