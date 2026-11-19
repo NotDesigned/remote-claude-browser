@@ -6,7 +6,7 @@ import {
   type Up,
 } from "@mirror/protocol";
 import type { ViewMode } from "./client-session";
-import { extractSnapshotViewport, type Mirror } from "./mirror";
+import { extractSnapshotViewport, fitViewportScale, type Mirror } from "./mirror";
 import { createPxView, type PxView } from "./pxview";
 import { videoOption } from "./px-video";
 import type { GatewayConnectionState } from "./ws";
@@ -44,6 +44,7 @@ export function createPresentation(options: PresentationOptions) {
   let ready = false;
   let reconnecting = false;
   let viewport: Viewport | undefined;
+  let viewportLimit: Extract<Down, { t: "hello" }>["viewportLimit"];
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;
   let activating: { tab: TabId; until: number } | undefined;
   let pixels: PxView | undefined;
@@ -62,21 +63,30 @@ export function createPresentation(options: PresentationOptions) {
     options.onInputReady(ready);
   };
 
-  const deviceScale = () => host.ownerDocument.defaultView?.devicePixelRatio || 1;
-  const viewportMatchesHost = () =>
-    viewport?.tab === tab &&
-    viewport.w === host.clientWidth &&
-    viewport.h === host.clientHeight &&
-    viewport.dpr === deviceScale();
+  const measureViewport = () => {
+    const { clientWidth: width, clientHeight: height } = host;
+    const dpr = host.ownerDocument.defaultView?.devicePixelRatio || 1;
+    if (!viewportLimit || width <= 0 || height <= 0) return { w: width, h: height, dpr };
+    const scale = Math.min(
+      1,
+      fitViewportScale(width, height, viewportLimit.width, viewportLimit.height),
+    );
+    return {
+      w: Math.max(1, Math.round(width * scale)),
+      h: Math.max(1, Math.round(height * scale)),
+      dpr,
+    };
+  };
+  const viewportMatchesHost = ({ w, h, dpr } = measureViewport()) =>
+    viewport?.tab === tab && viewport.w === w && viewport.h === h && viewport.dpr === dpr;
 
   const reportViewport = () => {
     resizeTimer = undefined;
-    if (!driver || tab === null || viewportMatchesHost()) return;
-    const w = host.clientWidth;
-    const h = host.clientHeight;
-    if (w <= 0 || h <= 0) return;
+    if (!driver || tab === null) return;
+    const measured = measureViewport();
+    if (measured.w <= 0 || measured.h <= 0 || viewportMatchesHost(measured)) return;
     inputReady(false);
-    viewport = { t: "view", tab, w, h, dpr: deviceScale() };
+    viewport = { t: "view", tab, ...measured };
     send(viewport);
   };
   const scheduleViewport = (delay = 0) => {
@@ -209,6 +219,7 @@ export function createPresentation(options: PresentationOptions) {
       switch (message.t) {
         case "hello": {
           mirror.handle(message);
+          viewportLimit = message.viewportLimit;
           const resumed =
             reconnecting &&
             tab !== null &&

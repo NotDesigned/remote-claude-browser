@@ -161,7 +161,7 @@ describe("createScreencast", () => {
     };
     const px = { t: "mode", tab: "tab-1", mode: "px", quality: "sharp", video: true } as const;
 
-    it("widens the window and zooms a high-density page to reach device resolution", async () => {
+    it("captures at device resolution with the original desktop screen dimensions", async () => {
       const { hub, pressed, metrics, controller } = await setup(2);
       await controller.handle(px);
       expect(pressed).toEqual([2]);
@@ -172,8 +172,8 @@ describe("createScreencast", () => {
           height: 1800,
           deviceScaleFactor: 1,
           mobile: false,
-          screenWidth: 2880,
-          screenHeight: 1800,
+          screenWidth: 1920,
+          screenHeight: 1080,
           positionX: 0,
           positionY: 0,
         },

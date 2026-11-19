@@ -53,7 +53,7 @@ export interface Mirror {
   getIframe(): HTMLIFrameElement | null;
   getReplayer(): Replayer | null;
   observeRtt(rttMs: number): void;
-  /** Recompute follower fit scaling after the outer viewer changes size. */
+  /** Recompute how the remote viewport fits after the viewer changes size. */
   refreshViewportLayout(): void;
   /** Lets go of hidden pages of tabs that no longer exist. */
   keepTabs(tabs: readonly TabId[]): void;
@@ -247,18 +247,19 @@ export function createMirror(opts: MirrorOpts): Mirror {
     live.mount.dataset.viewportRole = isDriver ? "driver" : "follower";
     opts.container.dataset.viewportRole = isDriver ? "driver" : "follower";
     const viewport = live.viewport;
-    if (isDriver || viewport === null) {
+    const { clientWidth, clientHeight } = opts.container;
+    if (
+      viewport === null ||
+      (isDriver && viewport.w === clientWidth && viewport.h === clientHeight)
+    ) {
+      delete live.mount.dataset.fit;
       live.mount.style.width = "";
       live.mount.style.height = "";
       live.mount.style.transform = "";
       return;
     }
-    const scale = fitViewportScale(
-      viewport.w,
-      viewport.h,
-      opts.container.clientWidth,
-      opts.container.clientHeight,
-    );
+    const scale = fitViewportScale(viewport.w, viewport.h, clientWidth, clientHeight);
+    live.mount.dataset.fit = "true";
     live.mount.style.width = `${viewport.w}px`;
     live.mount.style.height = `${viewport.h}px`;
     live.mount.style.transform = `scale(${scale})`;

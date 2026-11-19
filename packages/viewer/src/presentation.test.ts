@@ -77,6 +77,31 @@ function fixture(entryTab: string | null = null) {
 afterEach(() => vi.useRealTimers());
 
 describe("viewer presentation", () => {
+  it("fits an oversized desktop layout and unlocks input at the fitted geometry", () => {
+    const { controller, host, send } = fixture();
+    host.clientWidth = 3200;
+    host.clientHeight = 1800;
+    send.mockClear();
+    controller.handle({
+      t: "hello",
+      viewerId: "me",
+      role: "driver",
+      sessionId: "fixture",
+      viewportLimit: { width: 1920, height: 1080 },
+    });
+    vi.runOnlyPendingTimers();
+    expect(send).toHaveBeenCalledExactlyOnceWith({ t: "view", tab: "a", w: 1920, h: 1080, dpr: 1 });
+    controller.snapshotApplied(snapshot("a", 1920, 1080));
+    expect(controller.canInput("a", "dom")).toBe(true);
+    send.mockClear();
+    host.clientWidth = 3840;
+    host.clientHeight = 2160;
+    controller.resized();
+    vi.runOnlyPendingTimers();
+    expect(send).not.toHaveBeenCalled();
+    expect(controller.canInput("a", "dom")).toBe(true);
+  });
+
   it("blocks input during a tab change and negotiates again on a quick return", () => {
     const { controller, sent, host } = fixture();
     controller.snapshotApplied(snapshot());

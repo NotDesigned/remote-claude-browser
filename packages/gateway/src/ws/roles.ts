@@ -19,6 +19,7 @@ export interface RoleConnectionOptions {
   send: RoleSender;
   viewerId?: string;
   name?: string;
+  viewportLimit?: Extract<Down, { t: "hello" }>["viewportLimit"];
   /** Tabs this connection resumed from the viewer's cursor; echoed in `hello`. */
   resumed?: string[];
 }
@@ -124,6 +125,7 @@ export function createRoleManager(options: RoleManagerOptions = {}): RoleManager
         role: session.driverId === viewerId ? "driver" : "viewer",
         sessionId: peer.sessionId,
         serverTs: now(),
+        ...(connection.viewportLimit && { viewportLimit: connection.viewportLimit }),
         ...(connection.resumed?.length ? { resumed: [...connection.resumed] } : {}),
       });
       broadcastState(session);

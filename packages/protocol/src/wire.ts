@@ -87,6 +87,8 @@ export type Down =
       viewerId: string;
       role: "driver" | "viewer";
       sessionId: string;
+      /** Desktop dimensions available for the page layout in this workspace. */
+      viewportLimit?: { width: number; height: number };
       /** Gateway wall-clock reference for viewer clock-skew estimation. */
       serverTs?: number;
       /**

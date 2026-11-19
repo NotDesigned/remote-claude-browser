@@ -209,12 +209,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       deviceScaleFactor: zoom > 1 || state.hub.pixelGrabbing ? 1 : viewport.dpr,
       // Browser zoom has no effect on a mobile viewport. The layout is the same width either way.
       mobile: opts.mobile === true && zoom <= 1,
-      ...screenMetrics(
-        Math.round(viewport.w * zoom),
-        Math.round(viewport.h * zoom),
-        opts.mobile === true && zoom <= 1,
-        opts.screen,
-      ),
+      ...screenMetrics(viewport.w, viewport.h, opts.mobile === true, opts.screen),
     });
   };
   const pageDensity = async (state: TabState): Promise<number> => {

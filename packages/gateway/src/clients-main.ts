@@ -546,6 +546,7 @@ export async function startClientGateway(
         inviteRole: "driver",
         viewerId: id,
         send: (message, serialized) => viewer.send(message, serialized),
+        viewportLimit: clientSessions.get(sid)?.phone ? undefined : runtime.account.identity.screen,
         resumed,
       });
       viewer.send(

@@ -5,7 +5,7 @@ export interface Screen {
 
 export const DEFAULT_SCREEN: Screen = { width: 1920, height: 1080 };
 
-/** The account's own screen, not the shared X display the browser's windows are placed on. */
+/** Screen dimensions use the logical page viewport before capture magnification. */
 export function screenMetrics(
   width: number,
   height: number,

@@ -1093,5 +1093,17 @@ describe("D10 recovery triggers", () => {
       transform: "scale(0.5)",
     });
     expect(applied).toEqual([{ epoch: 1, reason: "viewport" }]);
+
+    const host = container as unknown as FakeElement;
+    host.clientWidth = 2400;
+    host.clientHeight = 1350;
+    mirror.handle({ t: "driver", viewerId: "follower-1" });
+    expect(mount.dataset.viewportRole).toBe("driver");
+    expect(mount.dataset.fit).toBe("true");
+    expect(mount.style).toMatchObject({
+      width: "1600px",
+      height: "900px",
+      transform: "scale(1.5)",
+    });
   });
 });
