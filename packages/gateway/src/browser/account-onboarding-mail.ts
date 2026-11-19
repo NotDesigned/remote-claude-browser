@@ -17,6 +17,7 @@ interface Message extends MessageSummary {
 export interface OnboardingMailbox {
   readonly enabled: boolean;
   getAddress(owner: string, mailboxId: string): { id: string; address: string } | undefined;
+  listAddresses?(owner: string): { id: string; address: string }[];
   listMessages(owner: string, mailboxId: string, since?: number): MessageSummary[];
   readMessage(owner: string, mailboxId: string, messageId: string): Promise<Message | undefined>;
 }
@@ -49,10 +50,17 @@ const mailSubject = {
   claude: /^secure link to log in to claude\.ai$/i,
 };
 
-function isVerificationMail(provider: Provider, mail: MessageSummary) {
+export const isAppleRelayEmail = (address: string) =>
+  /^[a-z0-9._%+~-]+@(?:privaterelay\.appleid\.com|private\.icloud\.com)$/i.test(address);
+
+function isVerificationMail({ provider, email }: Verification, mail: MessageSummary) {
   const from = mail.from.trim();
   const address = /<([^<>]+)>$/.exec(from)?.[1] ?? from;
-  return senderDomain[provider].test(address) && mailSubject[provider].test(mail.subject.trim());
+  return (
+    mailSubject[provider].test(mail.subject.trim()) &&
+    (senderDomain[provider].test(address) ||
+      (provider === "claude" && isAppleRelayEmail(email) && isAppleRelayEmail(address)))
+  );
 }
 
 function appleCode(mail: Message): string | undefined {
@@ -101,7 +109,7 @@ export function createVerification(mailbox?: OnboardingMailbox) {
     try {
       while (active(key, job)) {
         try {
-          if (!job.ready || job.provider === "claude") {
+          if (!job.ready || (job.provider === "claude" && !job.apply)) {
             const messages = box
               .listMessages(job.owner, job.mailboxId, job.since)
               .filter(
@@ -109,7 +117,7 @@ export function createVerification(mailbox?: OnboardingMailbox) {
                   mail.receivedAt >= job.since &&
                   mail.receivedAt > job.latest &&
                   !job.seen.has(mail.id) &&
-                  isVerificationMail(job.provider, mail),
+                  isVerificationMail(job, mail),
               )
               .sort((a, b) => b.receivedAt - a.receivedAt);
             for (const { id } of messages) {
@@ -118,17 +126,17 @@ export function createVerification(mailbox?: OnboardingMailbox) {
               );
               if (!active(key, job)) return;
               job.seen.add(id);
-              if (!mail?.authenticated || !isVerificationMail(job.provider, mail)) continue;
+              if (!mail?.authenticated || !isVerificationMail(job, mail)) continue;
               const value =
                 job.provider === "apple" ? appleCode(mail) : claudeLink(mail, job.email);
               if (!value) continue;
               job.pending = value;
               job.latest = mail.receivedAt;
-              if (job.provider === "claude") job.ready = true;
+              if (job.provider === "claude" && !job.apply) job.ready = true;
               break;
             }
             const code = job.pending;
-            if (job.provider === "apple" && code) {
+            if (code && job.apply) {
               const action = await untilCanceled(job.signal, () => job.apply!(code));
               if (action) {
                 job.ready = true;
@@ -170,7 +178,7 @@ export function createVerification(mailbox?: OnboardingMailbox) {
       return {
         ready: job?.ready ?? false,
         expired: !job,
-        ...(provider === "apple" && job?.pending && { received: true }),
+        ...(job?.pending && (provider === "apple" || job.apply) && { received: true }),
         ...(job?.submitted && { submitted: true }),
       };
     },

@@ -40,6 +40,56 @@ function mailFixture() {
 }
 
 describe("mail verification", () => {
+  it("opens an authenticated Apple-forwarded link for the saved relay address only", async () => {
+    const { mailbox, messages, context, tab } = mailFixture();
+    const email = "a1b2c3@private.icloud.com";
+    const link = (address: string) =>
+      `https://claude.ai/magic-link#0123456789abcdef0123456789abcdef:${Buffer.from(address).toString("base64")}`;
+    const mail = {
+      from: "Relay <forwarded@privaterelay.appleid.com>",
+      subject: "Secure link to log in to Claude.ai",
+    };
+    messages.push(
+      {
+        ...mail,
+        id: "valid",
+        text: link(email),
+        receivedAt: context.since + 1,
+        authenticated: true,
+      },
+      {
+        ...mail,
+        id: "wrong-account",
+        text: link(context.email),
+        receivedAt: context.since + 2,
+        authenticated: true,
+      },
+      {
+        ...mail,
+        id: "unauthenticated",
+        text: link(email),
+        receivedAt: context.since + 3,
+        authenticated: false,
+      },
+    );
+    const apply = vi.fn(async () => "submitted" as const);
+    const verification = createVerification(mailbox);
+    try {
+      verification.start({ ...context, provider: "claude", email, apply });
+      await vi.waitFor(() =>
+        expect(verification.status("claude", tab, "alice")).toEqual({
+          ready: true,
+          submitted: true,
+          expired: false,
+        }),
+      );
+      expect(apply).toHaveBeenCalledExactlyOnceWith(link(email));
+      expect(verification.status("claude", tab, "bob").expired).toBe(true);
+    } finally {
+      verification.close();
+    }
+  });
+
   it("uses current authenticated mail for the same alias and opens the newest official link once", async () => {
     const { mailbox, messages, readMessage, context, tab } = mailFixture();
     const token = "0123456789abcdef0123456789abcdef";

@@ -43,6 +43,7 @@ interface SavedAppleDetails {
   phoneCode: string;
   phone: string;
   password: string;
+  relayEmail?: string;
 }
 
 type Step =
@@ -52,7 +53,8 @@ type Step =
       accounts: SavedAppleAccount[];
       selected?: SavedAppleAccount & SavedAppleDetails;
     }
-  | { name: "claude"; email?: string }
+  | { name: "claude" }
+  | { name: "claude-apple"; record: string; relayEmail?: string }
   | { name: "apple"; apple: AppleRegistration }
   | {
       name: "apple-verification" | "claude-verification";
@@ -60,7 +62,8 @@ type Step =
       watching: boolean;
       filled: boolean;
       email: string;
-      mailboxId?: string;
+      automatic?: boolean;
+      requested?: boolean;
     };
 
 interface Verification {
@@ -290,6 +293,12 @@ export function AccountOnboarding({
     onOpenTab(tab);
     close();
   };
+  useEffect(() => {
+    if (!open || step.name !== "claude-verification" || !step.automatic || !verification.submitted)
+      return;
+    goTo({ name: "start" });
+    openTab(step.tab);
+  }, [open, step, verification.submitted]);
   const openApple = () => {
     if (appleAttempt.current) return;
     const controller = new AbortController();
@@ -344,6 +353,34 @@ export function AccountOnboarding({
     else goTo({ name: "start" });
     openTab(tab);
   };
+  const openAppleClaude = async (record: string, relayEmail?: string) => {
+    const result = await apiRequest<{
+      tab: string;
+      email: string;
+      filled: boolean;
+      requested: boolean;
+      watching: boolean;
+    }>(
+      `${route}/apple/accounts/${encodeURIComponent(record)}/claude`,
+      "POST",
+      relayEmail ? { relayEmail } : {},
+    );
+    goTo({ name: "claude-verification", automatic: true, ...result });
+  };
+  useEffect(() => {
+    if (!open || step.name !== "claude-apple" || step.relayEmail) return;
+    const controller = new AbortController();
+    const path = `${route}/apple/accounts/${encodeURIComponent(step.record)}`;
+    void apiRequest<SavedAppleDetails>(path, "GET", undefined, (input, init) =>
+      fetch(input, { ...init, signal: controller.signal }),
+    ).then(
+      ({ relayEmail }) => {
+        if (relayEmail && !controller.signal.aborted) setStep({ ...step, relayEmail });
+      },
+      () => {},
+    );
+    return () => controller.abort();
+  }, [open, route, step]);
   const submitForm = async (form: FormData, attempt?: AppleAttempt) => {
     const service = attempt ? "Apple" : "Claude";
     let email = String(form.get("email") ?? "").trim();
@@ -382,7 +419,6 @@ export function AccountOnboarding({
         filled,
         watching,
         email,
-        mailboxId: "mailboxId" in identity ? identity.mailboxId : undefined,
       });
     }
     if (step.name === "claude") await openClaude(identity, email);
@@ -433,14 +469,7 @@ export function AccountOnboarding({
       {mailboxes && selectedMailbox === PERSONAL_ADDRESS && (
         <label>
           邮箱
-          <input
-            name="email"
-            type="email"
-            defaultValue={step.name === "claude" ? step.email : undefined}
-            autoComplete="email"
-            maxLength={254}
-            required
-          />
+          <input name="email" type="email" autoComplete="email" maxLength={254} required />
         </label>
       )}
       {!mailboxes && (
@@ -524,6 +553,9 @@ export function AccountOnboarding({
                   手机号 {step.selected.phone} · 区号地区 {step.selected.phoneCode}
                 </div>
                 <div>{appleAccountStates[step.selected.state]}</div>
+                {step.selected.relayEmail && (
+                  <div class="account-onboarding-address">Claude {step.selected.relayEmail}</div>
+                )}
                 <div class="user-panel-actions">
                   <button
                     type="button"
@@ -539,17 +571,27 @@ export function AccountOnboarding({
                   </button>
                   <button
                     type="button"
+                    disabled={busy}
                     onClick={() => {
-                      const { email } = step.selected!;
-                      goTo({ name: "claude", email });
-                      setMailboxValue(
-                        mailboxes?.addresses.find((address) => address.address === email)?.id ??
-                          PERSONAL_ADDRESS,
-                      );
+                      const { id, relayEmail } = step.selected!;
+                      if (relayEmail) void perform(() => openAppleClaude(id));
+                      else goTo({ name: "claude-apple", record: id });
                     }}
                   >
-                    用此邮箱登录 Claude
+                    {step.selected.relayEmail ? "登录 Claude" : "设置 Claude 转发邮箱"}
                   </button>
+                  {step.selected.relayEmail && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        const { id, relayEmail } = step.selected!;
+                        goTo({ name: "claude-apple", record: id, relayEmail });
+                      }}
+                    >
+                      更换转发邮箱
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => goTo({ name: "saved", accounts: step.accounts })}
@@ -786,24 +828,17 @@ export function AccountOnboarding({
                     {needsAppleDetails ? "前往 Apple 补填" : "在 Apple 页面继续"}
                   </button>
                 )}
-                {challenge?.kind !== "declined" && (
+                {challenge?.kind === "complete" && appleVerification && (
                   <button
                     type="button"
-                    class={challenge?.kind === "complete" ? "user-panel-save" : undefined}
+                    class="user-panel-save"
                     disabled={busy}
                     onClick={() => {
                       stopApple();
-                      goTo({ name: "claude", email: step.email });
-                      setMailboxValue(step.mailboxId ?? PERSONAL_ADDRESS);
-                      void perform(() =>
-                        openClaude(
-                          step.mailboxId ? { mailboxId: step.mailboxId } : { email: step.email },
-                          step.email,
-                        ),
-                      );
+                      goTo({ name: "claude-apple", record: appleVerification.id });
                     }}
                   >
-                    用此邮箱登录 Claude
+                    继续设置 Claude
                   </button>
                 )}
                 {appleEnded ? (
@@ -817,6 +852,71 @@ export function AccountOnboarding({
             )}
           </section>
         )}
+        {step.name === "claude-apple" && (
+          <form
+            class="user-panel-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const email = String(
+                new FormData(event.currentTarget).get("relayEmail") ?? "",
+              ).trim();
+              void perform(() => openAppleClaude(step.record, email));
+            }}
+          >
+            <h3>Claude 的 Apple 转发邮箱</h3>
+            {!step.relayEmail && (
+              <>
+                <div class="user-panel-actions">
+                  <button
+                    type="button"
+                    class="user-panel-save"
+                    disabled={busy}
+                    onClick={() =>
+                      void perform(async () => {
+                        const { tab, started } = await apiRequest<{
+                          tab: string;
+                          started: boolean;
+                        }>(
+                          `${route}/apple/accounts/${encodeURIComponent(step.record)}/claude/apple`,
+                          "POST",
+                        );
+                        if (!started)
+                          throw new Error("当前 Claude 登录页没有找到 Continue with Apple。");
+                        openTab(tab);
+                      })
+                    }
+                  >
+                    {pending ? "正在打开…" : "使用 Apple 登录 Claude"}
+                  </button>
+                </div>
+                <p>
+                  在 Apple
+                  页面完成所需验证，授权时选择「隐藏我的电子邮件」。已有转发地址时，也可以直接填写。
+                </p>
+              </>
+            )}
+            <label>
+              转发邮箱
+              <input
+                name="relayEmail"
+                type="email"
+                defaultValue={step.relayEmail}
+                placeholder="…@privaterelay.appleid.com"
+                maxLength={254}
+                required
+                disabled={busy}
+              />
+            </label>
+            <div class="user-panel-actions">
+              <button type="submit" class="user-panel-save" disabled={busy}>
+                {pending ? "正在打开 Claude…" : "保存并登录 Claude"}
+              </button>
+              <button type="button" disabled={busy} onClick={() => goTo({ name: "start" })}>
+                返回
+              </button>
+            </div>
+          </form>
+        )}
         {step.name === "claude" && (
           <form
             class="user-panel-form"
@@ -827,12 +927,6 @@ export function AccountOnboarding({
             }}
           >
             {emailField}
-            {selectedMailbox === PERSONAL_ADDRESS && (
-              <p class="user-panel-muted">
-                如果你已在 Claude App 选择「使用 Apple 登录」和「隐藏邮件地址」，可填入 Apple
-                账户显示的 Claude 转发邮箱。
-              </p>
-            )}
             {selectedMailbox !== PERSONAL_ADDRESS && (
               <p class="user-panel-muted">在 Claude 页面发送登录邮件后，从工作台回到这里继续。</p>
             )}
@@ -855,12 +949,18 @@ export function AccountOnboarding({
                 ? "请在 Claude 页面手动输入此邮箱。"
                 : verification.ready
                   ? "登录邮件已收到，可以继续。"
-                  : verification.expired
-                    ? "等待邮件已超时，请在收件箱打开最新的登录邮件。"
-                    : "请在 Claude 页面发送登录邮件，收到后回到这里继续。"}
+                  : step.automatic && !step.requested
+                    ? "请打开 Claude 并点击 Continue with email。"
+                    : step.automatic && !step.watching
+                      ? "请到 Apple 的转发目的收件箱打开 Claude 登录邮件。"
+                      : verification.expired
+                        ? "等待邮件已超时，请在收件箱打开最新的登录邮件。"
+                        : step.automatic
+                          ? "正在等待 Apple 转发 Claude 登录邮件。"
+                          : "请在 Claude 页面发送登录邮件，收到后回到这里继续。"}
             </p>
             <div class="user-panel-actions">
-              {verification.ready && (
+              {verification.ready && !step.automatic && (
                 <button
                   type="button"
                   class="user-panel-save"

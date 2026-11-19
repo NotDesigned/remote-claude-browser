@@ -8,10 +8,15 @@ import type {
 } from "fastify";
 import type { Protocol } from "puppeteer-core";
 import type { TargetRef } from "../types";
-import type { AppleAccountState, AppleAccountStore } from "../auth/apple-accounts";
+import type {
+  AppleAccountState,
+  AppleAccountStore,
+  AppleCredentials,
+} from "../auth/apple-accounts";
 import { createAppleAttempts, untilCanceled } from "./account-onboarding-attempts";
 import {
   createVerification,
+  isAppleRelayEmail,
   type AppleCodeAction,
   type OnboardingMailbox,
 } from "./account-onboarding-mail";
@@ -23,6 +28,7 @@ const APPLE_ACCOUNT = "https://account.apple.com/account";
 const APPLE_FORM = "https://appleid.apple.com/widget/account/";
 const APPLE_TERMS = [ICLOUD, APPLE_FORM, APPLE_SIGN_IN, APPLE_ACCOUNT];
 const CLAUDE_LOGIN = "https://claude.ai/login";
+const APPLE_AUTH = ["https://appleid.apple.com", "https://idmsa.apple.com"];
 const ICLOUD_FLOW_MS = 35_000;
 const APPLE_REGISTRATION_MS = 30_000;
 
@@ -126,7 +132,9 @@ export function registerAccountOnboarding(
   const mailboxService = options.mailbox?.enabled ? options.mailbox : undefined;
   const verification = createVerification(mailboxService);
   const attempts = createAppleAttempts();
+  const shutdown = new AbortController();
   app.addHook("onClose", async () => {
+    shutdown.abort();
     attempts.close();
     verification.close();
   });
@@ -173,6 +181,7 @@ export function registerAccountOnboarding(
     tab: string,
     since: number,
     signal?: AbortSignal,
+    autoOpen = false,
   ) => {
     if (!details.owner || !details.mailboxId) return false;
     verification.start({
@@ -197,6 +206,11 @@ export function registerAccountOnboarding(
             )
           )?.value,
       }),
+      ...(provider === "claude" &&
+        autoOpen && {
+          apply: async (url: string) =>
+            (await openClaudeLink(current.browser, tab, url)) ? ("submitted" as const) : undefined,
+        }),
     });
     return true;
   };
@@ -220,6 +234,135 @@ export function registerAccountOnboarding(
         entry && (await entry.accounts.get(entry.user, entry.profile, request.params.record));
       if (!account) return reply.code(404).send({ error: "没有这条 Apple 账户记录" });
       return account;
+    },
+  );
+  app.post<{ Params: SessionParams & { record: string } }>(
+    `${route}/apple/accounts/:record/claude/apple`,
+    { preHandler },
+    async (request, reply) => {
+      const { sid, record } = request.params;
+      const entry = archive(request, sid);
+      const account = entry && (await entry.accounts.get(entry.user, entry.profile, record));
+      if (!account) return reply.code(404).send({ error: "没有这条 Apple 账户记录" });
+      const current = session(sid)!;
+      const tab = await current.open(CLAUDE_LOGIN, true);
+      const signal = AbortSignal.any([shutdown.signal, AbortSignal.timeout(8 * 60_000)]);
+      const started = await waitForForm<boolean>(
+        current.browser,
+        tab,
+        CLAUDE_LOGIN,
+        `
+        const buttons = [...document.querySelectorAll('button,a,[role="button"]')].filter((button) =>
+          button.getClientRects().length && !button.matches(':disabled,[aria-disabled="true"]') &&
+          [button.getAttribute("aria-label"), button.innerText].some(
+            (label) => /^(?:continue|sign in|sign up) with Apple$/i.test(label?.trim() ?? "")));
+        if (buttons.length !== 1) return null;
+        buttons[0].click();
+        return true;
+      `,
+        { mainFrameOnly: true, signal, userGesture: true },
+        Date.now() + 6_000,
+      );
+      if (started)
+        void assistClaudeApple(current.browser, tab, account, signal, async (email) => {
+          if (session(sid)?.browser !== current.browser || userId(request) !== entry!.user) return;
+          await entry!.accounts.bindRelay(entry!.user, entry!.profile, record, email, false);
+        }).catch(() => {});
+      const signIn =
+        started &&
+        (await waitForForm<boolean>(
+          current.browser,
+          tab,
+          APPLE_AUTH,
+          "return true;",
+          { originOnly: true, includePopups: true, signal },
+          Date.now() + 4_000,
+        ));
+      return { tab: signIn ? signIn.tab : tab, started: !!started };
+    },
+  );
+  app.post<{ Params: SessionParams & { record: string }; Body: { relayEmail?: string } }>(
+    `${route}/apple/accounts/:record/claude`,
+    {
+      preHandler,
+      bodyLimit: 512,
+      schema: {
+        body: {
+          type: "object",
+          additionalProperties: false,
+          properties: { relayEmail: emailField },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { sid, record } = request.params;
+      const entry = archive(request, sid);
+      if (!entry) return reply.code(404).send({ error: "没有这条 Apple 账户记录" });
+      const supplied = request.body.relayEmail?.trim().toLowerCase();
+      if (supplied !== undefined && !isAppleRelayEmail(supplied))
+        return reply.code(400).send({ error: "请输入 Apple 为 Claude 生成的转发邮箱" });
+      const account = supplied
+        ? await entry.accounts.bindRelay(entry.user, entry.profile, record, supplied)
+        : await entry.accounts.get(entry.user, entry.profile, record);
+      if (!account) return reply.code(404).send({ error: "没有这条 Apple 账户记录" });
+      const email = account.relayEmail;
+      if (!email) return reply.code(409).send({ error: "请先填写 Claude 的 Apple 转发邮箱" });
+      const current = session(sid)!;
+      const mailbox = mailboxService
+        ?.listAddresses?.(entry.user)
+        .find((address) => address.address.toLowerCase() === account.email.toLowerCase());
+      const tab = await current.open(CLAUDE_LOGIN, true);
+      const since = Date.now();
+      const focused = await waitForForm<boolean>(
+        current.browser,
+        tab,
+        CLAUDE_LOGIN,
+        `
+        const field = document.querySelector('input[type="email"]');
+        if (!field?.getClientRects().length || field.disabled || field.readOnly) return null;
+        field.focus();
+        field.select();
+        return field === document.activeElement ? true : null;
+      `,
+        { mainFrameOnly: true },
+      );
+      const page = findPage(current.browser, tab);
+      if (focused && page)
+        await current.browser.send(page.sessionId, "Input.insertText", { text: email });
+      const watching =
+        !!mailbox &&
+        watch(
+          "claude",
+          { email, owner: entry.user, mailboxId: mailbox.id },
+          current,
+          sid,
+          tab,
+          since,
+          undefined,
+          true,
+        );
+      const requested = !!(
+        focused &&
+        (await waitForForm<boolean>(
+          current.browser,
+          tab,
+          CLAUDE_LOGIN,
+          `
+        const field = document.querySelector('input[type="email"]');
+        if (field?.value.toLowerCase() !== ${JSON.stringify(email)}) return null;
+        const buttons = [...document.querySelectorAll('button, [role="button"]')].filter((button) =>
+          button.getClientRects().length && !button.matches(':disabled, [aria-disabled="true"]') &&
+          [button.getAttribute("aria-label"), button.innerText].some(
+            (label) => /^Continue with email$/i.test(label?.trim() ?? "")));
+        if (buttons.length !== 1) return null;
+        buttons[0].click();
+        return true;
+      `,
+          { mainFrameOnly: true, userGesture: true },
+          Date.now() + 4_000,
+        ))
+      );
+      return { tab, email, filled: !!focused, requested, watching };
     },
   );
   app.post<{ Params: SessionParams; Querystring: AppleQuery }>(
@@ -494,20 +637,114 @@ export function registerAccountOnboarding(
     async (request, reply) => {
       const { sid, tab } = request.params;
       const current = session(sid)!;
-      const opened = await verification.open(request.params, userId(request), async (url) => {
-        const result = await checkForm<boolean>(
-          current.browser,
-          tab,
-          CLAUDE_LOGIN,
-          `location.assign(${JSON.stringify(url)}); return true;`,
-          { mainFrameOnly: true },
-        );
-        return result?.value === true;
-      });
+      const opened = await verification.open(request.params, userId(request), (url) =>
+        openClaudeLink(current.browser, tab, url),
+      );
       if (!opened) return reply.code(409).send({ error: "请在原来的 Claude 登录标签中继续" });
       return { opened: true };
     },
   );
+}
+
+async function openClaudeLink(browser: Browser, tab: string, url: string) {
+  const result = await checkForm<boolean>(browser, tab, CLAUDE_LOGIN, "return true;", {
+    mainFrameOnly: true,
+  });
+  if (!result?.value) return false;
+  const navigation = (await browser.send(result.sessionId, "Page.navigate", {
+    url,
+  })) as Protocol.Page.NavigateResponse;
+  return !navigation.errorText;
+}
+
+async function assistClaudeApple(
+  browser: Browser,
+  tab: string,
+  account: AppleCredentials,
+  signal: AbortSignal,
+  saveRelay: (email: string) => Promise<void>,
+) {
+  let enteredEmail = false;
+  let enteredPassword = false;
+  let selectedHide = false;
+  while (!signal.aborted && findPage(browser, tab)) {
+    const action = await checkForm<"email" | "password" | "hide">(
+      browser,
+      tab,
+      APPLE_AUTH,
+      `
+      if (!/^\\/(?:appleauth|auth)\\//.test(location.pathname)) return null;
+      ${SET_VALUE}
+      const { email, password, enteredEmail, enteredPassword, selectedHide } =
+        ${JSON.stringify({ email: account.email, password: account.password, enteredEmail, enteredPassword, selectedHide })};
+      const visible = (element) => element.getClientRects().length &&
+        getComputedStyle(element).visibility === "visible" && !element.closest('[inert], [aria-hidden="true"]');
+      const field = (selector) => [...document.querySelectorAll(selector)].find((input) =>
+        visible(input) && !input.disabled && !input.readOnly);
+      const next = (scope) => {
+        const buttons = [...scope.querySelectorAll('button,input[type="submit"],[role="button"]')].filter((button) =>
+          visible(button) && !button.matches(':disabled,[aria-disabled="true"]') &&
+          (button.id === "sign-in" || [button.getAttribute("aria-label"), button.matches("input") ? button.value : button.innerText]
+            .some((label) => /^(?:continue|sign in|next)$/i.test(label?.trim() ?? ""))));
+        if (buttons.length === 1) buttons[0].click();
+      };
+      const choices = [...document.querySelectorAll('input[type="radio"],[role="radio"],label')]
+        .filter((option) => visible(option) && (!option.matches("label") || option.control?.type === "radio"));
+      const hide = choices.find((option) => /^hide my email\\b/i.test((
+        option.getAttribute("aria-label") || option.innerText ||
+        Array.from(option.labels ?? [], (label) => label.innerText).join(" ")
+      ).trim()));
+      if (hide && !selectedHide) {
+        const selected = () => hide.checked || hide.control?.checked || hide.getAttribute("aria-checked") === "true";
+        if (!selected()) hide.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (!selected()) return null;
+        next(hide.form ?? hide.closest('dialog,[role="dialog"]') ?? document);
+        return "hide";
+      }
+      const username = field('#account_name_text_field,input[type="email"],input[autocomplete="username"]');
+      const secret = field('input[type="password"]');
+      if (secret && !enteredPassword &&
+        (enteredEmail || username?.value.toLowerCase() === email.toLowerCase() ||
+          document.body.innerText.toLowerCase().includes(email.toLowerCase()))) {
+        if (!setValue(secret, password)) return null;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        next(secret.form ?? document);
+        return "password";
+      }
+      if (username && !enteredEmail && setValue(username, email)) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (!secret) next(username.form ?? document);
+        return "email";
+      }
+      return null;
+      `,
+      { originOnly: true, includePopups: true, signal, userGesture: true },
+    );
+    if (action?.value === "email") enteredEmail = true;
+    if (action?.value === "password") enteredPassword = true;
+    if (action?.value === "hide") selectedHide = true;
+    if (enteredPassword) {
+      const login = await checkForm<string>(
+        browser,
+        tab,
+        "https://claude.ai",
+        `
+        if (location.pathname === "/login") return null;
+        const response = await fetch("/api/account", { cache: "no-store", signal: AbortSignal.timeout(800) });
+        if (!response.ok) return null;
+        const account = await response.json();
+        return account.email_address ?? account.account?.email_address ?? null;
+      `,
+        { originOnly: true, mainFrameOnly: true, includePopups: true, signal },
+      );
+      if (typeof login?.value === "string" && isAppleRelayEmail(login.value)) {
+        await saveRelay(login.value.toLowerCase());
+        return;
+      }
+    }
+    await pause(1_500, undefined, { ref: false, signal });
+  }
 }
 
 interface RegistrationOptions {

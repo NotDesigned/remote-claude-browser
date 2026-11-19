@@ -19,6 +19,8 @@ try {
   const submissions = [];
   const codes = [];
   const archiveId = "saved-example";
+  const relayRequests = [];
+  let relayEmail;
   let stage = "captcha";
   let allowSms = false;
   const image = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
@@ -28,6 +30,20 @@ try {
   );
   await page.route(/\/onboarding\/apple(?:\/|\?)/, (route) => {
     const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/accounts/" + archiveId + "/claude")) {
+      const payload = route.request().postDataJSON();
+      relayRequests.push(payload);
+      relayEmail = payload.relayEmail ?? relayEmail;
+      return route.fulfill({
+        json: {
+          email: relayEmail,
+          tab: "relay-tab",
+          filled: true,
+          watching: true,
+          requested: true,
+        },
+      });
+    }
     if (url.pathname.endsWith("/accounts"))
       return route.fulfill({
         json: {
@@ -50,6 +66,7 @@ try {
           phoneCode: "CN",
           phone: "2025550100",
           password: "ExamplePass123!",
+          relayEmail,
         },
       });
     if (url.pathname.endsWith("/apple")) {
@@ -81,6 +98,9 @@ try {
     submissions.push(route.request().postDataJSON());
     return route.fulfill({ json: { filled: true, watching: true } });
   });
+  await page.route(/\/onboarding\/claude\/relay-tab\/verification/, (route) =>
+    route.fulfill({ json: { ready: false, expired: false } }),
+  );
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/test/onboarding/`);
   await page.getByRole("button", { name: "注册 Apple 账户" }).click();
   await page.getByRole("button", { name: "生成示例" }).click();
@@ -114,8 +134,16 @@ try {
   await page.getByRole("button", { name: /preview@example.com/ }).click();
   await page.getByText("出生日期 2000-01-02 · 地区 USA").waitFor();
   await page.getByRole("button", { name: "复制密码", exact: true }).waitFor();
-  await page.getByRole("button", { name: "用此邮箱登录 Claude", exact: true }).click();
-  assert.equal(await page.getByLabel("邮箱").inputValue(), "preview@example.com");
+  await page.getByRole("button", { name: "设置 Claude 转发邮箱", exact: true }).click();
+  await page.getByLabel("转发邮箱").fill("demo@privaterelay.appleid.com");
+  await page.getByRole("button", { name: "保存并登录 Claude", exact: true }).click();
+  await page.getByText("正在等待 Apple 转发 Claude 登录邮件。").waitFor();
+  await page.getByRole("button", { name: "重新开始", exact: true }).click();
+  await page.getByRole("button", { name: "已保存的 Apple 账户" }).click();
+  await page.getByRole("button", { name: /preview@example.com/ }).click();
+  await page.getByRole("button", { name: "登录 Claude", exact: true }).click();
+  await page.getByText("正在等待 Apple 转发 Claude 登录邮件。").waitFor();
+  assert.deepEqual(relayRequests, [{ relayEmail: "demo@privaterelay.appleid.com" }, {}]);
   assert.equal(submissions.length, 1);
   assert.equal(submissions[0].lastName, generatedLastName);
   assert.equal(submissions[0].firstName, generatedFirstName);
