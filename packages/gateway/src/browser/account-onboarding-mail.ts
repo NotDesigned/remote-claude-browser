@@ -170,6 +170,7 @@ export function createVerification(mailbox?: OnboardingMailbox) {
       return {
         ready: job?.ready ?? false,
         expired: !job,
+        ...(provider === "apple" && job?.pending && { received: true }),
         ...(job?.submitted && { submitted: true }),
       };
     },

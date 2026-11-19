@@ -386,7 +386,7 @@ function appleCode(email: string, code: string) {
       const text = section.innerText.toLowerCase().replace(/\\s+/g, " ");
       const addresses = text.match(/[a-z0-9._%+~-]+@[a-z0-9.-]+\\.[a-z]+/g) ?? [];
       return addresses.includes(address) &&
-        /\\b(?:verify (?:your )?e-?mail|e-?mail verification)\\b/.test(text) &&
+        /\\b(?:verify (?:your )?(?:apple (?:account|id) )?e-?mail|e-?mail verification)\\b/.test(text) &&
         !/\\b(?:phone|mobile number|trusted device|sms|text message|captcha)\\b/.test(text);
     };
     const single = [...document.querySelectorAll('input[autocomplete="one-time-code"]')].filter(writable);

@@ -38,6 +38,7 @@ type Step =
     };
 
 interface Verification {
+  received?: boolean;
   ready: boolean;
   expired: boolean;
   submitted?: boolean;
@@ -521,7 +522,9 @@ export function AccountOnboarding({
                     : "邮箱验证码已填入 Apple 页面。"
                   : verification.expired
                     ? "请从收件箱读取最新的邮箱验证码。"
-                    : "进入 Apple 的邮箱验证步骤后，向导会填入验证码，并在确认按钮可用时提交。"}
+                    : verification.received
+                      ? "已收到邮箱验证码，等待填入 Apple 的邮箱验证页面。"
+                      : "等待 Apple 的邮箱验证码邮件。"}
               </p>
             )}
             <div class="user-panel-actions">
