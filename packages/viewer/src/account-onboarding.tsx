@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { apiRequest } from "./api";
 import { writeLocalClipboard } from "./chrome/clipboard";
 import { useDialog } from "./dialog";
@@ -55,8 +55,9 @@ export function AccountOnboarding({
   onClose,
   onOpenTab,
 }: AccountOnboardingProps) {
-  const passwordInput = useRef<HTMLInputElement>(null);
+  const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [passwordCopied, setPasswordCopied] = useState(false);
   const close = () => {
     setShowPassword(false);
     setError(null);
@@ -134,7 +135,9 @@ export function AccountOnboarding({
   const goTo = (next: Step) => {
     setStep(next);
     setMailboxValue(undefined);
+    setPassword(next.name === "apple" && next.apple.options ? generatePassword() : "");
     setShowPassword(false);
+    setPasswordCopied(false);
     setVerification({ ready: false, expired: false });
     setError(null);
   };
@@ -145,7 +148,17 @@ export function AccountOnboarding({
   const openApple = () =>
     void perform(async () => {
       const apple = await apiRequest<AppleRegistration>(`${route}/apple`, "POST");
-      goTo({ name: "apple", apple });
+      const options = apple.options && {
+        countries: apple.options.countries.filter(([value]) => value),
+        phoneCodes: apple.options.phoneCodes.filter(([value]) => value),
+      };
+      goTo({
+        name: "apple",
+        apple: {
+          tab: apple.tab,
+          options: options?.countries.length && options.phoneCodes.length ? options : null,
+        },
+      });
     });
   const aliasKey = `mirror.mailbox.${profileKey}.${step.name}`;
   const rememberedAlias = open && mailboxes?.addresses.length ? storage.getItem(aliasKey) : null;
@@ -284,37 +297,54 @@ export function AccountOnboarding({
               <div class="account-onboarding-fields">
                 <label>
                   姓氏
-                  <input name="lastName" autoComplete="family-name" maxLength={100} required />
+                  <input
+                    name="lastName"
+                    autoComplete="family-name"
+                    placeholder="例如 Smith"
+                    maxLength={100}
+                    required
+                  />
                 </label>
                 <label>
                   名字
-                  <input name="firstName" autoComplete="given-name" maxLength={100} required />
+                  <input
+                    name="firstName"
+                    autoComplete="given-name"
+                    placeholder="例如 Alex"
+                    maxLength={100}
+                    required
+                  />
                 </label>
                 <label>
                   国家或地区
-                  <select name="country" required>
-                    <option value="">请选择</option>
-                    {step.apple.options.countries.map(([value, label]) => (
-                      <option key={value} value={value}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
+                  <RegistrationSelect
+                    name="country"
+                    options={step.apple.options.countries}
+                    preferred="USA"
+                  />
                 </label>
-                <label>
-                  出生日期
-                  <input name="birthday" type="date" autoComplete="bday" required />
-                </label>
+                <div class="account-onboarding-date">
+                  <label>
+                    出生日期
+                    <input
+                      name="birthday"
+                      type="date"
+                      autoComplete="bday"
+                      aria-describedby="account-onboarding-birthday-example"
+                      required
+                    />
+                  </label>
+                  <small id="account-onboarding-birthday-example" class="user-panel-muted">
+                    例如 2000-06-15
+                  </small>
+                </div>
                 <label>
                   电话区号
-                  <select name="phoneCode" required>
-                    {step.apple.options.phoneCodes.length !== 1 && <option value="">请选择</option>}
-                    {step.apple.options.phoneCodes.map(([value, label]) => (
-                      <option key={value} value={value}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
+                  <RegistrationSelect
+                    name="phoneCode"
+                    options={step.apple.options.phoneCodes}
+                    preferred="US"
+                  />
                 </label>
                 <label>
                   电话号码
@@ -328,45 +358,47 @@ export function AccountOnboarding({
                 </label>
               </div>
               {emailField}
-              <label>
-                密码
-                <input
-                  ref={passwordInput}
-                  name="password"
-                  type={showPassword ? "text" : "password"}
-                  autoComplete="new-password"
-                  minLength={8}
-                  maxLength={128}
-                  required
-                />
-              </label>
-              <div class="user-panel-actions">
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() => {
-                    passwordInput.current!.value = generatePassword();
-                    setShowPassword(true);
-                  }}
-                >
-                  生成密码
-                </button>
-                {showPassword && (
+              <div class="account-onboarding-password">
+                <label for="account-onboarding-password">密码</label>
+                <div class="user-panel-actions">
+                  <input
+                    id="account-onboarding-password"
+                    name="password"
+                    type={showPassword ? "text" : "password"}
+                    autoComplete="new-password"
+                    value={password}
+                    minLength={8}
+                    maxLength={128}
+                    required
+                    disabled={pending}
+                    onInput={(event) => {
+                      setPassword(event.currentTarget.value);
+                      setPasswordCopied(false);
+                    }}
+                  />
                   <button
                     type="button"
+                    aria-label={showPassword ? "隐藏密码" : "显示密码"}
                     disabled={pending}
+                    onClick={() => setShowPassword(!showPassword)}
+                  >
+                    {showPassword ? "隐藏" : "显示"}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={passwordCopied ? "已复制密码" : "复制密码"}
+                    disabled={pending || !password}
                     onClick={() =>
-                      void writeLocalClipboard(passwordInput.current!.value).then(
-                        () => {
-                          setShowPassword(false);
-                        },
+                      void writeLocalClipboard(password).then(
+                        () => setPasswordCopied(true),
                         (failure: Error) => setError(failure.message),
                       )
                     }
                   >
-                    复制密码
+                    {passwordCopied ? "已复制" : "复制"}
                   </button>
-                )}
+                </div>
+                <p class="user-panel-muted">继续前请保存密码。</p>
               </div>
               <p class="user-panel-muted">
                 在 Apple 页面完成图形验证码、手机验证和注册确认。
@@ -495,6 +527,30 @@ export function AccountOnboarding({
         )}
       </section>
     </div>
+  );
+}
+
+function RegistrationSelect({
+  name,
+  options,
+  preferred,
+}: {
+  name: string;
+  options: [string, string][];
+  preferred: string;
+}) {
+  const defaultChoice =
+    options.find(([value]) => value === preferred) ??
+    (options.length === 1 ? options[0] : undefined);
+  return (
+    <select name={name} required>
+      {!defaultChoice && <option value="">请选择</option>}
+      {options.map(([value, label]) => (
+        <option key={value} value={value} selected={value === defaultChoice?.[0]}>
+          {label}
+        </option>
+      ))}
+    </select>
   );
 }
 

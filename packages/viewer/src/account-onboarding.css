@@ -12,6 +12,22 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
+.account-onboarding-password,
+.account-onboarding-date {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+}
+.account-onboarding-password .user-panel-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+  margin: 0;
+}
+.account-onboarding-password button {
+  padding: 8px 12px;
+  white-space: nowrap;
+}
 .account-onboarding-address {
   overflow-wrap: anywhere;
   user-select: text;
