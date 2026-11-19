@@ -4,6 +4,7 @@ import { listAccounts, switchAccount, type AccountList } from "./accounts";
 import { currentUser, logout, myBrowserSessions, type FrontendUser } from "./users";
 import { AdminPanel } from "./admin-panel";
 import { AccountPanel } from "./account-panel";
+import { AccountOnboarding } from "./account-onboarding";
 import type { WorkspaceDestination, WorkspaceMenuProps } from "./workspace-menu";
 import { NetworkPanel } from "./network-panel";
 import { cpaApi, type CpaBrowserAuthorization } from "./network-api";
@@ -134,6 +135,7 @@ export function App() {
   const [networkTab, setNetworkTab] = useState<"proxies" | "cpa">("proxies");
   const [oauthCallbacks, setOAuthCallbacks] = useState<Record<string, "submitted" | "error">>({});
   const [accountPanelOpen, setAccountPanelOpen] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [profilePickerOpen, setProfilePickerOpen] = useState(false);
   const [browserAuthorization, setBrowserAuthorization] = useState<CpaBrowserAuthorization | null>(
     () => JSON.parse(sessionStorage.getItem("mirror-cpa-browser") ?? "null"),
@@ -426,6 +428,7 @@ export function App() {
     setClientSession(null);
     setClientPhase("closed");
     setProfilePickerOpen(false);
+    setOnboardingOpen(false);
     window.history.replaceState(window.history.state, "", "/?closed=1");
   };
   // Observe existing sessions after a disconnect; only an explicit action opens a new one.
@@ -955,6 +958,7 @@ export function App() {
     }
     setUserPanelOpen(destination === "admin");
     setAccountPanelOpen(destination === "account");
+    setOnboardingOpen(destination === "onboarding");
     setNetworkPanelOpen(destination === "proxies" || destination === "cpa");
     if (destination === "proxies" || destination === "cpa") setNetworkTab(destination);
     if (destination === "profiles") {
@@ -993,6 +997,8 @@ export function App() {
   const workspace: WorkspaceMenuProps | undefined = user
     ? {
         user,
+        onboardingAvailable:
+          clientPhase === "ready" && clientSession !== null && !profilePickerOpen,
         onNavigate: navigateWorkspace,
         onLogout: () => void signOut(),
         logoutPending,
@@ -1052,6 +1058,13 @@ export function App() {
             refreshAccounts();
             if (sid === clientSession?.sid) finishSession();
           }}
+        />
+      )}
+      {onboardingOpen && user && clientSession && clientPhase === "ready" && (
+        <AccountOnboarding
+          key={clientSession.sid}
+          sid={clientSession.sid}
+          onClose={() => setOnboardingOpen(false)}
         />
       )}
       {user && (

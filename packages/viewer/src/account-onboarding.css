@@ -1,0 +1,20 @@
+.account-onboarding {
+  width: min(540px, 100%);
+}
+.account-onboarding-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.account-onboarding-email {
+  grid-column: 1 / -1;
+}
+.account-onboarding-secondary {
+  background: var(--surface);
+  color: var(--ink);
+}
+@media (max-width: 420px) {
+  .account-onboarding-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

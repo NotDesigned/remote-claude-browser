@@ -20,30 +20,15 @@
 
 .profile-topbar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
+  justify-content: flex-end;
   width: min(1000px, 100%);
 }
 
-.profile-brand {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  font-size: 14px;
-  font-weight: 600;
-}
-.profile-brand > span {
-  color: var(--accent);
-  font-size: 25px;
-}
 .profile-tools {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin-left: auto;
 }
 
 .profile-exit-health {
@@ -643,9 +628,6 @@ button.profile-card:focus-visible {
   .profile-picker {
     padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
       max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
-  }
-  .profile-brand {
-    font-size: 12px;
   }
   .profile-tools {
     gap: 5px;

@@ -587,9 +587,6 @@ export function ProfilePicker(props: {
   return (
     <main class="profile-picker">
       <div class="profile-topbar">
-        <span class="profile-brand">
-          <span aria-hidden="true">◈</span> Remote Workspace
-        </span>
         <div class="profile-tools">
           {props.workspace && <WorkspaceMenu {...props.workspace} />}
           {props.onBack && (

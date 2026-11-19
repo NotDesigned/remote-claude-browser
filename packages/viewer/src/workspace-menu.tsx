@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import type { FrontendUser } from "./users";
 import "./workspace-menu.css";
 
-export type WorkspaceDestination = "profiles" | "proxies" | "cpa" | "admin" | "account";
+export type WorkspaceDestination =
+  "profiles" | "proxies" | "cpa" | "admin" | "account" | "onboarding";
 export interface WorkspaceMenuProps {
   user: FrontendUser;
+  onboardingAvailable?: boolean;
   onNavigate(destination: WorkspaceDestination): void;
   onLogout(): void;
   logoutPending: boolean;
@@ -46,6 +48,7 @@ export function WorkspaceMenu(props: WorkspaceMenuProps) {
       : []),
     ["account", "我的账号"],
   ];
+  if (props.onboardingAvailable) destinations.push(["onboarding", "Apple 账户与 Claude 登录"]);
   return (
     <div class="workspace-menu" ref={root}>
       <button

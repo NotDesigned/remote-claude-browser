@@ -48,6 +48,7 @@ export interface TabLifecycle {
   hubFor(tabId: string): TabHub | undefined;
   /** Current metadata for a newly connected viewer; lifecycle changes still publish globally. */
   tabsMessage(): Promise<TabsMsg>;
+  open(url?: string): Promise<string>;
   handle(msg: TabNavMsg): Promise<void>;
   dispose(): void;
 }
@@ -321,7 +322,7 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
     if (neighbor !== undefined) await activate(neighbor);
   };
 
-  const create = async (url: string | undefined): Promise<void> => {
+  const create = async (url?: string): Promise<string> => {
     const result = (await sendBrowser("Target.createTarget", {
       url: url === undefined || url.trim() === "" ? NEW_TAB_URL : url,
     })) as { targetId?: unknown } | undefined;
@@ -331,6 +332,7 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
     await sendBrowser("Target.activateTarget", { targetId: result.targetId });
     activeTabId = result.targetId;
     scheduleTabsBroadcast();
+    return result.targetId;
   };
 
   opts.browser.onTargetInfoChanged((info) => {
@@ -423,6 +425,7 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
       return tabs.get(tabId)?.hub;
     },
     tabsMessage,
+    open: create,
     async handle(msg) {
       switch (msg.action) {
         case "newtab":

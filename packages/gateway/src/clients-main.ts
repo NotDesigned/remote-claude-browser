@@ -71,6 +71,7 @@ import { createTabLifecycle } from "./session/tabs";
 import { isClientSlot, ClientSessionError, createClientSessions } from "./session/clients";
 import { createLifecycleLock } from "./session/lifecycle-lock";
 import { registerAccountRoutes } from "./auth/account-routes";
+import { registerAccountOnboarding } from "./browser/account-onboarding";
 import { createIdleReaper, PAGE_GENERATING_EXPRESSION } from "./session/idle-reaper";
 import { createProfileStore, DEFAULT_PROFILE, MAX_PROFILES } from "./session/profiles";
 import { createResourceSampler } from "./monitor/resources";
@@ -1894,6 +1895,17 @@ export async function startClientGateway(
     } catch (error) {
       return clientError(reply, error, owner);
     }
+  });
+  registerAccountOnboarding(app, requireSession(), (sid) => {
+    const runtime = runtimes.get(sid);
+    if (!runtime) return;
+    return {
+      browser: runtime.browser,
+      async open(url) {
+        await stopPixels(runtime);
+        return runtime.tabs.open(url);
+      },
+    };
   });
   app.get<{ Params: { sid: string } }>(
     "/s/:sid/theme",
