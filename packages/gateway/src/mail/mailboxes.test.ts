@@ -75,7 +75,7 @@ it("routes verified delivery to matching addresses and serves message bodies onl
     const second = store.createAddress("owner");
     const third = store.createAddress("other");
     expect(first.label).toBe("我的账号");
-    expect(first.address).toMatch(/^[a-z]+(?:-[a-z]+){3}@mail\.example\.com$/);
+    expect(first.address).toMatch(/^[a-z]+-[a-z]+@mail\.example\.com$/);
     expect(first.address).not.toBe(second.address);
     expect((await app.inject({ url: mailboxPath, headers: owner })).json()).toEqual({
       enabled: true,

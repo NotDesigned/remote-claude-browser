@@ -15,8 +15,24 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
-.account-onboarding-password,
-.account-onboarding-date {
+.account-onboarding-example {
+  display: grid;
+  margin-top: 6px;
+}
+.account-onboarding-example > * {
+  grid-area: 1 / 1;
+}
+.account-onboarding-example span {
+  align-self: center;
+  margin-inline: 10px 36px;
+  background: var(--bg);
+  pointer-events: none;
+}
+.account-onboarding-example input:focus + span,
+.account-onboarding-example input:valid + span {
+  visibility: hidden;
+}
+.account-onboarding-password {
   display: grid;
   align-content: start;
   gap: 6px;

@@ -96,6 +96,11 @@ export async function createMailboxService(options: {
       label TEXT NOT NULL, created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS mailbox_addresses_user ON mailbox_addresses(user_id, created_at);
+    CREATE TABLE IF NOT EXISTS retired_mailbox_addresses (address TEXT PRIMARY KEY);
+    CREATE TRIGGER IF NOT EXISTS retire_mailbox_address AFTER DELETE ON mailbox_addresses
+    BEGIN
+      INSERT OR IGNORE INTO retired_mailbox_addresses VALUES (OLD.address);
+    END;
     CREATE TABLE IF NOT EXISTS mailbox_messages (
       address_id TEXT NOT NULL REFERENCES mailbox_addresses(id) ON DELETE CASCADE,
       id TEXT NOT NULL, sender TEXT NOT NULL, subject TEXT NOT NULL, received_at INTEGER NOT NULL,
@@ -113,7 +118,9 @@ export async function createMailboxService(options: {
     FROM mailbox_addresses WHERE user_id = ? AND id = ?
   `);
   const addAddress = db.prepare(
-    "INSERT INTO mailbox_addresses VALUES (?, ?, ?, ?, ?) ON CONFLICT(address) DO NOTHING",
+    `INSERT INTO mailbox_addresses (id, user_id, address, label, created_at)
+     SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM retired_mailbox_addresses WHERE address = ?)
+     ON CONFLICT(address) DO NOTHING`,
   );
   const messagesForOwner = `
     SELECT m.id, m.sender AS "from", m.subject, m.received_at AS receivedAt
@@ -146,12 +153,13 @@ export async function createMailboxService(options: {
       if ([...name].length > 80) throw new MailboxError(400, "收件地址名称最多 80 个字");
       const id = randomUUID();
       const createdAt = now();
-      for (;;) {
-        const words = Array.from({ length: 4 }, () => addressWords[randomInt(addressWords.length)]);
+      for (let attempt = 0; attempt < 32; attempt++) {
+        const words = Array.from({ length: 2 }, () => addressWords[randomInt(addressWords.length)]);
         const address = `${words.join("-")}@${domain}`;
-        if (addAddress.run(id, userId, address, name, createdAt).changes)
+        if (addAddress.run(id, userId, address, name, createdAt, address).changes)
           return { id, address, label: name, createdAt };
       }
+      throw new MailboxError(503, "暂时无法分配新的邮箱地址");
     },
     getAddress(userId, addressId) {
       return getAddress.get(userId, addressId) as unknown as MailboxAddress | undefined;

@@ -420,26 +420,18 @@ export function AccountOnboarding({
               }}
             >
               <div class="account-onboarding-fields">
-                <label>
-                  姓氏
-                  <input
-                    name="lastName"
-                    autoComplete="family-name"
-                    placeholder={`例如 ${step.example.lastName}`}
-                    maxLength={100}
-                    required
-                  />
-                </label>
-                <label>
-                  名字
-                  <input
-                    name="firstName"
-                    autoComplete="given-name"
-                    placeholder={`例如 ${step.example.firstName}`}
-                    maxLength={100}
-                    required
-                  />
-                </label>
+                <ExampleField
+                  name="lastName"
+                  label="姓氏"
+                  autoComplete="family-name"
+                  example={step.example.lastName!}
+                />
+                <ExampleField
+                  name="firstName"
+                  label="名字"
+                  autoComplete="given-name"
+                  example={step.example.firstName!}
+                />
                 <label>
                   国家或地区
                   <RegistrationSelect
@@ -448,21 +440,12 @@ export function AccountOnboarding({
                     preferred="USA"
                   />
                 </label>
-                <div class="account-onboarding-date">
-                  <label>
-                    出生日期
-                    <input
-                      name="birthday"
-                      type="date"
-                      autoComplete="bday"
-                      aria-describedby="account-onboarding-birthday-example"
-                      required
-                    />
-                  </label>
-                  <small id="account-onboarding-birthday-example" class="user-panel-muted">
-                    例如 {step.example.birthday}
-                  </small>
-                </div>
+                <ExampleField
+                  name="birthday"
+                  label="出生日期"
+                  autoComplete="bday"
+                  example={step.example.birthday}
+                />
                 <label>
                   电话区号
                   <RegistrationSelect
@@ -666,6 +649,40 @@ export function AccountOnboarding({
           </section>
         )}
       </section>
+    </div>
+  );
+}
+
+function ExampleField({
+  name,
+  label,
+  autoComplete,
+  example,
+}: {
+  name: "firstName" | "lastName" | "birthday";
+  label: string;
+  autoComplete: string;
+  example: string;
+}) {
+  const id = `account-onboarding-${name}`;
+  const date = name === "birthday";
+  return (
+    <div>
+      <label for={id}>{label}</label>
+      <div class="account-onboarding-example">
+        <input
+          id={id}
+          name={name}
+          type={date ? "date" : "text"}
+          autoComplete={autoComplete}
+          maxLength={date ? undefined : 100}
+          aria-describedby={`${id}-example`}
+          required
+        />
+        <span id={`${id}-example`} class="user-panel-muted">
+          例如 {example}
+        </span>
+      </div>
     </div>
   );
 }
