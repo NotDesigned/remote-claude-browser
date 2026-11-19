@@ -35,17 +35,19 @@ try {
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/test/onboarding/`);
   await page.getByRole("button", { name: "注册 Apple 账户" }).click();
   await page.getByRole("button", { name: "生成示例" }).click();
-  assert.ok(await page.getByLabel("姓氏").inputValue());
-  await page.getByLabel("姓氏").fill("Example");
-  await page.getByLabel("名字").fill("Tester");
-  await page.getByLabel("出生日期").fill("2000-02-29");
+  const generatedLastName = await page.getByLabel("姓氏").inputValue();
+  const generatedFirstName = await page.getByLabel("名字").inputValue();
+  assert.ok(generatedLastName);
+  assert.ok(generatedFirstName);
+  assert.ok(await page.getByLabel("出生日期").inputValue());
   await page.getByLabel("电话号码").fill("2025550100");
   await page.getByLabel("密码", { exact: true }).fill("ExamplePass123!");
   await page.getByLabel("邮箱").fill("preview@example.com");
   await page.getByRole("button", { name: "填写并前往 Apple" }).click();
   await page.getByRole("heading", { name: "请在 Apple 页面补全资料" }).waitFor();
   assert.equal(submissions.length, 1);
-  assert.equal(submissions[0].lastName, "Example");
+  assert.equal(submissions[0].lastName, generatedLastName);
+  assert.equal(submissions[0].firstName, generatedFirstName);
   assert.equal(submissions[0].phoneCode, "CN");
   assert.deepEqual(errors, []);
 } finally {

@@ -422,14 +422,6 @@ export function AccountOnboarding({
               onSubmit={(event) => {
                 event.preventDefault();
                 if (busy) return;
-                const generated = Array.from(
-                  event.currentTarget.querySelectorAll<HTMLInputElement>("input[data-example]"),
-                ).find((input) => input.value === input.dataset.example);
-                if (generated) {
-                  setError("请将生成示例替换为你的资料后继续。");
-                  generated.focus();
-                  return;
-                }
                 const form = new FormData(event.currentTarget);
                 const attempt = appleAttempt.current!;
                 void perform(() => submitForm(form, attempt), attempt);
