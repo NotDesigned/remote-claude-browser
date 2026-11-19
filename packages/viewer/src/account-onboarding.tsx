@@ -25,7 +25,7 @@ interface AppleAttempt {
 
 type Step =
   | { name: "start" | "claude" }
-  | { name: "apple"; apple: AppleRegistration }
+  | { name: "apple"; apple: AppleRegistration; example: ReturnType<typeof registrationExample> }
   | {
       name: "apple-verification" | "claude-verification";
       tab: string;
@@ -54,6 +54,26 @@ interface AccountOnboardingProps {
 
 const NEW_ADDRESS = "new";
 const PERSONAL_ADDRESS = "personal";
+
+// Sampled from Faker's English locale. Only the short example lists ship to the browser.
+const exampleFirstNames =
+  "Ottilie Melvin Amelia Eino Olga Luisa Manuel Ryann Jarod Thalia Veronica Arden Eladio Margaret Betsy Arthur Eldon Ervin".split(
+    " ",
+  );
+const exampleLastNames =
+  "Zulauf Kessler Haag Durgan Koch Hane Kuhlman MacGyver Feil Mitchell Price Bailey Kulas Nolan Volkman Veum Paucek Yost".split(
+    " ",
+  );
+
+function registrationExample() {
+  const start = Date.UTC(1995, 0, 1);
+  const end = Date.UTC(2006, 0, 1);
+  return {
+    firstName: exampleFirstNames[Math.floor(Math.random() * exampleFirstNames.length)],
+    lastName: exampleLastNames[Math.floor(Math.random() * exampleLastNames.length)],
+    birthday: new Date(start + Math.random() * (end - start)).toISOString().slice(0, 10),
+  };
+}
 const APPLE_TAB_CLOSED = "Apple 注册标签已关闭，可以重新开始。";
 const APPLE_ATTEMPT_ENDED = "Apple 注册向导已结束，可以重新开始。";
 
@@ -245,6 +265,7 @@ export function AccountOnboarding({
       };
       goTo({
         name: "apple",
+        example: registrationExample(),
         apple: {
           tab: apple.tab,
           options: options?.countries.length && options.phoneCodes.length ? options : null,
@@ -404,7 +425,7 @@ export function AccountOnboarding({
                   <input
                     name="lastName"
                     autoComplete="family-name"
-                    placeholder="例如 Smith"
+                    placeholder={`例如 ${step.example.lastName}`}
                     maxLength={100}
                     required
                   />
@@ -414,7 +435,7 @@ export function AccountOnboarding({
                   <input
                     name="firstName"
                     autoComplete="given-name"
-                    placeholder="例如 Alex"
+                    placeholder={`例如 ${step.example.firstName}`}
                     maxLength={100}
                     required
                   />
@@ -439,7 +460,7 @@ export function AccountOnboarding({
                     />
                   </label>
                   <small id="account-onboarding-birthday-example" class="user-panel-muted">
-                    例如 2000-06-15
+                    例如 {step.example.birthday}
                   </small>
                 </div>
                 <label>
