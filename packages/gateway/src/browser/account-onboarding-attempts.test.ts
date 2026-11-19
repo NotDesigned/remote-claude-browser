@@ -112,12 +112,19 @@ describe("Apple attempt cancellation", () => {
       if (method === "Runtime.evaluate") {
         const expression = String(params?.expression);
         if (expression.includes("iCloud Terms")) {
-          if (params?.contextId !== "home" || choices.length) return { result: { value: null } };
-          const selected = /const choice = "(agree|disagree)"/.exec(expression)?.[1];
+          if (
+            params?.contextId !== "home" ||
+            choices.includes("confirm") ||
+            choices.includes("disagree")
+          )
+            return { result: { value: null } };
+          const stage = choices.includes("agree") ? "confirm" : "terms";
+          const selected = /const choice = "(agree|disagree|confirm)"/.exec(expression)?.[1];
           if (selected) choices.push(selected);
-          return { result: { value: true } };
+          return { result: { value: stage } };
         }
-        if (expression.includes('const action = "read"')) return { result: { value: null } };
+        if (expression.includes('const action = "read"'))
+          return { result: { value: { kind: "sms" } } };
       }
       return send(sid, method, params);
     });
@@ -133,7 +140,7 @@ describe("Apple attempt cancellation", () => {
         kind: outcome,
       });
       expect((await fx.request("GET", url)).json().challenge).toEqual({ kind: outcome });
-      expect(choices).toEqual([choice]);
+      expect(choices).toEqual(choice === "agree" ? ["agree", "confirm"] : ["disagree"]);
     } finally {
       await fx.app.close();
     }

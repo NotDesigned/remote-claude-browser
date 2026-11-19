@@ -64,6 +64,7 @@ type Step =
       email: string;
       automatic?: boolean;
       requested?: boolean;
+      autoAgree?: boolean;
     };
 
 interface Verification {
@@ -74,7 +75,7 @@ interface Verification {
   challenge?:
     | { kind: "captcha"; image: string }
     | { kind: "terms"; tab: string }
-    | { kind: "email" | "sms" | "complete" | "declined" | "waiting" };
+    | { kind: "email" | "sms" | "complete" | "declined" | "waiting" | "closed" };
 }
 
 interface AccountOnboardingProps {
@@ -110,6 +111,7 @@ export function AccountOnboarding({
 }: AccountOnboardingProps) {
   const appleAttempt = useRef<AppleAttempt | null>(null);
   const autoStarted = useRef(false);
+  const autoAgreed = useRef<string>();
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [passwordCopied, setPasswordCopied] = useState(false);
@@ -124,6 +126,7 @@ export function AccountOnboarding({
   const [mailboxes, setMailboxes] = useState<Awaited<ReturnType<typeof mailboxApi.addresses>>>();
   const [mailboxValue, setMailboxValue] = useState<string>();
   const [verification, setVerification] = useState<Verification>({ ready: false, expired: false });
+  const [smsSubmitted, setSmsSubmitted] = useState(false);
   const [pending, setPending] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -156,6 +159,7 @@ export function AccountOnboarding({
     setShowPassword(false);
     setPasswordCopied(false);
     setVerification({ ready: false, expired: false });
+    setSmsSubmitted(false);
     setError(null);
   };
   const resetApple = (message?: string) => {
@@ -230,7 +234,8 @@ export function AccountOnboarding({
       (guided
         ? pending ||
           verification.challenge?.kind === "complete" ||
-          verification.challenge?.kind === "declined"
+          verification.challenge?.kind === "declined" ||
+          verification.challenge?.kind === "closed"
         : !watching || verification.ready || verification.expired)
     )
       return;
@@ -385,6 +390,8 @@ export function AccountOnboarding({
     const service = attempt ? "Apple" : "Claude";
     let email = String(form.get("email") ?? "").trim();
     form.delete("email");
+    const autoAgree = form.get("autoAgree") === "on";
+    form.delete("autoAgree");
     let identity: { mailboxId: string } | { email: string };
     if (selectedMailbox === NEW_ADDRESS) {
       const label = profileName ? `${profileName.slice(0, 70)} · ${service}` : service;
@@ -419,17 +426,13 @@ export function AccountOnboarding({
         filled,
         watching,
         email,
+        autoAgree,
       });
     }
     if (step.name === "claude") await openClaude(identity, email);
   };
 
-  if (!open && step.name !== "apple") return null;
-
-  const needsAppleDetails =
-    step.name === "apple-verification" && !step.filled && !verification.ready;
   const challenge = verification.challenge;
-  const appleEnded = challenge?.kind === "complete" || challenge?.kind === "declined";
   const decideTerms = (choice: "agree" | "disagree") => {
     void perform(async () => {
       const result = await apiRequest<Pick<Verification, "challenge">>(
@@ -441,6 +444,33 @@ export function AccountOnboarding({
       setVerification((value) => ({ ...value, ...result }));
     }, appleVerification ?? undefined);
   };
+  useEffect(() => {
+    if (
+      !open ||
+      step.name !== "apple-verification" ||
+      !step.autoAgree ||
+      !appleVerification ||
+      challenge?.kind !== "terms" ||
+      pending ||
+      autoAgreed.current === appleVerification.id
+    )
+      return;
+    autoAgreed.current = appleVerification.id;
+    decideTerms("agree");
+  }, [open, step, challenge?.kind, pending, appleVerification]);
+
+  if (!open && step.name !== "apple") return null;
+
+  const needsAppleDetails =
+    step.name === "apple-verification" && !step.filled && !verification.ready;
+  const appleEnded =
+    challenge?.kind === "complete" ||
+    challenge?.kind === "declined" ||
+    challenge?.kind === "closed";
+  const canContinueClaude =
+    challenge?.kind === "complete" ||
+    challenge?.kind === "closed" ||
+    (challenge?.kind === "waiting" && smsSubmitted);
   const manualChallenge =
     challenge?.kind === "captcha" ||
     challenge?.kind === "sms" ||
@@ -695,6 +725,19 @@ export function AccountOnboarding({
                 <p class="user-panel-muted">注册资料和密码会保存到此配置。</p>
               </div>
               <p class="user-panel-muted">接下来完成图形验证码、邮箱和手机验证。</p>
+              <label class="account-onboarding-consent">
+                <input name="autoAgree" type="checkbox" disabled={busy} />
+                <span>
+                  自动同意{" "}
+                  <a
+                    href="https://www.apple.com/legal/internet-services/icloud/"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    iCloud 条款
+                  </a>
+                </span>
+              </label>
               <div class="user-panel-actions">
                 <button type="submit" class="user-panel-save" disabled={busy || !mailboxes}>
                   {pending ? "正在填写…" : "继续"}
@@ -727,9 +770,11 @@ export function AccountOnboarding({
                   ? "Apple 账户已创建"
                   : challenge?.kind === "declined"
                     ? "未接受 iCloud 条款"
-                    : challenge?.kind === "terms"
-                      ? "iCloud 条款与条件"
-                      : "验证 Apple 账户"}
+                    : challenge?.kind === "closed"
+                      ? "Apple 页面已关闭"
+                      : challenge?.kind === "terms"
+                        ? "iCloud 条款与条件"
+                        : "验证 Apple 账户"}
             </h3>
             <p class="user-panel-muted account-onboarding-address">{step.email}</p>
             {challenge?.kind === "terms" && (
@@ -740,7 +785,7 @@ export function AccountOnboarding({
                   disabled={busy}
                   onClick={() => decideTerms("agree")}
                 >
-                  同意
+                  {pending ? "正在提交选择…" : "同意"}
                 </button>
                 <button type="button" disabled={busy} onClick={() => decideTerms("disagree")}>
                   不同意
@@ -767,9 +812,17 @@ export function AccountOnboarding({
                 />
               </div>
             )}
-            {!needsAppleDetails && (!challenge || challenge.kind === "waiting") && (
+            {!needsAppleDetails &&
+              (!challenge || challenge.kind === "waiting") &&
+              !smsSubmitted && (
+                <p class="user-panel-muted" role="status">
+                  正在读取 Apple 验证步骤…
+                </p>
+              )}
+            {((challenge?.kind === "sms" && busy) ||
+              (smsSubmitted && (challenge?.kind === "sms" || challenge?.kind === "waiting"))) && (
               <p class="user-panel-muted" role="status">
-                正在读取 Apple 验证步骤…
+                {busy ? "正在向 Apple 提交短信验证码…" : "短信验证码已提交，正在等待 Apple 确认。"}
               </p>
             )}
             {manualChallenge && (
@@ -780,6 +833,7 @@ export function AccountOnboarding({
                   event.preventDefault();
                   const form = event.currentTarget;
                   const code = String(new FormData(form).get("code") ?? "").trim();
+                  if (challenge.kind === "sms") setSmsSubmitted(false);
                   void perform(async () => {
                     await apiRequest(
                       verificationRoute!,
@@ -787,6 +841,8 @@ export function AccountOnboarding({
                       { kind: challenge.kind, code },
                       appleVerification?.fetcher,
                     );
+                    if (challenge.kind === "sms" && !appleVerification?.controller.signal.aborted)
+                      setSmsSubmitted(true);
                     form.reset();
                   }, appleVerification ?? undefined);
                 }}
@@ -816,7 +872,7 @@ export function AccountOnboarding({
                 </label>
                 <div class="user-panel-actions">
                   <button type="submit" class="user-panel-save" disabled={busy}>
-                    验证
+                    {busy ? "提交中…" : "验证"}
                   </button>
                 </div>
               </form>
@@ -825,10 +881,14 @@ export function AccountOnboarding({
               <div class="user-panel-actions">
                 {!appleEnded && (
                   <button type="button" disabled={busy} onClick={() => openTab(step.tab)}>
-                    {needsAppleDetails ? "前往 Apple 补填" : "在 Apple 页面继续"}
+                    {needsAppleDetails
+                      ? "前往 Apple 补填"
+                      : challenge?.kind === "sms"
+                        ? "查看短信重发选项"
+                        : "在 Apple 页面继续"}
                   </button>
                 )}
-                {challenge?.kind === "complete" && appleVerification && (
+                {canContinueClaude && appleVerification && (
                   <button
                     type="button"
                     class="user-panel-save"
@@ -838,7 +898,9 @@ export function AccountOnboarding({
                       goTo({ name: "claude-apple", record: appleVerification.id });
                     }}
                   >
-                    继续设置 Claude
+                    {challenge?.kind === "complete"
+                      ? "继续设置 Claude"
+                      : "已在 Apple 完成，继续 Claude"}
                   </button>
                 )}
                 {appleEnded ? (

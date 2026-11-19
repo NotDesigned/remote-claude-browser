@@ -47,15 +47,27 @@ const senderDomain = {
 };
 const mailSubject = {
   apple: /verif(?:y|ication).*(?:e-?mail|code|apple (?:id|account))/i,
-  claude: /^secure link to log in to claude\.ai$/i,
+  claude:
+    /^(?:secure link to log in to claude\.ai|your secure link to claude is here(?:\s*\|\s*\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})?)$/i,
 };
 
 export const isAppleRelayEmail = (address: string) =>
   /^[a-z0-9._%+~-]+@(?:privaterelay\.appleid\.com|private\.icloud\.com)$/i.test(address);
 
-function isVerificationMail({ provider, email }: Verification, mail: MessageSummary) {
+function senderAddress(mail: MessageSummary) {
   const from = mail.from.trim();
-  const address = /<([^<>]+)>$/.exec(from)?.[1] ?? from;
+  return /<([^<>]+)>$/.exec(from)?.[1] ?? from;
+}
+
+export function isICloudWelcome(mail: MessageSummary) {
+  return (
+    /^welcome to icloud\.?$/i.test(mail.subject.trim()) &&
+    senderDomain.apple.test(senderAddress(mail))
+  );
+}
+
+function isVerificationMail({ provider, email }: Verification, mail: MessageSummary) {
+  const address = senderAddress(mail);
   return (
     mailSubject[provider].test(mail.subject.trim()) &&
     (senderDomain[provider].test(address) ||

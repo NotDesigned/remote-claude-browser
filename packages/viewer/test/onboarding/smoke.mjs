@@ -15,6 +15,7 @@ try {
   await server.listen();
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH, headless: true });
   const page = await browser.newPage();
+  const autoAgree = process.env.APPLE_SMOKE_AUTO_AGREE === "1";
   const errors = [];
   const submissions = [];
   const codes = [];
@@ -23,6 +24,7 @@ try {
   let relayEmail;
   let stage = "captcha";
   let allowSms = false;
+  let allowTerms = false;
   const image = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
   page.on("pageerror", (error) => errors.push(error.message));
   await page.route("**/api/me/mailboxes", (route) =>
@@ -84,13 +86,14 @@ try {
         const body = route.request().postDataJSON();
         codes.push(body);
         if (body.kind === "terms") {
-          stage = "declined";
+          stage = body.choice === "agree" ? "complete" : "declined";
           return route.fulfill({ json: { challenge: { kind: stage } } });
         }
         stage = body.kind === "captcha" ? "email" : "terms";
         return route.fulfill({ json: { submitted: true } });
       }
-      const kind = stage === "email" && allowSms ? "sms" : stage;
+      const kind =
+        stage === "email" && allowSms ? "sms" : stage === "terms" && !allowTerms ? "sms" : stage;
       return route.fulfill({
         json: { ready: kind === "sms", expired: false, challenge: { kind, image } },
       });
@@ -112,6 +115,7 @@ try {
   await page.getByLabel("电话号码").fill("2025550100");
   await page.getByLabel("密码", { exact: true }).fill("ExamplePass123!");
   await page.getByLabel("邮箱").fill("preview@example.com");
+  if (autoAgree) await page.getByRole("checkbox", { name: "自动同意 iCloud 条款" }).check();
   await page.getByRole("button", { name: "继续", exact: true }).click();
   await page.getByRole("img", { name: "Apple 图形验证码" }).waitFor();
   await page.getByLabel("图形验证码", { exact: true }).fill("ABCD");
@@ -120,14 +124,20 @@ try {
   allowSms = true;
   await page.getByLabel("短信验证码").fill("123456");
   await page.getByRole("button", { name: "验证", exact: true }).click();
-  await page.getByRole("heading", { name: "iCloud 条款与条件" }).waitFor();
-  assert.equal(codes.length, 2);
-  await page.getByRole("button", { name: "不同意", exact: true }).click();
-  await page.getByRole("heading", { name: "未接受 iCloud 条款" }).waitFor();
+  await page.getByText("短信验证码已提交，正在等待 Apple 确认。").waitFor();
+  allowTerms = true;
+  if (!autoAgree) {
+    await page.getByRole("heading", { name: "iCloud 条款与条件" }).waitFor();
+    assert.equal(codes.length, 2);
+    await page.getByRole("button", { name: "不同意", exact: true }).click();
+  }
+  await page
+    .getByRole("heading", { name: autoAgree ? "Apple 账户已创建" : "未接受 iCloud 条款" })
+    .waitFor();
   assert.deepEqual(codes, [
     { kind: "captcha", code: "ABCD" },
     { kind: "sms", code: "123456" },
-    { kind: "terms", choice: "disagree" },
+    { kind: "terms", choice: autoAgree ? "agree" : "disagree" },
   ]);
   await page.getByRole("button", { name: "完成", exact: true }).click();
   await page.getByRole("button", { name: "已保存的 Apple 账户" }).click();

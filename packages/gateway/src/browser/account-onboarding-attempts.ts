@@ -6,6 +6,10 @@ export interface AppleAttempt {
   guided?: boolean;
   email?: string;
   submitting?: boolean;
+  smsSubmitted?: boolean;
+  termsSeen?: boolean;
+  inbox?: { owner: string; mailboxId: string; since: number };
+  welcomeChecked?: string;
   termsOutcome?: "complete" | "declined";
 }
 

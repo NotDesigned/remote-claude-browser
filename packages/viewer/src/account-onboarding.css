@@ -62,6 +62,15 @@
 .account-onboarding-progress progress {
   width: 100%;
 }
+.account-onboarding .account-onboarding-consent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.account-onboarding-consent input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
 .account-onboarding .user-panel-actions button:not(.user-panel-save) {
   background: var(--surface);
   color: var(--ink);

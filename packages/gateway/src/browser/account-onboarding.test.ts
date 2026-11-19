@@ -47,7 +47,7 @@ describe("mail verification", () => {
       `https://claude.ai/magic-link#0123456789abcdef0123456789abcdef:${Buffer.from(address).toString("base64")}`;
     const mail = {
       from: "Relay <forwarded@privaterelay.appleid.com>",
-      subject: "Secure link to log in to Claude.ai",
+      subject: "Your secure link to Claude is here | 2026-11-20 03:31:13",
     };
     messages.push(
       {

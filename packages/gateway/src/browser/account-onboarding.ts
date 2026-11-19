@@ -13,10 +13,15 @@ import type {
   AppleAccountStore,
   AppleCredentials,
 } from "../auth/apple-accounts";
-import { createAppleAttempts, untilCanceled } from "./account-onboarding-attempts";
+import {
+  createAppleAttempts,
+  untilCanceled,
+  type AppleAttempt,
+} from "./account-onboarding-attempts";
 import {
   createVerification,
   isAppleRelayEmail,
+  isICloudWelcome,
   type AppleCodeAction,
   type OnboardingMailbox,
 } from "./account-onboarding-mail";
@@ -130,6 +135,18 @@ export function registerAccountOnboarding(
     entry?.accounts.setState(entry.user, entry.profile, id.toLowerCase(), state);
   };
   const mailboxService = options.mailbox?.enabled ? options.mailbox : undefined;
+  const welcomeReceived = async (attempt: AppleAttempt) => {
+    if (!mailboxService || !attempt.inbox) return false;
+    const { owner, mailboxId, since } = attempt.inbox;
+    const welcome = mailboxService.listMessages(owner, mailboxId, since).find(isICloudWelcome);
+    if (!welcome || welcome.id === attempt.welcomeChecked) return false;
+    const message = await mailboxService
+      .readMessage(owner, mailboxId, welcome.id)
+      .catch(() => undefined);
+    if (!message || attempt.control.signal.aborted) return false;
+    attempt.welcomeChecked = welcome.id;
+    return message.authenticated && isICloudWelcome(message);
+  };
   const verification = createVerification(mailboxService);
   const attempts = createAppleAttempts();
   const shutdown = new AbortController();
@@ -267,6 +284,7 @@ export function registerAccountOnboarding(
         void assistClaudeApple(current.browser, tab, account, signal, async (email) => {
           if (session(sid)?.browser !== current.browser || userId(request) !== entry!.user) return;
           await entry!.accounts.bindRelay(entry!.user, entry!.profile, record, email, false);
+          entry!.accounts.setState(entry!.user, entry!.profile, record, "created");
         }).catch(() => {});
       const signIn =
         started &&
@@ -457,6 +475,8 @@ export function registerAccountOnboarding(
             });
           }
           attempt.email = details.email;
+          if (details.owner && details.mailboxId)
+            attempt.inbox = { owner: details.owner, mailboxId: details.mailboxId, since };
         }
         return {
           filled: result?.value === true,
@@ -506,7 +526,23 @@ export function registerAccountOnboarding(
         const { sid, tab } = request.params;
         const id = request.query.attempt;
         const attempt = provider === "apple" && id ? appleAttempt(sid, tab, id) : undefined;
-        if (provider === "apple" && id && !attempt) return appleGone(reply);
+        if (provider === "apple" && id && !attempt) {
+          const previous = attempts.get(sid, id);
+          if (
+            previous?.guided &&
+            previous.tab === tab &&
+            previous.browser === session(sid)?.browser &&
+            (previous.smsSubmitted || previous.termsSeen)
+          ) {
+            if (await welcomeReceived(previous)) {
+              previous.termsOutcome = "complete";
+              archiveState(request, sid, id, "accepted");
+              return { ready: false, expired: true, challenge: { kind: "complete" } };
+            }
+            return { ready: false, expired: true, challenge: { kind: "closed" } };
+          }
+          return appleGone(reply);
+        }
         const status = verification.status(provider, request.params, userId(request));
         if (!attempt?.guided || !attempt.email) return status;
         const { signal } = attempt.control;
@@ -514,10 +550,26 @@ export function registerAccountOnboarding(
           if (attempt.termsOutcome) return { ...status, challenge: { kind: attempt.termsOutcome } };
           const browser = session(sid)!.browser;
           const challenge = await readAppleChallenge(browser, tab, signal);
-          if (challenge.kind === "waiting" || challenge.kind === "complete") {
-            const terms = await findAppleTerms(browser, attempt.startTab ?? tab, signal);
+          const root = attempt.startTab ?? tab;
+          if (
+            challenge.kind === "waiting" ||
+            challenge.kind === "complete" ||
+            challenge.kind === "sms"
+          ) {
+            const terms = await findAppleTerms(browser, root, signal);
             if (terms || challenge.kind === "complete") archiveState(request, sid, id!, "created");
-            if (terms) return { ...status, challenge: { kind: "terms", tab: terms.tab } };
+            if (terms) {
+              attempt.termsSeen = true;
+              return { ...status, challenge: { kind: "terms", tab: terms.tab } };
+            }
+            if (
+              (attempt.termsSeen || attempt.smsSubmitted) &&
+              ((await appleFinished(browser, root, signal)) || (await welcomeReceived(attempt)))
+            ) {
+              attempt.termsOutcome = "complete";
+              archiveState(request, sid, id!, "accepted");
+              return { ...status, challenge: { kind: "complete" } };
+            }
           }
           return { ...status, challenge };
         });
@@ -569,13 +621,27 @@ export function registerAccountOnboarding(
           if (body.kind === "terms") {
             if (attempt.termsOutcome) return { challenge: { kind: attempt.termsOutcome } };
             const root = attempt.startTab ?? tab;
-            if (!(await findAppleTerms(browser, root, signal, body.choice)))
+            const initial = await findAppleTerms(browser, root, signal, body.choice);
+            if (!initial)
               return reply
                 .code(409)
                 .send({ error: "未找到可操作的 iCloud 条款，请在 Apple 页面查看" });
-            for (let retry = 0; retry < 8; retry++) {
+            let confirmed = initial.value === "confirm";
+            let gone = 0;
+            for (let retry = 0; retry < 16; retry++) {
               await pause(250, undefined, { signal });
-              if (!(await findAppleTerms(browser, root, signal))) {
+              const stage = await findAppleTerms(browser, root, signal);
+              if (!confirmed && body.choice === "agree" && stage?.value === "confirm") {
+                confirmed = !!(await findAppleTerms(browser, root, signal, "confirm"));
+              }
+              gone = stage ? 0 : gone + 1;
+              if (
+                gone >= 3 &&
+                (confirmed ||
+                  body.choice === "disagree" ||
+                  !findPage(browser, root) ||
+                  (await appleFinished(browser, root, signal)))
+              ) {
                 attempt.termsOutcome = body.choice === "agree" ? "complete" : "declined";
                 archiveState(
                   request,
@@ -623,6 +689,7 @@ export function registerAccountOnboarding(
             return reply
               .code(409)
               .send({ error: "未能点击 Apple 的 Continue，请重试或在 Apple 页面继续" });
+          if (kind === "sms") attempt.smsSubmitted = true;
           attempts.refresh(sid, request.query.attempt!);
           return { submitted: true };
         });
@@ -1065,9 +1132,9 @@ function findAppleTerms(
   browser: Browser,
   tab: string,
   signal: AbortSignal,
-  choice?: "agree" | "disagree",
+  choice?: "agree" | "disagree" | "confirm",
 ) {
-  return checkForm<boolean>(
+  return checkForm<"terms" | "confirm">(
     browser,
     tab,
     APPLE_TERMS,
@@ -1075,30 +1142,58 @@ function findAppleTerms(
     const choice = ${JSON.stringify(choice)};
     const visible = (element) => element.getClientRects().length &&
       getComputedStyle(element).visibility === "visible" && !element.closest('[inert], [aria-hidden="true"]');
-    const heading = [...document.querySelectorAll('h1,h2,h3,[role="heading"]')].find((element) =>
-      visible(element) && /^iCloud Terms (?:and|&) Conditions$/i.test(element.innerText.trim()));
-    if (!heading) return null;
-    const findActions = (scope) => {
-      const buttons = [...scope.querySelectorAll('button,[role="button"],input[type="submit"]')].filter(visible);
-      const matching = (label) => buttons.filter((button) =>
+    const buttons = (root, label) => [...root.querySelectorAll('button,[role="button"],input[type="submit"]')]
+      .filter((button) => visible(button) &&
         [button.getAttribute("aria-label"), button.matches("input") ? button.value : button.innerText]
           .some((text) => text?.trim().toLowerCase() === label));
-      const agree = matching("agree");
-      const disagree = matching("disagree");
+    const click = (button) => {
+      if (!button || button.matches(':disabled,[aria-disabled="true"]')) return false;
+      button.click();
+      return true;
+    };
+    for (const dialog of document.querySelectorAll('dialog,[role="dialog"],[role="alertdialog"]')) {
+      if (!visible(dialog) || !/iCloud Terms (?:and|&) Conditions/i.test(dialog.innerText)) continue;
+      const agree = buttons(dialog, "agree");
+      if (agree.length === 1 && buttons(dialog, "cancel").length === 1) {
+        if (choice && (choice === "disagree" || !click(agree[0]))) return null;
+        return "confirm";
+      }
+    }
+    if (choice === "confirm") return null;
+    const title = (text) => /^iCloud Terms (?:and|&) Conditions$/i.test(text.trim());
+    const heading = [...document.querySelectorAll('h1,h2,h3,[role="heading"]')].find((element) =>
+      visible(element) && title(element.innerText));
+    if (!heading && !document.body.innerText.split("\\n").some(title)) return null;
+    const findActions = (scope) => {
+      const agree = buttons(scope, "agree");
+      const disagree = buttons(scope, "disagree");
       if (agree.length === 1 && disagree.length === 1) return { agree: agree[0], disagree: disagree[0] };
     };
-    const scope = heading.closest('dialog,[role="dialog"]') ?? document;
+    const scope = heading?.closest('dialog,[role="dialog"]') ?? document;
     const actions = findActions(scope) ?? (scope !== document && findActions(document));
     if (!actions) return null;
-    if (choice) {
-      const button = actions[choice];
-      if (button.matches(':disabled,[aria-disabled="true"]')) return null;
-      button.click();
-    }
-    return true;
+    if (choice && !click(actions[choice])) return null;
+    return "terms";
   `,
     { includePopups: true, originOnly: true, userGesture: !!choice, signal },
   );
+}
+
+async function appleFinished(browser: Browser, tab: string, signal: AbortSignal) {
+  return !!(await checkForm<boolean>(
+    browser,
+    tab,
+    ICLOUD,
+    `
+    const elements = [...document.querySelectorAll('button,[role="button"],a')].filter((element) =>
+      element.getClientRects().length && !element.closest('[inert],[aria-hidden="true"]'));
+    const has = (label) => elements.some((element) =>
+      [element.getAttribute("aria-label"), element.title, element.innerText]
+        .some((text) => text?.trim().toLowerCase() === label));
+    return (has("app launcher") && (has("account") || has("icloud settings"))) || has("sign out") ? true : null;
+  `,
+    { includePopups: true, mainFrameOnly: true, originOnly: true, signal },
+  ));
 }
 
 function findPage(browser: Browser, tab: string) {
