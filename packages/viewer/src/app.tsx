@@ -1077,6 +1077,8 @@ export function App() {
           profileKey={`${user.id}.${currentProfile.id}`}
           profileName={currentProfile.name}
           storage={viewStorage()}
+          tabs={tabs}
+          browserConnected={connection === "open"}
           onClose={() => setOnboardingOpen(false)}
           onOpenTab={(tab) => presentationRef.current?.activate(tab)}
         />

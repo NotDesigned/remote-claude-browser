@@ -1,5 +1,5 @@
-import { useEffect, useState } from "preact/hooks";
-import { apiRequest } from "./api";
+import { useEffect, useRef, useState } from "preact/hooks";
+import { ApiError, apiRequest } from "./api";
 import { writeLocalClipboard } from "./chrome/clipboard";
 import { useDialog } from "./dialog";
 import { mailboxApi, mailboxLabel } from "./mailboxes";
@@ -14,6 +14,13 @@ interface RegistrationOptions {
 interface AppleRegistration {
   tab: string;
   options: RegistrationOptions | null;
+}
+
+interface AppleAttempt {
+  id: string;
+  controller: AbortController;
+  fetcher: typeof fetch;
+  seenTabs: Set<string>;
 }
 
 type Step =
@@ -39,12 +46,16 @@ interface AccountOnboardingProps {
   profileKey: string;
   profileName: string | undefined;
   storage: Pick<Storage, "getItem" | "setItem">;
+  tabs: readonly { id: string }[];
+  browserConnected: boolean;
   onClose(): void;
   onOpenTab(tab: string): void;
 }
 
 const NEW_ADDRESS = "new";
 const PERSONAL_ADDRESS = "personal";
+const APPLE_TAB_CLOSED = "Apple 注册标签已关闭，可以重新开始。";
+const APPLE_ATTEMPT_ENDED = "Apple 注册向导已结束，可以重新开始。";
 
 export function AccountOnboarding({
   open,
@@ -52,15 +63,18 @@ export function AccountOnboarding({
   profileKey,
   profileName,
   storage,
+  tabs,
+  browserConnected,
   onClose,
   onOpenTab,
 }: AccountOnboardingProps) {
+  const appleAttempt = useRef<AppleAttempt | null>(null);
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [passwordCopied, setPasswordCopied] = useState(false);
   const close = () => {
     setShowPassword(false);
-    setError(null);
+    if (!appleAttempt.current?.controller.signal.aborted) setError(null);
     onClose();
   };
   const panel = useDialog(open, close);
@@ -69,15 +83,72 @@ export function AccountOnboarding({
   const [mailboxValue, setMailboxValue] = useState<string>();
   const [verification, setVerification] = useState<Verification>({ ready: false, expired: false });
   const [pending, setPending] = useState(false);
+  const [canceling, setCanceling] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const busy = pending || appleAttempt.current?.controller.signal.aborted === true;
   const route = `/api/client/session/${encodeURIComponent(sid)}/onboarding`;
+  const applePath = (attempt: AppleAttempt, suffix = "") =>
+    `${route}/apple${suffix}?attempt=${attempt.id}`;
+  const appleTab =
+    step.name === "apple" ? step.apple.tab : step.name === "apple-verification" ? step.tab : null;
+  const appleVerification = step.name === "apple-verification" ? appleAttempt.current : null;
   const verificationRoute =
-    step.name === "apple-verification"
-      ? `${route}/apple/${encodeURIComponent(step.tab)}/verification`
+    step.name === "apple-verification" && appleVerification
+      ? applePath(appleVerification, `/${encodeURIComponent(step.tab)}/verification`)
       : step.name === "claude-verification"
         ? `${route}/claude/${encodeURIComponent(step.tab)}/verification`
         : null;
   const watching = "watching" in step && step.watching;
+
+  const stopApple = () => {
+    const attempt = appleAttempt.current;
+    if (!attempt) return;
+    appleAttempt.current = null;
+    attempt.controller.abort();
+    void apiRequest(applePath(attempt), "DELETE").catch(() => {});
+  };
+  const goTo = (next: Step) => {
+    setStep(next);
+    setMailboxValue(undefined);
+    setPassword(next.name === "apple" && next.apple.options ? generatePassword() : "");
+    setShowPassword(false);
+    setPasswordCopied(false);
+    setVerification({ ready: false, expired: false });
+    setError(null);
+  };
+  const resetApple = (message?: string) => {
+    stopApple();
+    goTo({ name: "start" });
+    setPending(false);
+    setCanceling(false);
+    if (message) setError(message);
+  };
+  const cancelApple = async () => {
+    const attempt = appleAttempt.current!;
+    attempt.controller.abort();
+    setPending(false);
+    setCanceling(true);
+    setError(null);
+    try {
+      await apiRequest(applePath(attempt), "DELETE");
+      if (appleAttempt.current !== attempt) return;
+      appleAttempt.current = null;
+      resetApple();
+    } catch {
+      if (appleAttempt.current !== attempt) return;
+      setCanceling(false);
+      setError("暂时无法取消 Apple 向导。请重试。");
+    }
+  };
+
+  useEffect(() => () => stopApple(), [route]);
+  useEffect(() => {
+    const attempt = appleAttempt.current;
+    if (!attempt || !browserConnected || !tabs.length) return;
+    for (const tab of tabs) attempt.seenTabs.add(tab.id);
+    if (appleTab && attempt.seenTabs.has(appleTab) && !tabs.some(({ id }) => id === appleTab))
+      resetApple(APPLE_TAB_CLOSED);
+  }, [appleTab, browserConnected, pending, tabs]);
 
   useEffect(() => {
     if (!open) return;
@@ -103,15 +174,25 @@ export function AccountOnboarding({
     let timer: ReturnType<typeof setTimeout>;
     const check = async () => {
       try {
-        const status = await apiRequest<Verification>(verificationRoute);
-        if (active) {
+        const status = await apiRequest<Verification>(
+          verificationRoute,
+          "GET",
+          undefined,
+          appleVerification?.fetcher,
+        );
+        if (active && !appleVerification?.controller.signal.aborted) {
           setVerification(status);
           setError(null);
         }
       } catch (failure) {
-        if (active) setError((failure as Error).message);
+        if (active && !appleVerification?.controller.signal.aborted) {
+          if (appleVerification && failure instanceof ApiError && failure.status === 410)
+            resetApple(APPLE_ATTEMPT_ENDED);
+          else setError((failure as Error).message);
+        }
       } finally {
-        if (active) timer = setTimeout(check, 2_000);
+        if (active && !appleVerification?.controller.signal.aborted)
+          timer = setTimeout(check, 2_000);
       }
     };
     void check();
@@ -121,33 +202,43 @@ export function AccountOnboarding({
     };
   }, [open, verificationRoute, watching, verification.ready, verification.expired]);
 
-  const perform = async (task: () => Promise<void>) => {
+  const perform = async (task: () => Promise<void>, attempt?: AppleAttempt) => {
     setPending(true);
     setError(null);
     try {
       await task();
     } catch (failure) {
-      setError((failure as Error).message);
+      if (attempt?.controller.signal.aborted) return;
+      if (attempt && failure instanceof ApiError && failure.status === 410)
+        resetApple(APPLE_ATTEMPT_ENDED);
+      else if (attempt && step.name === "start") resetApple((failure as Error).message);
+      else setError((failure as Error).message);
     } finally {
-      setPending(false);
+      if (!attempt?.controller.signal.aborted) setPending(false);
     }
-  };
-  const goTo = (next: Step) => {
-    setStep(next);
-    setMailboxValue(undefined);
-    setPassword(next.name === "apple" && next.apple.options ? generatePassword() : "");
-    setShowPassword(false);
-    setPasswordCopied(false);
-    setVerification({ ready: false, expired: false });
-    setError(null);
   };
   const openTab = (tab: string) => {
     onOpenTab(tab);
     close();
   };
-  const openApple = () =>
+  const openApple = () => {
+    if (appleAttempt.current) return;
+    const controller = new AbortController();
+    const attempt: AppleAttempt = {
+      id: crypto.randomUUID(),
+      controller,
+      fetcher: (input, init) => fetch(input, { ...init, signal: controller.signal }),
+      seenTabs: new Set(),
+    };
+    appleAttempt.current = attempt;
     void perform(async () => {
-      const apple = await apiRequest<AppleRegistration>(`${route}/apple`, "POST");
+      const apple = await apiRequest<AppleRegistration>(
+        applePath(attempt),
+        "POST",
+        undefined,
+        attempt.fetcher,
+      );
+      if (controller.signal.aborted) return;
       const options = apple.options && {
         countries: apple.options.countries.filter(([value]) => value),
         phoneCodes: apple.options.phoneCodes.filter(([value]) => value),
@@ -159,20 +250,23 @@ export function AccountOnboarding({
           options: options?.countries.length && options.phoneCodes.length ? options : null,
         },
       });
-    });
+    }, attempt);
+  };
   const aliasKey = `mirror.mailbox.${profileKey}.${step.name}`;
   const rememberedAlias = open && mailboxes?.addresses.length ? storage.getItem(aliasKey) : null;
   const selectedMailbox =
     mailboxValue ??
     mailboxes?.addresses.find((address) => address.id === rememberedAlias)?.id ??
     (mailboxes?.enabled ? NEW_ADDRESS : PERSONAL_ADDRESS);
-  const submitForm = async (form: FormData, service: "Apple" | "Claude") => {
+  const submitForm = async (form: FormData, attempt?: AppleAttempt) => {
+    const service = attempt ? "Apple" : "Claude";
     let email = String(form.get("email") ?? "").trim();
     form.delete("email");
     let identity: { mailboxId: string } | { email: string };
     if (selectedMailbox === NEW_ADDRESS) {
       const label = profileName ? `${profileName.slice(0, 70)} · ${service}` : service;
-      const { address } = await mailboxApi.create(label);
+      const { address } = await mailboxApi.create(label, attempt?.fetcher);
+      if (attempt?.controller.signal.aborted) return;
       setMailboxes((current) => ({
         enabled: true,
         addresses: [...(current?.addresses ?? []), address],
@@ -187,13 +281,15 @@ export function AccountOnboarding({
           mailboxes?.addresses.find((address) => address.id === selectedMailbox)?.address ?? "";
     }
     if ("mailboxId" in identity) storage.setItem(aliasKey, identity.mailboxId);
-    if (step.name === "apple") {
+    if (step.name === "apple" && attempt) {
       const { tab } = step.apple;
       const { filled, watching } = await apiRequest<{ filled: boolean; watching: boolean }>(
-        `${route}/apple/${encodeURIComponent(tab)}`,
+        applePath(attempt, `/${encodeURIComponent(tab)}`),
         "POST",
         { ...Object.fromEntries(form), ...identity },
+        attempt.fetcher,
       );
+      if (attempt.controller.signal.aborted) return;
       goTo({ name: "apple-verification", tab, filled, watching, email });
       if (filled) openTab(tab);
     }
@@ -209,7 +305,7 @@ export function AccountOnboarding({
     }
   };
 
-  if (!open) return null;
+  if (!open && step.name !== "apple") return null;
 
   const needsAppleDetails =
     step.name === "apple-verification" && !step.filled && !verification.ready;
@@ -220,7 +316,7 @@ export function AccountOnboarding({
           收件地址
           <select
             value={selectedMailbox}
-            disabled={pending}
+            disabled={busy}
             onChange={(event) => setMailboxValue(event.currentTarget.value)}
           >
             {mailboxes.enabled && <option value={NEW_ADDRESS}>新建专属收件地址</option>}
@@ -246,9 +342,14 @@ export function AccountOnboarding({
       )}
     </>
   );
+  const cancelAppleButton = (
+    <button type="button" disabled={canceling} onClick={() => void cancelApple()}>
+      {canceling ? "正在取消…" : "取消本次向导"}
+    </button>
+  );
 
   return (
-    <div class="user-panel-backdrop">
+    <div class="user-panel-backdrop account-onboarding-backdrop" hidden={!open}>
       <section
         class="user-panel account-onboarding"
         role="dialog"
@@ -275,12 +376,13 @@ export function AccountOnboarding({
               </p>
             )}
             <div class="user-panel-actions">
-              <button type="button" class="user-panel-save" disabled={pending} onClick={openApple}>
+              <button type="button" class="user-panel-save" disabled={busy} onClick={openApple}>
                 注册 Apple 账户
               </button>
-              <button type="button" disabled={pending} onClick={() => goTo({ name: "claude" })}>
+              <button type="button" disabled={busy} onClick={() => goTo({ name: "claude" })}>
                 登录 Claude
               </button>
+              {appleAttempt.current && cancelAppleButton}
             </div>
           </section>
         )}
@@ -290,8 +392,10 @@ export function AccountOnboarding({
               class="user-panel-form"
               onSubmit={(event) => {
                 event.preventDefault();
+                if (busy) return;
                 const form = new FormData(event.currentTarget);
-                void perform(() => submitForm(form, "Apple"));
+                const attempt = appleAttempt.current!;
+                void perform(() => submitForm(form, attempt), attempt);
               }}
             >
               <div class="account-onboarding-fields">
@@ -370,7 +474,7 @@ export function AccountOnboarding({
                     minLength={8}
                     maxLength={128}
                     required
-                    disabled={pending}
+                    disabled={busy}
                     onInput={(event) => {
                       setPassword(event.currentTarget.value);
                       setPasswordCopied(false);
@@ -379,7 +483,7 @@ export function AccountOnboarding({
                   <button
                     type="button"
                     aria-label={showPassword ? "隐藏密码" : "显示密码"}
-                    disabled={pending}
+                    disabled={busy}
                     onClick={() => setShowPassword(!showPassword)}
                   >
                     {showPassword ? "隐藏" : "显示"}
@@ -387,13 +491,18 @@ export function AccountOnboarding({
                   <button
                     type="button"
                     aria-label={passwordCopied ? "已复制密码" : "复制密码"}
-                    disabled={pending || !password}
-                    onClick={() =>
+                    disabled={busy || !password}
+                    onClick={() => {
+                      const signal = appleAttempt.current!.controller.signal;
                       void writeLocalClipboard(password).then(
-                        () => setPasswordCopied(true),
-                        (failure: Error) => setError(failure.message),
-                      )
-                    }
+                        () => {
+                          if (!signal.aborted) setPasswordCopied(true);
+                        },
+                        (failure: Error) => {
+                          if (!signal.aborted) setError(failure.message);
+                        },
+                      );
+                    }}
                   >
                     {passwordCopied ? "已复制" : "复制"}
                   </button>
@@ -406,12 +515,10 @@ export function AccountOnboarding({
                   "向导会填入邮箱验证码，并在确认按钮可用时提交。"}
               </p>
               <div class="user-panel-actions">
-                <button type="submit" class="user-panel-save" disabled={pending || !mailboxes}>
+                <button type="submit" class="user-panel-save" disabled={busy || !mailboxes}>
                   {pending ? "正在填写…" : "填写并前往 Apple"}
                 </button>
-                <button type="button" disabled={pending} onClick={() => goTo({ name: "start" })}>
-                  返回
-                </button>
+                {cancelAppleButton}
               </div>
             </form>
           ) : (
@@ -421,13 +528,12 @@ export function AccountOnboarding({
                 <button
                   type="button"
                   class="user-panel-save"
+                  disabled={busy}
                   onClick={() => openTab(step.apple.tab)}
                 >
                   前往 Apple 注册
                 </button>
-                <button type="button" onClick={() => goTo({ name: "start" })}>
-                  返回
-                </button>
+                {cancelAppleButton}
               </div>
             </section>
           ))}
@@ -448,12 +554,25 @@ export function AccountOnboarding({
               </p>
             )}
             <div class="user-panel-actions">
-              <button type="button" class="user-panel-save" onClick={() => openTab(step.tab)}>
+              <button
+                type="button"
+                class="user-panel-save"
+                disabled={busy}
+                onClick={() => openTab(step.tab)}
+              >
                 {needsAppleDetails ? "前往 Apple 补填" : "返回 Apple"}
               </button>
-              <button type="button" onClick={() => goTo({ name: "claude" })}>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  stopApple();
+                  goTo({ name: "claude" });
+                }}
+              >
                 登录 Claude
               </button>
+              {cancelAppleButton}
             </div>
           </section>
         )}
@@ -463,7 +582,7 @@ export function AccountOnboarding({
             onSubmit={(event) => {
               event.preventDefault();
               const form = new FormData(event.currentTarget);
-              void perform(() => submitForm(form, "Claude"));
+              void perform(() => submitForm(form));
             }}
           >
             {emailField}

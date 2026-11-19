@@ -1,8 +1,14 @@
 import type { IncomingMessage } from "node:http";
 import { setTimeout as pause } from "node:timers/promises";
-import type { FastifyInstance, FastifyRequest, preHandlerAsyncHookHandler } from "fastify";
+import type {
+  FastifyInstance,
+  FastifyReply,
+  FastifyRequest,
+  preHandlerAsyncHookHandler,
+} from "fastify";
 import type { Protocol } from "puppeteer-core";
 import type { TargetRef } from "../types";
+import { createAppleAttempts, untilCanceled } from "./account-onboarding-attempts";
 import {
   createVerification,
   type AppleCodeAction,
@@ -51,6 +57,19 @@ interface TabParams extends SessionParams {
   tab: string;
 }
 
+interface AppleQuery {
+  attempt?: string;
+}
+
+const attemptQuery = {
+  type: "object",
+  properties: {
+    attempt: { type: "string", pattern: "^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$" },
+  },
+};
+const appleGone = (reply: FastifyReply) =>
+  reply.code(410).send({ error: "Apple 注册已结束，请重新打开向导" });
+
 const requiredText = (maxLength: number) => ({ type: "string", minLength: 1, maxLength });
 const emailField = { ...requiredText(254), pattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$" };
 const appleDetails = {
@@ -86,7 +105,33 @@ export function registerAccountOnboarding(
   const userId = (request: FastifyRequest) => options.currentUserId(request.raw);
   const mailboxService = options.mailbox?.enabled ? options.mailbox : undefined;
   const verification = createVerification(mailboxService);
-  app.addHook("onClose", async () => verification.close());
+  const attempts = createAppleAttempts();
+  app.addHook("onClose", async () => {
+    attempts.close();
+    verification.close();
+  });
+  const applePreHandler: preHandlerAsyncHookHandler = async (request, reply) => {
+    if ((request.query as AppleQuery).attempt) return requireSession.call(app, request, reply);
+    return preHandler.call(app, request, reply);
+  };
+  const appleAttempt = (sid: string, tab: string, id: string) => {
+    const attempt = attempts.get(sid, id);
+    const browser = session(sid)?.browser;
+    if (attempt?.tab === tab && browser === attempt.browser && findPage(browser, tab))
+      return attempt;
+  };
+  const performApple = async <T>(
+    reply: FastifyReply,
+    signal: AbortSignal | undefined,
+    work: () => Promise<T>,
+  ) => {
+    try {
+      return await untilCanceled(signal, work);
+    } catch (error) {
+      if (signal?.aborted) return appleGone(reply);
+      throw error;
+    }
+  };
   const address = (request: FastifyRequest<{ Body: MailAddress }>) => {
     const { mailboxId, email } = request.body;
     if (!mailboxId) return { email: email! };
@@ -101,6 +146,7 @@ export function registerAccountOnboarding(
     sid: string,
     tab: string,
     since: number,
+    signal?: AbortSignal,
   ) => {
     if (!details.owner || !details.mailboxId) return false;
     verification.start({
@@ -111,6 +157,7 @@ export function registerAccountOnboarding(
       mailboxId: details.mailboxId,
       email: details.email,
       since,
+      signal,
       isActive: () => session(sid)?.browser === current.browser && !!findPage(current.browser, tab),
       ...(provider === "apple" && {
         apply: async (code: string) =>
@@ -120,6 +167,7 @@ export function registerAccountOnboarding(
               tab,
               APPLE_FORM,
               appleCode(details.email, code),
+              { signal },
             )
           )?.value,
       }),
@@ -127,42 +175,83 @@ export function registerAccountOnboarding(
     return true;
   };
   const route = "/api/client/session/:sid/onboarding";
-  app.post<{ Params: SessionParams }>(`${route}/apple`, { preHandler }, async (request) => {
-    const current = session(request.params.sid)!;
-    const tab = await current.open(ICLOUD);
-    const registration = await openAppleRegistration(current.browser, tab);
-    return registration
-      ? { tab: registration.tab, options: registration.value }
-      : { tab, options: null };
-  });
-  app.post<{ Params: TabParams; Body: AppleDetails }>(
+  app.post<{ Params: SessionParams; Querystring: AppleQuery }>(
+    `${route}/apple`,
+    { preHandler: applePreHandler, schema: { querystring: attemptQuery } },
+    async (request, reply) => {
+      const { sid } = request.params;
+      const { attempt: id } = request.query;
+      const current = session(sid);
+      if (!current) return reply.code(409).send({ error: "请先连接当前浏览器" });
+      const attempt = id && attempts.start(sid, id, current.browser);
+      if (id && !attempt) return appleGone(reply);
+      const signal = attempt ? attempt.control.signal : undefined;
+      return performApple(reply, signal, async () => {
+        const tab = await current.open(ICLOUD);
+        signal?.throwIfAborted();
+        const registration = await openAppleRegistration(current.browser, tab, signal);
+        signal?.throwIfAborted();
+        const activeTab = registration?.tab ?? tab;
+        if (attempt) {
+          if (session(sid)?.browser !== current.browser || !findPage(current.browser, activeTab))
+            return appleGone(reply);
+          attempt.tab = activeTab;
+        }
+        return { tab: activeTab, options: registration?.value ?? null };
+      });
+    },
+  );
+  app.delete<{ Params: SessionParams; Querystring: { attempt: string } }>(
+    `${route}/apple`,
+    {
+      preHandler: requireSession,
+      schema: { querystring: { ...attemptQuery, required: ["attempt"] } },
+    },
+    (request, reply) => {
+      attempts.cancel(request.params.sid, request.query.attempt);
+      return reply.code(204).send();
+    },
+  );
+  app.post<{ Params: TabParams; Querystring: AppleQuery; Body: AppleDetails }>(
     `${route}/apple/:tab`,
     {
-      preHandler,
+      preHandler: applePreHandler,
       bodyLimit: 4096,
       schema: {
+        querystring: attemptQuery,
         body: mailBody({ ...appleDetails, password: requiredText(256) }, Object.keys(appleDetails)),
       },
     },
     async (request, reply) => {
       const { sid, tab } = request.params;
+      const { attempt: id } = request.query;
+      const attempt = id && appleAttempt(sid, tab, id);
+      if (id && !attempt) return appleGone(reply);
+      const signal = attempt ? attempt.control.signal : undefined;
       const current = session(sid)!;
       if (!findPage(current.browser, tab))
         return reply.code(404).send({ error: "Apple 注册标签已关闭，请重新打开" });
       const details = address(request);
       if (!details) return reply.code(404).send({ error: "未找到这个接收邮箱" });
       const since = Date.now();
-      const result = await waitForForm<boolean>(
-        current.browser,
-        tab,
-        APPLE_FORM,
-        fillApple({ ...request.body, email: details.email }),
-      );
-      const filled = result?.value === true;
-      return {
-        filled,
-        watching: watch("apple", details, current, sid, tab, since),
-      };
+      return performApple(reply, signal, async () => {
+        const result = await waitForForm<boolean>(
+          current.browser,
+          tab,
+          APPLE_FORM,
+          fillApple({ ...request.body, email: details.email }),
+          { signal },
+        );
+        signal?.throwIfAborted();
+        if (id) {
+          if (!appleAttempt(sid, tab, id)) return appleGone(reply);
+          attempts.refresh(sid, id);
+        }
+        return {
+          filled: result?.value === true,
+          watching: watch("apple", details, current, sid, tab, since, signal),
+        };
+      });
     },
   );
   app.post<{ Params: SessionParams; Body: MailAddress }>(
@@ -196,11 +285,16 @@ export function registerAccountOnboarding(
     },
   );
   for (const provider of ["apple", "claude"] as const) {
-    app.get<{ Params: TabParams }>(
+    app.get<{ Params: TabParams; Querystring: AppleQuery }>(
       `${route}/${provider}/:tab/verification`,
-      { preHandler },
+      provider === "apple"
+        ? { preHandler: applePreHandler, schema: { querystring: attemptQuery } }
+        : { preHandler },
       (request, reply) => {
         reply.header("cache-control", "no-store");
+        const { sid, tab } = request.params;
+        const id = request.query.attempt;
+        if (provider === "apple" && id && !appleAttempt(sid, tab, id)) return appleGone(reply);
         return verification.status(provider, request.params, userId(request));
       },
     );
@@ -330,19 +424,26 @@ function appleCode(email: string, code: string) {
   `;
 }
 
-async function openAppleRegistration(browser: Browser, tab: string) {
-  const registration = await openICloudRegistration(browser, tab);
-  if (registration) return registration;
-  const page = findPage(browser, tab);
-  if (!page) return null;
-  const navigation = (await browser.send(page.sessionId, "Page.navigate", {
-    url: APPLE_ACCOUNT,
-  })) as Protocol.Page.NavigateResponse;
-  if (navigation.errorText) return null;
-  return waitForRegistration(browser, tab, Date.now() + APPLE_REGISTRATION_MS, false);
+async function openAppleRegistration(browser: Browser, tab: string, signal?: AbortSignal) {
+  try {
+    const registration = await openICloudRegistration(browser, tab, signal);
+    signal?.throwIfAborted();
+    if (registration) return registration;
+    const page = findPage(browser, tab);
+    if (!page) return null;
+    const navigation = (await browser.send(page.sessionId, "Page.navigate", {
+      url: APPLE_ACCOUNT,
+    })) as Protocol.Page.NavigateResponse;
+    if (navigation.errorText) return null;
+    return waitForRegistration(browser, tab, Date.now() + APPLE_REGISTRATION_MS, { signal });
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (!findPage(browser, tab)) return null;
+    throw error;
+  }
 }
 
-async function openICloudRegistration(browser: Browser, tab: string) {
+async function openICloudRegistration(browser: Browser, tab: string, signal?: AbortSignal) {
   const deadline = Date.now() + ICLOUD_FLOW_MS;
   const signIn = await waitForForm<{ x: number; y: number }>(
     browser,
@@ -354,22 +455,26 @@ async function openICloudRegistration(browser: Browser, tab: string) {
     const { x, y, width, height } = button.getBoundingClientRect();
     return { x: x + width / 2, y: y + height / 2 };
   `,
-    { mainFrameOnly: true },
+    { mainFrameOnly: true, signal },
     deadline,
   );
+  signal?.throwIfAborted();
   const page = findPage(browser, tab);
   if (!signIn || !page) return null;
   const mouse = { ...signIn.value, button: "left", clickCount: 1 };
-  await browser.send(page.sessionId, "Input.dispatchMouseEvent", {
-    ...mouse,
-    type: "mousePressed",
-    buttons: 1,
-  });
-  await browser.send(page.sessionId, "Input.dispatchMouseEvent", {
-    ...mouse,
-    type: "mouseReleased",
-    buttons: 0,
-  });
+  // Dispatch the complete click before checking cancellation again.
+  await Promise.all([
+    browser.send(page.sessionId, "Input.dispatchMouseEvent", {
+      ...mouse,
+      type: "mousePressed",
+      buttons: 1,
+    }),
+    browser.send(page.sessionId, "Input.dispatchMouseEvent", {
+      ...mouse,
+      type: "mouseReleased",
+      buttons: 0,
+    }),
+  ]);
   const create = await waitForForm<boolean>(
     browser,
     tab,
@@ -382,19 +487,14 @@ async function openICloudRegistration(browser: Browser, tab: string) {
     button.click();
     return true;
   `,
-    { userGesture: true },
+    { userGesture: true, signal },
     deadline,
   );
   if (!create) return null;
-  return waitForRegistration(browser, tab, deadline, true);
+  return waitForRegistration(browser, tab, deadline, { includePopups: true, signal });
 }
 
-function waitForRegistration(
-  browser: Browser,
-  tab: string,
-  deadline: number,
-  includePopups: boolean,
-) {
+function waitForRegistration(browser: Browser, tab: string, deadline: number, scope: FormScope) {
   return waitForForm<RegistrationOptions>(
     browser,
     tab,
@@ -405,7 +505,7 @@ function waitForRegistration(
     if (!document.querySelector('input[name="phoneNumber"]')) return null;
     return { countries: options("countrySelect"), phoneCodes: options("phoneCode") };
   `,
-    { includePopups },
+    scope,
     deadline,
   );
 }
@@ -414,6 +514,7 @@ interface FormScope {
   mainFrameOnly?: boolean;
   includePopups?: boolean;
   userGesture?: boolean;
+  signal?: AbortSignal;
 }
 
 function findPage(browser: Browser, tab: string) {
@@ -443,7 +544,7 @@ async function waitForForm<T>(
   while (Date.now() < deadline) {
     const result = await checkForm<T>(browser, tab, form, source, scope);
     if (result || !findPage(browser, tab)) return result;
-    await pause(250);
+    await pause(250, undefined, { signal: scope?.signal });
   }
   return null;
 }
@@ -455,6 +556,8 @@ async function checkForm<T>(
   source: string,
   scope: FormScope = {},
 ): Promise<{ tab: string; value: T } | null> {
+  const { signal } = scope;
+  signal?.throwIfAborted();
   const { origin, pathname } = new URL(form);
   const expression = `(async () => {
     if (location.origin !== ${JSON.stringify(origin)} || location.pathname !== ${JSON.stringify(pathname)}) return null;
@@ -475,6 +578,7 @@ async function checkForm<T>(
         sessionId,
         "Page.getFrameTree",
       )) as Protocol.Page.GetFrameTreeResponse;
+      signal?.throwIfAborted();
       const frames = [frameTree];
       for (const { frame, childFrames } of frames) {
         if (!scope.mainFrameOnly) frames.push(...(childFrames ?? []));
@@ -483,6 +587,7 @@ async function checkForm<T>(
           frameId: frame.id,
           worldName: "workbenchAccountOnboarding",
         })) as Protocol.Page.CreateIsolatedWorldResponse;
+        signal?.throwIfAborted();
         const result = (await browser.send(sessionId, "Runtime.evaluate", {
           contextId: executionContextId,
           expression,
@@ -492,10 +597,12 @@ async function checkForm<T>(
           timeout: 1_000,
           userGesture: scope.userGesture,
         })) as Protocol.Runtime.EvaluateResponse;
+        signal?.throwIfAborted();
         if (result.result.value != null)
           return { tab: page.targetId, value: result.result.value as T };
       }
     } catch {
+      signal?.throwIfAborted();
       // Navigation can replace the frame while the browser is evaluating it.
     }
   }

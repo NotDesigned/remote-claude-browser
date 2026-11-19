@@ -1,4 +1,5 @@
 import { setTimeout as pause } from "node:timers/promises";
+import { untilCanceled } from "./account-onboarding-attempts";
 
 interface MessageSummary {
   id: string;
@@ -32,6 +33,7 @@ interface Verification extends Tab {
   mailboxId: string;
   email: string;
   since: number;
+  signal?: AbortSignal;
   isActive(): boolean;
   apply?(code: string): Promise<AppleCodeAction | undefined>;
 }
@@ -89,11 +91,13 @@ export function createVerification(mailbox?: OnboardingMailbox) {
   const keyOf = (provider: Provider, { sid, tab }: Tab) => JSON.stringify([provider, sid, tab]);
   const active = (key: string, job: Watcher) =>
     jobs.get(key) === job &&
+    !job.signal?.aborted &&
     Date.now() < job.since + WAIT_MS &&
     job.isActive() &&
     !!mailbox?.getAddress(job.owner, job.mailboxId);
 
   async function poll(box: OnboardingMailbox, key: string, job: Watcher) {
+    const signal = job.signal ? AbortSignal.any([job.signal, shutdown.signal]) : shutdown.signal;
     try {
       while (active(key, job)) {
         try {
@@ -109,7 +113,9 @@ export function createVerification(mailbox?: OnboardingMailbox) {
               )
               .sort((a, b) => b.receivedAt - a.receivedAt);
             for (const { id } of messages) {
-              const mail = await box.readMessage(job.owner, job.mailboxId, id);
+              const mail = await untilCanceled(job.signal, () =>
+                box.readMessage(job.owner, job.mailboxId, id),
+              );
               if (!active(key, job)) return;
               job.seen.add(id);
               if (!mail?.authenticated || !isVerificationMail(job.provider, mail)) continue;
@@ -121,8 +127,9 @@ export function createVerification(mailbox?: OnboardingMailbox) {
               if (job.provider === "claude") job.ready = true;
               break;
             }
-            if (job.provider === "apple" && job.pending) {
-              const action = await job.apply!(job.pending);
+            const code = job.pending;
+            if (job.provider === "apple" && code) {
+              const action = await untilCanceled(job.signal, () => job.apply!(code));
               if (action) {
                 job.ready = true;
                 job.submitted = action === "submitted";
@@ -133,7 +140,7 @@ export function createVerification(mailbox?: OnboardingMailbox) {
         } catch {
           // Receiving email or switching browser pages can briefly interrupt a poll.
         }
-        await pause(POLL_MS, undefined, { ref: false, signal: shutdown.signal });
+        await pause(POLL_MS, undefined, { ref: false, signal });
       }
     } finally {
       if (jobs.get(key) === job) jobs.delete(key);

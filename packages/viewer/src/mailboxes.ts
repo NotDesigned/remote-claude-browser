@@ -27,7 +27,8 @@ const messagesRoute = (addressId: string) => `${route}/${encodeURIComponent(addr
 
 export const mailboxApi = {
   addresses: () => apiRequest<{ enabled: boolean; addresses: MailboxAddress[] }>(route),
-  create: (label: string) => apiRequest<{ address: MailboxAddress }>(route, "POST", { label }),
+  create: (label: string, fetcher?: typeof fetch) =>
+    apiRequest<{ address: MailboxAddress }>(route, "POST", { label }, fetcher),
   messages: (addressId: string) =>
     apiRequest<{ messages: MailboxMessage[] }>(messagesRoute(addressId)),
   message: (addressId: string, messageId: string) =>

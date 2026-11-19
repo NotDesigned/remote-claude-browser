@@ -1,6 +1,9 @@
 .account-onboarding {
   width: min(540px, 100%);
 }
+.account-onboarding-backdrop[hidden] {
+  display: none;
+}
 .account-onboarding .user-panel-heading {
   position: sticky;
   top: 0;
