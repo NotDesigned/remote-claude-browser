@@ -1,69 +1,301 @@
-import { EventType, type Down, type TabId } from "@mirror/protocol";
+import {
+  encodeResumeCursors,
+  type Down,
+  type PxQuality,
+  type TabId,
+  type Up,
+} from "@mirror/protocol";
+import type { ViewMode } from "./client-session";
+import { extractSnapshotViewport, type Mirror } from "./mirror";
+import { createPxView, type PxView } from "./pxview";
+import { videoOption } from "./px-video";
+import type { GatewayConnectionState } from "./ws";
 
 type Snapshot = Extract<Down, { t: "snapshot" }>;
+type Viewport = Extract<Up, { t: "view" }>;
+type DomUpdate = Extract<Down, { t: "snapshot" | "delta" | "resync" }>;
 
-/** Canvas and rrweb must never own the same surface at the same time. */
-export function createPresentationState() {
-  const modes = new Map<TabId, "dom" | "px">();
-  let viewport: { tab: TabId; w: number; h: number; dpr: number } | undefined;
+interface PresentationOptions {
+  host: HTMLElement;
+  mirror: Mirror;
+  send(message: Up): void;
+  entryTab: TabId | null;
+  entryMode: ViewMode | null;
+  preferredQuality(): PxQuality;
+  onTab(tab: TabId): void;
+  onViewMode(mode: ViewMode): void;
+  onTabMode(tab: TabId, mode: ViewMode): void;
+  onInputReady(ready: boolean): void;
+  onPaint(): void;
+}
+
+function isDomUpdate(message: Down): message is DomUpdate {
+  return message.t === "snapshot" || message.t === "delta" || message.t === "resync";
+}
+
+/** One remote tab and one input agreement own the display, independent of the shell UI. */
+export function createPresentation(options: PresentationOptions) {
+  const { host, mirror, send } = options;
+  const modes = new Map<TabId, ViewMode>();
+  let { entryMode, entryTab } = options;
+  let tab: TabId | null = null;
+  let viewerId: string | null = null;
+  let driver = false;
+  let ready = false;
+  let reconnecting = false;
+  let viewport: Viewport | undefined;
+  let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+  let activating: { tab: TabId; until: number } | undefined;
+  let pixels: PxView | undefined;
+  let held: { tab: TabId; updates: DomUpdate[]; timer: ReturnType<typeof setTimeout> } | undefined;
+  host.inert = true;
+  options.onInputReady(false);
+
+  const modeFor = (target: TabId): ViewMode => modes.get(target) ?? "dom";
+  const canInput = (target: TabId, mode: ViewMode) =>
+    driver && ready && tab === target && modeFor(target) === mode;
+
+  const inputReady = (value: boolean) => {
+    if (value === ready) return;
+    ready = value;
+    host.inert = !ready;
+    options.onInputReady(ready);
+  };
+
+  const deviceScale = () => host.ownerDocument.defaultView?.devicePixelRatio || 1;
+  const viewportMatchesHost = () =>
+    viewport?.tab === tab &&
+    viewport.w === host.clientWidth &&
+    viewport.h === host.clientHeight &&
+    viewport.dpr === deviceScale();
+
+  const reportViewport = () => {
+    resizeTimer = undefined;
+    if (!driver || tab === null || viewportMatchesHost()) return;
+    const w = host.clientWidth;
+    const h = host.clientHeight;
+    if (w <= 0 || h <= 0) return;
+    inputReady(false);
+    viewport = { t: "view", tab, w, h, dpr: deviceScale() };
+    send(viewport);
+  };
+  const scheduleViewport = (delay = 0) => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(reportViewport, delay);
+  };
+
+  const releaseHeld = (replay: boolean) => {
+    if (!held) return;
+    const { updates, timer } = held;
+    held = undefined;
+    clearTimeout(timer);
+    if (replay) for (const message of updates) mirror.handle(message);
+  };
+
+  const follow = (next: TabId) => {
+    if (tab === next) return;
+    releaseHeld(true);
+    tab = next;
+    viewport = undefined;
+    inputReady(false);
+    options.onTab(next);
+    options.onViewMode(modes.get(next) ?? entryMode ?? "dom");
+    pixels?.selectTab(next);
+    if (mirror.getActiveTab() !== null) mirror.selectTab(next);
+    scheduleViewport();
+  };
+
+  const activate = (target: TabId) => {
+    // A tab list sent before this click can still name the previous tab.
+    activating = { tab: target, until: Date.now() + 2_000 };
+    follow(target);
+    send({ t: "nav", tab: target, action: "activate" });
+  };
+
+  const sendMode = (target: TabId, mode: ViewMode, quality: PxQuality) => {
+    if (mode === "px") send({ t: "mode", tab: target, mode, quality, ...videoOption() });
+    else send({ t: "mode", tab: target, mode });
+  };
+
+  const ensurePixels = () => {
+    if (pixels) return pixels;
+    pixels = createPxView({
+      container: host,
+      send(message) {
+        if (!("tab" in message) || message.tab !== tab) return;
+        // Decoder recovery doesn't require an input agreement.
+        if (
+          driver &&
+          modeFor(tab) === "px" &&
+          (ready || message.t === "vid-key" || message.t === "mode")
+        )
+          send(message);
+      },
+      onEnterPx: () => mirror.teardown(),
+      onPaint: options.onPaint,
+    });
+    if (tab !== null) pixels.selectTab(tab);
+    return pixels;
+  };
+
+  const matchesViewport = (target: TabId, w: number, h: number) =>
+    driver && tab === target && viewport?.tab === target && viewport.w === w && viewport.h === h;
+
+  const snapshotApplied = (snapshot: Snapshot) => {
+    if (!driver || snapshot.tab !== tab) return;
+    if (snapshot.reason === "viewport") {
+      const size = extractSnapshotViewport(snapshot);
+      if (!size || !matchesViewport(snapshot.tab, size.w, size.h)) return;
+      send({ t: "view-ack", tab: snapshot.tab, epoch: snapshot.epoch });
+      inputReady(true);
+    } else if (!ready) scheduleViewport();
+  };
+
   return {
-    observe(message: Down) {
-      if (message.t === "mode") modes.set(message.tab, message.mode);
+    canInput,
+    isDriver: () => driver,
+    activeTab: () => tab,
+    snapshotApplied,
+    activate,
+    requestMode(mode: ViewMode, quality: PxQuality) {
+      if (tab === null) entryMode = mode;
+      else {
+        releaseHeld(true);
+        // Capture can temporarily change the remote page geometry before pixel mode starts.
+        if (mode === "px" && modeFor(tab) === "dom")
+          held = { tab, updates: [], timer: setTimeout(() => releaseHeld(true), 8_000) };
+        sendMode(tab, mode, quality);
+      }
+      options.onViewMode(mode);
     },
-    isPixel(tab: TabId | null) {
-      return tab !== null && modes.get(tab) === "px";
+    updateQuality(quality: PxQuality) {
+      if (tab !== null && modeFor(tab) === "px") sendMode(tab, "px", quality);
     },
-    shouldMirror(message: Down, activeTab: TabId | null = null) {
-      if (
-        (message.t === "snapshot" || message.t === "delta" || message.t === "resync") &&
-        activeTab !== null &&
-        message.tab !== activeTab
-      )
-        return false;
-      return !(
-        (message.t === "snapshot" || message.t === "delta" || message.t === "resync") &&
-        modes.get(message.tab) === "px"
-      );
+    resized() {
+      mirror.refreshViewportLayout();
+      scheduleViewport(300);
     },
-    needsViewport(tab: TabId, w: number, h: number, dpr: number) {
-      return (
-        !viewport ||
-        viewport.tab !== tab ||
-        viewport.w !== w ||
-        viewport.h !== h ||
-        viewport.dpr !== dpr
-      );
+    resumeParam() {
+      if (tab === null || modeFor(tab) === "px") return null;
+      const cursor = mirror.resumeCursor();
+      return cursor?.tab === tab ? encodeResumeCursors([cursor]) : null;
     },
-    resetViewport() {
-      viewport = undefined;
+    connectionChanged(state: GatewayConnectionState, reconnected: boolean) {
+      if (state === "open") {
+        reconnecting = reconnected;
+        return;
+      }
+      driver = false;
+      inputReady(false);
+      clearTimeout(resizeTimer);
+      if (state !== "closed") return;
+      activating = undefined;
+      releaseHeld(false);
+      if (tab !== null) entryMode ??= modes.get(tab) ?? null;
+      if (tab === null || modeFor(tab) !== "px") mirror.connectionLost();
     },
-    /** The last viewport this page negotiated, kept across a resumable reconnect. */
-    currentViewport() {
-      return viewport === undefined ? undefined : { ...viewport };
+    handle(message: Down) {
+      if (isDomUpdate(message)) {
+        // Select provisionally when the join snapshot arrives before the tab list.
+        if (tab === null && message.t === "snapshot") follow(message.tab);
+        if (tab !== null && message.tab !== tab) return;
+        if (modeFor(message.tab) === "px") {
+          if (message.t === "snapshot") snapshotApplied(message);
+        } else if (held?.tab === message.tab) held.updates.push(message);
+        else mirror.handle(message);
+        return;
+      }
+
+      switch (message.t) {
+        case "hello": {
+          mirror.handle(message);
+          const resumed =
+            reconnecting &&
+            tab !== null &&
+            modeFor(tab) === "dom" &&
+            message.resumed?.includes(tab) === true;
+          if (reconnecting && (tab === null || modeFor(tab) === "dom"))
+            mirror.connectionRestored(resumed);
+          reconnecting = false;
+          viewerId = message.viewerId;
+          driver = message.role === "driver";
+          if (!resumed || !driver) viewport = undefined;
+          inputReady(resumed && driver && viewportMatchesHost());
+          scheduleViewport();
+          break;
+        }
+        case "driver": {
+          mirror.handle(message);
+          const changed = viewerId !== null && viewerId === message.viewerId;
+          if (changed === driver) break;
+          driver = changed;
+          viewport = undefined;
+          inputReady(false);
+          if (driver) scheduleViewport();
+          break;
+        }
+        case "tabs": {
+          mirror.keepTabs(message.tabs.map(({ id }) => id));
+          const active = message.tabs.find((candidate) => candidate.active);
+          if (!active) break;
+          if (activating && active.id !== activating.tab && Date.now() < activating.until) break;
+          activating = undefined;
+          const requestedTab = message.tabs.find(({ id }) => id === entryTab)?.id ?? active.id;
+          const requestedMode = entryMode;
+          entryTab = null;
+          entryMode = null;
+          follow(active.id);
+          if (requestedMode !== null) {
+            if (requestedTab !== active.id) activate(requestedTab);
+            sendMode(requestedTab, requestedMode, options.preferredQuality());
+          }
+          break;
+        }
+        case "mode":
+          modes.set(message.tab, message.mode);
+          if (message.mode === "px") ensurePixels().handle(message);
+          else pixels?.handle(message);
+          if (held?.tab === message.tab) releaseHeld(message.mode === "dom");
+          options.onTabMode(message.tab, message.mode);
+          if (message.tab === tab) {
+            options.onViewMode(message.mode);
+            if (message.mode === "dom") scheduleViewport();
+          }
+          break;
+        case "px":
+          send({ t: "px-ack", tab: message.tab });
+          // Both frame formats share display ownership inside PxView.
+          ensurePixels().handle(message);
+          break;
+        case "vid":
+        case "vid-cfg":
+          ensurePixels().handle(message);
+          break;
+        case "view-ok":
+          if (matchesViewport(message.tab, message.w, message.h)) inputReady(true);
+          break;
+        case "tab-state":
+          if (message.tab === tab) {
+            inputReady(false);
+            if (message.state === "ready") {
+              viewport = undefined;
+              scheduleViewport();
+            }
+          }
+          break;
+        case "rtc-sig":
+        case "pong":
+          mirror.handle(message);
+          break;
+      }
     },
-    restoreViewport(saved: { tab: TabId; w: number; h: number; dpr: number } | undefined) {
-      viewport = saved === undefined ? undefined : { ...saved };
-    },
-    requested(tab: TabId, w: number, h: number, dpr = 1) {
-      viewport = { tab, w, h, dpr };
-    },
-    matchesViewport(tab: TabId, w: number, h: number) {
-      return viewport?.tab === tab && viewport.w === w && viewport.h === h;
-    },
-    canAcknowledge(snapshot: Snapshot, activeTab: TabId | null, driver: boolean) {
-      if (
-        !driver ||
-        snapshot.reason !== "viewport" ||
-        activeTab !== snapshot.tab ||
-        viewport?.tab !== snapshot.tab
-      )
-        return false;
-      const meta = snapshot.data.find((event) => event.type === EventType.Meta);
-      return (
-        meta?.type === EventType.Meta &&
-        meta.data.width === viewport.w &&
-        meta.data.height === viewport.h
-      );
+    dispose() {
+      driver = false;
+      inputReady(false);
+      clearTimeout(resizeTimer);
+      releaseHeld(false);
+      pixels?.destroy();
+      mirror.teardown();
     },
   };
 }

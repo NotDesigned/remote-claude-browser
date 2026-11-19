@@ -141,7 +141,7 @@ wss.on("connection", (socket) => {
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
 const browser = await chromium.launch({
-  executablePath: "/opt/claude-test-chrome/chrome",
+  executablePath: process.env.CHROME_PATH ?? "/opt/claude-test-chrome/chrome",
   headless: true,
 });
 const page = await browser.newPage({ viewport: { width: 1360, height: 1000 } });
@@ -201,7 +201,7 @@ await page.addInitScript(() => {
 });
 const checks = {};
 try {
-  await page.goto(origin);
+  await page.goto(origin + "/?sid=client-1");
   await page.waitForFunction(
     () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
   );
@@ -233,19 +233,29 @@ try {
     () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
   );
   await page.locator('[data-view-mode="px"]').click();
-  await page.locator("#mirror-host canvas").waitFor({ state: "visible" });
+  const canvas = page.locator("#mirror-host canvas");
+  await canvas.evaluate((element) => (element.dataset.fixture = "original"));
   await page.setViewportSize({ width: 900, height: 700 });
+  const hostSize = await page.locator("#mirror-host").evaluate((host) => ({
+    w: host.clientWidth,
+    h: host.clientHeight,
+  }));
+  for (let attempt = 0; attempt < 30; attempt++) {
+    if (views.at(-1)?.w === hostSize.w && views.at(-1)?.h === hostSize.h) break;
+    await page.waitForTimeout(100);
+  }
+  assert.equal(views.at(-1).w, hostSize.w);
+  assert.equal(views.at(-1).h, hostSize.h);
   await page.waitForFunction(
     () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
   );
   assert.equal(await page.locator("#mirror-host iframe").count(), 0);
-  const canvas = page.locator("#mirror-host canvas");
   await page.waitForFunction(() => {
     const canvas = document.querySelector("#mirror-host canvas");
-    const host = document.querySelector("#mirror-host");
     return (
-      canvas?.width === host.clientWidth &&
-      canvas?.height === host.clientHeight &&
+      canvas?.dataset.fixture === "original" &&
+      canvas.width === 2 &&
+      canvas.height === 2 &&
       canvas?.getContext("2d").getImageData(0, 0, 1, 1).data[3] === 255
     );
   });

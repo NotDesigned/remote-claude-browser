@@ -444,7 +444,7 @@ describe("D10 recovery triggers", () => {
       mirror.teardown();
     });
 
-    it("asks for a snapshot if the gateway never answers, and input comes back", () => {
+    it("retries a silent tab switch and waits for the snapshot before restoring input", () => {
       const { container, mirror, requestResync, open } = tabs();
       open("T1");
       const stage = container.children[0] as unknown as { inert?: boolean };
@@ -454,7 +454,10 @@ describe("D10 recovery triggers", () => {
       vi.advanceTimersByTime(1_500);
 
       expect(requestResync).toHaveBeenCalledExactlyOnceWith("T1", "tab selected");
-      expect(stage.inert).toBe(false);
+      expect(stage.inert).toBe(true);
+      mirror.handle({ t: "snapshot", tab: "T1", epoch: 1, seq: 1, data: [full(1000)] });
+      expect(container.children[0] as unknown as { inert?: boolean }).not.toBe(stage);
+      expect(mirror.resumeCursor()?.tab).toBe("T1");
       mirror.teardown();
     });
 
@@ -799,6 +802,11 @@ describe("D10 recovery triggers", () => {
     expect(previous.destroyed).toBe(false);
     expect(rawContainer.dataset).toMatchObject({ mirrorState: "live", resyncPending: "true" });
 
+    // A transport reconnect cannot shorten DOM recovery to a delta-only resume.
+    mirror.connectionLost();
+    expect(mirror.resumeCursor()).toBeNull();
+    mirror.connectionRestored();
+    expect(requests).toEqual(["seq gap: expected 2, got 3", "ws reconnect"]);
     mirror.handle({ t: "resync", tab: "T1" });
     mirror.handle({
       t: "snapshot",

@@ -798,63 +798,53 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     qualityChanged = false,
   ): Promise<void> => {
     if (!current(state)) return;
-    if (mode === "px") {
-      // A queued retry may follow a failed/finished transition that released its first lease.
-      if (!acquirePixel(state)) {
-        opts.publish({ t: "mode", tab: state.target.targetId, mode: "dom" });
-        return;
-      }
-      const bringToFrontGeneration = state.generation;
-      void sendBounded(state, "Page.bringToFront").catch((error) => {
-        if (current(state, bringToFrontGeneration)) report(error);
-      });
-      if (state.screencasting && state.hub.mode === "px") {
-        if (qualityChanged) {
-          // Keep showing the current picture; only the capture restarts with the new preset.
-          const generation = state.generation;
-          stopVideo(state);
-          try {
-            await sendBounded(state, "Page.stopScreencast");
-            if (!current(state, generation)) return;
-            await beginCapture(state);
-          } catch (error) {
-            await returnToDom(state, generation, error);
-            return;
-          }
-          if (!current(state, generation)) return;
-        }
-        opts.publish({ t: "mode", tab: state.target.targetId, mode: "px" });
-        if (state.lastFrame) opts.publish(state.lastFrame);
-        else void ensureFirstFrame(state, state.generation);
-        // A capture that just started already begins with a keyframe.
-        if (!qualityChanged || !state.grabbing) restartVideo(state);
-        return;
-      }
-      const generation = ++state.generation;
+    if (mode === "dom") {
+      if (state.screencasting || state.hub.mode === "px" || state.pixelLease)
+        await returnToDom(state, state.generation);
+      return;
+    }
+    // A queued retry may follow a failed transition that released its first lease.
+    if (!acquirePixel(state)) {
+      opts.publish({ t: "mode", tab: state.target.targetId, mode: "dom" });
+      return;
+    }
+
+    const starting = !state.screencasting || state.hub.mode !== "px";
+    const generation = starting ? ++state.generation : state.generation;
+    void sendBounded(state, "Page.bringToFront").catch((error) => {
+      if (current(state, generation)) report(error);
+    });
+    if (starting) {
       clearFirstFrameTimer(state);
       state.fallback = undefined;
       delete state.lastFrame;
       state.screencasting = true;
-      // Until start is confirmed, keep the existing DOM lane available to the viewer.
+      // Keep the DOM lane available until capture starts.
       state.hub.mode = "dom";
+    }
+    if (starting || qualityChanged) {
       try {
+        if (!starting) {
+          // Changing quality restarts capture while the viewer keeps the last picture.
+          stopVideo(state);
+          await sendBounded(state, "Page.stopScreencast");
+          if (!current(state, generation)) return;
+        }
         await beginCapture(state);
       } catch (error) {
         await returnToDom(state, generation, error);
         return;
       }
       if (!current(state, generation)) return;
-      state.screencasting = true;
-      state.hub.mode = "px";
-      opts.publish({ t: "mode", tab: state.target.targetId, mode: "px" });
-      // A frame can precede CDP's start acknowledgement; the viewer ignores it until mode.
-      if (state.lastFrame) opts.publish(state.lastFrame);
-      else watchFirstFrame(state, generation);
-      return;
     }
 
-    if (!state.screencasting && state.hub.mode === "dom" && !state.pixelLease) return;
-    await returnToDom(state, state.generation);
+    state.hub.mode = "px";
+    opts.publish({ t: "mode", tab: state.target.targetId, mode: "px" });
+    // A first frame can precede startScreencast's acknowledgement. Publish it after the mode.
+    if (state.lastFrame) opts.publish(state.lastFrame);
+    else if (starting) watchFirstFrame(state, generation);
+    else void ensureFirstFrame(state, generation);
+    if (!starting && (!qualityChanged || !state.grabbing)) restartVideo(state);
   };
 
   opts.browser.onDetached((target) => {

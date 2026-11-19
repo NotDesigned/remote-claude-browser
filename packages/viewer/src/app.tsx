@@ -9,7 +9,7 @@ import { NetworkPanel } from "./network-panel";
 import { cpaApi, type CpaBrowserAuthorization } from "./network-api";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import type { AgentMsg, Down, eventWithTime, TabId } from "@mirror/protocol";
-import { EventType, encodeResumeCursors } from "@mirror/protocol";
+import { EventType } from "@mirror/protocol";
 import { createMirror, type Mirror } from "./mirror";
 import { attachMirrorInput } from "./input";
 import { EventPipeline } from "./pipeline";
@@ -26,9 +26,7 @@ import {
   type DownloadEntry,
   updateDownloads,
 } from "./chrome/downloads";
-import { createPxView, type PxView } from "./pxview";
 import { HudLayer, type FrameRates } from "./hud";
-import { videoOption } from "./px-video";
 import { pollServerStatus, receiveServerStatus, type ReceivedServerStatus } from "./server-status";
 import { ShellBar, type LinkTarget, type ThemePreference } from "./shell-bar";
 import { createVoiceLink, type VoiceLink } from "./media/voice";
@@ -37,7 +35,7 @@ import { createResyncController, type ResyncTabState, RESYNC_WINDOW_MS } from ".
 import { connectGateway, type GatewayConnectionState, type GatewaySocket } from "./ws";
 import { createFileUploadRelay, type FileUploadRelay, type UploadState } from "./uploads";
 import { externalLink } from "./input/default-actions";
-import { createPresentationState } from "./presentation";
+import { createPresentation } from "./presentation";
 import {
   ClientSessionError,
   PX_QUALITY_STORAGE_KEY,
@@ -110,12 +108,9 @@ function viewStorage(): Pick<Storage, "getItem" | "setItem"> {
   }
 }
 
-const PICTURE_HOLD_TIMEOUT_MS = 8_000;
 const THEME_CHECK_MS = 3_000;
 /** How long after a click on a mirror file input the page's file request belongs to that click. */
 const MIRROR_PICKER_WINDOW_MS = 5_000;
-/** How long a tab list naming another tab is taken as older than this viewer's own click. */
-const ACTIVATION_WAIT_MS = 2_000;
 
 export function App() {
   const uploadRef = useRef<FileUploadRelay | null>(null);
@@ -125,9 +120,7 @@ export function App() {
   const [uploadState, setUploadState] = useState<UploadState | null>(null);
   const hostRef = useRef<HTMLElement>(null);
   const socketRef = useRef<GatewaySocket | null>(null);
-  const mirrorRef = useRef<Mirror | null>(null);
-  const pxViewRef = useRef<PxView | null>(null);
-  const activateTabRef = useRef<((tab: TabId) => void) | null>(null);
+  const presentationRef = useRef<ReturnType<typeof createPresentation> | null>(null);
   const dismissedDownloadIdsRef = useRef(new Set<string>());
   const runtimeCleanupRef = useRef<(() => void) | null>(null);
   const endControllerRef = useRef<AbortController | null>(null);
@@ -225,27 +218,6 @@ export function App() {
   useEffect(() => {
     viewStorage().setItem("mirror.links", linkTarget);
   }, [linkTarget]);
-  // The page changes shape while the picture starts, which the mirror should not show.
-  const pictureHoldRef = useRef<{
-    tab: TabId;
-    messages: Down[];
-    timer: ReturnType<typeof setTimeout>;
-  } | null>(null);
-  const releasePictureHold = (replay: boolean) => {
-    const hold = pictureHoldRef.current;
-    if (!hold) return;
-    pictureHoldRef.current = null;
-    clearTimeout(hold.timer);
-    if (replay) for (const message of hold.messages) mirrorRef.current?.handle(message);
-  };
-  const holdMirrorForPicture = (tab: TabId) => {
-    releasePictureHold(true);
-    pictureHoldRef.current = {
-      tab,
-      messages: [],
-      timer: setTimeout(() => releasePictureHold(true), PICTURE_HOLD_TIMEOUT_MS),
-    };
-  };
   const [chromeByTab, setChromeByTab] = useState<
     Record<TabId, Extract<Down, { t: "chrome" }> | undefined>
   >({});
@@ -505,24 +477,7 @@ export function App() {
     let disposed = false;
     const controller = new AbortController();
     let socket: GatewaySocket | null = null;
-    let viewerId: string | null = null;
-    let driver = false;
-    let inputsReady = false;
-    const inputStatus = (ready: boolean) => {
-      if (disposed) return;
-      inputsReady = ready;
-      setInputReady(ready);
-      host.inert = !ready;
-    };
-    inputStatus(false);
     let sessionId: string | null = null;
-    let currentTab: TabId | null = null;
-    const entryParams = new URLSearchParams(window.location.search);
-    let entryMode: "dom" | "px" | null = pendingModeRef.current;
-    pendingModeRef.current = null;
-    let entryTab = entryParams.get("tab");
-    const presentation = createPresentationState();
-    const knownModes = new Map<TabId, "dom" | "px">();
     const pageUrls = new Map<TabId, string>();
     const autoStarted = new Set<string>();
     const shownDownloads = new Set<string>();
@@ -540,27 +495,6 @@ export function App() {
       downloadTimers.add(timer);
     };
     const downloadTimers = new Set<ReturnType<typeof setTimeout>>();
-    let reconnectPending = false;
-    let viewportBeforeDisconnect: ReturnType<typeof presentation.currentViewport>;
-    let pxView: PxView | null = null;
-    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
-    const reportViewport = () => {
-      resizeTimer = null;
-      if (disposed || !driver || currentTab === null) return;
-      const w = host.clientWidth;
-      const h = host.clientHeight;
-      if (w <= 0 || h <= 0) return;
-      const dpr = window.devicePixelRatio || 1;
-      if (!presentation.needsViewport(currentTab, w, h, dpr)) return;
-      inputStatus(false);
-      presentation.requested(currentTab, w, h, dpr);
-      socket?.send({ t: "view", tab: currentTab, w, h, dpr });
-    };
-    const scheduleViewport = (delay = 300) => {
-      if (disposed) return;
-      if (resizeTimer !== null) clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(reportViewport, delay);
-    };
     const clipboard = createClipboardWriter({
       onCopied: () => {
         if (!disposed) setClipboardError(null);
@@ -571,8 +505,9 @@ export function App() {
     });
     const echo = createEchoFilter({
       onContenteditableReconcile: () => {
-        if (!disposed && driver && currentTab !== null)
-          socket?.send({ t: "resync-req", tab: currentTab, reason: "editable-clear" });
+        const tab = presentation.activeTab();
+        if (tab !== null && presentation.canInput(tab, "dom"))
+          socket?.send({ t: "resync-req", tab, reason: "editable-clear" });
       },
     });
     // A file input in the mirror opens its own picker, and the same click reaches the remote page.
@@ -595,7 +530,11 @@ export function App() {
       },
     });
     uploadRef.current = uploads;
-    const scroll = createScrollFilter({ send: (message) => socket?.send(message) });
+    const scroll = createScrollFilter({
+      send(message) {
+        if (presentation.canInput(message.tab, "dom")) socket?.send(message);
+      },
+    });
     // Pasted images become attachments of the remote page: stage the files, then open the
     // remote attachment input. Its `filepick` (also published over the socket) pairs with them.
     const uploadPastedFiles = async (tab: TabId, files: File[], sid: string): Promise<void> => {
@@ -677,19 +616,7 @@ export function App() {
       onSnapshotApplied(snapshot) {
         if (disposed) return;
         resync.recovered(snapshot.tab);
-        // A follower may receive the driver's viewport snapshot while its replay is scaled.
-        // Never pre-ack that geometry: queued follower input must stay gated across a transfer.
-        if (presentation.canAcknowledge(snapshot, currentTab, driver)) {
-          socket?.send({ t: "view-ack", tab: snapshot.tab, epoch: snapshot.epoch });
-          inputStatus(true);
-        } else if (
-          driver &&
-          snapshot.tab === currentTab &&
-          !inputsReady &&
-          snapshot.reason !== "viewport"
-        ) {
-          scheduleViewport(0);
-        }
+        presentation.snapshotApplied(snapshot);
       },
       requestResync(tab, reason) {
         resync.request(tab, reason);
@@ -704,13 +631,13 @@ export function App() {
           replayer,
           tab,
           send: (message) => {
-            if (driver && inputsReady) socket?.send(message);
+            if (presentation.canInput(tab, "dom")) socket?.send(message);
           },
           onEditableFocus: echo.setFocused,
           onEditableInput: echo.input,
           onKeyDown: echo.keyDown,
           onFileSelection: (tab, input) => {
-            if (driver) uploads.select(tab, input);
+            if (presentation.canInput(tab, "dom")) uploads.select(tab, input);
             else input.value = "";
           },
           linkToOpen: (target) =>
@@ -723,92 +650,58 @@ export function App() {
           },
           onFilePickerCanceled: (tab) => uploads.cancelPick(tab),
           onPasteFiles: (tab, files) => {
-            if (driver && sessionId !== null) void uploadPastedFiles(tab, files, sessionId);
+            if (presentation.canInput(tab, "dom") && sessionId !== null)
+              void uploadPastedFiles(tab, files, sessionId);
           },
           scrollFilter: scroll,
         });
       },
     });
-    mirrorRef.current = mirror;
-    let activating: { tab: TabId; at: number } | null = null;
-    const followTab = (tab: TabId) => {
-      const tabChanged = currentTab !== tab;
-      currentTab = tab;
-      setActiveTab(tab);
-      // The gateway stops a tab's picture when another becomes active, without a message
-      // about the new one, so the view must follow what this tab is really showing.
-      if (tabChanged) setViewMode(knownModes.get(tab) ?? entryMode ?? "dom");
-      pxView?.selectTab(tab);
-      if (mirror.getActiveTab() !== null && mirror.getActiveTab() !== tab) mirror.selectTab(tab);
-      if (tabChanged) scheduleViewport(0);
-    };
-    // Before the click goes out, as the tab's snapshot can arrive ahead of the new tab list.
-    activateTabRef.current = (tab) => {
-      activating = { tab, at: Date.now() };
-      followTab(tab);
-    };
     let paintedFrames = 0;
     let gatewayFrames = { capture: 0, encode: 0, drop: 0 };
-    const frameRateTimer = setInterval(() => {
-      const display = paintedFrames;
-      paintedFrames = 0;
-      setFrameRates({ ...gatewayFrames, display });
-    }, 1_000);
-    const ensurePxView = (): PxView => {
-      if (pxView !== null) return pxView;
-      pxView = createPxView({
-        container: host,
-        send: (message) => {
-          // Asking for a keyframe is about the picture, so it does not wait for input to unlock.
-          if (driver && (inputsReady || message.t === "vid-key")) socket?.send(message);
-        },
-        onEnterPx: () => mirror.teardown(),
-        onPaint: () => {
-          paintedFrames++;
-        },
-      });
-      if (currentTab !== null) pxView.selectTab(currentTab);
-      pxViewRef.current = pxView;
-      return pxView;
-    };
-    const resizeObserver = new ResizeObserver(() => {
-      if (disposed) return;
-      mirror.refreshViewportLayout();
-      scheduleViewport();
+    const presentation = createPresentation({
+      host,
+      mirror,
+      send: (message) => socket?.send(message),
+      entryTab: new URLSearchParams(window.location.search).get("tab"),
+      entryMode: pendingModeRef.current,
+      preferredQuality: () => preferredPxQuality(viewStorage()),
+      onTab: setActiveTab,
+      onViewMode: setViewMode,
+      onTabMode: (tab, mode) => setModeByTab((current) => ({ ...current, [tab]: mode })),
+      onInputReady: (ready) => {
+        if (mountedRef.current) setInputReady(ready);
+      },
+      onPaint: () => paintedFrames++,
     });
+    presentationRef.current = presentation;
+    pendingModeRef.current = null;
+    const frameRateTimer = setInterval(() => {
+      setFrameRates({ ...gatewayFrames, display: paintedFrames });
+      paintedFrames = 0;
+    }, 1_000);
+    const resizeObserver = new ResizeObserver(presentation.resized);
     resizeObserver.observe(host);
-    const onWindowResize = () => scheduleViewport();
-    window.addEventListener("resize", onWindowResize);
+    window.addEventListener("resize", presentation.resized);
     const cleanup = () => {
       if (disposed) return;
       disposed = true;
       clearInterval(frameRateTimer);
       controller.abort();
-      driver = false;
-      inputsReady = false;
-      host.inert = true;
       for (const timer of downloadTimers) clearTimeout(timer);
-      // A stale "ready" must not stay behind: the next connection unlocks input only after its own
-      // hello and viewport agreement.
-      if (mountedRef.current) setInputReady(false);
       socket?.close();
       resizeObserver.disconnect();
-      window.removeEventListener("resize", onWindowResize);
-      if (resizeTimer !== null) clearTimeout(resizeTimer);
+      window.removeEventListener("resize", presentation.resized);
       socketRef.current = null;
       voiceRef.current?.setSender(null);
-      mirrorRef.current = null;
-      activateTabRef.current = null;
-      pxViewRef.current = null;
-      pxView?.destroy();
-      pxView = null;
+      presentationRef.current = null;
+      presentation.dispose();
       resync.dispose();
       clipboard.dispose();
       uploads.dispose();
       uploadRef.current = null;
       uploadRequestRef.current?.abort();
       setUploadState(null);
-      mirror.teardown();
       if (mountedRef.current) setPixelAvailable(true);
       if (runtimeCleanupRef.current === cleanup) runtimeCleanupRef.current = null;
     };
@@ -861,59 +754,11 @@ export function App() {
           };
           return;
         }
-        presentation.observe(message);
-        // Acknowledge receipt so the gateway paces frames to what this link actually delivers.
-        if (message.t === "px") socket?.send({ t: "px-ack", tab: message.tab });
-        if (
-          message.t === "px" ||
-          message.t === "vid" ||
-          message.t === "vid-cfg" ||
-          (message.t === "mode" && message.mode === "px")
-        ) {
-          ensurePxView().handle(message);
-        } else if (message.t === "mode") {
-          pxView?.handle(message);
-        }
-        if (message.t === "mode" && pictureHoldRef.current?.tab === message.tab)
-          releasePictureHold(message.mode === "dom");
-        const hold = pictureHoldRef.current;
-        if (hold && presentation.shouldMirror(message, currentTab)) {
-          hold.messages.push(message);
-        } else if (presentation.shouldMirror(message, currentTab)) {
-          mirror.handle(message);
-        } else if (
-          message.t === "snapshot" &&
-          presentation.canAcknowledge(message, currentTab, driver)
-        ) {
-          // Pixel mode still acknowledges the viewport epoch, without rebuilding an iframe.
-          socket?.send({ t: "view-ack", tab: message.tab, epoch: message.epoch });
-          inputStatus(true);
-        }
-        if (
-          message.t === "view-ok" &&
-          driver &&
-          message.tab === currentTab &&
-          presentation.matchesViewport(message.tab, message.w, message.h)
-        )
-          inputStatus(true);
+        presentation.handle(message);
         if (message.t === "hello") {
           setOAuthCallbacks({});
           setInputFailures({});
           setPageStates({});
-          const resumed =
-            reconnectPending &&
-            currentTab !== null &&
-            !presentation.isPixel(currentTab) &&
-            (message.resumed ?? []).includes(currentTab);
-          if (reconnectPending) {
-            reconnectPending = false;
-            mirror.connectionRestored(resumed);
-          }
-          // A resumed replay keeps its negotiated geometry; anything else renegotiates (D7).
-          if (resumed) presentation.restoreViewport(viewportBeforeDisconnect);
-          else presentation.resetViewport();
-          viewportBeforeDisconnect = undefined;
-          viewerId = message.viewerId;
           sessionId = message.sessionId;
           setViewerId(message.viewerId);
           void fetch(`/s/${encodeURIComponent(message.sessionId)}/downloads`, {
@@ -931,92 +776,26 @@ export function App() {
               }
             })
             .catch(() => undefined);
-          driver = message.role === "driver";
-          if (driver) setDriverId(message.viewerId);
-          if (resumed && driver) inputStatus(true);
-          scheduleViewport(0);
+          if (message.role === "driver") setDriverId(message.viewerId);
         }
         if (message.t === "driver") {
           setDriverId(message.viewerId);
-          const wasDriver = driver;
-          driver = viewerId !== null && message.viewerId === viewerId;
-          if (!driver) {
+          if (!presentation.isDriver()) {
             uploads.clear();
             uploadRequestRef.current?.abort();
-            inputStatus(false);
-            presentation.resetViewport();
-          }
-          // Presence rebroadcasts the current driver on every join. Only a real role transition
-          // needs a fresh measurement; resending an unchanged view rebuilds the remote epoch.
-          if (driver && !wasDriver) {
-            presentation.resetViewport();
-            scheduleViewport(0);
           }
         }
         if (message.t === "presence") setViewers(message.viewers);
         if (message.t === "clip") {
           clipboard.write(message.text);
         }
-        if (message.t === "snapshot" && currentTab === null) {
-          // Join payloads contain background tabs too; only tabs.active selects thereafter.
-          currentTab = message.tab;
-          setActiveTab(message.tab);
-          scheduleViewport(0);
-        }
         if (message.t === "chrome") {
           pageUrls.set(message.tab, message.url);
           setChromeByTab((current) => ({ ...current, [message.tab]: message }));
-          setActiveTab((current) => current ?? message.tab);
         }
-        if (message.t === "tab-state") {
+        if (message.t === "tab-state")
           setPageStates((current) => ({ ...current, [message.tab]: message.state }));
-          if (message.tab === currentTab) {
-            inputStatus(false);
-            if (message.state === "ready") {
-              presentation.resetViewport();
-              scheduleViewport(0);
-            }
-          }
-        }
-        if (message.t === "mode") {
-          setModeByTab((current) => ({ ...current, [message.tab]: message.mode }));
-          knownModes.set(message.tab, message.mode);
-          if (message.tab === currentTab) setViewMode(message.mode);
-          if (message.mode === "dom" && message.tab === currentTab) scheduleViewport(0);
-        }
-        if (message.t === "tabs") {
-          setTabs(message.tabs);
-          mirror.keepTabs(message.tabs.map((tab) => tab.id));
-          const active = message.tabs.find((tab) => tab.active);
-          // A list sent before the gateway saw this viewer's click still names the old tab.
-          const outdated =
-            active !== undefined &&
-            activating !== null &&
-            activating.tab !== active.id &&
-            Date.now() - activating.at < ACTIVATION_WAIT_MS;
-          if (active !== undefined && !outdated) {
-            activating = null;
-            followTab(active.id);
-            if (entryMode === "px" || entryMode === "dom") {
-              const requestedMode = entryMode;
-              entryMode = null;
-              const tab = message.tabs.find((item) => item.id === entryTab)?.id ?? active.id;
-              if (tab !== active.id) socket?.send({ t: "nav", tab, action: "activate" });
-              socket?.send(
-                requestedMode === "px"
-                  ? {
-                      t: "mode",
-                      tab,
-                      mode: "px",
-                      quality: preferredPxQuality(viewStorage()),
-                      ...videoOption(),
-                    }
-                  : { t: "mode", tab, mode: "dom" },
-              );
-            }
-            entryTab = null;
-          }
-        }
+        if (message.t === "tabs") setTabs(message.tabs);
         if (message.t === "download" && !dismissedDownloadIdsRef.current.has(message.id)) {
           setDownloads((current) => updateDownloads(current, message));
           // The link works from the start: the browser saves the file as it arrives, and shows that.
@@ -1032,7 +811,7 @@ export function App() {
             else setDownloads((current) => dismissDownload(current, message.id));
           }
         }
-        if (message.t === "filepick" && driver && sessionId !== null) {
+        if (message.t === "filepick" && presentation.isDriver() && sessionId !== null) {
           uploads.handlePick(message, sessionId);
         }
       },
@@ -1049,19 +828,11 @@ export function App() {
           setSpeedBps(sample);
           setPeakSpeedBps((peak) => Math.max(peak ?? 0, sample));
         },
-        resumeParam() {
-          if (currentTab === null || presentation.isPixel(currentTab)) return null;
-          const cursor = mirror.resumeCursor();
-          return cursor === null ? null : encodeResumeCursors([cursor]);
-        },
+        resumeParam: presentation.resumeParam,
         onStateChange(state, reconnected) {
           if (disposed) return;
           setConnection(state);
-          if (state !== "open") {
-            inputStatus(false);
-            viewportBeforeDisconnect ??= presentation.currentViewport();
-            presentation.resetViewport();
-          }
+          presentation.connectionChanged(state, reconnected);
           if (state === "ended") {
             finishSession();
             return;
@@ -1077,21 +848,9 @@ export function App() {
             setClientPhase("replaced");
             return;
           }
-          if (state === "closed") {
-            // Capture stops offline; the returning tab reapplies its chosen view.
-            entryMode ??= currentTab === null ? null : (knownModes.get(currentTab) ?? null);
-            if (!presentation.isPixel(currentTab)) mirror.connectionLost();
-          }
-          if (state === "open" && reconnected && !presentation.isPixel(currentTab)) {
-            // `hello` says whether the gateway resumed this replay; recovery waits for it.
-            // Content recovery does not unlock input before its viewport acknowledgement.
-            reconnectPending = true;
-          }
         },
         onProtocolError(error) {
-          if (disposed) return;
-          const tab = mirror.getActiveTab();
-          if (tab !== null) resync.request(tab, error.message);
+          if (!disposed) mirror.recover(error.message);
         },
       },
     );
@@ -1181,18 +940,11 @@ export function App() {
   const changeView = (mode: ViewMode, remember = true) => {
     if (remember) rememberViewMode(viewStorage(), mode);
     if (mode === viewMode) return;
-    if (activeTab === null) {
+    if (presentationRef.current) presentationRef.current.requestMode(mode, pxQuality);
+    else {
       pendingModeRef.current = mode;
       setViewMode(mode);
-      return;
     }
-    if (mode === "px") holdMirrorForPicture(activeTab);
-    socketRef.current?.send(
-      mode === "px"
-        ? { t: "mode", tab: activeTab, mode, quality: pxQuality, ...videoOption() }
-        : { t: "mode", tab: activeTab, mode },
-    );
-    setViewMode(mode);
   };
 
   const navigateWorkspace = (destination: WorkspaceDestination) => {
@@ -1270,15 +1022,7 @@ export function App() {
         onPxQuality={(quality) => {
           setPxQuality(quality);
           viewStorage().setItem(PX_QUALITY_STORAGE_KEY, quality);
-          // Applied right away in the pixel view, otherwise the next time it opens.
-          if (pixelMode && activeTab !== null)
-            socketRef.current?.send({
-              t: "mode",
-              tab: activeTab,
-              mode: "px",
-              quality,
-              ...videoOption(),
-            });
+          presentationRef.current?.updateQuality(quality);
         }}
         serverStatus={serverStatus}
         rttMs={rttMs}
@@ -1288,9 +1032,7 @@ export function App() {
         <TabStrip
           tabs={tabs}
           chromeByTab={chromeByTab}
-          onActivate={(tab) => {
-            activateTabRef.current?.(tab);
-          }}
+          onActivate={(tab) => presentationRef.current?.activate(tab)}
           send={(message) => socketRef.current?.send(message)}
         />
       </ShellBar>

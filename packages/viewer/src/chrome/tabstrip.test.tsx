@@ -89,7 +89,6 @@ describe("P2 viewer tab strip", () => {
 
     expect(activated).toHaveBeenCalledWith("tab-a");
     expect(sent).toEqual([
-      { t: "nav", tab: "tab-a", action: "activate" },
       { t: "nav", tab: "tab-a", action: "close" },
       { t: "nav", tab: "tab-b", action: "newtab", url: "https://claude.ai/" },
     ]);
@@ -97,7 +96,7 @@ describe("P2 viewer tab strip", () => {
 
   it("keeps New tab enabled and sends newtab when there are no tabs", () => {
     const sent: Up[] = [];
-    const tree = TabStrip({ tabs: [], send: (message) => sent.push(message) });
+    const tree = TabStrip({ tabs: [], send: (message) => sent.push(message), onActivate: vi.fn() });
     const newTab = children(tree).find((node) => node.props.id === "new-tab");
 
     expect(newTab?.props.disabled).toBeUndefined();

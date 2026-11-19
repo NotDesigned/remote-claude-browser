@@ -56,7 +56,7 @@ const server = createServer(async (request, response) => {
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
 const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 const browser = await chromium.launch({
-  executablePath: "/opt/claude-test-chrome/chrome",
+  executablePath: process.env.CHROME_PATH ?? "/opt/claude-test-chrome/chrome",
   headless: true,
 });
 const wss = new WebSocketServer({ server, path: "/ws" });
@@ -277,7 +277,7 @@ try {
       proxy: (document.querySelector(".px-ime-input") as HTMLTextAreaElement | null)?.value,
     })),
   });
-  await page.goto(origin);
+  await page.goto(origin + "/?sid=client-1");
   await page.waitForFunction(
     () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
   );

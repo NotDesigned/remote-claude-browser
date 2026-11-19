@@ -42,6 +42,7 @@ type Delta = Extract<Down, { t: "delta" }>;
 
 export interface Mirror {
   handle(msg: Down): void;
+  recover(reason: string): void;
   connectionLost(): void;
   /** `resumed`: the gateway continued this replay from its cursor, so no snapshot is needed. */
   connectionRestored(resumed?: boolean): void;
@@ -97,15 +98,16 @@ interface LiveRtc {
 interface LiveState {
   tab: TabId;
   epoch: number;
-  lastSeq: number;
+  nextSeq: number;
+  /** Replay validity survives a socket reconnect. */
+  needsSnapshot: boolean;
+  viewport: ReturnType<typeof extractSnapshotViewport>;
   replayer: Replayer;
   stage: HTMLDivElement;
   mount: HTMLDivElement;
   detachInteraction: () => void;
   detachMediaRestore: () => void;
   rtc: LiveRtc | null;
-  rtcDisconnected: boolean;
-  bufferMs: number;
   /** Paints sampled canvas pictures; the replayer itself is never handed canvas commands. */
   canvas: CanvasCompositor;
 }
@@ -218,17 +220,16 @@ export function createMirror(opts: MirrorOpts): Mirror {
   const restoreHooks = opts.restoreHooks ?? createRebuildRestoreHooks();
   let activeTab: TabId | null = null;
   let state: LiveState | null = null;
-  let resyncRequested = false;
+  let snapshotPending = false; // A snapshot is expected on this connection.
   let switchTimer: ReturnType<typeof setTimeout> | null = null;
   const parkedLimit = opts.parkedTabs ?? 0;
   /** Oldest first. Never moved in the DOM, which would reload their iframes. */
   const parked = new Map<TabId, LiveState>();
   /** A page back in view until the gateway's catch-up for its tab, which it mostly already has. */
-  let catchUp: { answered: boolean; snapshotSeen: boolean } | null = null;
+  let catchUp: "waiting" | "answered" | "snapshot" | null = null;
   let pendingRestore: RebuildRestorePoint | null = null;
   let viewerId: string | null = null;
   let isDriver = true;
-  let remoteViewport: { w: number; h: number } | null = null;
 
   const disposeRtc = (tab: TabId, rtc: LiveRtc | null) => {
     if (rtc === null) return;
@@ -245,20 +246,21 @@ export function createMirror(opts: MirrorOpts): Mirror {
     if (live === null) return;
     live.mount.dataset.viewportRole = isDriver ? "driver" : "follower";
     opts.container.dataset.viewportRole = isDriver ? "driver" : "follower";
-    if (isDriver || remoteViewport === null) {
+    const viewport = live.viewport;
+    if (isDriver || viewport === null) {
       live.mount.style.width = "";
       live.mount.style.height = "";
       live.mount.style.transform = "";
       return;
     }
     const scale = fitViewportScale(
-      remoteViewport.w,
-      remoteViewport.h,
+      viewport.w,
+      viewport.h,
       opts.container.clientWidth,
       opts.container.clientHeight,
     );
-    live.mount.style.width = `${remoteViewport.w}px`;
-    live.mount.style.height = `${remoteViewport.h}px`;
+    live.mount.style.width = `${viewport.w}px`;
+    live.mount.style.height = `${viewport.h}px`;
     live.mount.style.transform = `scale(${scale})`;
   };
 
@@ -316,7 +318,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
 
   /** Canvases and video arrive over WebRTC, which ends with the view, so they cannot come back. */
   const canPark = (live: LiveState): boolean => {
-    if (parkedLimit < 1) return false;
+    if (parkedLimit < 1 || live.needsSnapshot) return false;
     try {
       const page = live.replayer.iframe.contentDocument;
       return page !== null && page !== undefined && page.querySelector("canvas,video") === null;
@@ -354,54 +356,57 @@ export function createMirror(opts: MirrorOpts): Mirror {
     renderStatus(message);
   };
 
-  const endTabSwitch = () => {
+  const clearSwitchTimer = () => {
     if (switchTimer !== null) clearTimeout(switchTimer);
     switchTimer = null;
+  };
+
+  const endTabSwitch = () => {
+    clearSwitchTimer();
     catchUp = null;
     delete opts.container.dataset.switching;
-    if (state !== null) state.stage.inert = false;
+    if (state !== null) state.stage.inert = state.needsSnapshot;
   };
 
   /** The page is shown at once, but input waits for the gateway to say what it has missed. */
   const awaitCatchUp = (tab: TabId) => {
-    catchUp = { answered: false, snapshotSeen: false };
+    catchUp = "waiting";
     if (state !== null) state.stage.inert = true;
     switchTimer = setTimeout(() => {
       switchTimer = null;
-      const waiting = catchUp;
-      if (state !== null) state.stage.inert = false;
-      if (waiting === null || waiting.snapshotSeen || waiting.answered) return;
+      if (catchUp !== "waiting") return;
       catchUp = null;
       requestFreshSnapshot(tab, "tab selected");
     }, TAB_SWITCH_WAIT_MS);
   };
 
-  const settleCatchUp = (message: Snapshot) => {
-    if (switchTimer !== null) clearTimeout(switchTimer);
-    switchTimer = null;
-    if (catchUp !== null) catchUp.snapshotSeen = true;
-    if (state !== null) state.stage.inert = false;
-    remoteViewport = extractSnapshotViewport(message) ?? remoteViewport;
-    applyViewportLayout();
-    opts.onSnapshotApplied?.(message);
+  const setSnapshotPending = (pending: boolean) => {
+    snapshotPending = pending;
+    if (pending) opts.container.dataset.resyncPending = "true";
+    else delete opts.container.dataset.resyncPending;
+  };
+
+  const awaitSnapshot = (tab: TabId) => {
+    if (state?.tab === tab) {
+      state.needsSnapshot = true;
+      state.stage.inert = true;
+    }
+    setSnapshotPending(true);
   };
 
   const requestFreshSnapshot = (tab: TabId, reason: string) => {
-    if (resyncRequested) return;
-    resyncRequested = true;
-    opts.container.dataset.resyncPending = "true";
+    if (snapshotPending) return;
+    awaitSnapshot(tab);
     opts.requestResync(tab, reason);
   };
 
-  const runPipeline = (tab: TabId, event: eventWithTime): eventWithTime | null => {
-    // The interactive iframe option also enables rrweb's canvas lane. Preserve disabled
-    // canvas-command replay while the inherited CSP blocks website scripts and subframe URLs.
-    if (
-      event.type === EventType.IncrementalSnapshot &&
-      event.data.source === IncrementalSource.CanvasMutation
-    )
-      return null;
-    return opts.pipeline.run(event, { tab, nowMs: now() });
+  const commitSnapshot = (live: LiveState, message: Snapshot) => {
+    live.viewport = extractSnapshotViewport(message) ?? live.viewport;
+    live.stage.inert = false;
+    setSnapshotPending(false);
+    opts.container.dataset.mirrorState = "live";
+    applyViewportLayout();
+    opts.onSnapshotApplied?.(message);
   };
 
   const addEvent = (live: LiveState, event: eventWithTime): boolean => {
@@ -409,10 +414,9 @@ export function createMirror(opts: MirrorOpts): Mirror {
       void live.canvas.apply(event);
       return true;
     }
-    const processed = runPipeline(live.tab, event);
-    if (processed === null) return true;
     try {
-      live.replayer.addEvent(processed);
+      const processed = opts.pipeline.run(event, { tab: live.tab, nowMs: now() });
+      if (processed !== null) live.replayer.addEvent(processed);
       return true;
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : String(cause);
@@ -448,6 +452,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
       pendingRestore = null;
     } else captureInteraction();
     const restorePoint = pendingRestore;
+    const viewport = state?.tab === message.tab ? state.viewport : null;
     pendingRestore = null;
     // The teardown and replacement happen in one synchronous websocket task. Browsers cannot
     // paint or run the chaos sampler between these operations, so the last good frame remains on
@@ -467,21 +472,19 @@ export function createMirror(opts: MirrorOpts): Mirror {
 
     const initialEvents: eventWithTime[] = [];
     const initialCanvas: eventWithTime[] = [];
-    remoteViewport = extractSnapshotViewport(message) ?? remoteViewport;
-    for (const event of message.data) {
-      if (isCanvasMutation(event)) {
-        initialCanvas.push(event);
-        continue;
-      }
-      const processed = runPipeline(message.tab, event);
-      if (processed !== null) initialEvents.push(processed);
-    }
-
     let replayer: Replayer | null = null;
     let rtc: LiveRtc | null = null;
     let cancelRestore = () => {};
     let mediaRestore: ReturnType<typeof armLiveMediaRestore> | null = null;
     try {
+      // Sampled canvases have their own compositor. Never send canvas commands to rrweb.
+      for (const event of message.data) {
+        if (isCanvasMutation(event)) initialCanvas.push(event);
+        else {
+          const processed = opts.pipeline.run(event, { tab: message.tab, nowMs: now() });
+          if (processed !== null) initialEvents.push(processed);
+        }
+      }
       if (opts.rtc !== undefined) {
         const lane = opts.rtc.createLane?.() ?? createRtcLane();
         let mediaRequested = false;
@@ -571,25 +574,24 @@ export function createMirror(opts: MirrorOpts): Mirror {
       }
       mount.remove();
       renderStatus("Mirror recovery requested…");
-      resyncRequested = true;
-      opts.container.dataset.resyncPending = "true";
+      setSnapshotPending(false);
       const detail = cause instanceof Error ? cause.message : String(cause);
-      opts.requestResync(message.tab, `snapshot replay: ${detail}`);
+      requestFreshSnapshot(message.tab, `snapshot replay: ${detail}`);
       return;
     }
 
     state = {
       tab: message.tab,
       epoch: message.epoch,
-      lastSeq: message.seq,
+      nextSeq: message.seq + 1,
+      needsSnapshot: false,
+      viewport,
       replayer,
       stage,
       mount,
       detachInteraction: () => {},
       detachMediaRestore: mediaRestore.detach,
       rtc,
-      rtcDisconnected: false,
-      bufferMs: clock.liveBufferMs(),
       canvas: createCanvasCompositor(
         { getReplayer: () => replayer },
         {
@@ -600,29 +602,25 @@ export function createMirror(opts: MirrorOpts): Mirror {
     };
     for (const event of initialCanvas) void state.canvas.apply(event);
     state.detachInteraction = opts.attachInteraction?.(message.tab, replayer) ?? (() => {});
-    applyViewportLayout();
-    resyncRequested = false;
-    delete opts.container.dataset.resyncPending;
-    opts.container.dataset.mirrorState = "live";
-    opts.onSnapshotApplied?.(message);
+    commitSnapshot(state, message);
   };
 
   const applyDelta = (message: Delta) => {
-    if (resyncRequested) return;
+    if (snapshotPending) return;
     const live = state;
     if (live === null) {
       if (activeTab === null) activeTab = message.tab;
       requestFreshSnapshot(message.tab, "delta before snapshot");
       return;
     }
-    if (message.tab !== live.tab) return;
+    if (message.tab !== live.tab || live.needsSnapshot) return;
     if (message.epoch !== live.epoch) {
       requestFreshSnapshot(message.tab, `epoch gap: expected ${live.epoch}, got ${message.epoch}`);
       return;
     }
 
     // Frozen protocol assumption: delta.seq is the first event's per-tab sequence.
-    const expectedSeq = live.lastSeq + 1;
+    const expectedSeq = live.nextSeq;
     let seq = message.seq;
     let data = message.data;
     if (catchUp !== null) {
@@ -633,7 +631,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
         data = data.slice(applied);
         seq = expectedSeq;
       }
-      if (catchUp.snapshotSeen) catchUp = null;
+      if (catchUp === "snapshot") catchUp = null;
     }
     if (seq !== expectedSeq || data.length === 0) {
       requestFreshSnapshot(
@@ -646,7 +644,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
     for (const event of data) {
       if (!addEvent(live, event)) return;
     }
-    live.lastSeq = seq + data.length - 1;
+    live.nextSeq = seq + data.length;
   };
 
   renderStatus("Waiting for a snapshot…");
@@ -667,13 +665,21 @@ export function createMirror(opts: MirrorOpts): Mirror {
           break;
         case "snapshot":
           if (activeTab === null || msg.tab === activeTab) {
-            if (catchUp !== null && state?.tab === msg.tab && msg.epoch === state.epoch) {
-              settleCatchUp(msg);
+            if (
+              catchUp !== null &&
+              state?.tab === msg.tab &&
+              !state.needsSnapshot &&
+              msg.epoch === state.epoch
+            ) {
+              clearSwitchTimer();
+              catchUp = "snapshot";
+              commitSnapshot(state, msg);
             } else if (
               state === null ||
               state.tab !== msg.tab ||
               msg.epoch > state.epoch ||
-              resyncRequested
+              state.needsSnapshot ||
+              snapshotPending
             ) {
               rebuild(msg);
             }
@@ -684,11 +690,10 @@ export function createMirror(opts: MirrorOpts): Mirror {
           break;
         case "resync":
           if (catchUp !== null && state?.tab === msg.tab) {
-            catchUp.answered = true;
+            if (catchUp === "waiting") catchUp = "answered";
           } else if (activeTab === null || msg.tab === activeTab) {
             activeTab = msg.tab;
-            resyncRequested = true;
-            opts.container.dataset.resyncPending = "true";
+            awaitSnapshot(msg.tab);
           }
           break;
         case "rtc-sig": {
@@ -705,6 +710,9 @@ export function createMirror(opts: MirrorOpts): Mirror {
         }
       }
     },
+    recover(reason) {
+      if (activeTab !== null) requestFreshSnapshot(activeTab, reason);
+    },
     connectionLost() {
       for (const tab of [...parked.keys()]) dropParked(tab);
       endTabSwitch();
@@ -713,28 +721,28 @@ export function createMirror(opts: MirrorOpts): Mirror {
       if (state?.rtc?.hasMediaRequests()) {
         const rtc = state.rtc;
         state.rtc = null;
-        state.rtcDisconnected = true;
+        state.needsSnapshot = true;
+        state.stage.inert = true;
         disposeRtc(state.tab, rtc);
       }
       if (state === null) renderStatus("Connection lost. Reconnecting…");
       else opts.container.dataset.connectionStale = "true";
-      resyncRequested = false;
+      setSnapshotPending(false);
     },
     connectionRestored(resumed = false) {
       delete opts.container.dataset.connectionStale;
-      if (resumed && state !== null && state.tab === activeTab && !state.rtcDisconnected) return;
+      if (resumed && state?.tab === activeTab && !state.needsSnapshot) return;
       if (activeTab !== null) requestFreshSnapshot(activeTab, "ws reconnect");
     },
     resumeCursor() {
-      if (state === null || resyncRequested || state.tab !== activeTab || state.rtcDisconnected)
-        return null;
-      return { tab: state.tab, epoch: state.epoch, nextSeq: state.lastSeq + 1 };
+      if (state === null || state.needsSnapshot || state.tab !== activeTab) return null;
+      return { tab: state.tab, epoch: state.epoch, nextSeq: state.nextSeq };
     },
     selectTab(tab) {
       if (tab === activeTab) return;
       activeTab = tab;
       pendingRestore = null;
-      resyncRequested = false;
+      setSnapshotPending(false);
       endTabSwitch();
       let saved = parked.get(tab);
       // Picture mode clears the shared surface, and an iframe does not survive leaving the page.
@@ -795,7 +803,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
       for (const tab of [...parked.keys()]) dropParked(tab);
       pendingRestore = null;
       discard("Mirror stopped.");
-      delete opts.container.dataset.resyncPending;
+      setSnapshotPending(false);
       delete opts.container.dataset.connectionStale;
       activeTab = null;
     },

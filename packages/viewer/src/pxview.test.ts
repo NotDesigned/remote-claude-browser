@@ -208,17 +208,19 @@ function edit(overrides: Record<string, unknown> = {}) {
 function pixelInputFixture() {
   const container = new FakeContainer();
   const sent: Up[] = [];
+  const image = new FakeImage();
   const view = createPxView({
     container: container as unknown as HTMLElement,
     send: (message) => sent.push(message),
     onEnterPx: vi.fn(),
-    createImage: () => new FakeImage() as unknown as HTMLImageElement,
+    createImage: () => image as unknown as HTMLImageElement,
   });
   view.selectTab("tab-1");
   view.handle({ t: "mode", tab: "tab-1", mode: "px" });
   view.handle({ t: "px", tab: "tab-1", data: "first", w: 800, h: 400 });
+  image.onload!();
   const input = [...container.inputs][0]!;
-  return { container, view, input, sent };
+  return { container, view, input, image, sent };
 }
 
 describe("selecting text in the picture", () => {
@@ -234,10 +236,10 @@ describe("selecting text in the picture", () => {
       container.canvas.fire("mousemove", mouse({ clientX: 170 }));
       container.canvas.fire("mouseup", mouse({ clientX: 170, buttons: 0 }));
       expect(kinds(sent)).toEqual([
-        ["down", 75],
-        ["move", 105],
-        ["move", 120],
-        ["up", 120],
+        ["down", 200],
+        ["move", 280],
+        ["move", 320],
+        ["up", 320],
       ]);
       view.destroy();
     } finally {
@@ -479,7 +481,7 @@ describe("P2 viewer pixel fallback", () => {
   });
 
   it("removes native IME state and ignores late commits on mode changes, tab changes, and teardown", () => {
-    const { container, view, input, sent } = pixelInputFixture();
+    const { container, view, input, image, sent } = pixelInputFixture();
     input.fire("compositionstart", { isTrusted: true, data: "" });
     const lateCommit = [...input.listeners.get("compositionend")!][0]!;
     view.handle({ t: "mode", tab: "tab-1", mode: "dom" });
@@ -489,6 +491,7 @@ describe("P2 viewer pixel fallback", () => {
 
     view.handle({ t: "mode", tab: "tab-1", mode: "px" });
     view.handle({ t: "px", tab: "tab-1", data: "again", w: 800, h: 400 });
+    image.onload!();
     const secondInput = [...container.inputs][0]!;
     secondInput.fire("compositionstart", { isTrusted: true, data: "" });
     view.selectTab("tab-2");
@@ -496,6 +499,7 @@ describe("P2 viewer pixel fallback", () => {
     secondInput.fire("compositionend", { isTrusted: true, data: "old tab" });
     view.handle({ t: "mode", tab: "tab-2", mode: "px" });
     view.handle({ t: "px", tab: "tab-2", data: "new tab", w: 800, h: 400 });
+    image.onload!();
     const thirdInput = [...container.inputs][0]!;
     thirdInput.fire("compositionstart", { isTrusted: true, data: "" });
     view.destroy();
@@ -508,6 +512,7 @@ describe("P2 viewer pixel fallback", () => {
     const container = new FakeContainer();
     const images: FakeImage[] = [];
     const sent: Up[] = [];
+    const onPaint = vi.fn();
     const enterPx = vi.fn(() => container.replaceChildren());
     const enterDom = vi.fn(() => container.replaceChildren({ kind: "mirror" }));
     const view = createPxView({
@@ -515,6 +520,7 @@ describe("P2 viewer pixel fallback", () => {
       send: (message) => sent.push(message),
       onEnterPx: enterPx,
       onEnterDom: enterDom,
+      onPaint,
       createImage: () => {
         const image = new FakeImage();
         images.push(image);
@@ -526,17 +532,21 @@ describe("P2 viewer pixel fallback", () => {
     view.handle({ t: "mode", tab: "tab-1", mode: "px" });
     expect(enterPx).not.toHaveBeenCalled();
     expect(container.child).toEqual({ kind: "mirror" });
+    view.handle({ t: "px", tab: "tab-1", data: "broken", w: 800, h: 400 });
+    images[0]!.onerror!();
     view.handle({ t: "px", tab: "tab-1", data: "jpeg-base64", w: 800, h: 400 });
+    expect(container.child).toEqual({ kind: "mirror" });
+    expect(enterPx).not.toHaveBeenCalled();
+    expect(onPaint).not.toHaveBeenCalled();
+    expect(images[1]?.src).toBe("data:image/jpeg;base64,jpeg-base64");
 
+    images[1]!.onload!();
     expect(enterPx).toHaveBeenCalledWith("tab-1");
     expect(container.child).toBe(container.canvas);
-    expect(container.canvas.width).toBe(300);
-    expect(container.canvas.height).toBe(150);
-    expect(images[0]?.src).toBe("data:image/jpeg;base64,jpeg-base64");
-    images[0]?.onload?.();
+    expect(onPaint).toHaveBeenCalledOnce();
     expect(container.canvas.width).toBe(800);
     expect(container.canvas.height).toBe(400);
-    expect(container.canvas.drawImage).toHaveBeenCalledWith(images[0], 0, 0, 800, 400);
+    expect(container.canvas.drawImage).toHaveBeenCalledWith(images[1], 0, 0, 800, 400);
 
     container.canvas.fire("mousedown", mouse());
     expect(sent).toEqual([
@@ -563,7 +573,7 @@ describe("P2 viewer pixel fallback", () => {
     expect(container.canvas.listeners.get("mousedown")?.size).toBe(0);
 
     view.handle({ t: "px", tab: "tab-1", data: "late", w: 1, h: 1 });
-    expect(images).toHaveLength(1);
+    expect(images).toHaveLength(2);
   });
 
   it("keeps the painted frame while decoding and coalesces a burst without starving the decoder", async () => {

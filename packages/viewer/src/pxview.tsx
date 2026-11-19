@@ -34,80 +34,76 @@ export interface PxView {
   destroy(): void;
 }
 
+interface PixelSurface {
+  canvas: HTMLCanvasElement;
+  painter: ReturnType<typeof createPxFramePainter>;
+  detachInput?: () => void;
+}
+
 export function createPxView(options: PxViewOptions): PxView {
   const modes = new Map<TabId, "dom" | "px">();
   let activeTab: TabId | null = null;
-  let canvas: HTMLCanvasElement | null = null;
-  let detachInput = () => {};
-  let painter: ReturnType<typeof createPxFramePainter> | null = null;
-  let destroyed = false;
+  let surface: PixelSurface | null = null;
   let video: VideoStream | null = null;
+  let destroyed = false;
 
-  const closeVideo = () => {
+  const reset = () => {
     video?.close();
     video = null;
+    if (surface === null) return;
+    surface.painter.dispose();
+    surface.detachInput?.();
+    surface.canvas.remove();
+    surface = null;
   };
-  const videoStream = (): VideoStream =>
+
+  const painted = (tab: TabId, view: PixelSurface) => {
+    if (view.detachInput === undefined) {
+      options.onEnterPx(tab);
+      options.container.replaceChildren(view.canvas);
+      options.container.dataset.mirrorState = "px";
+      view.detachInput = attachPxInput({ canvas: view.canvas, tab, send: options.send });
+    }
+    options.onPaint?.();
+  };
+
+  const prepareSurface = (tab: TabId): PixelSurface => {
+    if (surface !== null) return surface;
+    const canvas = options.container.ownerDocument.createElement("canvas");
+    canvas.className = "px-canvas";
+    canvas.tabIndex = 0;
+    canvas.setAttribute("aria-label", "Pixel browser view");
+    const painter = createPxFramePainter(canvas, options.createImage, () => painted(tab, view));
+    const view: PixelSurface = { canvas, painter };
+    surface = view;
+    return view;
+  };
+
+  const videoStream = (tab: TabId): VideoStream =>
     (video ??= createVideoStream({
       onFrame(frame, w, h) {
         try {
-          if (activeTab === null || destroyed) return;
-          const target = enterPx(activeTab);
-          const context = target.getContext("2d");
-          options.onPaint?.();
-          if (context)
-            paintPicture(
-              target,
-              context,
-              frame,
-              frame.displayWidth,
-              frame.displayHeight,
-              w,
-              h,
-              false,
-            );
+          const view = prepareSurface(tab);
+          const context = view.canvas.getContext("2d");
+          if (context === null) return;
+          paintPicture(
+            view.canvas,
+            context,
+            frame,
+            frame.displayWidth,
+            frame.displayHeight,
+            w,
+            h,
+            false,
+          );
+          painted(tab, view);
         } finally {
           frame.close();
         }
       },
-      requestKeyframe() {
-        if (activeTab !== null) options.send({ t: "vid-key", tab: activeTab });
-      },
-      onUnusable() {
-        if (activeTab !== null)
-          options.send({ t: "mode", tab: activeTab, mode: "px", video: false });
-      },
+      requestKeyframe: () => options.send({ t: "vid-key", tab }),
+      onUnusable: () => options.send({ t: "mode", tab, mode: "px", video: false }),
     }));
-
-  const removeCanvas = () => {
-    painter?.dispose();
-    painter = null;
-    detachInput();
-    detachInput = () => {};
-    canvas?.remove();
-    canvas = null;
-  };
-
-  const enterPx = (tab: TabId): HTMLCanvasElement => {
-    if (canvas !== null) return canvas;
-    options.onEnterPx(tab);
-    const next = options.container.ownerDocument.createElement("canvas");
-    next.className = "px-canvas";
-    next.tabIndex = 0;
-    next.setAttribute("aria-label", "Pixel browser view");
-    options.container.replaceChildren(next);
-    options.container.dataset.mirrorState = "px";
-    canvas = next;
-    painter = createPxFramePainter(next, options.createImage);
-    detachInput = attachPxInput({ canvas: next, tab, send: options.send });
-    return next;
-  };
-
-  const enterDom = (tab: TabId) => {
-    removeCanvas();
-    options.container.dataset.mirrorState = "building";
-    options.onEnterDom?.(tab);
-  };
 
   return {
     handle(message) {
@@ -115,50 +111,40 @@ export function createPxView(options: PxViewOptions): PxView {
       if (message.t === "mode") {
         modes.set(message.tab, message.mode);
         if (message.tab !== activeTab) return;
-        // A mode announcement alone must not disturb rrweb's live iframe or its document-set
-        // observers. Pixel mode claims the shared host only when an actual frame is available.
         if (message.mode === "dom") {
-          closeVideo();
-          if (canvas !== null) enterDom(message.tab);
-        } else if (videoOption().video) videoStream().needKeyframe();
+          const wasVisible = surface?.detachInput !== undefined;
+          reset();
+          if (wasVisible) {
+            options.container.dataset.mirrorState = "building";
+            options.onEnterDom?.(message.tab);
+          }
+        } else if (videoOption().video) videoStream(message.tab).needKeyframe();
         return;
       }
       if (message.tab !== activeTab || modes.get(message.tab) !== "px") return;
-      if (message.t === "vid-cfg") return videoStream().configure(message);
-      if (message.t === "vid") return videoStream().decode(message);
-      enterPx(message.tab);
-      painter?.enqueue(message);
+      if (message.t === "vid-cfg") videoStream(message.tab).configure(message);
+      else if (message.t === "vid") videoStream(message.tab).decode(message);
+      else prepareSurface(message.tab).painter.enqueue(message);
     },
     selectTab(tab) {
       if (destroyed || tab === activeTab) return;
-      closeVideo();
-      removeCanvas();
+      reset();
       activeTab = tab;
     },
-    getCanvas: () => canvas,
+    getCanvas: () => (surface?.detachInput === undefined ? null : surface.canvas),
     destroy() {
-      if (destroyed) return;
       destroyed = true;
-      closeVideo();
-      removeCanvas();
+      reset();
       modes.clear();
-      activeTab = null;
     },
   };
-}
-
-export function paintPxFrame(
-  canvas: HTMLCanvasElement,
-  frame: Pick<PxFrame, "data" | "w" | "h" | "sharp">,
-  createImage: () => HTMLImageElement = () => new Image(),
-): () => void {
-  return decodePxFrame(canvas, frame, createImage, () => {});
 }
 
 /** One decoder keeps making progress while only the newest waiting frame is retained. */
 function createPxFramePainter(
   canvas: HTMLCanvasElement,
   createImage: () => HTMLImageElement = () => new Image(),
+  onPaint: () => void,
 ) {
   let disposed = false;
   let pending: Pick<PxFrame, "data" | "w" | "h" | "sharp"> | null = null;
@@ -170,7 +156,7 @@ function createPxFramePainter(
     pending = null;
     const decoding = { cancel: () => {} };
     active = decoding;
-    decoding.cancel = decodePxFrame(canvas, frame, createImage, () => {
+    decoding.cancel = decodePxFrame(canvas, frame, createImage, onPaint, () => {
       if (active !== decoding) return;
       active = null;
       drain();
@@ -180,7 +166,7 @@ function createPxFramePainter(
   return {
     enqueue(frame: Pick<PxFrame, "data" | "w" | "h" | "sharp">) {
       if (disposed) return;
-      pending = { data: frame.data, w: frame.w, h: frame.h, sharp: frame.sharp };
+      pending = frame;
       drain();
     },
     dispose() {
@@ -194,6 +180,7 @@ function createPxFramePainter(
 
 const logicalSizes = new WeakMap<HTMLCanvasElement, { width: number; height: number }>();
 const sharpGrids = new WeakMap<HTMLCanvasElement, TileGrid>();
+const samplers = new WeakMap<HTMLCanvasElement, HTMLCanvasElement>();
 
 /** The page's size in CSS pixels, which pointer coordinates are expressed in. */
 function logicalSize(canvas: HTMLCanvasElement): { width: number; height: number } {
@@ -209,9 +196,13 @@ function pictureGrid(
   try {
     const columns = GRID_COLUMNS;
     const rows = Math.max(1, Math.round((columns * height) / width));
-    const small = canvas.ownerDocument.createElement("canvas");
-    small.width = columns;
-    small.height = rows;
+    let small = samplers.get(canvas);
+    if (small === undefined) {
+      small = canvas.ownerDocument.createElement("canvas");
+      samplers.set(canvas, small);
+    }
+    if (small.width !== columns) small.width = columns;
+    if (small.height !== rows) small.height = rows;
     const context = small.getContext("2d", { willReadFrequently: true });
     if (!context) return null;
     context.drawImage(source, 0, 0, columns, rows);
@@ -273,6 +264,7 @@ function decodePxFrame(
   canvas: HTMLCanvasElement,
   frame: Pick<PxFrame, "data" | "w" | "h" | "sharp">,
   createImage: () => HTMLImageElement,
+  onPaint: () => void,
   settled: () => void,
 ): () => void {
   const context = canvas.getContext("2d");
@@ -310,6 +302,7 @@ function decodePxFrame(
         frame.h,
         frame.sharp === true,
       );
+      onPaint();
     } finally {
       complete();
     }

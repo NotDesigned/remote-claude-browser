@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { EventType, type Down } from "@mirror/protocol";
-import { createPresentationState } from "./presentation";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { EventType, type Down, type Up } from "@mirror/protocol";
+import type { Mirror } from "./mirror";
+import { createPresentation } from "./presentation";
 
-function snapshot(tab = "tab", w = 1280, h = 800): Extract<Down, { t: "snapshot" }> {
+function snapshot(tab = "a", w = 1280, h = 800): Extract<Down, { t: "snapshot" }> {
   return {
     t: "snapshot",
     tab,
@@ -19,44 +20,148 @@ function snapshot(tab = "tab", w = 1280, h = 800): Extract<Down, { t: "snapshot"
   };
 }
 
-describe("pixel/DOM presentation ownership", () => {
-  it("deduplicates identical geometry but forces negotiation for a new connection or driver", () => {
-    const state = createPresentationState();
-    expect(state.needsViewport("tab", 1280, 800, 1)).toBe(true);
-    state.requested("tab", 1280, 800, 1);
-    expect(state.needsViewport("tab", 1280, 800, 1)).toBe(false);
-    expect(state.needsViewport("tab", 1280, 800, 2)).toBe(true);
-    expect(state.needsViewport("tab", 1280, 700, 1)).toBe(true);
-    expect(state.needsViewport("other", 1280, 800, 1)).toBe(true);
-    state.resetViewport();
-    expect(state.needsViewport("tab", 1280, 800, 1)).toBe(true);
+function tabs(active: string): Down {
+  return {
+    t: "tabs",
+    tabs: ["a", "b"].map((id) => ({ id, active: id === active, title: id, url: "" })),
+  };
+}
+
+function fixture(entryTab: string | null = null) {
+  vi.useFakeTimers();
+  const host = {
+    clientWidth: 1280,
+    clientHeight: 800,
+    inert: false,
+    ownerDocument: { defaultView: { devicePixelRatio: 1 } },
+  };
+  const mirror = {
+    handle: vi.fn(),
+    recover: vi.fn(),
+    connectionLost: vi.fn(),
+    connectionRestored: vi.fn(),
+    resumeCursor: vi.fn<Mirror["resumeCursor"]>(() => ({ tab: "a", epoch: 2, nextSeq: 4 })),
+    selectTab: vi.fn(),
+    getActiveTab: () => "a",
+    getIframe: () => null,
+    getReplayer: () => null,
+    observeRtt: vi.fn(),
+    refreshViewportLayout: vi.fn(),
+    keepTabs: vi.fn(),
+    teardown: vi.fn(),
+  } satisfies Mirror;
+  const send = vi.fn<(message: Up) => void>();
+  const controller = createPresentation({
+    host: host as unknown as HTMLElement,
+    mirror,
+    send,
+    entryTab,
+    entryMode: entryTab === null ? null : "dom",
+    preferredQuality: () => "balanced",
+    onTab: vi.fn(),
+    onTabMode: vi.fn(),
+    onViewMode: vi.fn(),
+    onInputReady: vi.fn(),
+    onPaint: vi.fn(),
   });
-  it("keeps DOM snapshots from replacing the pixel canvas, and resumes only after DOM mode", () => {
-    const state = createPresentationState();
-    state.observe({ t: "mode", tab: "tab", mode: "px" });
-    expect(state.isPixel("tab")).toBe(true);
-    expect(state.shouldMirror(snapshot())).toBe(false);
-    expect(state.shouldMirror({ t: "delta", tab: "tab", epoch: 2, seq: 4, data: [] })).toBe(false);
-    expect(state.shouldMirror({ t: "resync", tab: "tab" })).toBe(false);
-    expect(state.shouldMirror(snapshot("other"))).toBe(true);
-    expect(state.shouldMirror(snapshot("other"), "tab")).toBe(false);
-    expect(state.shouldMirror({ t: "resync", tab: "other" }, "tab")).toBe(false);
-    state.observe({ t: "mode", tab: "tab", mode: "dom" });
-    expect(state.shouldMirror(snapshot())).toBe(true);
+  const hello = (role: "driver" | "viewer" = "driver", resumed?: string[]) =>
+    controller.handle({ t: "hello", viewerId: "me", role, sessionId: "fixture", resumed });
+  controller.connectionChanged("open", false);
+  hello();
+  controller.handle(tabs("a"));
+  vi.runOnlyPendingTimers();
+  const sent = () => send.mock.calls.map(([message]) => message);
+  return { host, mirror, controller, send, hello, sent };
+}
+
+afterEach(() => vi.useRealTimers());
+
+describe("viewer presentation", () => {
+  it("blocks input during a tab change and negotiates again on a quick return", () => {
+    const { controller, sent, host } = fixture();
+    controller.snapshotApplied(snapshot());
+    expect(controller.canInput("a", "dom")).toBe(true);
+
+    controller.activate("b");
+    expect(host.inert).toBe(true);
+    controller.handle(tabs("a")); // Arrived before the gateway processed the activation.
+    expect(controller.activeTab()).toBe("b");
+    controller.activate("a");
+    vi.runOnlyPendingTimers();
+
+    expect(
+      sent()
+        .filter((m) => m.t === "view")
+        .map((m) => m.tab),
+    ).toEqual(["a", "a"]);
+    controller.handle({ t: "view-ok", tab: "b", w: 1280, h: 800 });
+    expect(controller.canInput("a", "dom")).toBe(false);
+    controller.handle({ t: "view-ok", tab: "a", w: 1280, h: 800 });
+    expect(controller.canInput("a", "dom")).toBe(true);
   });
 
-  it("accepts only the driver's current viewport, including after a pixel resize", () => {
-    const state = createPresentationState();
-    state.observe({ t: "mode", tab: "tab", mode: "px" });
-    state.requested("tab", 1280, 800);
-    expect(state.canAcknowledge(snapshot(), "tab", true)).toBe(true);
-    expect(state.canAcknowledge(snapshot(), "tab", false)).toBe(false);
-    expect(state.canAcknowledge(snapshot(), "other", true)).toBe(false);
-    state.requested("tab", 900, 650);
-    expect(state.canAcknowledge(snapshot(), "tab", true)).toBe(false);
-    expect(state.canAcknowledge(snapshot("tab", 900, 650), "tab", true)).toBe(true);
-    expect(
-      state.canAcknowledge({ ...snapshot("tab", 900, 650), reason: "resync" }, "tab", true),
-    ).toBe(false);
+  it("uses pixel snapshots only for geometry and gates delayed input to the owning mode", () => {
+    const { controller, mirror, host, sent } = fixture();
+    controller.handle({ t: "mode", tab: "a", mode: "px" });
+    mirror.handle.mockClear();
+    controller.handle(snapshot("b"));
+    controller.handle(snapshot("a", 900, 650));
+    expect(host.inert).toBe(true);
+    controller.handle(snapshot());
+    expect(mirror.handle).not.toHaveBeenCalled();
+    expect(sent().at(-1)).toEqual({ t: "view-ack", tab: "a", epoch: 2 });
+    expect(controller.canInput("a", "px")).toBe(true);
+    expect(controller.canInput("a", "dom")).toBe(false);
+
+    controller.handle({ t: "mode", tab: "a", mode: "dom" });
+    controller.handle(snapshot());
+    expect(mirror.handle).toHaveBeenCalledExactlyOnceWith(snapshot());
+  });
+
+  it("reuses matching geometry after a DOM resume and renegotiates after a resize or fresh join", () => {
+    const { controller, mirror, host, hello, send } = fixture();
+    controller.snapshotApplied(snapshot());
+    send.mockClear();
+    controller.connectionChanged("closed", true);
+    expect(controller.canInput("a", "dom")).toBe(false);
+    expect(controller.resumeParam()).not.toBeNull();
+    controller.connectionChanged("open", true);
+    hello("driver", ["a"]);
+    vi.runOnlyPendingTimers();
+    expect(controller.canInput("a", "dom")).toBe(true);
+    expect(mirror.connectionRestored).toHaveBeenLastCalledWith(true);
+    expect(send).not.toHaveBeenCalled();
+
+    controller.connectionChanged("closed", true);
+    host.clientWidth = 900;
+    controller.connectionChanged("open", true);
+    hello("driver", ["a"]);
+    expect(controller.canInput("a", "dom")).toBe(false);
+    vi.runOnlyPendingTimers();
+    expect(send).toHaveBeenCalledExactlyOnceWith({ t: "view", tab: "a", w: 900, h: 800, dpr: 1 });
+
+    send.mockClear();
+    controller.connectionChanged("closed", true);
+    controller.connectionChanged("open", true);
+    hello();
+    vi.runOnlyPendingTimers();
+    expect(mirror.connectionRestored).toHaveBeenLastCalledWith(false);
+    expect(controller.canInput("a", "dom")).toBe(false);
+    expect(send).toHaveBeenCalledExactlyOnceWith({ t: "view", tab: "a", w: 900, h: 800, dpr: 1 });
+  });
+
+  it("consumes the entry tab once and follows the server's current tab after reconnect", () => {
+    const { controller, hello, send, sent } = fixture("b");
+    expect(sent()[0]).toEqual({ t: "nav", tab: "b", action: "activate" });
+    send.mockClear();
+    controller.handle({ t: "mode", tab: "b", mode: "dom" });
+    controller.connectionChanged("closed", true);
+    controller.connectionChanged("open", true);
+    hello("viewer");
+    controller.handle(tabs("a"));
+    vi.runOnlyPendingTimers();
+    expect(controller.activeTab()).toBe("a");
+    expect(controller.canInput("a", "dom")).toBe(false);
+    expect(sent().some((m) => m.t === "nav" || m.t === "view")).toBe(false);
   });
 });

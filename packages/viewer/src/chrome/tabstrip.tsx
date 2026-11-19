@@ -1,7 +1,7 @@
 /**
  * Viewer tab strip.
  * (Gateway half P2-TABS-G = gateway/src/session/tabs.ts, browser domain.)
- * Renders `tabs` Down msgs; sends `nav` activate/newtab/close.
+ * Renders the tab list and forwards browser navigation actions.
  */
 import type { Down, TabId, TabMeta, Up } from "@mirror/protocol";
 
@@ -12,18 +12,13 @@ export interface TabStripProps {
   tabs: readonly TabMeta[];
   chromeByTab?: Readonly<Record<TabId, ChromeState | undefined>>;
   send(message: TabNav): void;
-  onActivate?(tab: TabId): void;
+  onActivate(tab: TabId): void;
 }
 
 const NEW_TAB_URL = "https://claude.ai/";
 
 export function TabStrip({ tabs, chromeByTab = {}, send, onActivate }: TabStripProps) {
   const activeTab = tabs.find((tab) => tab.active) ?? tabs[0];
-  const activate = (tab: TabId) => {
-    onActivate?.(tab);
-    send({ t: "nav", tab, action: "activate" });
-  };
-
   return (
     <nav id="tabstrip" aria-label="Browser tabs">
       <div className="tabstrip-tabs">
@@ -47,7 +42,7 @@ export function TabStrip({ tabs, chromeByTab = {}, send, onActivate }: TabStripP
                   aria-selected={tab.active}
                   aria-controls="mirror-host"
                   title={url}
-                  onClick={() => activate(tab.id)}
+                  onClick={() => onActivate(tab.id)}
                 >
                   {tab.favicon === undefined ? (
                     <span className="tab-favicon-placeholder" aria-hidden="true">
