@@ -38,8 +38,9 @@ if [ -d /usr/local/lib/aliasmode ]; then bind_readonly /usr/local/lib/aliasmode;
 for path in /etc/chromium.d /etc/fonts /var/cache/fontconfig /etc/ssl/certs /etc/passwd /etc/group /etc/nsswitch.conf /etc/hosts /etc/resolv.conf /etc/ld.so.cache; do
   bind_readonly "$path"
 done
-ln -s /usr/share/zoneinfo/Etc/UTC "$root/etc/localtime"
-printf '%s\n' "${TZ:-Etc/UTC}" > "$root/etc/timezone"
+timezone=${TZ:-Etc/UTC}
+ln -s "/usr/share/zoneinfo/$timezone" "$root/etc/localtime"
+printf '%s\n' "$timezone" > "$root/etc/timezone"
 # This also covers native browser navigation, history and links outside the workbench URL bar.
 mkdir -p "$root/etc/chromium/policies/managed"
 printf '%s\n' '{"URLBlocklist":["file://*","filesystem:*","javascript:*"],"URLAllowlist":["about:blank"]}' > "$root/etc/chromium/policies/managed/workspace.json"
