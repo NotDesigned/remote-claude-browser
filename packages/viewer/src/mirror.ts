@@ -230,6 +230,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
   let pendingRestore: RebuildRestorePoint | null = null;
   let viewerId: string | null = null;
   let isDriver = true;
+  let viewportLimit: Extract<Down, { t: "hello" }>["viewportLimit"];
 
   const disposeRtc = (tab: TabId, rtc: LiveRtc | null) => {
     if (rtc === null) return;
@@ -248,10 +249,10 @@ export function createMirror(opts: MirrorOpts): Mirror {
     opts.container.dataset.viewportRole = isDriver ? "driver" : "follower";
     const viewport = live.viewport;
     const { clientWidth, clientHeight } = opts.container;
-    if (
-      viewport === null ||
-      (isDriver && viewport.w === clientWidth && viewport.h === clientHeight)
-    ) {
+    const fitted =
+      !isDriver ||
+      (viewportLimit && (clientWidth > viewportLimit.width || clientHeight > viewportLimit.height));
+    if (viewport === null || !fitted) {
       delete live.mount.dataset.fit;
       live.mount.style.width = "";
       live.mount.style.height = "";
@@ -658,6 +659,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
         case "hello":
           viewerId = msg.viewerId;
           isDriver = msg.role === "driver";
+          viewportLimit = msg.viewportLimit;
           applyViewportLayout();
           break;
         case "driver":

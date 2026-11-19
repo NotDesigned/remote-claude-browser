@@ -129,6 +129,9 @@ async function checkMovedFrame(page, address) {
     }, id);
   // Past the move, and past when a report would arrive.
   await page.waitForTimeout(8_000);
+  await page.waitForFunction(
+    () => document.getElementById("mirror-host").dataset.inputReady === "true",
+  );
   for (const tag of ["a", "b"]) {
     const before = await find(`${tag}-ticks`);
     assert.ok(before, `Moved frame ${tag}'s content is missing from the mirror`);

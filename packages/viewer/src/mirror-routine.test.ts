@@ -1073,6 +1073,7 @@ describe("D10 recovery triggers", () => {
       viewerId: "follower-1",
       role: "viewer",
       sessionId: "S1",
+      viewportLimit: { width: 1_600, height: 900 },
     });
     mirror.handle({
       t: "snapshot",
