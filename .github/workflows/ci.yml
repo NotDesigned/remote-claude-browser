@@ -76,6 +76,10 @@ jobs:
         run: pnpm test:network-ui
         env:
           CHROME_PATH: /usr/bin/google-chrome
+      - name: Test Apple account form example submission
+        run: pnpm test:apple-onboarding-ui
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
       - name: Test per-profile Mihomo networking, private CDP and stock CPA
         run: |
           fixture=$(docker create remote-claude-browser-server:local)

@@ -36,6 +36,7 @@
     "test:profiles-ui": "bash scripts/limited-run.sh node scripts/profile-picker-smoke.mjs",
     "test:profiles-webkit": "bash scripts/limited-run.sh env PROFILE_PICKER_BROWSER=webkit node scripts/profile-picker-smoke.mjs",
     "test:network-ui": "bash scripts/limited-run.sh node scripts/network-ui-smoke.mjs",
+    "test:apple-onboarding-ui": "bash scripts/limited-run.sh node packages/viewer/test/onboarding/smoke.mjs",
     "test:remote": "bash scripts/limited-run.sh node scripts/remote-smoke.mjs",
     "format": "bash scripts/limited-run.sh bash -c 'prettier --write .'",
     "format:check": "bash scripts/limited-run.sh bash -c 'prettier --check .'",

@@ -1,20 +1,11 @@
 import preact from "@preact/preset-vite";
 import { defineConfig } from "vite";
-import { fileURLToPath } from "node:url";
 
 const gateway = process.env.VITE_GATEWAY_URL ?? "http://127.0.0.1:3000";
 const port = Number(process.env.VIEWER_PORT ?? 5173);
 
 export default defineConfig({
   plugins: [preact()],
-  build: {
-    rollupOptions: {
-      input: {
-        onboardingPreview: fileURLToPath(new URL("./test/onboarding/index.html", import.meta.url)),
-        browser: fileURLToPath(new URL("./index.html", import.meta.url)),
-      },
-    },
-  },
   server: {
     host: "127.0.0.1",
     port,

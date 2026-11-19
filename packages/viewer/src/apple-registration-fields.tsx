@@ -21,12 +21,10 @@ function registrationExample() {
 export function AppleRegistrationFields({
   options,
   busy = false,
-  preview = false,
   onGenerate,
 }: {
   options: { countries: [string, string][]; phoneCodes: [string, string][] };
   busy?: boolean;
-  preview?: boolean;
   onGenerate?(): void;
 }) {
   return (
@@ -52,13 +50,13 @@ export function AppleRegistrationFields({
         </button>
       </div>
       <div class="account-onboarding-fields">
-        <ExampleField preview={preview} name="lastName" label="姓氏" autoComplete="family-name" />
-        <ExampleField preview={preview} name="firstName" label="名字" autoComplete="given-name" />
+        <ExampleField name="lastName" label="姓氏" autoComplete="family-name" />
+        <ExampleField name="firstName" label="名字" autoComplete="given-name" />
         <label>
           国家或地区
           <RegistrationSelect name="country" options={options.countries} preferred="USA" />
         </label>
-        <ExampleField preview={preview} name="birthday" label="出生日期" autoComplete="bday" />
+        <ExampleField name="birthday" label="出生日期" autoComplete="bday" />
         <label>
           电话区号
           <RegistrationSelect name="phoneCode" options={options.phoneCodes} preferred="CN" />
@@ -72,12 +70,10 @@ export function AppleRegistrationFields({
   );
 }
 function ExampleField({
-  preview,
   name,
   label,
   autoComplete,
 }: {
-  preview: boolean;
   name: "firstName" | "lastName" | "birthday";
   label: string;
   autoComplete: string;
@@ -94,18 +90,12 @@ function ExampleField({
           type={date ? "date" : "text"}
           autoComplete={autoComplete}
           maxLength={date ? undefined : 100}
-          aria-describedby={preview ? undefined : `${id}-example`}
           onInput={(event) => {
             const field = event.currentTarget;
             if (field.value !== field.dataset.example) delete field.dataset.example;
           }}
           required
         />
-        {!preview && (
-          <span id={`${id}-example`} class="user-panel-muted">
-            生成示例
-          </span>
-        )}
       </div>
     </div>
   );
