@@ -16,21 +16,18 @@
   gap: 12px;
 }
 .account-onboarding-example {
-  display: grid;
+  position: relative;
   margin-top: 6px;
 }
-.account-onboarding-example > * {
-  grid-area: 1 / 1;
-}
 .account-onboarding-example span {
-  align-self: center;
-  margin-inline: 10px 36px;
-  background: var(--bg);
-  pointer-events: none;
+  display: none;
 }
-.account-onboarding-example input:focus + span,
-.account-onboarding-example input:valid + span {
-  visibility: hidden;
+.account-onboarding-example input[data-example] + span {
+  display: inline;
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  font-size: 12px;
 }
 .account-onboarding-password {
   display: grid;

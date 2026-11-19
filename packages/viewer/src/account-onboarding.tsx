@@ -24,14 +24,16 @@ interface AppleAttempt {
 }
 
 type Step =
-  | { name: "start" | "claude" }
-  | { name: "apple"; apple: AppleRegistration; example: ReturnType<typeof registrationExample> }
+  | { name: "start" }
+  | { name: "claude"; email?: string }
+  | { name: "apple"; apple: AppleRegistration }
   | {
       name: "apple-verification" | "claude-verification";
       tab: string;
       watching: boolean;
       filled: boolean;
       email: string;
+      mailboxId?: string;
     };
 
 interface Verification {
@@ -69,8 +71,8 @@ function registrationExample() {
   const start = Date.UTC(1995, 0, 1);
   const end = Date.UTC(2006, 0, 1);
   return {
-    firstName: exampleFirstNames[Math.floor(Math.random() * exampleFirstNames.length)],
-    lastName: exampleLastNames[Math.floor(Math.random() * exampleLastNames.length)],
+    firstName: exampleFirstNames[Math.floor(Math.random() * exampleFirstNames.length)]!,
+    lastName: exampleLastNames[Math.floor(Math.random() * exampleLastNames.length)]!,
     birthday: new Date(start + Math.random() * (end - start)).toISOString().slice(0, 10),
   };
 }
@@ -265,7 +267,6 @@ export function AccountOnboarding({
       };
       goTo({
         name: "apple",
-        example: registrationExample(),
         apple: {
           tab: apple.tab,
           options: options?.countries.length && options.phoneCodes.length ? options : null,
@@ -279,6 +280,18 @@ export function AccountOnboarding({
     mailboxValue ??
     mailboxes?.addresses.find((address) => address.id === rememberedAlias)?.id ??
     (mailboxes?.enabled ? NEW_ADDRESS : PERSONAL_ADDRESS);
+  const openClaude = async (identity: { mailboxId: string } | { email: string }, email: string) => {
+    const { tab, filled, watching } = await apiRequest<{
+      tab: string;
+      filled: boolean;
+      watching: boolean;
+    }>(`${route}/claude`, "POST", identity);
+    if ("mailboxId" in identity)
+      storage.setItem(`mirror.mailbox.${profileKey}.claude`, identity.mailboxId);
+    if (watching || !filled) goTo({ name: "claude-verification", tab, filled, watching, email });
+    else goTo({ name: "start" });
+    openTab(tab);
+  };
   const submitForm = async (form: FormData, attempt?: AppleAttempt) => {
     const service = attempt ? "Apple" : "Claude";
     let email = String(form.get("email") ?? "").trim();
@@ -311,19 +324,17 @@ export function AccountOnboarding({
         attempt.fetcher,
       );
       if (attempt.controller.signal.aborted) return;
-      goTo({ name: "apple-verification", tab, filled, watching, email });
+      goTo({
+        name: "apple-verification",
+        tab,
+        filled,
+        watching,
+        email,
+        mailboxId: "mailboxId" in identity ? identity.mailboxId : undefined,
+      });
       if (filled) openTab(tab);
     }
-    if (step.name === "claude") {
-      const { tab, filled, watching } = await apiRequest<{
-        tab: string;
-        filled: boolean;
-        watching: boolean;
-      }>(`${route}/claude`, "POST", identity);
-      if (watching || !filled) goTo({ name: "claude-verification", tab, filled, watching, email });
-      else goTo({ name: "start" });
-      openTab(tab);
-    }
+    if (step.name === "claude") await openClaude(identity, email);
   };
 
   if (!open && step.name !== "apple") return null;
@@ -353,7 +364,14 @@ export function AccountOnboarding({
       {mailboxes && selectedMailbox === PERSONAL_ADDRESS && (
         <label>
           邮箱
-          <input name="email" type="email" autoComplete="email" maxLength={254} required />
+          <input
+            name="email"
+            type="email"
+            defaultValue={step.name === "claude" ? step.email : undefined}
+            autoComplete="email"
+            maxLength={254}
+            required
+          />
         </label>
       )}
       {!mailboxes && (
@@ -414,24 +432,41 @@ export function AccountOnboarding({
               onSubmit={(event) => {
                 event.preventDefault();
                 if (busy) return;
+                const generated = Array.from(
+                  event.currentTarget.querySelectorAll<HTMLInputElement>("input[data-example]"),
+                ).find((input) => input.value === input.dataset.example);
+                if (generated) {
+                  setError("请将生成示例替换为你的资料后继续。");
+                  generated.focus();
+                  return;
+                }
                 const form = new FormData(event.currentTarget);
                 const attempt = appleAttempt.current!;
                 void perform(() => submitForm(form, attempt), attempt);
               }}
             >
+              <div class="user-panel-actions">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={(event) => {
+                    const form = event.currentTarget.form!;
+                    for (const [name, sample] of Object.entries(registrationExample())) {
+                      const input = form.elements.namedItem(name) as HTMLInputElement;
+                      if (!input.value || input.value === input.dataset.example) {
+                        input.value = sample;
+                        input.dataset.example = sample;
+                      }
+                    }
+                    setError(null);
+                  }}
+                >
+                  生成示例
+                </button>
+              </div>
               <div class="account-onboarding-fields">
-                <ExampleField
-                  name="lastName"
-                  label="姓氏"
-                  autoComplete="family-name"
-                  example={step.example.lastName!}
-                />
-                <ExampleField
-                  name="firstName"
-                  label="名字"
-                  autoComplete="given-name"
-                  example={step.example.firstName!}
-                />
+                <ExampleField name="lastName" label="姓氏" autoComplete="family-name" />
+                <ExampleField name="firstName" label="名字" autoComplete="given-name" />
                 <label>
                   国家或地区
                   <RegistrationSelect
@@ -440,12 +475,7 @@ export function AccountOnboarding({
                     preferred="USA"
                   />
                 </label>
-                <ExampleField
-                  name="birthday"
-                  label="出生日期"
-                  autoComplete="bday"
-                  example={step.example.birthday}
-                />
+                <ExampleField name="birthday" label="出生日期" autoComplete="bday" />
                 <label>
                   电话区号
                   <RegistrationSelect
@@ -571,10 +601,17 @@ export function AccountOnboarding({
                 disabled={busy}
                 onClick={() => {
                   stopApple();
-                  goTo({ name: "claude" });
+                  goTo({ name: "claude", email: step.email });
+                  setMailboxValue(step.mailboxId ?? PERSONAL_ADDRESS);
+                  void perform(() =>
+                    openClaude(
+                      step.mailboxId ? { mailboxId: step.mailboxId } : { email: step.email },
+                      step.email,
+                    ),
+                  );
                 }}
               >
-                登录 Claude
+                用此邮箱登录 Claude
               </button>
               {cancelAppleButton}
             </div>
@@ -657,12 +694,10 @@ function ExampleField({
   name,
   label,
   autoComplete,
-  example,
 }: {
   name: "firstName" | "lastName" | "birthday";
   label: string;
   autoComplete: string;
-  example: string;
 }) {
   const id = `account-onboarding-${name}`;
   const date = name === "birthday";
@@ -677,10 +712,14 @@ function ExampleField({
           autoComplete={autoComplete}
           maxLength={date ? undefined : 100}
           aria-describedby={`${id}-example`}
+          onInput={(event) => {
+            const field = event.currentTarget;
+            if (field.value !== field.dataset.example) delete field.dataset.example;
+          }}
           required
         />
         <span id={`${id}-example`} class="user-panel-muted">
-          例如 {example}
+          生成示例
         </span>
       </div>
     </div>
