@@ -111,6 +111,7 @@ function viewStorage(): Pick<Storage, "getItem" | "setItem"> {
 }
 
 const THEME_CHECK_MS = 3_000;
+const APPLE_ONBOARDING_PROFILE = "mirror-apple-onboarding-profile";
 /** How long after a click on a mirror file input the page's file request belongs to that click. */
 const MIRROR_PICKER_WINDOW_MS = 5_000;
 
@@ -137,6 +138,7 @@ export function App() {
   const [oauthCallbacks, setOAuthCallbacks] = useState<Record<string, "submitted" | "error">>({});
   const [accountPanelOpen, setAccountPanelOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [startAppleOnboarding, setStartAppleOnboarding] = useState(false);
   const [mailboxOpen, setMailboxOpen] = useState(false);
   const [profilePickerOpen, setProfilePickerOpen] = useState(false);
   const [browserAuthorization, setBrowserAuthorization] = useState<CpaBrowserAuthorization | null>(
@@ -431,6 +433,8 @@ export function App() {
     setClientPhase("closed");
     setProfilePickerOpen(false);
     setOnboardingOpen(false);
+    setStartAppleOnboarding(false);
+    sessionStorage.removeItem(APPLE_ONBOARDING_PROFILE);
     window.history.replaceState(window.history.state, "", "/?closed=1");
   };
   // Observe existing sessions after a disconnect; only an explicit action opens a new one.
@@ -935,6 +939,18 @@ export function App() {
   const currentProfile = accountList?.accounts.find(
     (account) => account.id === accountList.current,
   );
+  useEffect(() => {
+    if (
+      clientPhase !== "ready" ||
+      connection !== "open" ||
+      !currentProfile ||
+      sessionStorage.getItem(APPLE_ONBOARDING_PROFILE) !== currentProfile.id
+    )
+      return;
+    sessionStorage.removeItem(APPLE_ONBOARDING_PROFILE);
+    setStartAppleOnboarding(true);
+    setOnboardingOpen(true);
+  }, [clientPhase, connection, currentProfile?.id]);
   const shellStatus: { text: string; tone: "ok" | "busy" | "bad" } =
     clientPhase !== "ready"
       ? { text: connectionLabel, tone: clientPhase === "starting" ? "busy" : "bad" }
@@ -1073,13 +1089,17 @@ export function App() {
         <AccountOnboarding
           key={`${user.id}:${clientSession.sid}:${currentProfile.id}`}
           open={onboardingOpen}
+          startApple={startAppleOnboarding}
           sid={clientSession.sid}
           profileKey={`${user.id}.${currentProfile.id}`}
           profileName={currentProfile.name}
           storage={viewStorage()}
           tabs={tabs}
           browserConnected={connection === "open"}
-          onClose={() => setOnboardingOpen(false)}
+          onClose={() => {
+            setStartAppleOnboarding(false);
+            setOnboardingOpen(false);
+          }}
           onOpenTab={(tab) => presentationRef.current?.activate(tab)}
         />
       )}
@@ -1183,8 +1203,9 @@ export function App() {
         <ProfilePicker
           requiredProxyId={browserAuthorization?.proxyId}
           proxyManagerOpen={networkPanelOpen && networkTab === "proxies"}
-          onPick={async (id) => {
+          onPick={async (id, startApple) => {
             if (!profilePickerOpen) {
+              if (startApple) sessionStorage.setItem(APPLE_ONBOARDING_PROFILE, id);
               setPickedAccount(id);
               return;
             }
@@ -1193,6 +1214,7 @@ export function App() {
               return;
             }
             await switchAccount(clientSession!.sid, id);
+            if (startApple) sessionStorage.setItem(APPLE_ONBOARDING_PROFILE, id);
             window.location.reload();
           }}
           current={profilePickerOpen ? accountList?.current : null}

@@ -261,7 +261,7 @@ function ProfileCard(props: {
 }
 
 export function ProfilePicker(props: {
-  onPick(id: string): Promise<void>;
+  onPick(id: string, startApple?: boolean): Promise<void>;
   current?: string | null;
   onBack?(): void;
   onChanged?(): void;
@@ -517,8 +517,8 @@ export function ProfilePicker(props: {
     }
   };
 
-  const open = async (id: string) => {
-    await props.onPick(id);
+  const open = async (id: string, startApple?: boolean) => {
+    await props.onPick(id, startApple);
     remember(id);
   };
 
@@ -533,10 +533,12 @@ export function ProfilePicker(props: {
       setBusy(false);
     }
   };
-  const create = async (event: Event) => {
+  const creationProxy = creationProxies?.find((node) => node.id === creationProxyId);
+  const canCreate = !busy && name.trim() !== "" && !!creationProxy;
+  const create = async (event: SubmitEvent) => {
     event.preventDefault();
-    if (busy || name.trim() === "" || !creationProxies?.some((node) => node.id === creationProxyId))
-      return;
+    if (!canCreate) return;
+    const startApple = (event.submitter as HTMLButtonElement | null)?.value === "apple";
     setError(null);
     setBusy(true);
     setCreationProgress("正在检查出口…");
@@ -547,13 +549,13 @@ export function ProfilePicker(props: {
         throw new Error(health.error ?? "出口检查未通过，请重试或选择其他节点");
       setCreationProgress("正在创建并打开…");
       const made = await createAccount(name.trim(), creationProxyId, undefined, creationPlatform);
-      made.proxyName = creationProxies.find((node) => node.id === creationProxyId)!.name;
+      made.proxyName = creationProxy.name;
       created = true;
       setAccounts((previous) => [...previous!, made]);
       changed();
       setCreating(false);
       setName("");
-      await open(made.id);
+      await open(made.id, startApple);
     } catch (reason) {
       setError((created ? "配置已创建，打开失败，可从列表重试：" : "") + (reason as Error).message);
     } finally {
@@ -923,16 +925,19 @@ export function ProfilePicker(props: {
                     </p>
                   )}
                   <div class="profile-create-actions">
-                    <button
-                      type="submit"
-                      disabled={
-                        busy ||
-                        name.trim() === "" ||
-                        !creationProxies?.some((node) => node.id === creationProxyId)
-                      }
-                    >
+                    <button type="submit" disabled={!canCreate}>
                       {busy ? creationProgress : "检查并打开"}
                     </button>
+                    {!props.requiredProxyId && (
+                      <button
+                        type="submit"
+                        value="apple"
+                        class="profile-cancel"
+                        disabled={!canCreate}
+                      >
+                        检查并注册 Apple 账户
+                      </button>
+                    )}
                     <button
                       type="button"
                       class="profile-cancel"

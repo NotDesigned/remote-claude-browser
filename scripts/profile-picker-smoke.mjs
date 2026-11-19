@@ -803,6 +803,7 @@ try {
   assert.equal(switches.at(-1).account, "default");
   page.off("dialog", onSwitchDialog);
   assert.deepEqual(switchDialogs, [], "opening a different configuration must not prompt");
+  await page.routeWebSocket(/\/ws(?:\?|$)/, () => {});
   await page.goto(origin + "/?new=1&sid=client-1");
   await page.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
   await page.route("**/api/proxies", (route) => route.fulfill({ json: { proxies: [] } }));
@@ -812,7 +813,9 @@ try {
   assert.equal(await createdPlatform.inputValue(), "windows");
   await createdPlatform.selectOption("macos");
   const createSubmit = page.getByRole("button", { name: "检查并打开", exact: true });
+  const createWithApple = page.getByRole("button", { name: "检查并注册 Apple 账户", exact: true });
   assert.equal(await createSubmit.isDisabled(), true);
+  assert.equal(await createWithApple.isDisabled(), true);
   await page.getByRole("button", { name: "导入节点或订阅", exact: true }).click();
   const importPanel = page.getByRole("dialog", { name: "代理与 API", exact: true });
   await importPanel.waitFor();
@@ -861,7 +864,16 @@ try {
       new URL(response.url()).pathname === "/api/client/session" &&
       response.request().postDataJSON()?.account === "p-9876543210",
   );
-  await createSubmit.click();
+  await page.route(/\/onboarding\/apple\?/, (route) => {
+    assert.equal(new URL(route.request().url()).searchParams.get("guided"), "true");
+    return route.fulfill({
+      json: {
+        tab: "apple-fixture",
+        options: { countries: [["USA", "美国"]], phoneCodes: [["CN", "+86 China Mainland"]] },
+      },
+    });
+  });
+  await createWithApple.click();
   await created;
   await page.waitForURL(
     (url) => url.searchParams.get("sid") === "client-1" && !url.searchParams.has("new"),
@@ -880,6 +892,9 @@ try {
   );
   assert.deepEqual(proxyChecks.slice(-2), ["proxy-private", "proxy-private"]);
   assert.notEqual(admissions.at(-1).clientKey, key);
+  const appleWizard = page.getByRole("dialog", { name: "Apple 账户与 Claude 登录" });
+  await appleWizard.getByLabel("姓氏").waitFor();
+  await appleWizard.getByRole("button", { name: "关闭", exact: true }).click();
   await page.getByRole("button", { name: "工作台", exact: true }).click();
   await page.getByRole("button", { name: "浏览器配置", exact: true }).click();
   await page.getByRole("button", { name: "新建浏览器配置", exact: true }).click();

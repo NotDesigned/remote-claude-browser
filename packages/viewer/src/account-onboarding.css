@@ -48,6 +48,17 @@
   overflow-wrap: anywhere;
   user-select: text;
 }
+.account-onboarding-captcha {
+  max-width: 100%;
+  justify-self: start;
+}
+.account-onboarding-progress {
+  display: grid;
+  gap: 8px;
+}
+.account-onboarding-progress progress {
+  width: 100%;
+}
 .account-onboarding .user-panel-actions button:not(.user-panel-save) {
   background: var(--surface);
   color: var(--ink);

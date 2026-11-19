@@ -1920,9 +1920,9 @@ export async function startClientGateway(
       if (!runtime) return;
       return {
         browser: runtime.browser,
-        async open(url) {
-          await stopPixels(runtime);
-          return runtime.tabs.open(url);
+        async open(url, background) {
+          if (!background) await stopPixels(runtime);
+          return runtime.tabs.open(url, background);
         },
       };
     },

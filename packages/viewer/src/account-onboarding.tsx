@@ -42,10 +42,13 @@ interface Verification {
   ready: boolean;
   expired: boolean;
   submitted?: boolean;
+  challenge?:
+    { kind: "captcha"; image: string } | { kind: "email" | "sms" | "complete" | "waiting" };
 }
 
 interface AccountOnboardingProps {
   open: boolean;
+  startApple?: boolean;
   sid: string;
   profileKey: string;
   profileName: string | undefined;
@@ -64,6 +67,7 @@ const APPLE_ATTEMPT_ENDED = "Apple 注册向导已结束，可以重新开始。
 
 export function AccountOnboarding({
   open,
+  startApple,
   sid,
   profileKey,
   profileName,
@@ -74,6 +78,7 @@ export function AccountOnboarding({
   onOpenTab,
 }: AccountOnboardingProps) {
   const appleAttempt = useRef<AppleAttempt | null>(null);
+  const autoStarted = useRef(false);
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [passwordCopied, setPasswordCopied] = useState(false);
@@ -181,7 +186,14 @@ export function AccountOnboarding({
   }, [open]);
 
   useEffect(() => {
-    if (!open || !verificationRoute || !watching || verification.ready || verification.expired)
+    const guided = step.name === "apple-verification" && step.filled;
+    if (
+      !open ||
+      !verificationRoute ||
+      (guided
+        ? verification.challenge?.kind === "complete"
+        : !watching || verification.ready || verification.expired)
+    )
       return;
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -195,7 +207,7 @@ export function AccountOnboarding({
         );
         if (active && !appleVerification?.controller.signal.aborted) {
           setVerification(status);
-          setError(null);
+          if (!guided) setError(null);
         }
       } catch (failure) {
         if (active && !appleVerification?.controller.signal.aborted) {
@@ -213,7 +225,14 @@ export function AccountOnboarding({
       active = false;
       clearTimeout(timer);
     };
-  }, [open, verificationRoute, watching, verification.ready, verification.expired]);
+  }, [
+    open,
+    verificationRoute,
+    watching,
+    verification.ready,
+    verification.expired,
+    verification.challenge?.kind,
+  ]);
 
   const perform = async (task: () => Promise<void>, attempt?: AppleAttempt) => {
     setPending(true);
@@ -246,7 +265,7 @@ export function AccountOnboarding({
     appleAttempt.current = attempt;
     void perform(async () => {
       const apple = await apiRequest<AppleRegistration>(
-        applePath(attempt),
+        `${applePath(attempt)}&guided=true`,
         "POST",
         undefined,
         attempt.fetcher,
@@ -265,6 +284,11 @@ export function AccountOnboarding({
       });
     }, attempt);
   };
+  useEffect(() => {
+    if (!open || !startApple || autoStarted.current) return;
+    autoStarted.current = true;
+    openApple();
+  }, [open, startApple]);
   const aliasKey = `mirror.mailbox.${profileKey}.${step.name}`;
   const rememberedAlias = open && mailboxes?.addresses.length ? storage.getItem(aliasKey) : null;
   const selectedMailbox =
@@ -323,7 +347,6 @@ export function AccountOnboarding({
         email,
         mailboxId: "mailboxId" in identity ? identity.mailboxId : undefined,
       });
-      if (filled) openTab(tab);
     }
     if (step.name === "claude") await openClaude(identity, email);
   };
@@ -332,6 +355,12 @@ export function AccountOnboarding({
 
   const needsAppleDetails =
     step.name === "apple-verification" && !step.filled && !verification.ready;
+  const challenge = verification.challenge;
+  const manualChallenge =
+    challenge?.kind === "captcha" ||
+    challenge?.kind === "sms" ||
+    (challenge?.kind === "email" &&
+      (!watching || verification.expired || (verification.ready && !verification.submitted)));
   const emailField = (
     <>
       {mailboxes?.enabled || mailboxes?.addresses.length ? (
@@ -402,7 +431,7 @@ export function AccountOnboarding({
           <section class="user-panel-form">
             {pending && (
               <p class="user-panel-muted" role="status">
-                正在从 iCloud 打开注册表单。表单未能加载时，可在 Apple 页面继续。
+                正在加载 Apple 注册表单…
               </p>
             )}
             <div class="user-panel-actions">
@@ -481,14 +510,10 @@ export function AccountOnboarding({
                 </div>
                 <p class="user-panel-muted">继续前请保存密码。</p>
               </div>
-              <p class="user-panel-muted">
-                在 Apple 页面完成图形验证码、手机验证和注册确认。
-                {selectedMailbox !== PERSONAL_ADDRESS &&
-                  "向导会填入邮箱验证码，并在确认按钮可用时提交。"}
-              </p>
+              <p class="user-panel-muted">接下来完成图形验证码、邮箱和手机验证。</p>
               <div class="user-panel-actions">
                 <button type="submit" class="user-panel-save" disabled={busy || !mailboxes}>
-                  {pending ? "正在填写…" : "填写并前往 Apple"}
+                  {pending ? "正在填写…" : "继续"}
                 </button>
                 {cancelAppleButton}
               </div>
@@ -511,33 +536,91 @@ export function AccountOnboarding({
           ))}
         {step.name === "apple-verification" && (
           <section class="user-panel-form">
-            <h3>{needsAppleDetails ? "请在 Apple 页面补全资料" : "完成 Apple 注册"}</h3>
+            <h3>
+              {needsAppleDetails
+                ? "请在 Apple 页面补全资料"
+                : challenge?.kind === "complete"
+                  ? "Apple 账户已创建"
+                  : "验证 Apple 账户"}
+            </h3>
             <p class="user-panel-muted account-onboarding-address">{step.email}</p>
-            <p>在 Apple 页面完成图形验证码、手机验证和注册确认。</p>
-            {step.watching && (
-              <p class="user-panel-muted" role="status">
-                {verification.ready
-                  ? verification.submitted
-                    ? "邮箱验证码已提交。请返回 Apple 查看下一步。"
-                    : "邮箱验证码已填入 Apple 页面。"
-                  : verification.expired
-                    ? "请从收件箱读取最新的邮箱验证码。"
+            {!needsAppleDetails && challenge?.kind === "email" && !manualChallenge && (
+              <div role="status" class="account-onboarding-progress">
+                <span>
+                  {verification.submitted
+                    ? "邮箱验证码已提交"
                     : verification.received
-                      ? "已收到邮箱验证码，等待填入 Apple 的邮箱验证页面。"
-                      : "等待 Apple 的邮箱验证码邮件。"}
+                      ? "正在填入邮箱验证码"
+                      : "正在等待 Apple 邮件"}
+                </span>
+                <progress
+                  aria-label="邮箱验证进度"
+                  max={2}
+                  value={verification.submitted ? 2 : verification.received ? 1 : undefined}
+                />
+              </div>
+            )}
+            {!needsAppleDetails && (!challenge || challenge.kind === "waiting") && (
+              <p class="user-panel-muted" role="status">
+                正在读取 Apple 验证步骤…
               </p>
             )}
-            <div class="user-panel-actions">
-              <button
-                type="button"
-                class="user-panel-save"
-                disabled={busy}
-                onClick={() => openTab(step.tab)}
+            {manualChallenge && (
+              <form
+                class="user-panel-form"
+                key={challenge.kind === "captcha" ? challenge.image : challenge.kind}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const form = event.currentTarget;
+                  const code = String(new FormData(form).get("code") ?? "").trim();
+                  void perform(async () => {
+                    await apiRequest(
+                      verificationRoute!,
+                      "POST",
+                      { kind: challenge.kind, code },
+                      appleVerification?.fetcher,
+                    );
+                    form.reset();
+                  }, appleVerification ?? undefined);
+                }}
               >
-                {needsAppleDetails ? "前往 Apple 补填" : "返回 Apple"}
+                {challenge.kind === "captcha" && (
+                  <img
+                    class="account-onboarding-captcha"
+                    src={challenge.image}
+                    alt="Apple 图形验证码"
+                  />
+                )}
+                <label>
+                  {challenge.kind === "captcha"
+                    ? "图形验证码"
+                    : challenge.kind === "sms"
+                      ? "短信验证码"
+                      : "邮箱验证码"}
+                  <input
+                    name="code"
+                    required
+                    disabled={busy}
+                    maxLength={challenge.kind === "captcha" ? 20 : 6}
+                    pattern={challenge.kind === "captcha" ? undefined : "[0-9]{6}"}
+                    inputMode={challenge.kind === "captcha" ? undefined : "numeric"}
+                    autoComplete={challenge.kind === "sms" ? "one-time-code" : "off"}
+                  />
+                </label>
+                <div class="user-panel-actions">
+                  <button type="submit" class="user-panel-save" disabled={busy}>
+                    验证
+                  </button>
+                </div>
+              </form>
+            )}
+            <div class="user-panel-actions">
+              <button type="button" disabled={busy} onClick={() => openTab(step.tab)}>
+                {needsAppleDetails ? "前往 Apple 补填" : "在 Apple 页面继续"}
               </button>
               <button
                 type="button"
+                class={challenge?.kind === "complete" ? "user-panel-save" : undefined}
                 disabled={busy}
                 onClick={() => {
                   stopApple();

@@ -27,7 +27,7 @@ const APPLE_REGISTRATION_MS = 30_000;
 type Browser = Pick<ClientBrowserScope, "send" | "targets">;
 interface OnboardingSession {
   browser: Browser;
-  open(url: string): Promise<string>;
+  open(url: string, background?: boolean): Promise<string>;
 }
 
 interface OnboardingOptions {
@@ -59,12 +59,14 @@ interface TabParams extends SessionParams {
 
 interface AppleQuery {
   attempt?: string;
+  guided?: boolean;
 }
 
 const attemptQuery = {
   type: "object",
   properties: {
     attempt: { type: "string", pattern: "^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$" },
+    guided: { type: "boolean" },
   },
 };
 const appleGone = (reply: FastifyReply) =>
@@ -187,7 +189,8 @@ export function registerAccountOnboarding(
       if (id && !attempt) return appleGone(reply);
       const signal = attempt ? attempt.control.signal : undefined;
       return performApple(reply, signal, async () => {
-        const tab = await current.open(ICLOUD);
+        const guided = !!attempt && request.query.guided === true;
+        const tab = guided ? await current.open(ICLOUD, true) : await current.open(ICLOUD);
         signal?.throwIfAborted();
         const registration = await openAppleRegistration(current.browser, tab, signal);
         signal?.throwIfAborted();
@@ -196,6 +199,7 @@ export function registerAccountOnboarding(
           if (session(sid)?.browser !== current.browser || !findPage(current.browser, activeTab))
             return appleGone(reply);
           attempt.tab = activeTab;
+          attempt.guided = guided;
         }
         return { tab: activeTab, options: registration?.value ?? null };
       });
@@ -247,6 +251,7 @@ export function registerAccountOnboarding(
           if (!appleAttempt(sid, tab, id)) return appleGone(reply);
           attempts.refresh(sid, id);
         }
+        if (attempt && result?.value === true) attempt.email = details.email;
         return {
           filled: result?.value === true,
           watching: watch("apple", details, current, sid, tab, since, signal),
@@ -290,15 +295,67 @@ export function registerAccountOnboarding(
       provider === "apple"
         ? { preHandler: applePreHandler, schema: { querystring: attemptQuery } }
         : { preHandler },
-      (request, reply) => {
+      async (request, reply) => {
         reply.header("cache-control", "no-store");
         const { sid, tab } = request.params;
         const id = request.query.attempt;
-        if (provider === "apple" && id && !appleAttempt(sid, tab, id)) return appleGone(reply);
-        return verification.status(provider, request.params, userId(request));
+        const attempt = provider === "apple" && id ? appleAttempt(sid, tab, id) : undefined;
+        if (provider === "apple" && id && !attempt) return appleGone(reply);
+        const status = verification.status(provider, request.params, userId(request));
+        if (!attempt?.guided || !attempt.email) return status;
+        return performApple(reply, attempt.control.signal, async () => ({
+          ...status,
+          challenge: await readAppleChallenge(session(sid)!.browser, tab, attempt.control.signal),
+        }));
       },
     );
   }
+  app.post<{ Params: TabParams; Querystring: AppleQuery; Body: { kind: string; code: string } }>(
+    `${route}/apple/:tab/verification`,
+    {
+      preHandler: applePreHandler,
+      bodyLimit: 256,
+      schema: {
+        querystring: { ...attemptQuery, required: ["attempt"] },
+        body: {
+          type: "object",
+          required: ["kind", "code"],
+          additionalProperties: false,
+          properties: { kind: { enum: ["captcha", "email", "sms"] }, code: requiredText(20) },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { sid, tab } = request.params;
+      const attempt = appleAttempt(sid, tab, request.query.attempt!);
+      if (!attempt?.guided || !attempt.email) return appleGone(reply);
+      const { kind, code } = request.body;
+      if ((kind !== "captcha" && !/^\d{6}$/.test(code)) || attempt.submitting)
+        return reply.code(409).send({ error: "请检查验证码后重试" });
+      const signal = attempt.control.signal;
+      const browser = session(sid)!.browser;
+      attempt.submitting = true;
+      try {
+        return await performApple(reply, signal, async () => {
+          const result = await checkForm(
+            browser,
+            tab,
+            APPLE_FORM,
+            kind === "captcha" ? appleChallenge(code) : appleCode(attempt.email!, code, kind),
+            { signal },
+          );
+          if (result?.value !== "submitted")
+            return reply
+              .code(409)
+              .send({ error: "Apple 暂未接受提交，请检查验证码或打开官方页面继续" });
+          attempts.refresh(sid, request.query.attempt!);
+          return { submitted: true };
+        });
+      } finally {
+        attempt.submitting = false;
+      }
+    },
+  );
   app.post<{ Params: TabParams }>(
     `${route}/claude/:tab/verification`,
     { preHandler },
@@ -373,11 +430,99 @@ function fillApple(details: AppleDetails & { email: string }): string {
   `;
 }
 
-function appleCode(email: string, code: string) {
+type AppleChallenge =
+  { kind: "captcha"; image: string } | { kind: "email" | "sms" | "complete" | "waiting" };
+
+function appleChallenge(code?: string) {
+  return `
+    ${SET_VALUE}
+    const visible = (element) => element.getClientRects().length &&
+      getComputedStyle(element).visibility === "visible" && !element.closest('[inert], [aria-hidden="true"]');
+    const images = [...document.images].filter((image) => visible(image) && image.naturalWidth &&
+      /captcha|visual challenge/i.test([image.id, image.alt, image.currentSrc.split(/[?#]/)[0].slice(0, 256)].join(" ")));
+    const captcha = [...document.querySelectorAll('input:not([type="hidden"])')].find((field) =>
+      visible(field) && !field.disabled && !field.readOnly &&
+      /captcha/i.test([field.name, field.id, field.getAttribute("aria-label")].join(" ")));
+    const code = ${JSON.stringify(code)};
+    if (captcha && images.length === 1) {
+      if (code === undefined) {
+        const image = images[0];
+        const canvas = document.createElement("canvas");
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        try {
+          canvas.getContext("2d").drawImage(image, 0, 0);
+          return { kind: "captcha", src: canvas.toDataURL("image/png") };
+        } catch {
+          return { kind: "captcha", src: image.currentSrc };
+        }
+      }
+      setValue(captcha, code);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const buttons = [...(captcha.form ?? document).querySelectorAll('button, input[type="submit"]')].filter((button) =>
+        visible(button) && /^(?:continue|create (?:an? |your )?(?:apple )?account)$/i.test(
+          (button.getAttribute("aria-label") ?? (button.matches("input") ? button.value : button.innerText)).trim()));
+      const button = buttons.length === 1 && buttons[0];
+      if (!button || button.matches(':disabled, [aria-disabled="true"]')) return null;
+      button.click();
+      return "submitted";
+    }
+    if (code !== undefined) return null;
+    for (const heading of document.querySelectorAll('h1, h2, h3, [role="heading"]')) {
+      if (!visible(heading)) continue;
+      const text = heading.innerText.trim();
+      if (/^verify (?:your )?(?:apple (?:account|id) )?e-?mail(?: address)?$/i.test(text))
+        return { kind: "email" };
+      if (/^verify (?:your )?(?:phone|mobile(?: phone)?) number$/i.test(text))
+        return { kind: "sms" };
+      if (/^(?:your )?apple account (?:has been |was )?created[.!]?$/i.test(text))
+        return { kind: "complete" };
+    }
+    return null;
+  `;
+}
+
+async function readAppleChallenge(
+  browser: Browser,
+  tab: string,
+  signal: AbortSignal,
+): Promise<AppleChallenge> {
+  const result = await checkForm<
+    { kind: "captcha"; src: string } | { kind: "email" | "sms" | "complete" }
+  >(browser, tab, APPLE_FORM, appleChallenge(), { signal });
+  if (!result) return { kind: "waiting" };
+  if (result.value.kind !== "captcha") return result.value;
+  const { src } = result.value;
+  if (/^data:image\/(?:jpeg|png|gif|webp);base64,[\w+/=]+$/i.test(src) && src.length <= 400_000)
+    return { kind: "captcha", image: src };
+  if (!src.startsWith("https://")) return { kind: "waiting" };
+  const resource = (await browser
+    .send(result.sessionId, "Page.getResourceContent", {
+      frameId: result.frameId,
+      url: src,
+    })
+    .catch(() => undefined)) as Protocol.Page.GetResourceContentResponse | undefined;
+  signal.throwIfAborted();
+  if (!resource?.base64Encoded || resource.content.length > 400_000) return { kind: "waiting" };
+  const prefix = resource.content;
+  const format = prefix.startsWith("iVBORw0KGgo")
+    ? "png"
+    : prefix.startsWith("/9j/")
+      ? "jpeg"
+      : prefix.startsWith("R0lGOD")
+        ? "gif"
+        : undefined;
+  return format
+    ? { kind: "captcha", image: `data:image/${format};base64,${resource.content}` }
+    : { kind: "waiting" };
+}
+
+function appleCode(email: string, code: string, mode = "auto-email") {
   return `
     ${SET_VALUE}
     const address = ${JSON.stringify(email.toLowerCase())};
     const code = ${JSON.stringify(code)};
+    const mode = ${JSON.stringify(mode)};
     const page = location.origin + location.pathname;
     const visible = (element) => element.getClientRects().length &&
       getComputedStyle(element).visibility === "visible" && !element.closest('[inert], [aria-hidden="true"]');
@@ -385,8 +530,10 @@ function appleCode(email: string, code: string) {
     const matchingChallenge = (section) => {
       const text = section.innerText.toLowerCase().replace(/\\s+/g, " ");
       const addresses = text.match(/[a-z0-9._%+~-]+@[a-z0-9.-]+\\.[a-z]+/g) ?? [];
-      return addresses.includes(address) &&
-        /\\b(?:verify (?:your )?(?:apple (?:account|id) )?e-?mail|e-?mail verification)\\b/.test(text) &&
+      const emailChallenge = /\\b(?:verify (?:your )?(?:apple (?:account|id) )?e-?mail|e-?mail verification)\\b/.test(text);
+      if (mode === "sms") return !emailChallenge &&
+        /\\b(?:verify (?:your )?(?:phone|mobile(?: phone)?) number|phone number verification)\\b/.test(text);
+      return addresses.includes(address) && emailChallenge &&
         !/\\b(?:phone|mobile number|trusted device|sms|text message|captcha)\\b/.test(text);
     };
     const inputs = [...document.querySelectorAll('input:is(:not([type]), [type="text"], [type="tel"], [type="number"])')]
@@ -394,7 +541,8 @@ function appleCode(email: string, code: string) {
     const single = inputs.filter((field) => field.autocomplete === "one-time-code" && field.maxLength !== 1);
     const digits = inputs.filter((field) => field.maxLength === 1);
     const fields = single.length === 1 ? single : digits.length === code.length ? digits : inputs;
-    if (!(single.length === 1 || fields.length === code.length) || fields.some((field) => field.value)) return null;
+    if (!(single.length === 1 || fields.length === code.length) ||
+      (mode === "auto-email" && fields.some((field) => field.value))) return null;
     const scopes = 'form, dialog, [role="dialog"], section, fieldset';
     let section = fields[0].closest(scopes);
     while (section && !(matchingChallenge(section) && fields.every((field) => section.contains(field))))
@@ -406,7 +554,7 @@ function appleCode(email: string, code: string) {
       const buttons = [...section.querySelectorAll('button, input[type="submit"]')].filter((button) => {
         const label = (button.getAttribute("aria-label") ??
           (button.matches("input") ? button.value : button.innerText)).trim();
-        return visible(button) && /^(?:verify(?: e-?mail(?: address)?)?|continue)$/i.test(label) &&
+        return visible(button) && /^(?:verify(?: e-?mail(?: address)?| phone number)?|continue)$/i.test(label) &&
           (!button.form || (section.contains(button.form) && fields.every((field) => field.form === button.form)));
       });
       if (buttons.length === 1) return buttons[0];
@@ -560,7 +708,7 @@ async function checkForm<T>(
   form: string,
   source: string,
   scope: FormScope = {},
-): Promise<{ tab: string; value: T } | null> {
+): Promise<{ tab: string; value: T; sessionId: string; frameId: string } | null> {
   const { signal } = scope;
   signal?.throwIfAborted();
   const { origin, pathname } = new URL(form);
@@ -604,7 +752,12 @@ async function checkForm<T>(
         })) as Protocol.Runtime.EvaluateResponse;
         signal?.throwIfAborted();
         if (result.result.value != null)
-          return { tab: page.targetId, value: result.result.value as T };
+          return {
+            tab: page.targetId,
+            value: result.result.value as T,
+            sessionId,
+            frameId: frame.id,
+          };
       }
     } catch {
       signal?.throwIfAborted();

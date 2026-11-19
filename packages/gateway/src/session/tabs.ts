@@ -48,7 +48,7 @@ export interface TabLifecycle {
   hubFor(tabId: string): TabHub | undefined;
   /** Current metadata for a newly connected viewer; lifecycle changes still publish globally. */
   tabsMessage(): Promise<TabsMsg>;
-  open(url?: string): Promise<string>;
+  open(url?: string, background?: boolean): Promise<string>;
   handle(msg: TabNavMsg): Promise<void>;
   dispose(): void;
 }
@@ -86,6 +86,7 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
   const assetTokenKey = Buffer.from(opts.assetTokenKey);
   const tabs = new Map<string, TabState>();
   const targetInfo = new Map<string, BrowserTargetInfo>();
+  const backgroundTabs = new Set<string>();
   const order: string[] = [];
   let activeTabId: string | undefined;
   let disposed = false;
@@ -284,6 +285,7 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
     if (state === undefined) throw new Error(`unknown tab ${tabId}`);
     await sendBrowser("Target.activateTarget", { targetId: tabId });
     if (disposed || tabs.get(tabId) !== state) return;
+    backgroundTabs.delete(tabId);
     const changed = activeTabId !== tabId;
     activeTabId = tabId;
     scheduleTabsBroadcast();
@@ -304,6 +306,7 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
     const index = order.indexOf(tabId);
     const wasActive = activeTabId === tabId;
     tabs.delete(tabId);
+    backgroundTabs.delete(tabId);
     targetInfo.delete(tabId);
     if (index >= 0) order.splice(index, 1);
     const neighbor = wasActive ? (order[index] ?? order[index - 1]) : undefined;
@@ -322,15 +325,17 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
     if (neighbor !== undefined) await activate(neighbor);
   };
 
-  const create = async (url?: string): Promise<string> => {
+  const create = async (url?: string, background = false): Promise<string> => {
     const result = (await sendBrowser("Target.createTarget", {
       url: url === undefined || url.trim() === "" ? NEW_TAB_URL : url,
     })) as { targetId?: unknown } | undefined;
     if (typeof result?.targetId !== "string") {
       throw new Error("Target.createTarget returned no targetId");
     }
-    await sendBrowser("Target.activateTarget", { targetId: result.targetId });
-    activeTabId = result.targetId;
+    if (!background || !activeTabId) {
+      await sendBrowser("Target.activateTarget", { targetId: result.targetId });
+      activeTabId = result.targetId;
+    } else backgroundTabs.add(result.targetId);
     scheduleTabsBroadcast();
     return result.targetId;
   };
@@ -380,7 +385,8 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
     activeTabId ??= target.targetId;
     // A page's new window comes to the front, as it would in any browser.
     if (target.openerTabId !== undefined && activeTabId !== target.targetId) {
-      void activate(target.targetId).catch(report);
+      if (backgroundTabs.has(target.openerTabId)) backgroundTabs.add(target.targetId);
+      else void activate(target.targetId).catch(report);
     }
     hub.onNeedSnapshot(() =>
       opts.agentLink.sendCmd(target.targetId, { cmd: "snapshot" }).then((result) => {
@@ -453,6 +459,7 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
       if (broadcastTimer !== undefined) clearTimeout(broadcastTimer);
       broadcastTimer = undefined;
       tabs.clear();
+      backgroundTabs.clear();
       targetInfo.clear();
       order.splice(0);
       activeTabId = undefined;
