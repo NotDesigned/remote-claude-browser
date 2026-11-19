@@ -22,7 +22,7 @@
     "html-to-text": "^10.0.1",
     "puppeteer-core": "^25.3.0",
     "undici": "^8.9.0",
-    "ws": "^8.21.1",
+    "ws": "^8.23.0",
     "yaml": "^2.8.2"
   },
   "devDependencies": {
@@ -30,7 +30,7 @@
     "@mirror/protocol": "workspace:*",
     "@types/html-to-text": "^9.0.4",
     "@types/node": "^22.0.0",
-    "@types/ws": "^8.5.0",
+    "@types/ws": "^8.18.2",
     "esbuild": "^0.28.1",
     "tsx": "^4.19.0"
   }
