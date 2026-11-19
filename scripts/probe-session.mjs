@@ -98,8 +98,12 @@ export async function createProbeSession(
   try {
     await prepare?.(api);
     const response = await api("/api/client/session", "POST", { clientKey: randomUUID() });
-    if (response.status !== 200)
-      throw new Error(`Temporary workspace admission failed (${response.status})`);
+    if (response.status !== 200) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(
+        `Temporary workspace admission failed (${response.status}) ${body?.code ?? ""}`.trimEnd(),
+      );
+    }
     const lease = await response.json();
     if (typeof lease.sid !== "string" || !/^client-[1-9]\d*$/.test(lease.sid))
       throw new Error("Probe received an invalid workspace");

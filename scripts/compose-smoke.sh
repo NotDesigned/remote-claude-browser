@@ -5,6 +5,7 @@
 set -euo pipefail
 
 runtime=$(mktemp)
+export SMOKE_BROKER_BUNDLE=$(mktemp --suffix=.mjs)
 cat > "$runtime" <<'YAML'
 services:
   server:
@@ -14,8 +15,11 @@ services:
     environment:
       MIRROR_PROFILE_EGRESS: "1"
       MIRROR_RUNTIME_SOCKET: /run/remote-browser/runtime.sock
+      SMOKE_GEO_URL: ${SMOKE_FIXTURE_ORIGIN}/geo
     devices:
       - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ${SMOKE_BROKER_BUNDLE}:/app/dist/profile-broker.mjs:ro
     tmpfs:
       - /run/netns:rw,nosuid,nodev,size=1m,mode=0755
       - /run/remote-browser:rw,nosuid,nodev,size=16m,mode=0755
@@ -58,7 +62,7 @@ cleanup() {
     in_server ip addr del "$SMOKE_PROXY_IP/32" dev lo >/dev/null 2>&1 || true
   fi
   "${compose[@]}" --project-name "$project" down --volumes --remove-orphans >/dev/null 2>&1 || true
-  rm -- "$runtime"
+  rm -- "$runtime" "$SMOKE_BROKER_BUNDLE"
 }
 
 diagnose() {
@@ -73,6 +77,18 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap diagnose ERR
+
+node --input-type=module <<'NODE'
+import { createRequire } from 'node:module';
+const { build } = createRequire(new URL('./packages/gateway/package.json', import.meta.url))('esbuild');
+await build({
+  entryPoints: ['scripts/compose-broker.mts'], outfile: process.env.SMOKE_BROKER_BUNDLE,
+  bundle: true, platform: 'node', format: 'esm', external: ['undici'],
+  banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
+  define: { 'import.meta.url': '"file:///compose-broker-fixture.mjs"' },
+});
+NODE
+chmod 644 "$SMOKE_BROKER_BUNDLE"
 
 "${compose[@]}" --project-name "$project" up --detach --build
 
