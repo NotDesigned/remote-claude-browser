@@ -337,17 +337,35 @@ export function registerAccountOnboarding(
       attempt.submitting = true;
       try {
         return await performApple(reply, signal, async () => {
-          const result = await checkForm(
+          if (kind === "captcha") {
+            const focused = await checkForm<boolean>(
+              browser,
+              tab,
+              APPLE_FORM,
+              appleChallenge("focus"),
+              { signal },
+            );
+            if (!focused?.value)
+              return reply.code(409).send({ error: "Apple 的图形验证码输入框已变化，请重试" });
+            const page = findPage(browser, focused.tab);
+            if (!page) return appleGone(reply);
+            signal.throwIfAborted();
+            await browser.send(page.sessionId, "Input.insertText", { text: code });
+          }
+          const result = await (kind === "captcha" ? waitForForm : checkForm)(
             browser,
             tab,
             APPLE_FORM,
-            kind === "captcha" ? appleChallenge(code) : appleCode(attempt.email!, code, kind),
-            { signal },
+            kind === "captcha"
+              ? appleChallenge("submit", code)
+              : appleCode(attempt.email!, code, kind),
+            { signal, userGesture: true },
+            Date.now() + 3_000,
           );
           if (result?.value !== "submitted")
             return reply
               .code(409)
-              .send({ error: "Apple 暂未接受提交，请检查验证码或打开官方页面继续" });
+              .send({ error: "未能点击 Apple 的 Continue，请重试或在 Apple 页面继续" });
           attempts.refresh(sid, request.query.attempt!);
           return { submitted: true };
         });
@@ -433,9 +451,9 @@ function fillApple(details: AppleDetails & { email: string }): string {
 type AppleChallenge =
   { kind: "captcha"; image: string } | { kind: "email" | "sms" | "complete" | "waiting" };
 
-function appleChallenge(code?: string) {
+function appleChallenge(action = "read", code?: string) {
   return `
-    ${SET_VALUE}
+    const action = ${JSON.stringify(action)};
     const visible = (element) => element.getClientRects().length &&
       getComputedStyle(element).visibility === "visible" && !element.closest('[inert], [aria-hidden="true"]');
     const images = [...document.images].filter((image) => visible(image) && image.naturalWidth &&
@@ -453,20 +471,21 @@ function appleChallenge(code?: string) {
     }
     const code = ${JSON.stringify(code)};
     const continueButton = (root) => {
-      const buttons = [...root.querySelectorAll('button, input[type="submit"]')].filter((button) =>
-        visible(button) && /^(?:continue|create (?:an? |your )?(?:apple )?account)$/i.test(
-          (button.getAttribute("aria-label") ?? (button.matches("input") ? button.value : button.innerText)).trim()));
+      const buttons = [...root.querySelectorAll('button, input[type="submit"], [role="button"]')].filter((button) =>
+        visible(button) && !button.matches(':disabled, [aria-disabled="true"]') &&
+        [button.getAttribute("aria-label"), button.matches("input") ? button.value : button.innerText].some(
+          label => /^(?:continue|create (?:an? |your )?(?:apple )?account)$/i.test(label?.trim() ?? "")));
       return buttons.length === 1 ? buttons[0] : undefined;
     };
     const submit = (field) => {
       const scope = field.form ?? field.closest('dialog, [role="dialog"]') ?? document;
       const button = continueButton(scope) ?? (scope !== document && continueButton(document));
-      if (!button || button.matches(':disabled, [aria-disabled="true"]')) return null;
+      if (!button) return null;
       button.click();
       return "submitted";
     };
     if (captcha && images.length === 1) {
-      if (code === undefined) {
+      if (action === "read") {
         const image = images[0];
         const canvas = document.createElement("canvas");
         canvas.width = image.naturalWidth;
@@ -478,11 +497,16 @@ function appleChallenge(code?: string) {
           return { kind: "captcha", src: image.currentSrc };
         }
       }
-      setValue(captcha, code);
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (action === "focus") {
+        captcha.focus();
+        captcha.select();
+        return captcha === document.activeElement;
+      }
+      if (captcha.value !== code) return null;
+      captcha.blur();
       return submit(captcha);
     }
-    if (code !== undefined) return null;
+    if (action !== "read") return null;
     for (const heading of document.querySelectorAll('h1, h2, h3, [role="heading"]')) {
       if (!visible(heading)) continue;
       const text = heading.innerText.trim();

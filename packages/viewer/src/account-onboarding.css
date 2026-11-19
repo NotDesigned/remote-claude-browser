@@ -1,6 +1,9 @@
 .account-onboarding {
   width: min(540px, 100%);
 }
+.user-panel-backdrop.account-onboarding-backdrop {
+  background: var(--bg);
+}
 .account-onboarding-backdrop[hidden] {
   display: none;
 }
