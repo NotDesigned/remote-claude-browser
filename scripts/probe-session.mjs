@@ -36,7 +36,7 @@ export async function readProbeCredentials({ env = process.env, read = readFile 
 
 export async function createProbeSession(
   origin,
-  { env = process.env, fetcher = fetch, credentials } = {},
+  { env = process.env, fetcher = fetch, credentials, prepare } = {},
 ) {
   const headers = { Origin: env.MIRROR_PUBLIC_ORIGIN || origin };
   const login = await fetcher(origin + "/gate", {
@@ -96,6 +96,7 @@ export async function createProbeSession(
     if (failures.length) throw new AggregateError(failures, "Probe cleanup failed");
   };
   try {
+    await prepare?.(api);
     const response = await api("/api/client/session", "POST", { clientKey: randomUUID() });
     if (response.status !== 200)
       throw new Error(`Temporary workspace admission failed (${response.status})`);

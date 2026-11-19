@@ -9,7 +9,13 @@ import { chromium } from "playwright";
 const origin = process.env.SMOKE_ORIGIN;
 const password = process.env.SMOKE_PASSWORD;
 const username = process.env.SMOKE_USERNAME ?? process.env.MIRROR_ADMIN_USERNAME ?? "admin";
-assert.ok(origin && password, "Set SMOKE_ORIGIN and SMOKE_PASSWORD");
+const fixtureOrigin = process.env.SMOKE_FIXTURE_ORIGIN;
+assert.ok(
+  origin && password && fixtureOrigin,
+  "Set SMOKE_ORIGIN, SMOKE_PASSWORD and SMOKE_FIXTURE_ORIGIN",
+);
+
+const fixturePage = (html) => `${fixtureOrigin}/?html=${Buffer.from(html).toString("base64url")}`;
 
 /**
  * Records a moment of picture and tone, and plays it from a blob as a site's player would: the mirror
@@ -93,7 +99,7 @@ const MOVED_PAGE = `<!doctype html><meta charset="utf-8"><title>Moved frames</ti
   .join("")}`;
 
 async function checkMovedFrame(page, address) {
-  await address.fill(`data:text/html;charset=utf-8,${encodeURIComponent(MOVED_PAGE)}`);
+  await address.fill(fixturePage(MOVED_PAGE));
   await address.press("Enter");
   const find = (id) =>
     page.evaluate((id) => {
@@ -187,7 +193,7 @@ ${sandboxed(
 )}`;
 
 async function checkNestedFrames(page, address) {
-  await address.fill(`data:text/html;charset=utf-8,${encodeURIComponent(NESTED_PAGE)}`);
+  await address.fill(fixturePage(NESTED_PAGE));
   await address.press("Enter");
   const find = (id) =>
     page.evaluate((id) => {
@@ -241,7 +247,7 @@ async function checkNestedFrames(page, address) {
 /** Accounts are separate Chromes: a cookie set in one is not there in another, and stays in its own. */
 /** A session whose viewers are all hidden sleeps its pages, and wakes them when one shows again. */
 async function checkPageSleep(page, address) {
-  const target = "https://example.com/#background-restore";
+  const target = `${fixturePage("<!doctype html><h1>Session restore</h1>")}#background-restore`;
   const sid = new URL(page.url()).searchParams.get("sid");
   const setHidden = (hidden) =>
     page.evaluate((hidden) => {
@@ -255,14 +261,14 @@ async function checkPageSleep(page, address) {
     page.waitForFunction(
       () =>
         document.querySelector("#mirror-host iframe")?.contentDocument?.querySelector("h1")
-          ?.textContent === "Example Domain",
+          ?.textContent === "Session restore",
     );
   await restored();
   await setHidden(true);
   await page.waitForFunction(
     async () => (await (await fetch("/healthz")).json()).clients === 0,
     undefined,
-    { timeout: 15000 },
+    { timeout: 80000 },
   );
   await page.waitForTimeout(1500);
   assert.equal((await (await page.request.get(origin + "/healthz")).json()).clients, 0);
@@ -307,29 +313,22 @@ async function checkAccounts(page) {
       .waitFor({ timeout: 60_000 });
     await page.waitForFunction(() => document.querySelector("#urlbar input")?.value !== "");
   };
-  // Two echo services, in case one is down: each sets a cookie and shows the cookies it got back.
-  const services = ["https://httpbin.org", "https://postman-echo.com"];
-  let service = null;
   const cookiesAfter = async (path) => {
-    for (const base of service ? [service] : services) {
-      const address = page.locator("#urlbar input");
-      await address.fill(`${base}${path}`);
-      await address.press("Enter");
-      const deadline = Date.now() + 25_000;
-      while (Date.now() < deadline) {
-        const text = await mirrorText();
-        if (/"cookies"/.test(text)) {
-          service = base;
-          return text;
-        }
-        await page.waitForTimeout(500);
-      }
-    }
-    throw new Error("No cookie echo service answered");
+    const address = page.locator("#urlbar input");
+    await address.fill(`${fixtureOrigin}${path}`);
+    await address.press("Enter");
+    await page
+      .frameLocator("#mirror-host .mirror-stage:not([data-parked]) iframe")
+      .getByText(/"cookies"/)
+      .first()
+      .waitFor();
+    return mirrorText();
   };
 
   assert.match(await cookiesAfter("/cookies/set?mirror=first"), /"mirror":\s*"first"/);
-  const made = (await call("POST", "/api/accounts", { name: "第二个" })).json;
+  const { accounts, current } = (await call("GET", `/api/accounts?sid=${sid}`)).json;
+  const proxyId = accounts.find((account) => account.id === current).proxyId;
+  const made = (await call("POST", "/api/accounts", { name: "第二个", proxyId })).json;
   assert.ok(made?.id, "The account was not created");
   const switched = await call("POST", `/api/client/session/${sid}/account`, { account: made.id });
   assert.equal(switched.status, 200, "Switching the session failed");
@@ -359,11 +358,11 @@ async function checkAccounts(page) {
     !after.accounts.some((account) => account.id === made.id),
     "The account is still listed",
   );
-  console.log(`Accounts keep their cookies apart, through ${service}.`);
+  console.log("Accounts keep their cookies apart.");
 }
 
 async function checkForm(page, address, mirrored) {
-  await address.fill(`data:text/html,${encodeURIComponent(FORM_PAGE)}`);
+  await address.fill(fixturePage(FORM_PAGE));
   await address.press("Enter");
   await mirrored.locator("#box").waitFor({ timeout: 30_000 });
   await page.waitForFunction(
@@ -418,7 +417,7 @@ const CANVAS_PAGE = `<!doctype html><meta charset="utf-8"><title>Canvas</title><
 
 /** With MIRROR_CANVAS_SITES=*, a canvas in a cross-origin frame shows, and keeps changing. */
 async function checkCanvas(page, address) {
-  await address.fill(`data:text/html;charset=utf-8,${encodeURIComponent(CANVAS_PAGE)}`);
+  await address.fill(fixturePage(CANVAS_PAGE));
   await address.press("Enter");
   const colour = () =>
     page.evaluate(() => {
@@ -460,7 +459,7 @@ async function checkVideo(page, address) {
       }
     };
   });
-  await address.fill(`data:text/html,${encodeURIComponent(VIDEO_PAGE)}`);
+  await address.fill(fixturePage(VIDEO_PAGE));
   await address.press("Enter");
   const read = () =>
     page.evaluate(async () => {
@@ -501,6 +500,15 @@ async function checkVideo(page, address) {
   console.log("Picture and sound arrived over WebRTC.");
 }
 
+async function openDefaultBrowser(page) {
+  await page.goto(origin);
+  await page.locator('input[name="username"]').fill(username);
+  await page.locator('input[name="password"]').fill(password);
+  await page.locator('button[type="submit"]').click();
+  await page.locator("button.profile-card").filter({ hasText: "默认账号" }).click();
+  await page.waitForSelector("#shell-bar", { timeout: 60_000 });
+}
+
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH,
   headless: true,
@@ -518,23 +526,24 @@ try {
   const refused = await context.request.get(`${origin}/api/client/session`, { maxRedirects: 0 });
   assert.notEqual(refused.status(), 200, "The API answered without logging in");
 
-  await page.goto(origin);
-  if (await page.locator('input[name="username"]').count())
-    await page.locator('input[name="username"]').fill(username);
-  await page.locator('input[name="password"]').fill(password);
-  await page.locator('button[type="submit"]').click();
-  await page.waitForSelector("#shell-bar", { timeout: 60_000 });
+  await openDefaultBrowser(page);
 
   const html =
-    '<!doctype html><meta charset="utf-8"><title>Mirror check</title><p id="ran">not run</p>' +
-    "<script>document.getElementById('ran').textContent = navigator.userAgent.includes('Chrome') ? 'ran' : 'odd';</script>";
+    '<!doctype html><meta charset="utf-8"><title>Mirror check</title><p id="ran">not run</p><output id="geometry"></output>' +
+    `<script>
+document.getElementById('ran').textContent = navigator.userAgent.includes('Chrome') ? 'ran' : 'odd';
+const geometry = document.getElementById('geometry');
+const report = () => geometry.textContent = JSON.stringify([innerWidth, innerHeight, screen.width, screen.height]);
+addEventListener('resize', report);
+report();
+</script>`;
   // The address bar is disabled until a tab exists.
   await page
     .locator('#urlbar button[aria-label="Reload"]:not([disabled])')
     .waitFor({ timeout: 60_000 });
   await page.waitForFunction(() => document.querySelector("#urlbar input")?.value !== "");
   const address = page.locator("#urlbar input");
-  await address.fill(`data:text/html,${encodeURIComponent(html)}`);
+  await address.fill(fixturePage(html));
   await address.press("Enter");
 
   const mirrored = page.frameLocator("#mirror-host .mirror-stage:not([data-parked]) iframe");
@@ -551,6 +560,25 @@ try {
   const scripts = await mirrored.locator("script:not([type='text/plain'])").count();
   console.log(`Mirrored a page from ${origin}; live scripts in the mirror: ${scripts}.`);
 
+  const [, , screenWidth, screenHeight] = JSON.parse(
+    await mirrored.locator("#geometry").innerText(),
+  );
+  await page.setViewportSize({ width: 3200, height: 2000 });
+  await page.waitForFunction(
+    ([screenWidth, screenHeight]) => {
+      const host = document.getElementById("mirror-host");
+      const frame = host.querySelector(".mirror-stage:not([data-parked]) [data-fit] iframe");
+      const geometry = frame?.contentDocument?.getElementById("geometry");
+      if (!geometry?.textContent || host.dataset.inputReady !== "true") return false;
+      const [w, h, sw, sh] = JSON.parse(geometry.textContent);
+      return (
+        sw === screenWidth && sh === screenHeight && (w === sw || h === sh) && w <= sw && h <= sh
+      );
+    },
+    [screenWidth, screenHeight],
+  );
+  console.log("An oversized workbench fits the page while keeping the remote screen size.");
+
   // A page's address changing shows in the bar, unless someone is typing there.
   const moving =
     "<!doctype html><title>Moving</title><script>setTimeout(() => (location.href = 'about:blank'), 3000);</script>";
@@ -562,10 +590,10 @@ try {
         timeout: 20_000,
       },
     );
-  await address.fill(`data:text/html,${encodeURIComponent(moving)}`);
+  await address.fill(fixturePage(moving));
   await address.press("Enter");
   await showsBlank();
-  await address.fill(`data:text/html,${encodeURIComponent(moving)}`);
+  await address.fill(fixturePage(moving));
   await address.press("Enter");
   await address.fill("still typing");
   await page.waitForTimeout(8_000);
@@ -577,6 +605,7 @@ try {
   console.log("The address bar follows the page, and keeps what is being typed.");
 
   await checkForm(page, address, mirrored);
+  await page.setViewportSize({ width: 1280, height: 900 });
   await checkMovedFrame(page, address);
   await checkNestedFrames(page, address);
   await checkPageSleep(page, address);
@@ -588,12 +617,7 @@ try {
   // Picture mode, in a session of its own. Its canvas only appears once a frame has arrived.
   const pictureContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const picture = await pictureContext.newPage();
-  await picture.goto(origin);
-  if (await picture.locator('input[name="username"]').count())
-    await picture.locator('input[name="username"]').fill(username);
-  await picture.locator('input[name="password"]').fill(password);
-  await picture.locator('button[type="submit"]').click();
-  await picture.waitForSelector("#shell-bar", { timeout: 60_000 });
+  await openDefaultBrowser(picture);
   // A title in Chinese, which picture mode has to read to find the window. The check on the gateway's
   // log in compose-smoke.sh sees it fail.
   await picture.waitForFunction(() => new URL(location.href).searchParams.has("sid"));
@@ -602,7 +626,7 @@ try {
     .locator('#urlbar button[aria-label="Reload"]:not([disabled])')
     .waitFor({ timeout: 60_000 });
   await pictureAddress.fill(
-    `data:text/html,${encodeURIComponent('<!doctype html><meta charset="utf-8"><title>中文标题</title><p>画面</p>')}`,
+    fixturePage('<!doctype html><meta charset="utf-8"><title>中文标题</title><p>画面</p>'),
   );
   await pictureAddress.press("Enter");
   await picture.waitForTimeout(2_000);

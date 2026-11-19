@@ -4,7 +4,23 @@
 # Set CHROME_PATH to also run the login with a local browser.
 set -euo pipefail
 
-compose=(docker compose --file compose.yml)
+runtime=$(mktemp)
+cat > "$runtime" <<'YAML'
+services:
+  server:
+    environment:
+      MIRROR_PROFILE_EGRESS: "1"
+      MIRROR_RUNTIME_SOCKET: /run/remote-browser/runtime.sock
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    tmpfs:
+      - /run/netns:rw,nosuid,nodev,size=1m,mode=0755
+      - /run/remote-browser:rw,nosuid,nodev,size=16m,mode=0755
+    sysctls:
+      net.ipv4.ip_forward: "1"
+      net.ipv6.conf.all.forwarding: "1"
+YAML
+compose=(docker compose --env-file /dev/null --file compose.yml --file "$runtime")
 # SMOKE_HOSTNET=1 tests compose.hostnet.yml.
 if [[ ${SMOKE_HOSTNET:-} == 1 ]]; then
   compose+=(--file compose.hostnet.yml)
@@ -25,13 +41,21 @@ export MIRROR_ADMIN_USERNAME=${MIRROR_ADMIN_USERNAME:-compose-admin}
 export MIRROR_AUTH_SECRET=compose-smoke-auth-key
 export MIRROR_PUBLIC_ORIGIN=http://127.0.0.1:$smoke_port
 export MIRROR_START_URL=about:blank
+export SMOKE_PROXY_IP=203.0.113.21
+export SMOKE_PROXY_PORT=$smoke_port
+export SMOKE_FIXTURE_ORIGIN=http://$SMOKE_PROXY_IP:18080
+proxy_started=false
 
 in_server() {
   "${compose[@]}" --project-name "$project" exec -T server "$@"
 }
 
 cleanup() {
+  if [[ ${SMOKE_HOSTNET:-} == 1 && $proxy_started == true ]]; then
+    in_server ip addr del "$SMOKE_PROXY_IP/32" dev lo >/dev/null 2>&1 || true
+  fi
   "${compose[@]}" --project-name "$project" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  rm -- "$runtime"
 }
 
 diagnose() {
@@ -69,10 +93,27 @@ gate=$(curl --fail --silent "http://127.0.0.1:${smoke_port}/gate")
 [[ $gate == *'name="username"'* ]]
 in_server test -s /app/viewer/index.html
 
-# Browsers now start on demand: a temporary owned workspace starts one for the sandbox checks.
+in_server ip addr add "$SMOKE_PROXY_IP/32" dev lo
+proxy_started=true
+in_server node -e 'const fs = require("node:fs"); fs.writeFileSync("/tmp/compose-fixture.mjs", fs.readFileSync(0));' < scripts/compose-fixture.mjs
+"${compose[@]}" --project-name "$project" exec -d server node /tmp/compose-fixture.mjs "$SMOKE_PROXY_IP" "$SMOKE_PROXY_PORT" 18080
+
+# Bind the fixture's proxy before opening a real authenticated browser workspace.
 node --input-type=module <<'NODE'
+import assert from 'node:assert/strict';
 import { createProbeSession } from './scripts/probe-session.mjs';
-const probe = await createProbeSession(process.env.MIRROR_PUBLIC_ORIGIN);
+const probe = await createProbeSession(process.env.MIRROR_PUBLIC_ORIGIN, {
+  async prepare(api) {
+    const imported = await api('/api/proxy-sources', 'POST', {
+      name: 'Compose smoke exit', visibility: 'private',
+      content: `socks5://${process.env.SMOKE_PROXY_IP}:${process.env.SMOKE_PROXY_PORT}#Smoke`,
+    });
+    assert.equal(imported.status, 200, await imported.text());
+    const { proxies: [proxy] } = await (await api('/api/proxies')).json();
+    const bound = await api('/api/accounts/default/proxy', 'PATCH', { proxyId: proxy.id });
+    assert.equal(bound.status, 200, await bound.text());
+  },
+});
 try {
   if (!probe.sid) throw new Error('The authenticated smoke workspace was not allocated');
 } finally {
@@ -87,7 +128,7 @@ if grep --quiet -- '--no-sandbox' <<<"$browser_processes"; then
   echo "Chromium is running without its sandbox" >&2
   false
 fi
-if in_server sh -c "ps -eo uid=,args= | grep '[c]hromium' | grep -v '^ *10001 '"; then
+if in_server sh -c "ps -C chromium -o uid= | grep -v '^ *10001 *$'"; then
   echo "Chromium is running as a privileged user" >&2
   false
 fi
