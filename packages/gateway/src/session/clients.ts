@@ -16,6 +16,7 @@ export interface ClientRecord {
   owner: string;
   clientKey: string;
   createdAt: number;
+  sleepingSince?: number;
   /** Opened from a phone, so it lives in the browser that asks for Claude's phone interface. */
   phone?: boolean;
   /** The account it uses, when not the default one. */
@@ -61,6 +62,13 @@ export async function createClientSessions(options: { file?: string; now?: () =>
       });
     return tail;
   };
+  // At startup there are no running windows. Keep any sleep time the previous gateway recorded.
+  const untracked = [...records.values()].filter((record) => record.sleepingSince === undefined);
+  if (untracked.length > 0) {
+    const startedAt = now();
+    for (const record of untracked) record.sleepingSince = startedAt;
+    await persist();
+  }
   const owns = (owner: string | undefined, sid: string) =>
     !!owner && records.get(sid as ClientSlot)?.owner === owner;
   const describe = (sid: ClientSlot) => ({
@@ -154,6 +162,17 @@ export async function createClientSessions(options: { file?: string; now?: () =>
         throw error;
       }
     },
+    async setSleeping(record: ClientRecord, sleeping: boolean) {
+      const previous = record.sleepingSince;
+      if (sleeping === (previous !== undefined)) return;
+      record.sleepingSince = sleeping ? now() : undefined;
+      try {
+        await persist();
+      } catch (error) {
+        record.sleepingSince = previous;
+        throw error;
+      }
+    },
     async release(owner: string, sid: string) {
       if (!owns(owner, sid))
         throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个独立会话不属于当前客户端");
@@ -179,6 +198,7 @@ function isRecord(value: unknown): value is ClientRecord {
     typeof r.clientKey === "string" &&
     /^[A-Za-z0-9_-]{1,128}$/.test(r.clientKey) &&
     Number.isFinite(r.createdAt) &&
+    (r.sleepingSince === undefined || Number.isFinite(r.sleepingSince)) &&
     (r.profile === undefined || (typeof r.profile === "string" && PROFILE_ID.test(r.profile)))
   );
 }

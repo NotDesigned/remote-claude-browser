@@ -68,7 +68,12 @@ import { createClaudeTheme, createThemeCopies, isClaudeTheme } from "./claude/th
 import { registerSecurityHeaders } from "./security-headers";
 import { gatewayHost, registerViewerStatic, trustedProxies } from "./serving";
 import { createTabLifecycle } from "./session/tabs";
-import { isClientSlot, ClientSessionError, createClientSessions } from "./session/clients";
+import {
+  isClientSlot,
+  ClientSessionError,
+  createClientSessions,
+  type ClientRecord,
+} from "./session/clients";
 import { createLifecycleLock } from "./session/lifecycle-lock";
 import { registerAccountRoutes } from "./auth/account-routes";
 import { registerAccountOnboarding } from "./browser/account-onboarding";
@@ -125,6 +130,7 @@ interface ClientRuntime {
 const VIDEO_BACKLOG_BYTES = 512 * 1024;
 /** An account's Chrome nobody has used for this long is closed. It starts again when needed. */
 const ACCOUNT_IDLE_CLOSE_MS = 120_000;
+const SESSION_SLEEP_LIMIT_MS = 24 * 60 * 60 * 1000;
 /** Headroom for another Chrome plus its private Xvfb display before the first page. */
 const ACCOUNT_MEMORY_BYTES = 560 * 1048576;
 
@@ -334,8 +340,11 @@ export async function startClientGateway(
     ? Buffer.from(process.env.MIRROR_AUTH_SECRET)
     : randomBytes(32);
   const sessionGuard = createSessionGuard({ key });
+  let e2eIdleOffset = 0;
+  const sessionNow = () => Date.now() + e2eIdleOffset;
   const clientSessions = await createClientSessions({
     file: join(profile, "client-sessions.json"),
+    now: sessionNow,
   });
   if (!e2e)
     await clientSessions.migrateOwners((owner) =>
@@ -668,7 +677,6 @@ export async function startClientGateway(
     if (stopping) return;
     for (const sid of runtimes.keys()) publish(sid, status(sid));
   }
-  let e2eIdleOffset = 0;
   /** Whether a page is writing a reply, which closing or reloading it would cut short. */
   async function pageGenerating(runtime: ClientRuntime, target: TargetRef): Promise<boolean> {
     const response = (await Promise.race([
@@ -732,6 +740,7 @@ export async function startClientGateway(
               urls: tabs.tabs.map((tab) => tab.url),
               active: tabs.tabs.findIndex((tab) => tab.active),
             });
+          await clientSessions.setSleeping(current, true);
         } finally {
           runtimes.delete(sid);
           runtimePromises.delete(sid);
@@ -740,7 +749,7 @@ export async function startClientGateway(
         }
       }),
     graceMs: e2e ? Number(process.env.MIRROR_IDLE_GRACE_MS ?? 60000) : 60000,
-    now: () => Date.now() + e2eIdleOffset,
+    now: sessionNow,
     onError: (error) => report("idle client cleanup", error),
   });
   app.get<{ Querystring: { sid?: string } }>("/api/status", async (request, reply) => {
@@ -1060,7 +1069,8 @@ export async function startClientGateway(
     [...runtimes.values()].some((runtime) => runtime.account.id === id) ||
     [...runtimePromises.keys()].some((sid) => clientSessions.profileOf(sid) === id);
 
-  async function createRuntime(sid: string): Promise<ClientRuntime> {
+  async function createRuntime(record: ClientRecord): Promise<ClientRuntime> {
+    const { sid } = record;
     if (!e2e && (await memoryShort()))
       throw new ClientSessionError(
         503,
@@ -1304,7 +1314,6 @@ export async function startClientGateway(
         }
         const active = sleeping && restored[sleeping.active];
         if (active) await tabs.handle({ t: "nav", tab: active, action: "activate" });
-        sleepingWindows.delete(sid);
       }
       // Resolve same-process child frame ownership for the shared download manager too.
       for (const target of targets.values())
@@ -1318,6 +1327,8 @@ export async function startClientGateway(
           };
           if (result.frameTree) visit(result.frameTree);
         }
+      await clientSessions.setSleeping(record, false);
+      sleepingWindows.delete(sid);
       return runtime;
     } catch (error) {
       runtimes.delete(sid);
@@ -1345,12 +1356,13 @@ export async function startClientGateway(
       !record ||
       !userId ||
       userStore.getUser(userId)?.enabled !== true ||
-      userStore.profileOwner(clientSessions.profileOf(sid)) !== userId
+      userStore.profileOwner(clientSessions.profileOf(sid)) !== userId ||
+      (await expireSleepingSessionLocked(record))
     )
       throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个会话不属于当前用户");
     let pending = runtimePromises.get(sid);
     if (!pending) {
-      pending = createRuntime(sid);
+      pending = createRuntime(record);
       runtimePromises.set(sid, pending);
       void pending.catch(() => {
         if (runtimePromises.get(sid) === pending) runtimePromises.delete(sid);
@@ -1445,11 +1457,12 @@ export async function startClientGateway(
               userStore.profileOwner(chosen) !== user.id)
           )
             throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
-          const previous = clientSessions.findExisting(
+          let previous = clientSessions.findExisting(
             owner,
             request.body?.clientKey,
             request.body?.sid,
           );
+          if (previous && (await expireSleepingSessionLocked(previous))) previous = undefined;
           const existing = previous !== undefined;
           if (
             !existing &&
@@ -1535,6 +1548,15 @@ export async function startClientGateway(
   }
   async function releaseClient(owner: string, sid: string) {
     return accountLifecycle.run(() => releaseClientLocked(owner, sid));
+  }
+  async function expireSleepingSessionLocked(record: ClientRecord): Promise<boolean> {
+    if (
+      record.sleepingSince === undefined ||
+      sessionNow() - record.sleepingSince < SESSION_SLEEP_LIMIT_MS
+    )
+      return false;
+    await releaseClientLocked(record.owner, record.sid);
+    return true;
   }
   async function releaseClientLocked(owner: string, sid: string) {
     if (!clientSessions.owns(owner, sid))
@@ -2235,11 +2257,12 @@ export async function startClientGateway(
     app.post<{ Body: { milliseconds?: number } }>("/__e2e/advance-idle", async (request, reply) => {
       if (!currentOwner(request.raw)) return reply.code(401).send({ error: "Forbidden" });
       const amount = request.body?.milliseconds;
-      if (!Number.isSafeInteger(amount) || amount! < 0 || amount! > 1000000)
+      if (!Number.isSafeInteger(amount) || amount! < 0 || amount! > SESSION_SLEEP_LIMIT_MS)
         return reply.code(400).send({ error: "Invalid test time" });
       await idleReaper.sweep();
       e2eIdleOffset += amount!;
       await idleReaper.sweep();
+      await reapIdleResources();
       return status();
     });
     app.get("/__e2e/probe", async () => ({ serverTs: Date.now() }));
@@ -2331,9 +2354,18 @@ export async function startClientGateway(
       .catch((error) => report("resource sampling", error));
   }, 3000);
   statusTimer.unref?.();
-  const closeUnusedAccounts = () =>
+  const reapIdleResources = () =>
     accountLifecycle.run(async () => {
       if (stopping) return;
+      for (const record of clientSessions.all()) {
+        if (runtimePromises.has(record.sid)) continue;
+        try {
+          if (record.sleepingSince === undefined) await clientSessions.setSleeping(record, true);
+          else await expireSleepingSessionLocked(record);
+        } catch (error) {
+          report("sleeping client cleanup", error);
+        }
+      }
       const now = Date.now();
       for (const account of [...accounts.values()]) {
         if (accountInUse(account.id)) {
@@ -2348,7 +2380,7 @@ export async function startClientGateway(
   const idleTimer = setInterval(
     () => {
       void idleReaper.sweep();
-      void closeUnusedAccounts().catch((error) => report("account cleanup failed", error));
+      void reapIdleResources().catch((error) => report("idle resource cleanup failed", error));
     },
     e2e ? 200 : 3000,
   );

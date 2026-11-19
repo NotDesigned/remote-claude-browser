@@ -945,6 +945,8 @@ try {
   const reclaimedStatus = await advanceIdle(3000);
   assertStatus(reclaimedStatus, 1, 2, 0);
   assert.equal((await (await request("b", "/healthz")).json()).clients, 1);
+  const oneDay = 24 * 60 * 60 * 1000;
+  assertStatus(await advanceIdle(oneDay - 15_000), 1, 2, 0);
   const resumedC = await new Viewer("c", third.sid, c.connectionKey).open();
   await waitFor(
     async () => (await state("c", third.sid)).tabs.length > 0,
@@ -981,6 +983,14 @@ try {
   );
   assert.equal((await lease("c", "c-test")).sid, third.sid);
   checks.idleBusyProtectionAndAutomaticReclaim = true;
+  await finalC.close();
+  await waitFor(() => b.status?.clientsOnline === 2, "final C disconnects");
+  assertStatus(await advanceIdle(61_000), 2, 3, 0);
+  assertStatus(await advanceIdle(oneDay), 2, 2, 0);
+  assert.equal(await rejectedWs("c", third.sid), 401);
+  assert.equal(b.closed, false);
+  assert.equal(freshViewer.closed, false);
+  checks.sleepingSessionExpiresWithoutClosingOnlineSessions = true;
   const result = {
     fixtureOnly: true,
     oneGatewayOwnedChrome: true,

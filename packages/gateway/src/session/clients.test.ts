@@ -88,6 +88,34 @@ describe("client ownership", () => {
     }
   });
 
+  it("starts legacy sleep at startup, preserves it across restarts, and starts fresh after waking", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "clients-sleep-"));
+    try {
+      const file = join(dir, "sessions.json");
+      const beforeRestart = await createClientSessions({ file, now: () => 10 });
+      const legacy = await beforeRestart.acquire("device", "tab");
+      let time = 20;
+      const now = () => time;
+      const migrated = await createClientSessions({ file, now });
+      expect(migrated.get(legacy.sid)).toMatchObject({ createdAt: 10, sleepingSince: 20 });
+      time = 30;
+      const restarted = await createClientSessions({ file, now });
+      const restored = restarted.get(legacy.sid)!;
+      expect(restored.sleepingSince).toBe(20);
+      await restarted.setSleeping(restored, true);
+      expect(restored.sleepingSince).toBe(20);
+      await restarted.setSleeping(restored, false);
+      expect(restored.sleepingSince).toBeUndefined();
+      time = 40;
+      await restarted.setSleeping(restored, true);
+      expect(restarted.get(legacy.sid)).toBe(restored);
+      time = 50;
+      expect((await createClientSessions({ file, now })).get(legacy.sid)?.sleepingSince).toBe(40);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("migrates device ownership without dropping sessions or repeating the user prefix", async () => {
     const dir = await mkdtemp(join(tmpdir(), "clients-owner-migration-"));
     try {
