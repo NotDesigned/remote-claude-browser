@@ -181,7 +181,7 @@ export function AccountOnboarding({
         { ...Object.fromEntries(form), ...identity },
       );
       goTo({ name: "apple-verification", tab, filled, watching, email });
-      openTab(tab);
+      if (filled) openTab(tab);
     }
     if (step.name === "claude") {
       const { tab, filled, watching } = await apiRequest<{
@@ -197,6 +197,8 @@ export function AccountOnboarding({
 
   if (!open) return null;
 
+  const needsAppleDetails =
+    step.name === "apple-verification" && !step.filled && !verification.ready;
   const emailField = (
     <>
       {mailboxes?.enabled || mailboxes?.addresses.length ? (
@@ -253,9 +255,14 @@ export function AccountOnboarding({
         )}
         {step.name === "start" && (
           <section class="user-panel-form">
+            {pending && (
+              <p class="user-panel-muted" role="status">
+                正在从 iCloud 打开注册表单。表单未能加载时，可在 Apple 页面继续。
+              </p>
+            )}
             <div class="user-panel-actions">
               <button type="button" class="user-panel-save" disabled={pending} onClick={openApple}>
-                {pending ? "正在打开 iCloud…" : "注册 Apple 账户"}
+                注册 Apple 账户
               </button>
               <button type="button" disabled={pending} onClick={() => goTo({ name: "claude" })}>
                 登录 Claude
@@ -375,14 +382,14 @@ export function AccountOnboarding({
             </form>
           ) : (
             <section class="user-panel-form">
-              <p role="status">iCloud 已打开，请在 Apple 页面继续注册。</p>
+              <p role="status">Apple 官方注册页已打开，请在页面填写资料并完成验证。</p>
               <div class="user-panel-actions">
                 <button
                   type="button"
                   class="user-panel-save"
                   onClick={() => openTab(step.apple.tab)}
                 >
-                  前往 iCloud
+                  前往 Apple 注册
                 </button>
                 <button type="button" onClick={() => goTo({ name: "start" })}>
                   返回
@@ -392,8 +399,7 @@ export function AccountOnboarding({
           ))}
         {step.name === "apple-verification" && (
           <section class="user-panel-form">
-            <h3>完成 Apple 注册</h3>
-            {!step.filled && <p>请在 Apple 页面检查剩余资料。</p>}
+            <h3>{needsAppleDetails ? "请在 Apple 页面补全资料" : "完成 Apple 注册"}</h3>
             <p class="user-panel-muted account-onboarding-address">{step.email}</p>
             <p>在 Apple 页面完成图形验证码、手机验证和注册确认。</p>
             {step.watching && (
@@ -402,12 +408,12 @@ export function AccountOnboarding({
                   ? "邮箱验证码已填入 Apple 页面。"
                   : verification.expired
                     ? "请从收件箱读取最新的邮箱验证码。"
-                    : "Apple 发出邮件后，邮箱验证码会自动填入。"}
+                    : "进入 Apple 的邮箱验证步骤后，收到的验证码会自动填入。"}
               </p>
             )}
             <div class="user-panel-actions">
               <button type="button" class="user-panel-save" onClick={() => openTab(step.tab)}>
-                返回 Apple
+                {needsAppleDetails ? "前往 Apple 补填" : "返回 Apple"}
               </button>
               <button type="button" onClick={() => goTo({ name: "claude" })}>
                 登录 Claude

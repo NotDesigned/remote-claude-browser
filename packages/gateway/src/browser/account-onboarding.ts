@@ -8,8 +8,11 @@ import type { ClientBrowserScope } from "./client-scope";
 
 const ICLOUD = "https://www.icloud.com/";
 const APPLE_SIGN_IN = "https://idmsa.apple.com/appleauth/auth/authorize/signin";
+const APPLE_ACCOUNT = "https://account.apple.com/account";
 const APPLE_FORM = "https://appleid.apple.com/widget/account/";
 const CLAUDE_LOGIN = "https://claude.ai/login";
+const ICLOUD_FLOW_MS = 35_000;
+const APPLE_REGISTRATION_MS = 30_000;
 
 type Browser = Pick<ClientBrowserScope, "send" | "targets">;
 interface OnboardingSession {
@@ -154,7 +157,7 @@ export function registerAccountOnboarding(
       const filled = result?.value === true;
       return {
         filled,
-        watching: filled && watch("apple", details, current, sid, tab, since),
+        watching: watch("apple", details, current, sid, tab, since),
       };
     },
   );
@@ -290,6 +293,19 @@ function appleCode(email: string, code: string) {
 }
 
 async function openAppleRegistration(browser: Browser, tab: string) {
+  const registration = await openICloudRegistration(browser, tab);
+  if (registration) return registration;
+  const page = findPage(browser, tab);
+  if (!page) return null;
+  const navigation = (await browser.send(page.sessionId, "Page.navigate", {
+    url: APPLE_ACCOUNT,
+  })) as Protocol.Page.NavigateResponse;
+  if (navigation.errorText) return null;
+  return waitForRegistration(browser, tab, Date.now() + APPLE_REGISTRATION_MS, false);
+}
+
+async function openICloudRegistration(browser: Browser, tab: string) {
+  const deadline = Date.now() + ICLOUD_FLOW_MS;
   const signIn = await waitForForm<{ x: number; y: number }>(
     browser,
     tab,
@@ -301,6 +317,7 @@ async function openAppleRegistration(browser: Browser, tab: string) {
     return { x: x + width / 2, y: y + height / 2 };
   `,
     { mainFrameOnly: true },
+    deadline,
   );
   const page = findPage(browser, tab);
   if (!signIn || !page) return null;
@@ -328,8 +345,18 @@ async function openAppleRegistration(browser: Browser, tab: string) {
     return true;
   `,
     { userGesture: true },
+    deadline,
   );
   if (!create) return null;
+  return waitForRegistration(browser, tab, deadline, true);
+}
+
+function waitForRegistration(
+  browser: Browser,
+  tab: string,
+  deadline: number,
+  includePopups: boolean,
+) {
   return waitForForm<RegistrationOptions>(
     browser,
     tab,
@@ -340,7 +367,8 @@ async function openAppleRegistration(browser: Browser, tab: string) {
     if (!document.querySelector('input[name="phoneNumber"]')) return null;
     return { countries: options("countrySelect"), phoneCodes: options("phoneCode") };
   `,
-    { includePopups: true },
+    { includePopups },
+    deadline,
   );
 }
 
@@ -372,13 +400,13 @@ async function waitForForm<T>(
   form: string,
   source: string,
   scope?: FormScope,
+  deadline = Date.now() + 10_000,
 ) {
-  const deadline = Date.now() + 10_000;
-  do {
+  while (Date.now() < deadline) {
     const result = await checkForm<T>(browser, tab, form, source, scope);
     if (result || !findPage(browser, tab)) return result;
     await pause(250);
-  } while (Date.now() < deadline);
+  }
   return null;
 }
 

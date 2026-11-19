@@ -133,6 +133,129 @@ describe("mail verification", () => {
 });
 
 describe("onboarding endpoints", () => {
+  it.each([false, true])("opens the Apple widget with a slow iCloud sign-in=%s", async (slow) => {
+    const home = "https://www.icloud.com/";
+    const account = "https://account.apple.com/account";
+    const widget = { frame: { id: "widget", url: "https://appleid.apple.com/widget/account/" } };
+    const auth = {
+      frame: { id: "auth", url: "https://idmsa.apple.com/appleauth/auth/authorize/signin" },
+    };
+    const options = { countries: [["USA", "United States"]], phoneCodes: [["US", "+1"]] };
+    const app = Fastify();
+    let url = home;
+    let signIn = false;
+    let created = false;
+    let fallbackPolls = 0;
+    let now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const send = vi.fn(async (_session, method, params) => {
+      if (method === "Page.getFrameTree") {
+        const childFrames = [];
+        if (url === home) {
+          if (signIn) childFrames.push(auth);
+          if (created) childFrames.push(widget);
+        } else if (++fallbackPolls === 1) {
+          now += 21_000;
+        } else {
+          childFrames.push(widget);
+        }
+        return { frameTree: { frame: { id: "main", url }, childFrames } };
+      }
+      if (method === "Page.createIsolatedWorld") return { executionContextId: params.frameId };
+      if (method === "Runtime.evaluate") {
+        if (params.contextId === "main") return { result: { value: { x: 10, y: 10 } } };
+        if (params.contextId === "auth") {
+          if (slow) now += 35_001;
+          else created = true;
+          return { result: { value: created || null } };
+        }
+        return { result: { value: options } };
+      }
+      if (method === "Input.dispatchMouseEvent" && params.type === "mouseReleased") signIn = true;
+      if (method === "Page.navigate") url = params.url;
+      return {};
+    });
+    const browser = {
+      targets: () => [{ targetId: "tab", type: "page" as const, sessionId: "cdp" }],
+      send,
+    };
+    const open = vi.fn(async () => "tab");
+    registerAccountOnboarding(
+      app,
+      async () => {},
+      () => ({ browser, open }),
+      {
+        currentUserId: () => "alice",
+      },
+    );
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/client/session/session/onboarding/apple",
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ tab: "tab", options });
+      expect(open).toHaveBeenCalledExactlyOnceWith(home);
+      expect(send.mock.calls.filter((call) => call[1] === "Page.navigate")).toEqual(
+        slow ? [["cdp", "Page.navigate", { url: account }]] : [],
+      );
+      expect(fallbackPolls).toBe(slow ? 2 : 0);
+    } finally {
+      clock.mockRestore();
+      await app.close();
+    }
+  });
+
+  it("starts Apple mail verification after partial autofill and expires it after ten minutes", async () => {
+    const { mailbox } = mailFixture();
+    const app = Fastify();
+    const browser = {
+      targets: () => [{ targetId: "tab", type: "page" as const, sessionId: "cdp" }],
+      async send(_session: string, method: string) {
+        if (method === "Page.getFrameTree") {
+          return {
+            frameTree: { frame: { id: "main", url: "https://appleid.apple.com/widget/account/" } },
+          };
+        }
+        if (method === "Page.createIsolatedWorld") return { executionContextId: 1 };
+        return { result: { value: false } };
+      },
+    };
+    registerAccountOnboarding(
+      app,
+      async () => {},
+      () => ({ browser, open: async () => "tab" }),
+      { currentUserId: () => "alice", mailbox },
+    );
+    const url = "/api/client/session/session/onboarding/apple/tab";
+    const start = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(start);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url,
+        payload: {
+          mailboxId: "alias",
+          firstName: "First",
+          lastName: "Last",
+          country: "USA",
+          birthday: "1990-01-01",
+          phoneCode: "US",
+          phone: "5550100",
+        },
+      });
+      expect(response.json()).toEqual({ filled: false, watching: true });
+      const status = async () => (await app.inject({ url: `${url}/verification` })).json();
+      clock.mockReturnValue(start + 10 * 60_000 - 1);
+      expect(await status()).toEqual({ ready: false, expired: false });
+      clock.mockReturnValue(start + 10 * 60_000);
+      expect(await status()).toEqual({ ready: false, expired: true });
+    } finally {
+      clock.mockRestore();
+      await app.close();
+    }
+  });
+
   it.each([true, false])(
     "keeps aliases private and supports manual entry when mailbox enabled=%s",
     async (enabled) => {
