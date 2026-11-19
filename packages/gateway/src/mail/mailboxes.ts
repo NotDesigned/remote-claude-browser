@@ -51,6 +51,7 @@ export interface MailboxMessage extends MailboxMessageSummary {
 export interface MailboxService {
   readonly enabled: boolean;
   createAddress(userId: string, label?: unknown): MailboxAddress;
+  deleteAddress(userId: string, addressId: string): void;
   getAddress(userId: string, addressId: string): MailboxAddress | undefined;
   listAddresses(userId: string): MailboxAddress[];
   listMessages(userId: string, addressId: string, since?: number): MailboxMessageSummary[];
@@ -138,6 +139,7 @@ export async function createMailboxService(options: {
     ON CONFLICT(address_id, id) DO NOTHING
   `);
   const deleteUser = db.prepare("DELETE FROM mailbox_addresses WHERE user_id = ?");
+  const deleteAddress = db.prepare("DELETE FROM mailbox_addresses WHERE user_id = ? AND id = ?");
 
   const requireReceiving = () => {
     if (!receiving) throw new MailboxError(503, "收件箱尚未启用");
@@ -160,6 +162,10 @@ export async function createMailboxService(options: {
           return { id, address, label: name, createdAt };
       }
       throw new MailboxError(503, "暂时无法分配新的邮箱地址");
+    },
+    deleteAddress(userId, addressId) {
+      if (!deleteAddress.run(userId, addressId).changes)
+        throw new MailboxError(404, "没有这个收件地址");
     },
     getAddress(userId, addressId) {
       return getAddress.get(userId, addressId) as unknown as MailboxAddress | undefined;
@@ -224,6 +230,13 @@ export function registerMailboxRoutes(
     const address = service.createAddress(userIdFor(request, reply), request.body?.label);
     return reply.code(201).send({ address });
   });
+  app.delete<{ Params: { addressId: string } }>(
+    `${MAILBOX_PATH}/:addressId`,
+    async (request, reply) => {
+      service.deleteAddress(userIdFor(request, reply), request.params.addressId);
+      return reply.code(204).send();
+    },
+  );
   app.get<{ Params: { addressId: string } }>(
     `${MAILBOX_PATH}/:addressId/messages`,
     async (request, reply) => {

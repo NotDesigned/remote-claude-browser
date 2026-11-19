@@ -133,6 +133,13 @@ it("routes verified delivery to matching addresses and serves message bodies onl
     expect(await store.readMessage("owner", first.id, "test-email")).toMatchObject({
       authenticated: false,
     });
+    const url = `${mailboxPath}/${first.id}`;
+    expect((await app.inject({ method: "DELETE", url, headers: other })).statusCode).toBe(404);
+    expect((await app.inject({ method: "DELETE", url, headers: owner })).statusCode).toBe(204);
+    await app.inject({ ...webhook, headers: signed(payload) });
+    expect(store.getAddress("owner", first.id)).toBeUndefined();
+    expect(store.listMessages("owner", first.id)).toEqual([]);
+    expect(store.listMessages("owner", second.id)).toEqual([summary]);
   } finally {
     await app.close();
     store.close();

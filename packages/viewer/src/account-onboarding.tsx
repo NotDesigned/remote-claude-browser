@@ -178,7 +178,15 @@ export function AccountOnboarding({
     const unavailable = { enabled: false, addresses: [] };
     void mailboxApi.addresses().then(
       (result) => {
-        if (active) setMailboxes(result);
+        if (!active) return;
+        setMailboxes(result);
+        setMailboxValue((id) =>
+          id === NEW_ADDRESS ||
+          id === PERSONAL_ADDRESS ||
+          result.addresses.some((item) => item.id === id)
+            ? id
+            : undefined,
+        );
       },
       () => {
         if (active) setMailboxes(unavailable);

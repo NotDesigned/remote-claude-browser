@@ -24,6 +24,7 @@ export function MailboxPanel({ onClose }: { onClose(): void }) {
     setAddressId(selected);
     setMessages(undefined);
     setSelectedMessage(undefined);
+    setContents(undefined);
     setCopied(false);
     setError("");
   };
@@ -93,6 +94,27 @@ export function MailboxPanel({ onClose }: { onClose(): void }) {
     }
   };
 
+  const deleteAddress = async () => {
+    if (
+      !address ||
+      !mailboxes ||
+      !window.confirm(`删除 ${address.address}？工作台将移除该地址的所有邮件记录，并停止为它收件。`)
+    )
+      return;
+    setSaving(true);
+    setError("");
+    try {
+      await mailboxApi.remove(address.id);
+      const remaining = mailboxes.addresses.filter((item) => item.id !== address.id);
+      setMailboxes({ ...mailboxes, addresses: remaining });
+      selectAddress(remaining[0]?.id ?? "");
+    } catch (failure) {
+      setError((failure as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div class="user-panel-backdrop">
       <section
@@ -131,6 +153,7 @@ export function MailboxPanel({ onClose }: { onClose(): void }) {
                       收件地址
                       <select
                         value={addressId}
+                        disabled={saving}
                         onChange={(event) => selectAddress(event.currentTarget.value)}
                       >
                         {mailboxes.addresses.map((item) => (
@@ -170,9 +193,15 @@ export function MailboxPanel({ onClose }: { onClose(): void }) {
                       <button
                         type="button"
                         class="user-panel-save"
+                        disabled={saving}
                         onClick={() => setCreating(true)}
                       >
                         新建地址
+                      </button>
+                    )}
+                    {address && (
+                      <button type="button" disabled={saving} onClick={() => void deleteAddress()}>
+                        删除地址
                       </button>
                     )}
                     {address && (
