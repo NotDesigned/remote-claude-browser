@@ -8,6 +8,9 @@ runtime=$(mktemp)
 cat > "$runtime" <<'YAML'
 services:
   server:
+    # Ubuntu's default AppArmor profile denies the mounts used by ip netns and Chromium's wrapper.
+    security_opt:
+      - apparmor=unconfined
     environment:
       MIRROR_PROFILE_EGRESS: "1"
       MIRROR_RUNTIME_SOCKET: /run/remote-browser/runtime.sock

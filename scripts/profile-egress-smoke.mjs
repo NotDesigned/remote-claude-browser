@@ -1417,6 +1417,7 @@ async function host() {
       "--read-only",
       "--cap-drop=ALL",
       "--security-opt=no-new-privileges:true",
+      "--security-opt=apparmor=unconfined",
       "--sysctl=net.ipv4.ip_forward=1",
       "--sysctl=net.ipv6.conf.all.forwarding=1",
       "--device=/dev/net/tun",
