@@ -30,6 +30,7 @@ type Step =
 interface Verification {
   ready: boolean;
   expired: boolean;
+  submitted?: boolean;
 }
 
 interface AccountOnboardingProps {
@@ -369,7 +370,8 @@ export function AccountOnboarding({
               </div>
               <p class="user-panel-muted">
                 在 Apple 页面完成图形验证码、手机验证和注册确认。
-                {selectedMailbox !== PERSONAL_ADDRESS && "邮箱验证码会自动填入。"}
+                {selectedMailbox !== PERSONAL_ADDRESS &&
+                  "向导会填入邮箱验证码，并在确认按钮可用时提交。"}
               </p>
               <div class="user-panel-actions">
                 <button type="submit" class="user-panel-save" disabled={pending || !mailboxes}>
@@ -405,10 +407,12 @@ export function AccountOnboarding({
             {step.watching && (
               <p class="user-panel-muted" role="status">
                 {verification.ready
-                  ? "邮箱验证码已填入 Apple 页面。"
+                  ? verification.submitted
+                    ? "邮箱验证码已提交。请返回 Apple 查看下一步。"
+                    : "邮箱验证码已填入 Apple 页面。"
                   : verification.expired
                     ? "请从收件箱读取最新的邮箱验证码。"
-                    : "进入 Apple 的邮箱验证步骤后，收到的验证码会自动填入。"}
+                    : "进入 Apple 的邮箱验证步骤后，向导会填入验证码，并在确认按钮可用时提交。"}
               </p>
             )}
             <div class="user-panel-actions">

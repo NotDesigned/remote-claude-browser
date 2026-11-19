@@ -93,43 +93,52 @@ describe("mail verification", () => {
     }
   });
 
-  it("only hands an authenticated Apple email code to the challenge in the live runtime", async () => {
-    const { mailbox, messages, context, tab, disconnect } = mailFixture();
-    const mail = {
-      from: "Apple <appleid@id.apple.com>",
-      subject: "Verify your Apple Account email address",
-      receivedAt: context.since,
-      authenticated: true,
-    };
-    messages.push(
-      {
-        ...mail,
-        id: "spoofed",
-        text: "Code 234567",
-        receivedAt: context.since + 2,
-        authenticated: false,
-      },
-      {
-        ...mail,
-        id: "unrelated",
-        text: "Order 345678",
-        receivedAt: context.since + 1,
-        subject: "Your receipt",
-      },
-      { ...mail, id: "official", text: "Your verification code is 123456" },
-    );
-    const apply = vi.fn(async () => true);
-    const verification = createVerification(mailbox);
-    try {
-      verification.start({ ...context, provider: "apple", apply });
-      await vi.waitFor(() => expect(verification.status("apple", tab, "alice").ready).toBe(true));
-      expect(apply).toHaveBeenCalledExactlyOnceWith("123456");
-      disconnect();
-      expect(verification.status("apple", tab, "alice")).toEqual({ ready: false, expired: true });
-    } finally {
-      verification.close();
-    }
-  });
+  it.each(["filled", "submitted"] as const)(
+    "records an authenticated Apple email code as %s in the live runtime",
+    async (action) => {
+      const { mailbox, messages, context, tab, disconnect } = mailFixture();
+      const mail = {
+        from: "Apple <appleid@id.apple.com>",
+        subject: "Verify your Apple Account email address",
+        receivedAt: context.since,
+        authenticated: true,
+      };
+      messages.push(
+        {
+          ...mail,
+          id: "spoofed",
+          text: "Code 234567",
+          receivedAt: context.since + 2,
+          authenticated: false,
+        },
+        {
+          ...mail,
+          id: "unrelated",
+          text: "Order 345678",
+          receivedAt: context.since + 1,
+          subject: "Your receipt",
+        },
+        { ...mail, id: "official", text: "Your verification code is 123456" },
+      );
+      const apply = vi.fn(async () => action);
+      const verification = createVerification(mailbox);
+      try {
+        verification.start({ ...context, provider: "apple", apply });
+        await vi.waitFor(() =>
+          expect(verification.status("apple", tab, "alice")).toEqual({
+            ready: true,
+            expired: false,
+            ...(action === "submitted" && { submitted: true }),
+          }),
+        );
+        expect(apply).toHaveBeenCalledExactlyOnceWith("123456");
+        disconnect();
+        expect(verification.status("apple", tab, "alice")).toEqual({ ready: false, expired: true });
+      } finally {
+        verification.close();
+      }
+    },
+  );
 });
 
 describe("onboarding endpoints", () => {

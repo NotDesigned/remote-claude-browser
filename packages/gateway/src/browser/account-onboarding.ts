@@ -3,7 +3,11 @@ import { setTimeout as pause } from "node:timers/promises";
 import type { FastifyInstance, FastifyRequest, preHandlerAsyncHookHandler } from "fastify";
 import type { Protocol } from "puppeteer-core";
 import type { TargetRef } from "../types";
-import { createVerification, type OnboardingMailbox } from "./account-onboarding-mail";
+import {
+  createVerification,
+  type AppleCodeAction,
+  type OnboardingMailbox,
+} from "./account-onboarding-mail";
 import type { ClientBrowserScope } from "./client-scope";
 
 const ICLOUD = "https://www.icloud.com/";
@@ -111,13 +115,13 @@ export function registerAccountOnboarding(
       ...(provider === "apple" && {
         apply: async (code: string) =>
           (
-            await checkForm<boolean>(
+            await checkForm<AppleCodeAction>(
               current.browser,
               tab,
               APPLE_FORM,
               appleCode(details.email, code),
             )
-          )?.value === true,
+          )?.value,
       }),
     });
     return true;
@@ -280,15 +284,49 @@ function appleCode(email: string, code: string) {
     ${SET_VALUE}
     const address = ${JSON.stringify(email.toLowerCase())};
     const code = ${JSON.stringify(code)};
-    const text = document.body.innerText.toLowerCase().replace(/\\s+/g, " ");
-    if (!text.includes(address) || !/verify (?:your )?e-?mail|e-?mail verification/.test(text)) return null;
-    const visible = (field) => field.getClientRects().length && !field.disabled && !field.readOnly;
-    const fields = [...document.querySelectorAll('input[autocomplete="one-time-code"]')].filter(visible);
-    if (fields.length === 1 && fields[0].maxLength !== 1 && !fields[0].value)
-      return setValue(fields[0], code);
-    const digits = [...document.querySelectorAll('input[inputmode="numeric"][maxlength="1"]')].filter(visible);
-    if (digits.length !== code.length || digits.some((field) => field.value)) return null;
-    return digits.every((field, index) => setValue(field, code[index]));
+    const page = location.origin + location.pathname;
+    const visible = (element) => element.getClientRects().length &&
+      getComputedStyle(element).visibility === "visible" && !element.closest('[inert], [aria-hidden="true"]');
+    const writable = (field) => visible(field) && !field.disabled && !field.readOnly;
+    const matchingChallenge = (section) => {
+      const text = section.innerText.toLowerCase().replace(/\\s+/g, " ");
+      const addresses = text.match(/[a-z0-9._%+~-]+@[a-z0-9.-]+\\.[a-z]+/g) ?? [];
+      return addresses.includes(address) &&
+        /\\b(?:verify (?:your )?e-?mail|e-?mail verification)\\b/.test(text) &&
+        !/\\b(?:phone|mobile number|trusted device|sms|text message|captcha)\\b/.test(text);
+    };
+    const single = [...document.querySelectorAll('input[autocomplete="one-time-code"]')].filter(writable);
+    const digits = [...document.querySelectorAll('input[inputmode="numeric"][maxlength="1"]')].filter(writable);
+    const fields = single.length === 1 && single[0].maxLength !== 1 ? single : digits;
+    if (!(fields.length === 1 || fields.length === code.length) || fields.some((field) => field.value)) return null;
+    if (fields.length === 1 && fields[0].maxLength === 1) return null;
+    const scopes = 'form, dialog, [role="dialog"], section, fieldset';
+    let section = fields[0].closest(scopes);
+    while (section && !(matchingChallenge(section) && fields.every((field) => section.contains(field))))
+      section = section.parentElement?.closest(scopes);
+    if (!section && !matchingChallenge(document.body)) return null;
+
+    const findButton = () => {
+      if (!section) return;
+      const buttons = [...section.querySelectorAll('button, input[type="submit"]')].filter((button) => {
+        const label = (button.getAttribute("aria-label") ??
+          (button.matches("input") ? button.value : button.innerText)).trim();
+        return visible(button) && /^(?:verify(?: e-?mail(?: address)?)?|continue)$/i.test(label) &&
+          (!button.form || (section.contains(button.form) && fields.every((field) => field.form === button.form)));
+      });
+      if (buttons.length === 1) return buttons[0];
+    };
+    const button = findButton();
+    const values = fields.length === 1 ? [code] : [...code];
+    if (!fields.map((field, i) => setValue(field, values[i])).every(Boolean)) return null;
+    if (!button) return "filled";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (page !== location.origin + location.pathname || !section.isConnected ||
+      !fields.every((field, i) => section.contains(field) && writable(field) && field.value === values[i]) ||
+      !matchingChallenge(section) || button !== findButton() ||
+      button.matches(':disabled, [aria-disabled="true"]')) return "filled";
+    button.click();
+    return "submitted";
   `;
 }
 

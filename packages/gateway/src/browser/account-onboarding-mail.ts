@@ -21,6 +21,7 @@ export interface OnboardingMailbox {
 }
 
 type Provider = "apple" | "claude";
+export type AppleCodeAction = "filled" | "submitted";
 interface Tab {
   sid: string;
   tab: string;
@@ -32,7 +33,7 @@ interface Verification extends Tab {
   email: string;
   since: number;
   isActive(): boolean;
-  apply?(code: string): Promise<boolean>;
+  apply?(code: string): Promise<AppleCodeAction | undefined>;
 }
 
 const WAIT_MS = 10 * 60_000;
@@ -77,6 +78,7 @@ interface Watcher extends Verification {
   seen: Set<string>;
   pending?: string;
   ready: boolean;
+  submitted?: boolean;
   opening: boolean;
   latest: number;
 }
@@ -119,9 +121,13 @@ export function createVerification(mailbox?: OnboardingMailbox) {
               if (job.provider === "claude") job.ready = true;
               break;
             }
-            if (job.provider === "apple" && job.pending && (await job.apply!(job.pending))) {
-              job.ready = true;
-              job.pending = undefined;
+            if (job.provider === "apple" && job.pending) {
+              const action = await job.apply!(job.pending);
+              if (action) {
+                job.ready = true;
+                job.submitted = action === "submitted";
+                job.pending = undefined;
+              }
             }
           }
         } catch {
@@ -154,7 +160,11 @@ export function createVerification(mailbox?: OnboardingMailbox) {
     },
     status(provider: Provider, tab: Tab, owner: string | undefined) {
       const job = forOwner(provider, tab, owner);
-      return { ready: job?.ready ?? false, expired: !job };
+      return {
+        ready: job?.ready ?? false,
+        expired: !job,
+        ...(job?.submitted && { submitted: true }),
+      };
     },
     async open(tab: Tab, owner: string | undefined, navigate: (url: string) => Promise<boolean>) {
       const job = forOwner("claude", tab, owner);
