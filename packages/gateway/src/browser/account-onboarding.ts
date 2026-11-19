@@ -389,19 +389,20 @@ function appleCode(email: string, code: string) {
         /\\b(?:verify (?:your )?(?:apple (?:account|id) )?e-?mail|e-?mail verification)\\b/.test(text) &&
         !/\\b(?:phone|mobile number|trusted device|sms|text message|captcha)\\b/.test(text);
     };
-    const single = [...document.querySelectorAll('input[autocomplete="one-time-code"]')].filter(writable);
-    const digits = [...document.querySelectorAll('input[inputmode="numeric"][maxlength="1"]')].filter(writable);
-    const fields = single.length === 1 && single[0].maxLength !== 1 ? single : digits;
-    if (!(fields.length === 1 || fields.length === code.length) || fields.some((field) => field.value)) return null;
-    if (fields.length === 1 && fields[0].maxLength === 1) return null;
+    const inputs = [...document.querySelectorAll('input:is(:not([type]), [type="text"], [type="tel"], [type="number"])')]
+      .filter(writable);
+    const single = inputs.filter((field) => field.autocomplete === "one-time-code" && field.maxLength !== 1);
+    const digits = inputs.filter((field) => field.maxLength === 1);
+    const fields = single.length === 1 ? single : digits.length === code.length ? digits : inputs;
+    if (!(single.length === 1 || fields.length === code.length) || fields.some((field) => field.value)) return null;
     const scopes = 'form, dialog, [role="dialog"], section, fieldset';
     let section = fields[0].closest(scopes);
     while (section && !(matchingChallenge(section) && fields.every((field) => section.contains(field))))
       section = section.parentElement?.closest(scopes);
-    if (!section && !matchingChallenge(document.body)) return null;
+    if (!section && matchingChallenge(document.body)) section = document.body;
+    if (!section) return null;
 
     const findButton = () => {
-      if (!section) return;
       const buttons = [...section.querySelectorAll('button, input[type="submit"]')].filter((button) => {
         const label = (button.getAttribute("aria-label") ??
           (button.matches("input") ? button.value : button.innerText)).trim();
@@ -410,7 +411,11 @@ function appleCode(email: string, code: string) {
       });
       if (buttons.length === 1) return buttons[0];
     };
-    const button = findButton();
+    let button = findButton();
+    if (!button && section !== document.body && matchingChallenge(document.body)) {
+      section = document.body;
+      button = findButton();
+    }
     const values = fields.length === 1 ? [code] : [...code];
     if (!fields.map((field, i) => setValue(field, values[i])).every(Boolean)) return null;
     if (!button) return "filled";
