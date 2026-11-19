@@ -439,11 +439,32 @@ function appleChallenge(code?: string) {
     const visible = (element) => element.getClientRects().length &&
       getComputedStyle(element).visibility === "visible" && !element.closest('[inert], [aria-hidden="true"]');
     const images = [...document.images].filter((image) => visible(image) && image.naturalWidth &&
-      /captcha|visual challenge/i.test([image.id, image.alt, image.currentSrc.split(/[?#]/)[0].slice(0, 256)].join(" ")));
-    const captcha = [...document.querySelectorAll('input:not([type="hidden"])')].find((field) =>
-      visible(field) && !field.disabled && !field.readOnly &&
-      /captcha/i.test([field.name, field.id, field.getAttribute("aria-label")].join(" ")));
+      /captcha|image challenge|visual challenge/i.test([image.id, image.alt, image.currentSrc.split(/[?#]/)[0].slice(0, 256)].join(" ")));
+    const writable = (field) => visible(field) && !field.disabled && !field.readOnly;
+    const caption = /characters (?:in|from) the image/i;
+    let captcha = [...document.querySelectorAll('input[type="text"], input:not([type])')].filter(writable).find((field) =>
+      /captcha/i.test(field.name + " " + field.id) ||
+      caption.test([field.getAttribute("aria-label"), field.placeholder,
+        ...Array.from(field.labels ?? [], label => label.innerText)].join(" ")));
+    for (let group = images[0]?.parentElement; !captcha && images.length === 1 && group; group = group.parentElement) {
+      const fields = [...group.querySelectorAll('input[type="text"], input:not([type])')].filter(writable);
+      if (fields.length > 1) break;
+      if (caption.test(group.innerText)) captcha = fields[0];
+    }
     const code = ${JSON.stringify(code)};
+    const continueButton = (root) => {
+      const buttons = [...root.querySelectorAll('button, input[type="submit"]')].filter((button) =>
+        visible(button) && /^(?:continue|create (?:an? |your )?(?:apple )?account)$/i.test(
+          (button.getAttribute("aria-label") ?? (button.matches("input") ? button.value : button.innerText)).trim()));
+      return buttons.length === 1 ? buttons[0] : undefined;
+    };
+    const submit = (field) => {
+      const scope = field.form ?? field.closest('dialog, [role="dialog"]') ?? document;
+      const button = continueButton(scope) ?? (scope !== document && continueButton(document));
+      if (!button || button.matches(':disabled, [aria-disabled="true"]')) return null;
+      button.click();
+      return "submitted";
+    };
     if (captcha && images.length === 1) {
       if (code === undefined) {
         const image = images[0];
@@ -459,13 +480,7 @@ function appleChallenge(code?: string) {
       }
       setValue(captcha, code);
       await new Promise((resolve) => setTimeout(resolve, 0));
-      const buttons = [...(captcha.form ?? document).querySelectorAll('button, input[type="submit"]')].filter((button) =>
-        visible(button) && /^(?:continue|create (?:an? |your )?(?:apple )?account)$/i.test(
-          (button.getAttribute("aria-label") ?? (button.matches("input") ? button.value : button.innerText)).trim()));
-      const button = buttons.length === 1 && buttons[0];
-      if (!button || button.matches(':disabled, [aria-disabled="true"]')) return null;
-      button.click();
-      return "submitted";
+      return submit(captcha);
     }
     if (code !== undefined) return null;
     for (const heading of document.querySelectorAll('h1, h2, h3, [role="heading"]')) {
