@@ -27,7 +27,7 @@ export function createClipboardWriter(options: ClipboardWriterOptions = {}) {
   };
 }
 
-async function writeLocalClipboard(text: string): Promise<void> {
+export async function writeLocalClipboard(text: string): Promise<void> {
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);

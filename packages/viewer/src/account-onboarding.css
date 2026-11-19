@@ -1,15 +1,22 @@
 .account-onboarding {
   width: min(540px, 100%);
 }
+.account-onboarding .user-panel-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+}
 .account-onboarding-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
-.account-onboarding-email {
-  grid-column: 1 / -1;
+.account-onboarding-address {
+  overflow-wrap: anywhere;
+  user-select: text;
 }
-.account-onboarding-secondary {
+.account-onboarding .user-panel-actions button:not(.user-panel-save) {
   background: var(--surface);
   color: var(--ink);
 }

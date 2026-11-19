@@ -1,0 +1,59 @@
+.mailbox-panel {
+  width: min(600px, 100%);
+}
+.mailbox-panel .user-panel-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+.mailbox-panel .user-panel-actions button:not(.user-panel-save) {
+  background: var(--surface);
+  color: var(--ink);
+}
+.mailbox-addresses {
+  gap: 10px;
+}
+.mailbox-address,
+.mailbox-messages {
+  overflow-wrap: anywhere;
+}
+.mailbox-address,
+.mailbox-body {
+  user-select: text;
+}
+.mailbox-create {
+  display: grid;
+  gap: 8px;
+}
+.mailbox-messages {
+  border-top: 1px solid var(--line);
+}
+.mailbox-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.mailbox-list button {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.mailbox-list button:hover {
+  background: var(--sunken);
+}
+.mailbox-body {
+  font: inherit;
+  margin: 0;
+  white-space: pre-wrap;
+}

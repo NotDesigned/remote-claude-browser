@@ -421,6 +421,9 @@ export async function launchBrowser(opts: LaunchOpts): Promise<BrowserHandle> {
   if (typeof process.getuid === "function" && process.getuid() === 0) {
     args.push("--no-sandbox");
   }
+  const env = { ...process.env, ...opts.env };
+  delete env.RESEND_API_KEY;
+  delete env.RESEND_WEBHOOK_SECRET;
 
   const browser = await launch({
     ...(opts.executablePath === undefined ? {} : { executablePath: opts.executablePath }),
@@ -429,7 +432,7 @@ export async function launchBrowser(opts: LaunchOpts): Promise<BrowserHandle> {
     ignoreDefaultArgs: true,
     pipe: true,
     userDataDir: opts.userDataDir,
-    ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+    env,
   });
   // Retain only Chromium crash diagnostics, never renderer console output or page content.
   let diagnosticTail = "";

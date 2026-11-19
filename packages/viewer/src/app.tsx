@@ -5,6 +5,7 @@ import { currentUser, logout, myBrowserSessions, type FrontendUser } from "./use
 import { AdminPanel } from "./admin-panel";
 import { AccountPanel } from "./account-panel";
 import { AccountOnboarding } from "./account-onboarding";
+import { MailboxPanel } from "./mailbox-panel";
 import type { WorkspaceDestination, WorkspaceMenuProps } from "./workspace-menu";
 import { NetworkPanel } from "./network-panel";
 import { cpaApi, type CpaBrowserAuthorization } from "./network-api";
@@ -136,6 +137,7 @@ export function App() {
   const [oauthCallbacks, setOAuthCallbacks] = useState<Record<string, "submitted" | "error">>({});
   const [accountPanelOpen, setAccountPanelOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [mailboxOpen, setMailboxOpen] = useState(false);
   const [profilePickerOpen, setProfilePickerOpen] = useState(false);
   const [browserAuthorization, setBrowserAuthorization] = useState<CpaBrowserAuthorization | null>(
     () => JSON.parse(sessionStorage.getItem("mirror-cpa-browser") ?? "null"),
@@ -930,6 +932,9 @@ export function App() {
                 : "重新连接中";
 
   const activeChrome = activeTab === null ? null : (chromeByTab[activeTab] ?? null);
+  const currentProfile = accountList?.accounts.find(
+    (account) => account.id === accountList.current,
+  );
   const shellStatus: { text: string; tone: "ok" | "busy" | "bad" } =
     clientPhase !== "ready"
       ? { text: connectionLabel, tone: clientPhase === "starting" ? "busy" : "bad" }
@@ -959,6 +964,7 @@ export function App() {
     setUserPanelOpen(destination === "admin");
     setAccountPanelOpen(destination === "account");
     setOnboardingOpen(destination === "onboarding");
+    setMailboxOpen(destination === "mailboxes");
     setNetworkPanelOpen(destination === "proxies" || destination === "cpa");
     if (destination === "proxies" || destination === "cpa") setNetworkTab(destination);
     if (destination === "profiles") {
@@ -998,7 +1004,10 @@ export function App() {
     ? {
         user,
         onboardingAvailable:
-          clientPhase === "ready" && clientSession !== null && !profilePickerOpen,
+          clientPhase === "ready" &&
+          clientSession !== null &&
+          !!currentProfile &&
+          !profilePickerOpen,
         onNavigate: navigateWorkspace,
         onLogout: () => void signOut(),
         logoutPending,
@@ -1060,13 +1069,19 @@ export function App() {
           }}
         />
       )}
-      {onboardingOpen && user && clientSession && clientPhase === "ready" && (
+      {user && currentProfile && clientSession && clientPhase === "ready" && (
         <AccountOnboarding
-          key={clientSession.sid}
+          key={`${user.id}:${clientSession.sid}:${currentProfile.id}`}
+          open={onboardingOpen}
           sid={clientSession.sid}
+          profileKey={`${user.id}.${currentProfile.id}`}
+          profileName={currentProfile.name}
+          storage={viewStorage()}
           onClose={() => setOnboardingOpen(false)}
+          onOpenTab={(tab) => presentationRef.current?.activate(tab)}
         />
       )}
+      {mailboxOpen && user && <MailboxPanel key={user.id} onClose={() => setMailboxOpen(false)} />}
       {user && (
         <NetworkPanel
           key={user.id}
@@ -1076,11 +1091,7 @@ export function App() {
           onTabChange={setNetworkTab}
           user={user}
           browserSessionId={clientPhase === "ready" ? clientSession?.sid : undefined}
-          browserProxyId={
-            clientPhase === "ready"
-              ? accountList?.accounts.find((account) => account.id === accountList.current)?.proxyId
-              : undefined
-          }
+          browserProxyId={clientPhase === "ready" ? currentProfile?.proxyId : undefined}
           onClose={() => setNetworkPanelOpen(false)}
           onOpenBrowser={() => {
             setNetworkPanelOpen(false);

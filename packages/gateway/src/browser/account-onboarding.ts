@@ -1,9 +1,13 @@
+import type { IncomingMessage } from "node:http";
 import { setTimeout as pause } from "node:timers/promises";
-import type { FastifyInstance, preHandlerAsyncHookHandler } from "fastify";
+import type { FastifyInstance, FastifyRequest, preHandlerAsyncHookHandler } from "fastify";
 import type { Protocol } from "puppeteer-core";
+import type { TargetRef } from "../types";
+import { createVerification, type OnboardingMailbox } from "./account-onboarding-mail";
 import type { ClientBrowserScope } from "./client-scope";
 
-const APPLE_ACCOUNT = "https://account.apple.com/account";
+const ICLOUD = "https://www.icloud.com/";
+const APPLE_SIGN_IN = "https://idmsa.apple.com/appleauth/auth/authorize/signin";
 const APPLE_FORM = "https://appleid.apple.com/widget/account/";
 const CLAUDE_LOGIN = "https://claude.ai/login";
 
@@ -13,14 +17,31 @@ interface OnboardingSession {
   open(url: string): Promise<string>;
 }
 
-interface AppleDetails {
+interface OnboardingOptions {
+  currentUserId(request: IncomingMessage): string | undefined;
+  mailbox?: OnboardingMailbox;
+}
+
+interface MailAddress {
+  email?: string;
+  mailboxId?: string;
+}
+
+interface AppleDetails extends MailAddress {
   firstName: string;
   lastName: string;
   country: string;
   birthday: string;
-  email: string;
   phoneCode: string;
   phone: string;
+  password?: string;
+}
+
+interface SessionParams {
+  sid: string;
+}
+interface TabParams extends SessionParams {
+  tab: string;
 }
 
 const requiredText = (maxLength: number) => ({ type: "string", minLength: 1, maxLength });
@@ -30,69 +51,124 @@ const appleDetails = {
   lastName: requiredText(100),
   country: { type: "string", pattern: "^[A-Z]{3}$" },
   birthday: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
-  email: emailField,
   phoneCode: { type: "string", pattern: "^[A-Z]{2}$" },
   phone: requiredText(40),
 };
-const bodyOf = (properties: Record<string, unknown>) => ({
+const mailBody = (
+  properties: Record<string, unknown> = {},
+  required = Object.keys(properties),
+) => ({
   type: "object",
-  required: Object.keys(properties),
+  required,
+  anyOf: [{ required: ["email"] }, { required: ["mailboxId"] }],
   additionalProperties: false,
-  properties,
+  properties: { ...properties, email: emailField, mailboxId: requiredText(100) },
 });
 
 export function registerAccountOnboarding(
   app: FastifyInstance,
   requireSession: preHandlerAsyncHookHandler,
   session: (sid: string) => OnboardingSession | undefined,
+  options: OnboardingOptions,
 ): void {
   const preHandler: preHandlerAsyncHookHandler = async (request, reply) => {
     await requireSession.call(app, request, reply);
-    if (!reply.sent && !session((request.params as { sid: string }).sid))
+    if (!reply.sent && !session((request.params as SessionParams).sid))
       return reply.code(409).send({ error: "请先连接当前浏览器" });
   };
-  const route = "/api/client/session/:sid/onboarding";
-  app.post<{ Params: { sid: string } }>(`${route}/apple`, { preHandler }, async (request) => {
-    const current = session(request.params.sid)!;
-    const tab = await current.open(APPLE_ACCOUNT);
-    const options = await waitForForm<RegistrationOptions>(
-      current.browser,
+  const userId = (request: FastifyRequest) => options.currentUserId(request.raw);
+  const mailboxService = options.mailbox?.enabled ? options.mailbox : undefined;
+  const verification = createVerification(mailboxService);
+  app.addHook("onClose", async () => verification.close());
+  const address = (request: FastifyRequest<{ Body: MailAddress }>) => {
+    const { mailboxId, email } = request.body;
+    if (!mailboxId) return { email: email! };
+    const owner = userId(request);
+    const mailbox = owner && mailboxService?.getAddress(owner, mailboxId);
+    if (mailbox) return { email: mailbox.address, mailboxId: mailbox.id, owner };
+  };
+  const watch = (
+    provider: "apple" | "claude",
+    details: NonNullable<ReturnType<typeof address>>,
+    current: OnboardingSession,
+    sid: string,
+    tab: string,
+    since: number,
+  ) => {
+    if (!details.owner || !details.mailboxId) return false;
+    verification.start({
+      provider,
+      sid,
       tab,
-      APPLE_FORM,
-      `
-      const options = (name) => Array.from(document.querySelector('select[name="' + name + '"]').options,
-        ({ value, text }) => [value, text]);
-      if (!document.querySelector('input[name="phoneNumber"]')) return null;
-      return { countries: options("countrySelect"), phoneCodes: options("phoneCode") };
-    `,
-    );
-    return { tab, options };
+      owner: details.owner,
+      mailboxId: details.mailboxId,
+      email: details.email,
+      since,
+      isActive: () => session(sid)?.browser === current.browser && !!findPage(current.browser, tab),
+      ...(provider === "apple" && {
+        apply: async (code: string) =>
+          (
+            await checkForm<boolean>(
+              current.browser,
+              tab,
+              APPLE_FORM,
+              appleCode(details.email, code),
+            )
+          )?.value === true,
+      }),
+    });
+    return true;
+  };
+  const route = "/api/client/session/:sid/onboarding";
+  app.post<{ Params: SessionParams }>(`${route}/apple`, { preHandler }, async (request) => {
+    const current = session(request.params.sid)!;
+    const tab = await current.open(ICLOUD);
+    const registration = await openAppleRegistration(current.browser, tab);
+    return registration
+      ? { tab: registration.tab, options: registration.value }
+      : { tab, options: null };
   });
-  app.post<{ Params: { sid: string; tab: string }; Body: AppleDetails }>(
+  app.post<{ Params: TabParams; Body: AppleDetails }>(
     `${route}/apple/:tab`,
-    { preHandler, bodyLimit: 2048, schema: { body: bodyOf(appleDetails) } },
+    {
+      preHandler,
+      bodyLimit: 4096,
+      schema: {
+        body: mailBody({ ...appleDetails, password: requiredText(256) }, Object.keys(appleDetails)),
+      },
+    },
     async (request, reply) => {
       const { sid, tab } = request.params;
       const current = session(sid)!;
-      if (
-        !current.browser
-          .targets()
-          .some((target) => target.type === "page" && target.targetId === tab)
-      )
+      if (!findPage(current.browser, tab))
         return reply.code(404).send({ error: "Apple 注册标签已关闭，请重新打开" });
+      const details = address(request);
+      if (!details) return reply.code(404).send({ error: "未找到这个接收邮箱" });
+      const since = Date.now();
+      const result = await waitForForm<boolean>(
+        current.browser,
+        tab,
+        APPLE_FORM,
+        fillApple({ ...request.body, email: details.email }),
+      );
+      const filled = result?.value === true;
       return {
-        filled:
-          (await waitForForm(current.browser, tab, APPLE_FORM, fillApple(request.body))) === true,
+        filled,
+        watching: filled && watch("apple", details, current, sid, tab, since),
       };
     },
   );
-  app.post<{ Params: { sid: string }; Body: { email: string } }>(
+  app.post<{ Params: SessionParams; Body: MailAddress }>(
     `${route}/claude`,
-    { preHandler, bodyLimit: 512, schema: { body: bodyOf({ email: emailField }) } },
-    async (request) => {
-      const current = session(request.params.sid)!;
+    { preHandler, bodyLimit: 1024, schema: { body: mailBody() } },
+    async (request, reply) => {
+      const details = address(request);
+      if (!details) return reply.code(404).send({ error: "未找到这个接收邮箱" });
+      const { sid } = request.params;
+      const current = session(sid)!;
+      const since = Date.now();
       const tab = await current.open(CLAUDE_LOGIN);
-      const filled = await waitForForm<boolean>(
+      const result = await waitForForm<boolean>(
         current.browser,
         tab,
         CLAUDE_LOGIN,
@@ -100,10 +176,46 @@ export function registerAccountOnboarding(
         ${SET_VALUE}
         const email = document.querySelector('input[type="email"]');
         if (!email?.getClientRects().length) return null;
-        return setValue(email, ${JSON.stringify(request.body.email)});
+        return setValue(email, ${JSON.stringify(details.email)});
       `,
+        { mainFrameOnly: true },
       );
-      return { filled: filled === true };
+      const filled = result?.value === true;
+      return {
+        tab,
+        filled,
+        watching: filled && watch("claude", details, current, sid, tab, since),
+      };
+    },
+  );
+  for (const provider of ["apple", "claude"] as const) {
+    app.get<{ Params: TabParams }>(
+      `${route}/${provider}/:tab/verification`,
+      { preHandler },
+      (request, reply) => {
+        reply.header("cache-control", "no-store");
+        return verification.status(provider, request.params, userId(request));
+      },
+    );
+  }
+  app.post<{ Params: TabParams }>(
+    `${route}/claude/:tab/verification`,
+    { preHandler },
+    async (request, reply) => {
+      const { sid, tab } = request.params;
+      const current = session(sid)!;
+      const opened = await verification.open(request.params, userId(request), async (url) => {
+        const result = await checkForm<boolean>(
+          current.browser,
+          tab,
+          CLAUDE_LOGIN,
+          `location.assign(${JSON.stringify(url)}); return true;`,
+          { mainFrameOnly: true },
+        );
+        return result?.value === true;
+      });
+      if (!opened) return reply.code(409).send({ error: "请在原来的 Claude 登录标签中继续" });
+      return { opened: true };
     },
   );
 }
@@ -129,10 +241,12 @@ const SET_VALUE = `
   }
 `;
 
-function fillApple(details: AppleDetails): string {
+function fillApple(details: AppleDetails & { email: string }): string {
+  const { firstName, lastName, country, birthday, email, phoneCode, phone, password } = details;
   return `
     ${SET_VALUE}
-    const { country, birthday, firstName, lastName, email, phoneCode, phone } = ${JSON.stringify(details)};
+    const { country, birthday, firstName, lastName, email, phoneCode, phone, password } =
+      ${JSON.stringify({ firstName, lastName, country, birthday, email, phoneCode, phone, password })};
     const control = (name) => document.querySelector('[name="' + name + '"]');
     const countryInput = control("countrySelect");
     if (!countryInput) return null;
@@ -145,35 +259,160 @@ function fillApple(details: AppleDetails): string {
     const yearSet = setValue(date("year"), year);
     const monthSet = setValue(date("month"), month);
     await render();
+    const passwords = [...document.querySelectorAll('input[type="password"]')]
+      .filter((field) => field.getClientRects().length);
     return [
       setValue(control("firstName"), firstName), setValue(control("lastName"), lastName),
       yearSet, monthSet, setValue(date("day"), day),
       setValue(control("appleId"), email), codeSet,
       codeSet && setValue(control("phoneNumber"), phone),
+      password === undefined || passwords.length === 2 &&
+        passwords.map((field) => setValue(field, password)).every(Boolean),
     ].every(Boolean);
   `;
 }
 
-async function waitForForm<T>(browser: Browser, tab: string, form: string, source: string) {
+function appleCode(email: string, code: string) {
+  return `
+    ${SET_VALUE}
+    const address = ${JSON.stringify(email.toLowerCase())};
+    const code = ${JSON.stringify(code)};
+    const text = document.body.innerText.toLowerCase().replace(/\\s+/g, " ");
+    if (!text.includes(address) || !/verify (?:your )?e-?mail|e-?mail verification/.test(text)) return null;
+    const visible = (field) => field.getClientRects().length && !field.disabled && !field.readOnly;
+    const fields = [...document.querySelectorAll('input[autocomplete="one-time-code"]')].filter(visible);
+    if (fields.length === 1 && fields[0].maxLength !== 1 && !fields[0].value)
+      return setValue(fields[0], code);
+    const digits = [...document.querySelectorAll('input[inputmode="numeric"][maxlength="1"]')].filter(visible);
+    if (digits.length !== code.length || digits.some((field) => field.value)) return null;
+    return digits.every((field, index) => setValue(field, code[index]));
+  `;
+}
+
+async function openAppleRegistration(browser: Browser, tab: string) {
+  const signIn = await waitForForm<{ x: number; y: number }>(
+    browser,
+    tab,
+    ICLOUD,
+    `
+    const button = document.querySelector('.sign-in-button');
+    if (!button?.getClientRects().length) return null;
+    const { x, y, width, height } = button.getBoundingClientRect();
+    return { x: x + width / 2, y: y + height / 2 };
+  `,
+    { mainFrameOnly: true },
+  );
+  const page = findPage(browser, tab);
+  if (!signIn || !page) return null;
+  const mouse = { ...signIn.value, button: "left", clickCount: 1 };
+  await browser.send(page.sessionId, "Input.dispatchMouseEvent", {
+    ...mouse,
+    type: "mousePressed",
+    buttons: 1,
+  });
+  await browser.send(page.sessionId, "Input.dispatchMouseEvent", {
+    ...mouse,
+    type: "mouseReleased",
+    buttons: 0,
+  });
+  const create = await waitForForm<boolean>(
+    browser,
+    tab,
+    APPLE_SIGN_IN,
+    `
+    const button = document.getElementById("create-link") ??
+      [...document.querySelectorAll('a, button, [role="button"]')].find((element) =>
+      element.getClientRects().length && /Create Your Apple\\s+Account/i.test(element.innerText));
+    if (!button?.getClientRects().length) return null;
+    button.click();
+    return true;
+  `,
+    { userGesture: true },
+  );
+  if (!create) return null;
+  return waitForForm<RegistrationOptions>(
+    browser,
+    tab,
+    APPLE_FORM,
+    `
+    const options = (name) => Array.from(document.querySelector('select[name="' + name + '"]').options,
+      ({ value, text }) => [value, text]);
+    if (!document.querySelector('input[name="phoneNumber"]')) return null;
+    return { countries: options("countrySelect"), phoneCodes: options("phoneCode") };
+  `,
+    { includePopups: true },
+  );
+}
+
+interface FormScope {
+  mainFrameOnly?: boolean;
+  includePopups?: boolean;
+  userGesture?: boolean;
+}
+
+function findPage(browser: Browser, tab: string) {
+  return browser.targets().find((target) => target.type === "page" && target.targetId === tab);
+}
+
+function rootPage(target: TargetRef, targets: Map<string, TargetRef>): TargetRef | undefined {
+  if (target.type === "page") return target;
+  const parent = targets.get(target.parentTargetId ?? "");
+  return parent && rootPage(parent, targets);
+}
+
+function descendsFrom(page: TargetRef, tab: string, targets: Map<string, TargetRef>): boolean {
+  if (page.targetId === tab) return true;
+  const opener = targets.get(page.openerTabId ?? "");
+  return !!opener && descendsFrom(opener, tab, targets);
+}
+
+async function waitForForm<T>(
+  browser: Browser,
+  tab: string,
+  form: string,
+  source: string,
+  scope?: FormScope,
+) {
+  const deadline = Date.now() + 10_000;
+  do {
+    const result = await checkForm<T>(browser, tab, form, source, scope);
+    if (result || !findPage(browser, tab)) return result;
+    await pause(250);
+  } while (Date.now() < deadline);
+  return null;
+}
+
+async function checkForm<T>(
+  browser: Browser,
+  tab: string,
+  form: string,
+  source: string,
+  scope: FormScope = {},
+): Promise<{ tab: string; value: T } | null> {
   const { origin, pathname } = new URL(form);
   const expression = `(async () => {
     if (location.origin !== ${JSON.stringify(origin)} || location.pathname !== ${JSON.stringify(pathname)}) return null;
     ${source}
   })()`;
-  const deadline = Date.now() + 10_000;
-  do {
-    const targets = browser.targets();
-    if (!targets.some(({ targetId }) => targetId === tab)) break;
-    for (const { targetId, parentTargetId, sessionId } of targets) {
-      if (targetId !== tab && parentTargetId !== tab) continue;
-      try {
-        const { frameTree } = (await browser.send(
-          sessionId,
-          "Page.getFrameTree",
-        )) as Protocol.Page.GetFrameTreeResponse;
-        const frames = [frameTree, ...(frameTree.childFrames ?? [])];
-        const frame = frames.find(({ frame }) => frame.url.split(/[?#]/, 1)[0] === form)?.frame;
-        if (!frame) continue;
+  const targets = new Map(browser.targets().map((target) => [target.targetId, target]));
+  for (const target of targets.values()) {
+    if (scope.mainFrameOnly && target.type !== "page") continue;
+    const page = rootPage(target, targets);
+    if (
+      !page ||
+      !(page.targetId === tab || (scope.includePopups && descendsFrom(page, tab, targets)))
+    )
+      continue;
+    const { sessionId } = target;
+    try {
+      const { frameTree } = (await browser.send(
+        sessionId,
+        "Page.getFrameTree",
+      )) as Protocol.Page.GetFrameTreeResponse;
+      const frames = [frameTree];
+      for (const { frame, childFrames } of frames) {
+        if (!scope.mainFrameOnly) frames.push(...(childFrames ?? []));
+        if (frame.url.split(/[?#]/, 1)[0] !== form) continue;
         const { executionContextId } = (await browser.send(sessionId, "Page.createIsolatedWorld", {
           frameId: frame.id,
           worldName: "workbenchAccountOnboarding",
@@ -185,13 +424,14 @@ async function waitForForm<T>(browser: Browser, tab: string, form: string, sourc
           returnByValue: true,
           silent: true,
           timeout: 1_000,
+          userGesture: scope.userGesture,
         })) as Protocol.Runtime.EvaluateResponse;
-        if (result.result.value != null) return result.result.value as T;
-      } catch {
-        // A page still loading can replace the frame before evaluation.
+        if (result.result.value != null)
+          return { tab: page.targetId, value: result.result.value as T };
       }
+    } catch {
+      // Navigation can replace the frame while the browser is evaluating it.
     }
-    await pause(250);
-  } while (Date.now() < deadline);
+  }
   return null;
 }

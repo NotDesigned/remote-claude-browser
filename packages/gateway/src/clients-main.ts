@@ -8,7 +8,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createUserGate } from "./auth/user-gate";
 import {
   createUserStore,
@@ -72,6 +72,7 @@ import { isClientSlot, ClientSessionError, createClientSessions } from "./sessio
 import { createLifecycleLock } from "./session/lifecycle-lock";
 import { registerAccountRoutes } from "./auth/account-routes";
 import { registerAccountOnboarding } from "./browser/account-onboarding";
+import { createMailboxService, registerMailboxRoutes, RESEND_WEBHOOK_PATH } from "./mail/mailboxes";
 import { createIdleReaper, PAGE_GENERATING_EXPRESSION } from "./session/idle-reaper";
 import { createProfileStore, DEFAULT_PROFILE, MAX_PROFILES } from "./session/profiles";
 import { createResourceSampler } from "./monitor/resources";
@@ -181,10 +182,17 @@ export async function startClientGateway(
       browserEngine: fingerprint?.engine ?? "chromium",
     };
   };
+  const usersDb = process.env.MIRROR_USERS_DB ?? join(profile, "users.sqlite");
   const userStore = await createUserStore({
-    file: process.env.MIRROR_USERS_DB ?? join(profile, "users.sqlite"),
+    file: usersDb,
     bootstrapUsername: process.env.MIRROR_ADMIN_USERNAME ?? "admin",
     bootstrapPassword: process.env.MIRROR_ACCESS_PASSWORD ?? (e2e ? "e2e-test-only" : undefined),
+  });
+  const mailbox = await createMailboxService({
+    file: usersDb === ":memory:" ? usersDb : join(dirname(usersDb), "mailboxes.sqlite"),
+    apiKey: process.env.RESEND_API_KEY,
+    webhookSecret: process.env.RESEND_WEBHOOK_SECRET,
+    domain: process.env.RESEND_RECEIVING_DOMAIN,
   });
   userStore.claimLegacyProfiles(
     accountStore.all().map((record) => record.id),
@@ -394,6 +402,12 @@ export async function startClientGateway(
     if (stopping) return reply.code(503).send({ error: "服务正在重启，请稍后重试" });
     if (e2e) return;
     if (cpaRuntime && request.url.startsWith("/v1/")) return;
+    if (
+      mailbox.enabled &&
+      request.method === "POST" &&
+      request.routeOptions.url === RESEND_WEBHOOK_PATH
+    )
+      return;
     await gate.preHandler.call(app, request, reply);
     if (reply.sent) return;
     // Upgrade old single-workspace cookies to a stable authenticated device identity.
@@ -401,6 +415,8 @@ export async function startClientGateway(
       reply.header("set-cookie", deviceCookie(request.raw));
   });
   gate.registerRoutes(app);
+  const currentUserId = (request: IncomingMessage) => currentUser(request)?.id;
+  registerMailboxRoutes(app, mailbox, currentUserId);
   registerProxyRoutes(app, {
     catalog: proxyCatalog,
     currentUser: (request) => currentUser(request) ?? null,
@@ -1896,17 +1912,22 @@ export async function startClientGateway(
       return clientError(reply, error, owner);
     }
   });
-  registerAccountOnboarding(app, requireSession(), (sid) => {
-    const runtime = runtimes.get(sid);
-    if (!runtime) return;
-    return {
-      browser: runtime.browser,
-      async open(url) {
-        await stopPixels(runtime);
-        return runtime.tabs.open(url);
-      },
-    };
-  });
+  registerAccountOnboarding(
+    app,
+    requireSession(),
+    (sid) => {
+      const runtime = runtimes.get(sid);
+      if (!runtime) return;
+      return {
+        browser: runtime.browser,
+        async open(url) {
+          await stopPixels(runtime);
+          return runtime.tabs.open(url);
+        },
+      };
+    },
+    { currentUserId, mailbox },
+  );
   app.get<{ Params: { sid: string } }>(
     "/s/:sid/theme",
     { preHandler: requireSession() },
@@ -2188,6 +2209,7 @@ export async function startClientGateway(
           await accountStore.remove(profileId);
           userStore.unassignProfile(profileId);
         }
+        mailbox.deleteUser(id);
         userStore.deleteUser(id);
       });
       return reply.code(204).send();
@@ -2371,6 +2393,7 @@ export async function startClientGateway(
         for (const account of [...accounts.values()]) await closeAccount(account);
         userStore.close();
         cpaStore?.close();
+        mailbox.close();
         if (managedProfile) {
           await rm(profile, { recursive: true, force: true });
           if (!process.env.MIRROR_ACCOUNTS_DIR)

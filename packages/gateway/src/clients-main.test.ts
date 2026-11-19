@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHmac } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { request as httpRequest } from "node:http";
@@ -188,6 +189,9 @@ beforeEach(() => {
   vi.stubEnv("MIRROR_RUNTIME_SOCKET", undefined);
   vi.stubEnv("MIRROR_BROWSER_ENGINE", undefined);
   vi.stubEnv("CPA_BROKER_SOCKET", undefined);
+  vi.stubEnv("RESEND_API_KEY", undefined);
+  vi.stubEnv("RESEND_WEBHOOK_SECRET", undefined);
+  vi.stubEnv("RESEND_RECEIVING_DOMAIN", undefined);
   vi.stubEnv("GATEWAY_PORT", "3000");
 });
 
@@ -1056,11 +1060,47 @@ describe("multi-user management routes", () => {
     expect(hooks.launch).not.toHaveBeenCalled();
   });
 
+  it("exposes the signed Resend webhook without granting access to the inbox", async () => {
+    const signingKey = Buffer.from("fixture-only-webhook-key");
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv("RESEND_WEBHOOK_SECRET", `whsec_${signingKey.toString("base64")}`);
+    vi.stubEnv("RESEND_RECEIVING_DOMAIN", "mail.example.com");
+    const { app } = await fixture();
+    const url = "/api/webhooks/resend";
+    const payload = JSON.stringify({ type: "email.sent" });
+    const id = "msg_fixture";
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = createHmac("sha256", signingKey)
+      .update(`${id}.${timestamp}.${payload}`)
+      .digest("base64");
+    const headers = {
+      "content-type": "application/json",
+      "svix-id": id,
+      "svix-timestamp": timestamp,
+      "svix-signature": `v1,${signature}`,
+    };
+    expect((await app.inject({ method: "POST", url, headers, payload })).statusCode).toBe(200);
+    expect(
+      (await app.inject({ method: "POST", url, headers, payload: payload + " " })).statusCode,
+    ).toBe(401);
+    expect((await app.inject({ url: "/api/me/mailboxes" })).statusCode).toBe(401);
+    const admin = await login(app);
+    expect((await api(app, admin, "GET", "/api/me/mailboxes")).json()).toEqual({
+      enabled: true,
+      addresses: [],
+    });
+    expect(hooks.launch).not.toHaveBeenCalled();
+  });
+
   it("starts without Chrome and separates each user's browser configurations and administration", async () => {
     const { app } = await fixture();
     const anonymous = await app.inject({ url: "/api/accounts" });
     expect(anonymous.statusCode).toBe(401);
     const admin = await login(app);
+    expect((await api(app, admin, "GET", "/api/me/mailboxes")).json()).toEqual({
+      enabled: false,
+      addresses: [],
+    });
     const me = (await api(app, admin, "GET", "/api/me")).json().user;
     expect(me).toMatchObject({ username: "admin", role: "admin" });
     const bob = await createBob(app, admin);
