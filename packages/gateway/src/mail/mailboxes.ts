@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { chmod, mkdir, open } from "node:fs/promises";
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import { dirname } from "node:path";
@@ -8,6 +8,25 @@ import { createResendReceiving, MailboxError } from "./resend";
 
 export const RESEND_WEBHOOK_PATH = "/api/webhooks/resend";
 const MAILBOX_PATH = "/api/me/mailboxes";
+const addressWords = `
+  acorn alder almond amber anchor apple arbor aster autumn bamboo basil bay beach beech berry
+  birch bloom blossom blue breeze briar brook brush butter candle canyon cape caramel cedar
+  cherry chestnut cinnamon citrus clay clear clover cloud coast cobalt coconut coral cove
+  crane creek crest crimson crocus dawn daybreak dew dove drift dune dusk earth elm ember
+  fern field finch fir flame flax flint flood forest frost garden ginger glade glass gleam
+  gold grain grape grass grove gull harbor hawk hazel heather heron hickory hill honey iris
+  island ivory ivy jade jasmine jay jet juniper kestrel kinglet lake larch lark laurel leaf
+  lemon lily lime linen linden lotus lunar maple marble marsh mauve meadow melon mint mist
+  moon moss mulberry myrtle nectar night north oak ocean olive orchid oriole otter pale palm
+  papaya paper peach pear pearl pebble petal pine plain plum pond poplar poppy prairie prism
+  purple quartz rain raven reed reef ridge river robin rose ruby rush rye saffron sage sand
+  scarlet sea shell shore silver sky slate snow sorrel sparrow spice spring spruce star stone
+  storm strand stream sugar summer summit sun sundew surf teal terrace thorn tide thyme tiger
+  topaz trail tulip tundra twig valley velvet violet walnut water wave wheat willow wind winter
+  wren yarrow zephyr
+`
+  .trim()
+  .split(/\s+/);
 
 export interface MailboxAddress {
   id: string;
@@ -93,7 +112,9 @@ export async function createMailboxService(options: {
     SELECT id, address, label, created_at AS createdAt
     FROM mailbox_addresses WHERE user_id = ? AND id = ?
   `);
-  const addAddress = db.prepare("INSERT INTO mailbox_addresses VALUES (?, ?, ?, ?, ?)");
+  const addAddress = db.prepare(
+    "INSERT INTO mailbox_addresses VALUES (?, ?, ?, ?, ?) ON CONFLICT(address) DO NOTHING",
+  );
   const messagesForOwner = `
     SELECT m.id, m.sender AS "from", m.subject, m.received_at AS receivedAt
     FROM mailbox_messages m JOIN mailbox_addresses a ON m.address_id = a.id
@@ -124,14 +145,13 @@ export async function createMailboxService(options: {
       const name = label?.trim() ?? "";
       if ([...name].length > 80) throw new MailboxError(400, "收件地址名称最多 80 个字");
       const id = randomUUID();
-      const address = {
-        id,
-        address: `mail-${id.replaceAll("-", "")}@${domain}`,
-        label: name,
-        createdAt: now(),
-      };
-      addAddress.run(id, userId, address.address, address.label, address.createdAt);
-      return address;
+      const createdAt = now();
+      for (;;) {
+        const words = Array.from({ length: 4 }, () => addressWords[randomInt(addressWords.length)]);
+        const address = `${words.join("-")}@${domain}`;
+        if (addAddress.run(id, userId, address, name, createdAt).changes)
+          return { id, address, label: name, createdAt };
+      }
     },
     getAddress(userId, addressId) {
       return getAddress.get(userId, addressId) as unknown as MailboxAddress | undefined;

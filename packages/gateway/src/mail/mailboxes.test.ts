@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import Fastify from "fastify";
 import { expect, it, vi } from "vitest";
 import { createMailboxService, registerMailboxRoutes, RESEND_WEBHOOK_PATH } from "./mailboxes";
@@ -74,7 +75,7 @@ it("routes verified delivery to matching addresses and serves message bodies onl
     const second = store.createAddress("owner");
     const third = store.createAddress("other");
     expect(first.label).toBe("我的账号");
-    expect(first.address).toMatch(/^mail-[0-9a-f]{32}@mail\.example\.com$/);
+    expect(first.address).toMatch(/^[a-z]+(?:-[a-z]+){3}@mail\.example\.com$/);
     expect(first.address).not.toBe(second.address);
     expect((await app.inject({ url: mailboxPath, headers: owner })).json()).toEqual({
       enabled: true,
@@ -138,12 +139,21 @@ it("routes verified delivery to matching addresses and serves message bodies onl
   }
 });
 
-it("deletes addresses and their messages while Resend is disabled", async () => {
+it("routes messages to existing addresses and deletes them while Resend is disabled", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mirror-mailbox-"));
   const file = join(dir, "mail.sqlite");
   try {
     const enabled = await createMailboxService({ file, ...provider });
-    const address = enabled.createAddress("owner");
+    const address = {
+      ...enabled.createAddress("owner"),
+      address: "mail-0123456789abcdef0123456789abcdef@mail.example.com",
+    };
+    const db = new DatabaseSync(file);
+    db.prepare("UPDATE mailbox_addresses SET address = ? WHERE id = ?").run(
+      address.address,
+      address.id,
+    );
+    db.close();
     const payload = event([address.address]);
     enabled.receive(Buffer.from(payload), signed(payload));
     enabled.close();
