@@ -57,3 +57,13 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.account-onboarding .user-panel-actions button.generate-example {
+  background: #b42333;
+  color: white;
+  border-color: #b42333;
+  font-weight: 600;
+}
+.account-onboarding .user-panel-actions button.generate-example:hover {
+  background: #971d2a;
+}

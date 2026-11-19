@@ -10,6 +10,7 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
+        onboardingPreview: fileURLToPath(new URL("./test/onboarding/index.html", import.meta.url)),
         browser: fileURLToPath(new URL("./index.html", import.meta.url)),
       },
     },
