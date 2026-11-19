@@ -143,6 +143,10 @@ async function inside() {
     assert.equal(fs.readFileSync('${profile}/uploads/input.txt', 'utf8'), 'own-upload');
     assert.equal(fs.readFileSync('/etc/timezone', 'utf8').trim(), 'Asia/Tokyo');
     assert.equal(fs.readlinkSync('/etc/localtime'), '/usr/share/zoneinfo/Asia/Tokyo');
+    assert.deepEqual(JSON.parse(fs.readFileSync('/etc/chromium/policies/managed/secure-dns.json', 'utf8')), {
+      DnsOverHttpsMode: 'automatic',
+      DnsOverHttpsTemplates: 'https://dns.example.test/dns-query',
+    });
     for (const path of ['/data/profile/users.sqlite', '/data/profile/other/private.txt', '/app/package.json', '/run/remote-browser', '/proc/1/root/data/profile/users.sqlite'])
       assert.equal(fs.existsSync(path), false, path);
     for (const pid of fs.readdirSync('/proc').filter(p => /^\\d+$/.test(p)))
@@ -152,7 +156,12 @@ async function inside() {
     fs.writeFileSync('${profile}/persistent-marker', 'retained');
   `;
   await exec(launcher, ["/tmp/probe-root", profile, "/usr/local/bin/node", "-e", boundaryProbe], {
-    env: { PATH: process.env.PATH, HOME: "/tmp/home", TZ: "Asia/Tokyo" },
+    env: {
+      PATH: process.env.PATH,
+      HOME: "/tmp/home",
+      TZ: "Asia/Tokyo",
+      MIRROR_BROWSER_DOH_TEMPLATE: "https://dns.example.test/dns-query",
+    },
   });
 
   const authority = "/tmp/display/authority";

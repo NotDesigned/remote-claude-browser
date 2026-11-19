@@ -313,6 +313,9 @@ export async function startProfileBroker({
         local,
         port,
         target,
+        dohTemplate: config.dns.nameserver
+          .find((address) => address.startsWith("https://"))
+          ?.split("#", 1)[0],
         proxyUrl: `http://${info.peerIp}:${port}`,
         externalProxyUrl: `http://${token}:x@${proxyHost}:${proxyPort}`,
       };
@@ -448,6 +451,7 @@ export async function startProfileBroker({
           HOME: process.env.HOME ?? "/tmp/home",
           LANG: "C.UTF-8",
           TZ: exitMetadata.timeZone,
+          MIRROR_BROWSER_DOH_TEMPLATE: egress.dohTemplate,
           ...options.env,
         },
         stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"],

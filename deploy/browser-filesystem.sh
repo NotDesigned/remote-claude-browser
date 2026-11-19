@@ -44,6 +44,11 @@ printf '%s\n' "$timezone" > "$root/etc/timezone"
 # This also covers native browser navigation, history and links outside the workbench URL bar.
 mkdir -p "$root/etc/chromium/policies/managed"
 printf '%s\n' '{"URLBlocklist":["file://*","filesystem:*","javascript:*"],"URLAllowlist":["about:blank"]}' > "$root/etc/chromium/policies/managed/workspace.json"
+# Chromium needs Secure DNS to use ECH. Both DoH and fallback DNS stay on this profile's exit.
+if [ -n "${MIRROR_BROWSER_DOH_TEMPLATE:-}" ]; then
+  printf '{"DnsOverHttpsMode":"automatic","DnsOverHttpsTemplates":"%s"}\n' \
+    "$MIRROR_BROWSER_DOH_TEMPLATE" > "$root/etc/chromium/policies/managed/secure-dns.json"
+fi
 mount -t tmpfs -o mode=1777,size=512m tmpfs "$root/tmp"
 mount -t tmpfs -o mode=0755,size=1m tmpfs "$root/dev"
 for device in null zero full random urandom tty; do

@@ -87,6 +87,8 @@ docker compose -f compose.yml -f compose.runtime.yml up -d --build
 
 已有部署应在 `COMPOSE_FILE` 中用 `compose.runtime.yml` 替换 `compose.proxy.yml`，保留入口、指纹内核和其他私有覆盖文件。订阅导入和刷新使用服务器网络，浏览器与 CPA 授权使用各自选定的节点。这个模块不启动公网入口代理，也不改动域名或证书。
 
+Chromium 使用浏览器出口配置里的 DoH 解析器，以便在受支持的网站上使用 ECH 加密 TLS 握手中的网站名。回退的 DNS 查询也经该浏览器的 Mihomo 出口发送。
+
 该模块使用 Docker bridge 网络连接内部 CPA 实例，不能与 `compose.hostnet.yml` 组合。现有主机网络部署需要先由部署者移除该覆盖文件并确认 bridge 下的端口和媒体连接，再启用运行时；同机入口和独立 VPS 入口都可以使用 bridge。
 
 从工作台或配置选择页打开「代理与 API」：
