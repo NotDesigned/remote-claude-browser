@@ -3,7 +3,7 @@ import { ApiError, apiRequest } from "./api";
 import "./user-panel.css";
 import "./payment-handoff.css";
 
-type Provider = "apple-pay" | "google-pay";
+type Provider = "apple-pay" | "google-pay" | "payment-request";
 type Handoff = {
   handoffId?: string;
   id?: string;
@@ -140,6 +140,7 @@ export function PaymentHandoffPanel({
               >
                 <option value="apple-pay">Apple Pay</option>
                 <option value="google-pay">Google Pay</option>
+                <option value="payment-request">Payment Request</option>
               </select>
             </label>
             <label>

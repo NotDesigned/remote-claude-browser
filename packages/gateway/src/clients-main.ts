@@ -77,8 +77,10 @@ import {
 import { createLifecycleLock } from "./session/lifecycle-lock";
 import { registerAccountRoutes } from "./auth/account-routes";
 import { registerAccountOnboarding } from "./browser/account-onboarding";
+import { isPublicPaymentHandoffPath, registerPaymentHandoffRoutes } from "./payment/handoff";
 import { createMailboxService, registerMailboxRoutes, RESEND_WEBHOOK_PATH } from "./mail/mailboxes";
 import { createIdleReaper, PAGE_GENERATING_EXPRESSION } from "./session/idle-reaper";
+import { ACCOUNT_IDLE_CLOSE_MS, SESSION_IDLE_GRACE_MS } from "./session/resource-policy";
 import { createProfileStore, DEFAULT_PROFILE, MAX_PROFILES } from "./session/profiles";
 import { createResourceSampler } from "./monitor/resources";
 import type { TargetRef, AgentLink } from "./types";
@@ -129,7 +131,6 @@ interface ClientRuntime {
 /** Frames wait before encoding beyond this, since a viewer cannot skip one once it is encoded. */
 const VIDEO_BACKLOG_BYTES = 512 * 1024;
 /** An account's Chrome nobody has used for this long is closed. It starts again when needed. */
-const ACCOUNT_IDLE_CLOSE_MS = 120_000;
 const SESSION_SLEEP_LIMIT_MS = 24 * 60 * 60 * 1000;
 /** Headroom for another Chrome plus its private Xvfb display before the first page. */
 const ACCOUNT_MEMORY_BYTES = 560 * 1048576;
@@ -411,6 +412,7 @@ export async function startClientGateway(
     if (stopping) return reply.code(503).send({ error: "服务正在重启，请稍后重试" });
     if (e2e) return;
     if (cpaRuntime && request.url.startsWith("/v1/")) return;
+    if (isPublicPaymentHandoffPath(request.url)) return;
     if (
       mailbox.enabled &&
       request.method === "POST" &&
@@ -749,7 +751,7 @@ export async function startClientGateway(
           broadcastStatus();
         }
       }),
-    graceMs: e2e ? Number(process.env.MIRROR_IDLE_GRACE_MS ?? 60000) : 60000,
+    graceMs: e2e ? Number(process.env.MIRROR_IDLE_GRACE_MS ?? 60000) : SESSION_IDLE_GRACE_MS,
     now: sessionNow,
     onError: (error) => report("idle client cleanup", error),
   });
@@ -1952,6 +1954,17 @@ export async function startClientGateway(
     },
     { currentUserId, mailbox, accounts: userStore.appleAccounts },
   );
+  registerPaymentHandoffRoutes(app, {
+    requireSession: requireSession(),
+    currentUserId,
+    profileForSession: (sid) => clientSessions.profileOf(sid),
+    allowedOrigins: (process.env.PAYMENT_HANDOFF_ORIGINS ?? "")
+      .split(",")
+      .map((origin) => origin.trim())
+      .filter(Boolean),
+    webhookSecret: process.env.PAYMENT_HANDOFF_WEBHOOK_SECRET,
+    publicOrigin: process.env.MIRROR_PUBLIC_ORIGIN ?? "http://127.0.0.1:3010",
+  });
   app.get<{ Params: { sid: string } }>(
     "/s/:sid/theme",
     { preHandler: requireSession() },

@@ -82,9 +82,10 @@ describe("payment handoff routes", () => {
       expect(url).toMatch(/^https:\/\/remote\.example\/pay\/handoff\//);
       const token = url.split("/").at(-1);
       expect(token).toBeTruthy();
-      expect((await app.inject({ method: "GET", url: `/pay/handoff/${token}` })).statusCode).toBe(
-        200,
-      );
+      const handoffPage = await app.inject({ method: "GET", url: `/pay/handoff/${token}` });
+      expect(handoffPage.statusCode).toBe(200);
+      expect(handoffPage.headers["permissions-policy"]).toContain("payment=(self)");
+      expect(handoffPage.body).toContain("ApplePaySession");
       expect(
         (
           await app.inject({

@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { FastifyInstance, preHandlerAsyncHookHandler } from "fastify";
+import { allowPaymentHandoff } from "../security-headers";
 
 export type PaymentProvider = "apple-pay" | "google-pay" | "payment-request";
 export type PaymentHandoffStatus =
@@ -294,6 +295,7 @@ export function registerPaymentHandoffRoutes(app: FastifyInstance, options: Rout
     const record = handoffs.markOpened(request.params.token);
     if (!record)
       return reply.code(410).type("text/plain; charset=utf-8").send("支付交接已过期或不存在");
+    allowPaymentHandoff(reply);
     const resumeUrl = escapeHtml(record.resumeUrl);
     const label =
       record.provider === "apple-pay"
@@ -304,7 +306,22 @@ export function registerPaymentHandoffRoutes(app: FastifyInstance, options: Rout
     return reply.type("text/html; charset=utf-8").send(`<!doctype html>
 <html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>在本机完成支付</title>
 <style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f8f6f0;color:#2b2520;font:16px system-ui,sans-serif}.card{width:min(420px,calc(100% - 40px));padding:28px;border:1px solid #d9d3c9;border-radius:16px;background:#fffdfa;box-shadow:0 14px 40px #2b252022}h1{font-size:22px;margin:0 0 12px}p{line-height:1.6;color:#6e655c}.button{display:block;width:100%;padding:12px;border:0;border-radius:9px;background:#9f553d;color:white;font:inherit;cursor:pointer;text-align:center;text-decoration:none;box-sizing:border-box}</style>
-<main class="card"><h1>在本机完成 ${escapeHtml(label)} 支付</h1><p>请在当前设备的 Safari 或 Chrome 中继续。支付平台会在本机检测可用的钱包和支付方式。</p><a class="button" href="${resumeUrl}">继续支付</a></main></html>`);
+<main class="card"><h1>在本机完成 ${escapeHtml(label)} 支付</h1><p>请在当前设备的 Safari 或 Chrome 中继续。支付平台会在本机检测可用的钱包和支付方式。</p><a class="button" href="${resumeUrl}">继续支付</a></main><script>
+  (async () => {
+    const capabilities = {
+      applePay: typeof globalThis.ApplePaySession === "function"
+        ? Boolean(await Promise.resolve(globalThis.ApplePaySession.canMakePayments?.()).catch(() => false))
+        : false,
+      googlePay: Boolean(globalThis.google?.payments?.api),
+      paymentRequest: typeof globalThis.PaymentRequest === "function",
+      webAuthn: Boolean(globalThis.PublicKeyCredential),
+      browser: navigator.userAgent.slice(0, 80)
+    };
+    await fetch(${JSON.stringify(`${publicToken}${encodeURIComponent(request.params.token)}/capability`)}, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(capabilities), keepalive: true
+    }).catch(() => {});
+  })();
+</script></html>`);
   });
   app.post<{ Params: { token: string }; Body: PaymentHandoffRecord["capabilities"] }>(
     `${publicToken}:token/capability`,
