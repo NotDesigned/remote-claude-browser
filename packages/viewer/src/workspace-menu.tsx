@@ -3,11 +3,10 @@ import type { FrontendUser } from "./users";
 import "./workspace-menu.css";
 
 export type WorkspaceDestination =
-  "profiles" | "proxies" | "cpa" | "payment" | "admin" | "account" | "onboarding" | "mailboxes";
+  "profiles" | "proxies" | "cpa" | "admin" | "account" | "onboarding" | "mailboxes";
 export interface WorkspaceMenuProps {
   user: FrontendUser;
   onboardingAvailable?: boolean;
-  paymentAvailable?: boolean;
   onNavigate(destination: WorkspaceDestination): void;
   onLogout(): void;
   logoutPending: boolean;
@@ -44,14 +43,11 @@ export function WorkspaceMenu(props: WorkspaceMenuProps) {
     ["profiles", "浏览器配置"],
     ["proxies", "代理"],
     ["cpa", "API"],
-    ...(props.paymentAvailable
-      ? ([["payment", "本机支付"]] as [WorkspaceDestination, string][])
-      : []),
     ["mailboxes", "收件箱"],
     ...(props.user.role === "admin"
       ? [["admin", "管理后台"] as [WorkspaceDestination, string]]
       : []),
-    ["account", "我的账号"] as [WorkspaceDestination, string],
+    ["account", "我的账号"],
   ];
   if (props.onboardingAvailable) destinations.push(["onboarding", "Apple 账户与 Claude 登录"]);
   return (

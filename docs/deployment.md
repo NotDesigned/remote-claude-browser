@@ -171,21 +171,6 @@ docker compose up -d
 
 迁移后，入口还需将 `/management.html` 和 `/api/cpa/instances/*` 转发到工作台。阻止公开访问原始管理接口的规则只匹配 `/v0/management`、`/v8/management` 及其子路径。
 
-## 本机支付交接
-
-工作台的「本机支付」会创建一个五分钟有效的一次性交接。远程浏览器只保留用户、会话、浏览器配置、商户来源和订单摘要；Apple Pay、Google Pay、Payment Request 及本机验证设备在用户设备的 Safari 或 Chrome 顶层页面中运行。
-
-启用前在服务端 `.env` 设置允许的 HTTPS 商户来源和支付回调签名密钥：
-
-```bash
-PAYMENT_HANDOFF_ORIGINS=https://checkout.example.com,https://pay.example.com
-PAYMENT_HANDOFF_WEBHOOK_SECRET=replace-with-a-random-secret
-```
-
-结算地址必须属于允许的商户来源。支付平台完成授权后，商户后端向 `/pay/handoff/{token}/result` 发送 JSON，并使用 `x-payment-signature` 传递 HMAC-SHA256 签名。工作台以签名回调更新状态，页面上的成功文字不会被当作支付凭据。银行卡号、Cookie 和钱包令牌不会经过工作台。
-
-Apple Pay 仍需要商户在 Apple 注册并验证真实结算域名，Google Pay 仍需要商户自己的 Google Pay Web 配置。没有 hosted checkout、resume URL 或签名回调的任意网页无法自动迁移远程购物车和登录状态。
-
 ## 收件箱
 
 在 Resend 中启用自有域名的 Receiving，并按控制台要求配置 MX。创建订阅 `email.received` 的 Webhook，目标为工作台公开地址下的 `/api/webhooks/resend`。在服务端 `.env` 设置 `RESEND_RECEIVING_DOMAIN`、有读取收件权限的 `RESEND_API_KEY` 和该 Webhook 的签名密钥 `RESEND_WEBHOOK_SECRET`，然后重建 `server` 容器。三个配置齐备时工作台会启用收件箱。
