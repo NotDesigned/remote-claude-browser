@@ -32,7 +32,10 @@ const server = createServer({ maxHeaderSize: 128 * 1024 }, (request, reply) => {
         .filter(Boolean)
         .map((cookie) => cookie.split("=")),
     );
-    reply.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ cookies }));
+    const text = JSON.stringify({ cookies }).replaceAll("&", "&amp;").replaceAll("<", "&lt;");
+    reply
+      .writeHead(200, { "content-type": "text/html; charset=utf-8" })
+      .end(`<!doctype html><meta charset="utf-8"><pre id="cookies">${text}</pre>`);
   } else {
     const html = Buffer.from(url.searchParams.get("html") ?? "", "base64url");
     reply.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(html);

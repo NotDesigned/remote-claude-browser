@@ -231,11 +231,14 @@ async function checkPageSleep(page, address) {
   await address.fill(target);
   await address.press("Enter");
   const restored = () =>
-    page.waitForFunction(
-      () =>
-        document.querySelector("#mirror-host iframe")?.contentDocument?.querySelector("h1")
-          ?.textContent === "Session restore",
-    );
+    page.waitForFunction(() => {
+      const host = document.getElementById("mirror-host");
+      const frame = host?.querySelector(".mirror-stage:not([data-parked]) iframe");
+      return (
+        host?.dataset.inputReady === "true" &&
+        frame?.contentDocument?.querySelector("h1")?.textContent === "Session restore"
+      );
+    });
   await restored();
   await setHidden(true);
   const clientCount = async () =>
@@ -273,12 +276,6 @@ async function checkAccounts(page) {
     );
   const sid = new URL(page.url()).searchParams.get("sid");
   assert.ok(sid, "The page has no session");
-  const mirrorText = () =>
-    page.evaluate(
-      () =>
-        document.querySelector("#mirror-host .mirror-stage:not([data-parked]) iframe")
-          ?.contentDocument?.body?.innerText ?? "",
-    );
   const ready = async () => {
     await page.waitForSelector("#shell-bar", { timeout: 60_000 });
     await page
@@ -290,12 +287,10 @@ async function checkAccounts(page) {
     const address = page.locator("#urlbar input");
     await address.fill(`${fixtureOrigin}${path}`);
     await address.press("Enter");
-    await page
+    return page
       .frameLocator("#mirror-host .mirror-stage:not([data-parked]) iframe")
-      .getByText(/"cookies"/)
-      .first()
-      .waitFor();
-    return mirrorText();
+      .locator("#cookies")
+      .innerText();
   };
 
   assert.match(await cookiesAfter("/cookies/set?mirror=first"), /"mirror":\s*"first"/);
