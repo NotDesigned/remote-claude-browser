@@ -163,6 +163,7 @@ export function createPaymentHandoffs({
   function markOpened(token: string): PaymentHandoffRecord | undefined {
     const record = resolve(token);
     if (!record) return;
+    if (["authorized", "failed", "cancelled", "expired"].includes(record.status)) return;
     if (record.status === "pending") record.status = "opened";
     return { ...record };
   }
@@ -170,6 +171,7 @@ export function createPaymentHandoffs({
   function setCapabilities(token: string, capabilities: PaymentHandoffRecord["capabilities"]) {
     const record = resolve(token);
     if (!record) return;
+    if (["authorized", "failed", "cancelled", "expired"].includes(record.status)) return;
     record.capabilities = capabilities;
     if (record.status === "pending") record.status = "opened";
     return { ...record };
@@ -186,6 +188,7 @@ export function createPaymentHandoffs({
     if (!/^[a-f0-9]{64}$/i.test(supplied) || !safeEquals(expected, supplied)) return;
     const record = resolve(token);
     if (!record) return;
+    if (["authorized", "failed", "cancelled", "expired"].includes(record.status)) return;
     record.status = body.status;
     if (body.providerReference) record.providerReference = body.providerReference;
     return { ...record };
@@ -353,9 +356,6 @@ export function registerPaymentHandoffRoutes(app: FastifyInstance, options: Rout
         : reply.code(401).send({ error: "支付结果签名无效或交接已过期" });
     },
   );
-  app.addHook("onClose", async () => {
-    // The store is intentionally process-local. Handoffs expire within minutes and never contain card data.
-  });
 }
 
 export function isPublicPaymentHandoffPath(url: string): boolean {
