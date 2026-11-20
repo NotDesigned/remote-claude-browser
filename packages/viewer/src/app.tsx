@@ -5,6 +5,7 @@ import { currentUser, logout, myBrowserSessions, type FrontendUser } from "./use
 import { AdminPanel } from "./admin-panel";
 import { AccountPanel } from "./account-panel";
 import { AccountOnboarding } from "./account-onboarding";
+import { PaymentHandoffPanel } from "./payment-handoff";
 import { MailboxPanel } from "./mailbox-panel";
 import type { WorkspaceDestination, WorkspaceMenuProps } from "./workspace-menu";
 import { NetworkPanel } from "./network-panel";
@@ -140,6 +141,7 @@ export function App() {
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [startAppleOnboarding, setStartAppleOnboarding] = useState(false);
   const [mailboxOpen, setMailboxOpen] = useState(false);
+  const [paymentOpen, setPaymentOpen] = useState(false);
   const [profilePickerOpen, setProfilePickerOpen] = useState(false);
   const [browserAuthorization, setBrowserAuthorization] = useState<CpaBrowserAuthorization | null>(
     () => JSON.parse(sessionStorage.getItem("mirror-cpa-browser") ?? "null"),
@@ -981,6 +983,7 @@ export function App() {
     setAccountPanelOpen(destination === "account");
     setOnboardingOpen(destination === "onboarding");
     setMailboxOpen(destination === "mailboxes");
+    setPaymentOpen(destination === "payment");
     setNetworkPanelOpen(destination === "proxies" || destination === "cpa");
     if (destination === "proxies" || destination === "cpa") setNetworkTab(destination);
     if (destination === "profiles") {
@@ -1020,6 +1023,11 @@ export function App() {
     ? {
         user,
         onboardingAvailable:
+          clientPhase === "ready" &&
+          clientSession !== null &&
+          !!currentProfile &&
+          !profilePickerOpen,
+        paymentAvailable:
           clientPhase === "ready" &&
           clientSession !== null &&
           !!currentProfile &&
@@ -1104,6 +1112,18 @@ export function App() {
         />
       )}
       {mailboxOpen && user && <MailboxPanel key={user.id} onClose={() => setMailboxOpen(false)} />}
+      {paymentOpen && clientSession && (
+        <PaymentHandoffPanel
+          open={paymentOpen}
+          sid={clientSession.sid}
+          resumeUrl={
+            (activeTab && chromeByTab[activeTab]?.url) ||
+            tabs.find((tab) => tab.id === activeTab)?.url ||
+            ""
+          }
+          onClose={() => setPaymentOpen(false)}
+        />
+      )}
       {user && (
         <NetworkPanel
           key={user.id}
