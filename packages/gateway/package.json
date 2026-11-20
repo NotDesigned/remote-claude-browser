@@ -29,9 +29,9 @@
     "@mirror/agent": "workspace:*",
     "@mirror/protocol": "workspace:*",
     "@types/html-to-text": "^9.0.4",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.6.6",
     "@types/ws": "^8.5.0",
-    "esbuild": "^0.28.1",
-    "tsx": "^4.19.0"
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15"
   }
 }
