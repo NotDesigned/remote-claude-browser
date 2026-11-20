@@ -1,4 +1,7 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
+
+export const PAYMENT_HANDOFF_PERMISSIONS_POLICY =
+  "camera=(), microphone=(), geolocation=(), payment=(self), usb=(), serial=(), bluetooth=()";
 
 export const SECURITY_HEADERS = {
   "content-security-policy": [
@@ -31,4 +34,9 @@ export function registerSecurityHeaders(app: FastifyInstance): void {
     }
     return payload;
   });
+}
+
+/** Allow payment APIs only on an explicitly controlled local handoff page. */
+export function allowPaymentHandoff(reply: FastifyReply): void {
+  reply.header("permissions-policy", PAYMENT_HANDOFF_PERMISSIONS_POLICY);
 }
