@@ -477,25 +477,7 @@ async function openDefaultBrowser(page) {
   await page.waitForSelector("#shell-bar", { timeout: 60_000 });
 }
 
-const browser = await chromium.launch({
-  executablePath: process.env.CHROME_PATH,
-  headless: true,
-});
-try {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-  await context.addInitScript(() => {
-    // The first about:blank document has an opaque origin and no storage.
-    try {
-      localStorage.setItem("mirror.view-mode", "dom");
-    } catch {}
-  });
-  const page = await context.newPage();
-
-  const refused = await context.request.get(`${origin}/api/client/session`, { maxRedirects: 0 });
-  assert.notEqual(refused.status(), 200, "The API answered without logging in");
-
-  await openDefaultBrowser(page);
-
+async function checkWorkspace(page, address) {
   const html =
     '<!doctype html><meta charset="utf-8"><title>Mirror check</title><p id="ran">not run</p><output id="geometry"></output>' +
     `<script>
@@ -505,12 +487,6 @@ const report = () => geometry.textContent = JSON.stringify([innerWidth, innerHei
 addEventListener('resize', report);
 report();
 </script>`;
-  // The address bar is disabled until a tab exists.
-  await page
-    .locator('#urlbar button[aria-label="Reload"]:not([disabled])')
-    .waitFor({ timeout: 60_000 });
-  await page.waitForFunction(() => document.querySelector("#urlbar input")?.value !== "");
-  const address = page.locator("#urlbar input");
   await address.fill(fixturePage(html));
   await address.press("Enter");
 
@@ -578,10 +554,9 @@ report();
   await checkNestedFrames(page, address);
   await checkPageSleep(page, address);
   await checkAccounts(page);
+}
 
-  if (process.env.SMOKE_VIDEO === "1") await checkVideo(page, address);
-  if (process.env.SMOKE_CANVAS === "1") await checkCanvas(page, address);
-
+async function checkPicture(browser) {
   // Picture mode, in a session of its own. Its canvas only appears once a frame has arrived.
   const pictureContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const picture = await pictureContext.newPage();
@@ -605,6 +580,40 @@ report();
     timeout: 60_000,
   });
   console.log("Picture mode shows frames.");
+}
+
+const browser = await chromium.launch({
+  executablePath: process.env.CHROME_PATH,
+  headless: true,
+});
+try {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.addInitScript(() => {
+    // The first about:blank document has an opaque origin and no storage.
+    try {
+      localStorage.setItem("mirror.view-mode", "dom");
+    } catch {}
+  });
+  const page = await context.newPage();
+
+  const refused = await context.request.get(`${origin}/api/client/session`, { maxRedirects: 0 });
+  assert.notEqual(refused.status(), 200, "The API answered without logging in");
+
+  await openDefaultBrowser(page);
+
+  // The address bar is disabled until a tab exists.
+  await page
+    .locator('#urlbar button[aria-label="Reload"]:not([disabled])')
+    .waitFor({ timeout: 60_000 });
+  await page.waitForFunction(() => document.querySelector("#urlbar input")?.value !== "");
+  const address = page.locator("#urlbar input");
+  if (process.env.SMOKE_VIDEO === "1" || process.env.SMOKE_CANVAS === "1") {
+    if (process.env.SMOKE_VIDEO === "1") await checkVideo(page, address);
+    if (process.env.SMOKE_CANVAS === "1") await checkCanvas(page, address);
+  } else {
+    await checkWorkspace(page, address);
+    await checkPicture(browser);
+  }
 } finally {
   await browser.close();
 }
