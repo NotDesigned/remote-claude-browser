@@ -190,7 +190,7 @@ export async function createProfileStore(
     },
     async create(
       name: unknown,
-      platform = options.fingerprintPlatform ?? "linux",
+      platform = options.fingerprintPlatform ?? "windows",
     ): Promise<ProfileRecord> {
       const clean = cleanName(name);
       if (records.size >= maxProfiles)

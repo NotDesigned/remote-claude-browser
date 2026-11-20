@@ -618,15 +618,15 @@ describe("multi-user management routes", () => {
     const local = await fixture();
     const localAdmin = await login(local.app);
     expect((await api(local.app, localAdmin, "GET", "/api/accounts")).json()).toMatchObject({
-      platforms: ["linux"],
-      defaultPlatform: "linux",
-      accounts: [expect.objectContaining({ platform: "linux", browserEngine: "chromium" })],
+      platforms: ["windows"],
+      defaultPlatform: "windows",
+      accounts: [expect.objectContaining({ platform: "windows", browserEngine: "chromium" })],
     });
     expect(
       (
         await api(local.app, localAdmin, "POST", "/api/accounts", {
           name: "unsupported",
-          platform: "windows",
+          platform: "macos",
         })
       ).statusCode,
     ).toBe(400);
@@ -637,12 +637,12 @@ describe("multi-user management routes", () => {
     const { app, paths } = await fixture();
     const admin = await login(app);
     expect((await api(app, admin, "GET", "/api/accounts")).json()).toMatchObject({
-      platforms: ["windows", "macos", "linux"],
+      platforms: ["windows", "macos"],
       defaultPlatform: "windows",
-      accounts: [expect.objectContaining({ platform: "linux", browserEngine: "chromium" })],
+      accounts: [expect.objectContaining({ platform: "windows", browserEngine: "chromium" })],
     });
     const made = [];
-    for (const platform of [undefined, "windows", "macos", "linux"] as const) {
+    for (const platform of [undefined, "windows", "macos"] as const) {
       const response = await api(app, admin, "POST", "/api/accounts", {
         name: platform ?? "default",
         ...(platform ? { platform } : {}),
@@ -691,11 +691,11 @@ describe("multi-user management routes", () => {
     expect(
       (await api(app, admin, "PATCH", "/api/accounts/default/platform", { platform: "linux" }))
         .statusCode,
-    ).toBe(200);
+    ).toBe(400);
     expect(hooks.closeSession).not.toHaveBeenCalled();
     expect(await readFile(paths.accounts, "utf8")).toBe(before);
     let seed;
-    for (const platform of ["windows", "macos", "linux"] as const) {
+    for (const platform of ["macos", "windows"] as const) {
       const response = await api(app, admin, "PATCH", "/api/accounts/default/platform", {
         platform,
       });
@@ -708,15 +708,10 @@ describe("multi-user management routes", () => {
       expect(identity.fingerprint).toEqual({ engine: "aliasmode", platform, seed });
       expect(await readFile(paths.sessions, "utf8")).toBe(originalSessions);
     }
-    expect(hooks.closeSession.mock.calls).toEqual([
-      ["client-1", undefined],
-      ["client-1", undefined],
-      ["client-1", undefined],
-    ]);
-    await api(app, admin, "PATCH", "/api/accounts/default/platform", { platform: "linux" });
-    expect(hooks.closeSession).toHaveBeenCalledTimes(3);
+    expect(hooks.closeSession.mock.calls).toEqual([["client-1", undefined], ["client-1", undefined]]);
+    expect(hooks.closeSession).toHaveBeenCalledTimes(2);
     expect((await api(app, admin, "GET", "/api/accounts")).json().accounts[0]).toMatchObject({
-      platform: "linux",
+      platform: "windows",
       browserEngine: "aliasmode",
     });
     expect(hooks.launch).not.toHaveBeenCalled();

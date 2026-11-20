@@ -167,7 +167,7 @@ export async function startClientGateway(
   const platforms: readonly BrowserPlatform[] =
     browserEngine === "aliasmode" && process.env.MIRROR_RUNTIME_SOCKET
       ? BROWSER_PLATFORMS
-      : ["linux"];
+      : ["windows"];
   const defaultPlatform = platforms[0]!;
   const requirePlatform = (value: unknown): BrowserPlatform => {
     if (!platforms.includes(value as BrowserPlatform))
@@ -184,7 +184,7 @@ export async function startClientGateway(
   const profileSystem = (id: string) => {
     const fingerprint = accountStore.identity(id).fingerprint;
     return {
-      platform: fingerprint?.platform ?? "linux",
+      platform: fingerprint?.platform ?? "windows",
       browserEngine: fingerprint?.engine ?? "chromium",
     };
   };

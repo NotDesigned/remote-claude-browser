@@ -10,8 +10,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export type BrowserEngine = "chromium" | "aliasmode";
-export const BROWSER_PLATFORMS = ["windows", "macos", "linux"] as const;
-export type BrowserPlatform = (typeof BROWSER_PLATFORMS)[number];
+/** Linux is kept only for reading old records. New profiles and API choices use Windows or Mac. */
+export const BROWSER_PLATFORMS = ["windows", "macos"] as const;
+export type BrowserPlatform = (typeof BROWSER_PLATFORMS)[number] | "linux";
 
 export interface BrowserIdentity {
   screen: { width: number; height: number };
