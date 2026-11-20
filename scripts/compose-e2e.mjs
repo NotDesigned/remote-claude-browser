@@ -17,6 +17,42 @@ assert.ok(
 
 const fixturePage = (html) => `${fixtureOrigin}/?html=${Buffer.from(html).toString("base64url")}`;
 
+async function mirrorElement(page, id, { text, inset } = {}) {
+  const match = await page.waitForFunction(
+    ({ id, text, inset }) => {
+      const root = document.querySelector("#mirror-host .mirror-stage:not([data-parked]) iframe");
+      const visit = (frame, x, y, sx, sy) => {
+        const doc = frame.contentDocument;
+        if (!doc) return null;
+        const box = frame.getBoundingClientRect();
+        const childX = sx * (box.width / frame.offsetWidth);
+        const childY = sy * (box.height / frame.offsetHeight);
+        const left = x + box.left * sx + frame.clientLeft * childX;
+        const top = y + box.top * sy + frame.clientTop * childY;
+        const node = doc.getElementById(id);
+        if (node && (text === undefined || node.textContent === text)) {
+          const rect = node.getBoundingClientRect();
+          return {
+            text: node.textContent,
+            checked: node.checked,
+            x: left + (rect.left + (inset ?? rect.width / 2)) * childX,
+            y: top + (rect.top + rect.height / 2) * childY,
+          };
+        }
+        for (const child of doc.querySelectorAll("iframe")) {
+          const result = visit(child, left, top, childX, childY);
+          if (result) return result;
+        }
+        return null;
+      };
+      return root ? visit(root, 0, 0, 1, 1) : null;
+    },
+    { id, text, inset },
+    { timeout: 15_000 },
+  );
+  return match.jsonValue();
+}
+
 /**
  * Records a moment of picture and tone, and plays it from a blob as a site's player would: the mirror
  * then takes it over WebRTC, through the same capture of a media element that a real site's video gets.
@@ -80,9 +116,10 @@ show();
  */
 const movedChild = (
   tag,
-) => `<!doctype html><meta charset="utf-8"><input type="checkbox" id="${tag}-box"><p id="${tag}-log">0</p><p id="${tag}-ticks">0</p><script>
+) => `<!doctype html><meta charset="utf-8"><input type="checkbox" id="${tag}-box"><p id="${tag}-log">0</p><p id="${tag}-hover"></p><p id="${tag}-ticks">0</p><script>
 let n = 0; const box = document.getElementById("${tag}-box");
 box.addEventListener("change", () => { document.getElementById("${tag}-log").textContent = String(box.checked); });
+box.addEventListener("mousemove", () => { document.getElementById("${tag}-hover").textContent = "hovered"; });
 setInterval(() => { document.getElementById("${tag}-ticks").textContent = ++n; }, 500);
 </script>`;
 const movedParent = (
@@ -101,56 +138,22 @@ const MOVED_PAGE = `<!doctype html><meta charset="utf-8"><title>Moved frames</ti
 async function checkMovedFrame(page, address) {
   await address.fill(fixturePage(MOVED_PAGE));
   await address.press("Enter");
-  const find = (id) =>
-    page.evaluate((id) => {
-      const visit = (doc, x, y) => {
-        const found = doc.getElementById(id);
-        if (found) {
-          const r = found.getBoundingClientRect();
-          return {
-            text: found.textContent,
-            checked: found.checked,
-            x: x + r.left + r.width / 2,
-            y: y + r.top + r.height / 2,
-          };
-        }
-        for (const frame of doc.querySelectorAll("iframe")) {
-          const inner = frame.contentDocument;
-          if (!inner) continue;
-          const r = frame.getBoundingClientRect();
-          const got = visit(inner, x + r.left + frame.clientLeft, y + r.top + frame.clientTop);
-          if (got) return got;
-        }
-        return null;
-      };
-      const top = document.querySelector("#mirror-host .mirror-stage:not([data-parked]) iframe");
-      const o = top.getBoundingClientRect();
-      return top.contentDocument ? visit(top.contentDocument, o.left, o.top) : null;
-    }, id);
-  // Past the move, and past when a report would arrive.
+  // The fixture moves its inner frames three seconds after loading.
   await page.waitForTimeout(8_000);
   await page.waitForFunction(
     () => document.getElementById("mirror-host").dataset.inputReady === "true",
   );
   for (const tag of ["a", "b"]) {
-    const before = await find(`${tag}-ticks`);
-    assert.ok(before, `Moved frame ${tag}'s content is missing from the mirror`);
+    const before = await mirrorElement(page, `${tag}-ticks`);
     await page.waitForTimeout(2_000);
-    const after = await find(`${tag}-ticks`);
-    assert.ok(Number(after?.text) > Number(before.text), `Moved frame ${tag} stopped updating`);
-    const box = await find(`${tag}-box`);
+    const after = await mirrorElement(page, `${tag}-ticks`);
+    assert.ok(Number(after.text) > Number(before.text), `Moved frame ${tag} stopped updating`);
+    const box = await mirrorElement(page, `${tag}-box`);
+    await page.mouse.move(box.x, box.y);
+    await mirrorElement(page, `${tag}-hover`, { text: "hovered" });
     await page.mouse.click(box.x, box.y);
-    await page.waitForTimeout(2_000);
-    assert.equal(
-      (await find(`${tag}-log`))?.text,
-      "true",
-      `A press did not reach moved frame ${tag}`,
-    );
-    assert.equal(
-      (await find(`${tag}-box`))?.checked,
-      true,
-      `The mirror did not show moved frame ${tag}'s check`,
-    );
+    await mirrorElement(page, `${tag}-log`, { text: "true" });
+    assert.equal((await mirrorElement(page, `${tag}-box`)).checked, true);
   }
   console.log("Frames moved without reloading stay in the mirror, live and usable.");
 }
@@ -160,11 +163,13 @@ const longDocument = (tag) => {
   let rows = "";
   for (let i = 0; i < 60; i++)
     rows += `<p id="${tag}-row${i}" style="height:40px;margin:0">row ${i}</p>`;
-  return `<!doctype html><meta charset="utf-8"><style>html,body{margin:0}</style><div id="${tag}-state" style="position:fixed;top:0;right:0">0/none</div>${rows}<script>
+  return `<!doctype html><meta charset="utf-8"><style>html,body{margin:0}</style><div style="position:fixed;top:0;right:0"><span id="${tag}-state">0/none</span><span id="${tag}-hover"></span></div>${rows}<script>
 const state = document.getElementById("${tag}-state");
+const hover = document.getElementById("${tag}-hover");
 let pressed = "none";
 const show = () => { state.textContent = Math.round(scrollY) + "/" + pressed; };
 addEventListener("scroll", show);
+addEventListener("mousemove", (event) => { hover.textContent = event.target.id; });
 addEventListener("mousedown", (event) => { pressed = event.target.id || event.target.tagName; show(); });
 </script>`;
 };
@@ -198,56 +203,21 @@ ${sandboxed(
 async function checkNestedFrames(page, address) {
   await address.fill(fixturePage(NESTED_PAGE));
   await address.press("Enter");
-  const find = (id) =>
-    page.evaluate((id) => {
-      const visit = (doc, x, y) => {
-        const found = doc.getElementById(id);
-        if (found) {
-          const r = found.getBoundingClientRect();
-          return { text: found.textContent, x: x + r.left + 20, y: y + r.top + r.height / 2 };
-        }
-        for (const frame of doc.querySelectorAll("iframe")) {
-          if (!frame.contentDocument) continue;
-          const r = frame.getBoundingClientRect();
-          const got = visit(
-            frame.contentDocument,
-            x + r.left + frame.clientLeft,
-            y + r.top + frame.clientTop,
-          );
-          if (got) return got;
-        }
-        return null;
-      };
-      const top = document.querySelector("#mirror-host .mirror-stage:not([data-parked]) iframe");
-      const o = top.getBoundingClientRect();
-      return top.contentDocument ? visit(top.contentDocument, o.left, o.top) : null;
-    }, id);
-  await page.waitForTimeout(6_000);
   for (const tag of ["deep", "single", "indata", "insandbox"]) {
-    const near = await find(`${tag}-row2`);
-    assert.ok(near, `The ${tag} document is missing from the mirror`);
+    const near = await mirrorElement(page, `${tag}-row2`, { inset: 20 });
     await page.mouse.move(near.x, near.y);
+    await mirrorElement(page, `${tag}-hover`, { text: `${tag}-row2` });
     await page.mouse.wheel(0, 800);
-    await page.waitForTimeout(2_500);
-    const state = await find(`${tag}-state`);
-    assert.equal(
-      state?.text.split("/")[0],
-      "800",
-      `The ${tag} document did not scroll on the remote page`,
-    );
-    const row = await find(`${tag}-row24`);
+    await mirrorElement(page, `${tag}-state`, { text: "800/none" });
+    const row = await mirrorElement(page, `${tag}-row24`, { inset: 20 });
+    await page.mouse.move(row.x, row.y);
+    await mirrorElement(page, `${tag}-hover`, { text: `${tag}-row24` });
     await page.mouse.click(row.x, row.y);
-    await page.waitForTimeout(1_500);
-    assert.equal(
-      (await find(`${tag}-state`))?.text,
-      `800/${tag}-row24`,
-      `A press in the ${tag} document went astray`,
-    );
+    await mirrorElement(page, `${tag}-state`, { text: `800/${tag}-row24` });
   }
   console.log("Scrolling and pressing reach the right place in nested frames.");
 }
 
-/** Accounts are separate Chromes: a cookie set in one is not there in another, and stays in its own. */
 /** A session whose viewers are all hidden sleeps its pages, and wakes them when one shows again. */
 async function checkPageSleep(page, address) {
   const target = `${fixturePage("<!doctype html><h1>Session restore</h1>")}#background-restore`;
@@ -268,13 +238,12 @@ async function checkPageSleep(page, address) {
     );
   await restored();
   await setHidden(true);
-  await page.waitForFunction(
-    async () => (await (await fetch("/healthz")).json()).clients === 0,
-    undefined,
-    { timeout: 80000 },
-  );
+  const clientCount = async () =>
+    (await (await page.request.get(origin + "/healthz")).json()).clients;
+  const deadline = Date.now() + 80_000;
+  while ((await clientCount()) !== 0 && Date.now() < deadline) await page.waitForTimeout(1_000);
   await page.waitForTimeout(1500);
-  assert.equal((await (await page.request.get(origin + "/healthz")).json()).clients, 0);
+  assert.equal(await clientCount(), 0, "The hidden session did not release its runtime");
   await setHidden(false);
   await page.waitForFunction(
     () => document.querySelector("[data-connection]")?.getAttribute("data-connection") === "open",
@@ -285,6 +254,7 @@ async function checkPageSleep(page, address) {
   console.log("Background pages release their runtime and reconnect to the same URL and session.");
 }
 
+/** Accounts are separate Chromes: a cookie set in one is not there in another, and stays in its own. */
 async function checkAccounts(page) {
   // From the page, as the viewer itself asks: its cookies are Secure, which only it sends to plain http.
   const call = (method, path, body) =>
@@ -581,6 +551,7 @@ report();
     [screenWidth, screenHeight],
   );
   console.log("An oversized workbench fits the page while keeping the remote screen size.");
+  await page.setViewportSize({ width: 1280, height: 900 });
 
   // A page's address changing shows in the bar, unless someone is typing there.
   const moving =
@@ -608,7 +579,6 @@ report();
   console.log("The address bar follows the page, and keeps what is being typed.");
 
   await checkForm(page, address, mirrored);
-  await page.setViewportSize({ width: 1280, height: 900 });
   await checkMovedFrame(page, address);
   await checkNestedFrames(page, address);
   await checkPageSleep(page, address);

@@ -68,6 +68,8 @@ jobs:
           pnpm smoke:cpa
       - name: Build the tunnel image
         run: docker build client
+      - name: Enable Chromium's user namespace sandbox on the test runner
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Build and test the server image
         run: pnpm smoke:compose
         env:
