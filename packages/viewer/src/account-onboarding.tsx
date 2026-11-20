@@ -1,4 +1,5 @@
 import { AppleRegistrationFields } from "./apple-registration-fields";
+import { GoogleRegistrationFields } from "./google-registration-fields";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { ApiError, apiRequest } from "./api";
 import { writeLocalClipboard } from "./chrome/clipboard";
@@ -27,6 +28,7 @@ interface AppleAttempt {
 interface GoogleAttempt {
   id: string;
   controller: AbortController;
+  fetcher: typeof fetch;
   tab: string;
   seenTabs: Set<string>;
 }
@@ -56,6 +58,13 @@ interface SavedAppleDetails {
 type Step =
   | { name: "start" }
   | { name: "google"; attempt: string; tab: string }
+  | {
+      name: "google-verification";
+      attempt: string;
+      tab: string;
+      email: string;
+      stage: string;
+    }
   | {
       name: "saved";
       accounts: SavedAppleAccount[];
@@ -104,6 +113,7 @@ const PERSONAL_ADDRESS = "personal";
 
 const APPLE_TAB_CLOSED = "Apple 注册标签已关闭，可以重新开始。";
 const APPLE_ATTEMPT_ENDED = "Apple 注册向导已结束，可以重新开始。";
+const GOOGLE_ATTEMPT_ENDED = "Google 注册向导已结束，可以重新开始。";
 
 export function AccountOnboarding({
   open,
@@ -150,12 +160,15 @@ export function AccountOnboarding({
   const appleTab =
     step.name === "apple" ? step.apple.tab : step.name === "apple-verification" ? step.tab : null;
   const appleVerification = step.name === "apple-verification" ? appleAttempt.current : null;
+  const googleVerification = step.name === "google-verification" ? googleAttempt.current : null;
   const verificationRoute =
     step.name === "apple-verification" && appleVerification
       ? applePath(appleVerification, `/${encodeURIComponent(step.tab)}/verification`)
-      : step.name === "claude-verification"
-        ? `${route}/claude/${encodeURIComponent(step.tab)}/verification`
-        : null;
+      : step.name === "google-verification" && googleVerification
+        ? `${route}/google/${encodeURIComponent(step.tab)}/verification?attempt=${step.attempt}`
+        : step.name === "claude-verification"
+          ? `${route}/claude/${encodeURIComponent(step.tab)}/verification`
+          : null;
   const watching = "watching" in step && step.watching;
 
   const stopApple = () => {
@@ -235,7 +248,12 @@ export function AccountOnboarding({
 
   useEffect(() => {
     const attempt = googleAttempt.current;
-    if (!attempt || step.name !== "google" || !browserConnected) return;
+    if (
+      !attempt ||
+      (step.name !== "google" && step.name !== "google-verification") ||
+      !browserConnected
+    )
+      return;
     for (const tab of tabs) attempt.seenTabs.add(tab.id);
     if (attempt.seenTabs.has(step.tab) && !tabs.some(({ id }) => id === step.tab))
       finishGoogle("Google 注册页面已关闭，可以重新开始。");
@@ -268,15 +286,21 @@ export function AccountOnboarding({
 
   useEffect(() => {
     const guided = step.name === "apple-verification" && step.filled;
+    const googleGuided = step.name === "google-verification";
     if (
       !open ||
       !verificationRoute ||
-      (guided
+      (googleGuided
         ? pending ||
           verification.challenge?.kind === "complete" ||
           verification.challenge?.kind === "declined" ||
           verification.challenge?.kind === "closed"
-        : !watching || verification.ready || verification.expired)
+        : guided
+          ? pending ||
+            verification.challenge?.kind === "complete" ||
+            verification.challenge?.kind === "declined" ||
+            verification.challenge?.kind === "closed"
+          : !watching || verification.ready || verification.expired)
     )
       return;
     let active = true;
@@ -287,21 +311,25 @@ export function AccountOnboarding({
           verificationRoute,
           "GET",
           undefined,
-          appleVerification?.fetcher,
+          appleVerification?.fetcher ?? googleVerification?.fetcher,
         );
-        if (active && !appleVerification?.controller.signal.aborted) {
+        const controller = appleVerification?.controller ?? googleVerification?.controller;
+        if (active && !controller?.signal.aborted) {
           setVerification(status);
-          if (!guided) setError(null);
+          if (!guided && !googleGuided) setError(null);
         }
       } catch (failure) {
-        if (active && !appleVerification?.controller.signal.aborted) {
+        const controller = appleVerification?.controller ?? googleVerification?.controller;
+        if (active && !controller?.signal.aborted) {
           if (appleVerification && failure instanceof ApiError && failure.status === 410)
             resetApple(APPLE_ATTEMPT_ENDED);
+          else if (googleVerification && failure instanceof ApiError && failure.status === 410)
+            finishGoogle(GOOGLE_ATTEMPT_ENDED);
           else setError((failure as Error).message);
         }
       } finally {
-        if (active && !appleVerification?.controller.signal.aborted)
-          timer = setTimeout(check, 2_000);
+        const controller = appleVerification?.controller ?? googleVerification?.controller;
+        if (active && !controller?.signal.aborted) timer = setTimeout(check, 2_000);
       }
     };
     void check();
@@ -317,9 +345,13 @@ export function AccountOnboarding({
     verification.ready,
     verification.expired,
     verification.challenge?.kind,
+    googleVerification,
   ]);
 
-  const perform = async (task: () => Promise<void>, attempt?: Pick<AppleAttempt, "controller">) => {
+  const perform = async (
+    task: () => Promise<void>,
+    attempt?: Pick<AppleAttempt | GoogleAttempt, "controller">,
+  ) => {
     setPending(true);
     setError(null);
     try {
@@ -327,7 +359,9 @@ export function AccountOnboarding({
     } catch (failure) {
       if (attempt?.controller.signal.aborted) return;
       if (attempt && failure instanceof ApiError && failure.status === 410)
-        resetApple(APPLE_ATTEMPT_ENDED);
+        attempt === appleAttempt.current
+          ? resetApple(APPLE_ATTEMPT_ENDED)
+          : finishGoogle(GOOGLE_ATTEMPT_ENDED);
       else if (attempt && step.name === "start") resetApple((failure as Error).message);
       else setError((failure as Error).message);
     } finally {
@@ -381,6 +415,7 @@ export function AccountOnboarding({
     const attempt: GoogleAttempt = {
       id: crypto.randomUUID(),
       controller,
+      fetcher: (input, init) => fetch(input, { ...init, signal: controller.signal }),
       tab: "",
       seenTabs: new Set(),
     };
@@ -397,6 +432,27 @@ export function AccountOnboarding({
       attempt.tab = result.tab;
       goTo({ name: "google", attempt: result.attempt, tab: result.tab });
     }, attempt);
+  };
+  const submitGoogle = async (form: FormData) => {
+    const attempt = googleAttempt.current;
+    if (!attempt || step.name !== "google") return;
+    const details = Object.fromEntries(form) as Record<string, string>;
+    if (!details.phone) delete details.phone;
+    if (!details.recoveryEmail) delete details.recoveryEmail;
+    const result = await apiRequest<{ filled: boolean; stage: string }>(
+      `${route}/google/${encodeURIComponent(step.tab)}?attempt=${attempt.id}`,
+      "POST",
+      details,
+      attempt.fetcher,
+    );
+    if (attempt.controller.signal.aborted) return;
+    goTo({
+      name: "google-verification",
+      attempt: attempt.id,
+      tab: step.tab,
+      email: `${details.username}@gmail.com`,
+      stage: result.stage,
+    });
   };
   useEffect(() => {
     if (!open || !startApple || autoStarted.current) return;
@@ -639,21 +695,162 @@ export function AccountOnboarding({
           </section>
         )}
         {step.name === "google" && (
-          <section class="user-panel-form">
-            <h3>继续 Google 注册</h3>
+          <form
+            class="user-panel-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (busy) return;
+              void perform(
+                () => submitGoogle(new FormData(event.currentTarget)),
+                googleAttempt.current!,
+              );
+            }}
+          >
+            <h3>填写 Google 注册资料</h3>
             <p class="user-panel-muted" role="status">
-              Google 官方页面已打开。请在同一个浏览器标签完成注册，后续页面会继续被跟踪。
+              资料会回写到同一个 Google 官方注册标签，验证码、手机号验证和条款确认会回到这里完成。
             </p>
+            <GoogleRegistrationFields busy={busy} />
             <div class="user-panel-actions">
-              <button type="button" class="user-panel-save" onClick={() => openTab(step.tab)}>
-                前往 Google 注册
+              <button type="submit" class="user-panel-save" disabled={busy}>
+                {pending ? "正在填写…" : "继续"}
               </button>
-              <button type="button" onClick={() => finishGoogle()}>
-                完成并返回
+              <button type="button" disabled={busy} onClick={() => openTab(step.tab)}>
+                查看 Google 页面
               </button>
-              <button type="button" onClick={() => finishGoogle("Google 注册已取消。")}>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => finishGoogle("Google 注册已取消。")}
+              >
                 取消向导
               </button>
+            </div>
+          </form>
+        )}
+        {step.name === "google-verification" && (
+          <section class="user-panel-form">
+            <h3>
+              {challenge?.kind === "complete"
+                ? "Google 账户已创建"
+                : challenge?.kind === "declined"
+                  ? "未接受 Google 条款"
+                  : challenge?.kind === "terms"
+                    ? "Google 条款与隐私"
+                    : "验证 Google 账户"}
+            </h3>
+            <p class="user-panel-muted account-onboarding-address">{step.email}</p>
+            {challenge?.kind === "terms" && (
+              <div class="user-panel-actions">
+                <button
+                  type="button"
+                  class="user-panel-save"
+                  disabled={busy}
+                  onClick={() =>
+                    void perform(async () => {
+                      const result = await apiRequest<Pick<Verification, "challenge">>(
+                        verificationRoute!,
+                        "POST",
+                        { kind: "terms", choice: "agree" },
+                        googleVerification?.fetcher,
+                      );
+                      setVerification((value) => ({ ...value, ...result }));
+                    }, googleVerification ?? undefined)
+                  }
+                >
+                  {pending ? "正在提交…" : "同意"}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    void perform(async () => {
+                      const result = await apiRequest<Pick<Verification, "challenge">>(
+                        verificationRoute!,
+                        "POST",
+                        { kind: "terms", choice: "disagree" },
+                        googleVerification?.fetcher,
+                      );
+                      setVerification((value) => ({ ...value, ...result }));
+                    }, googleVerification ?? undefined)
+                  }
+                >
+                  不同意
+                </button>
+              </div>
+            )}
+            {!challenge || challenge.kind === "waiting" ? (
+              <p class="user-panel-muted" role="status">
+                正在读取 Google 注册步骤…
+              </p>
+            ) : null}
+            {(challenge?.kind === "captcha" || challenge?.kind === "sms") && (
+              <form
+                class="user-panel-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const form = event.currentTarget;
+                  const code = String(new FormData(form).get("code") ?? "").trim();
+                  void perform(async () => {
+                    const result = await apiRequest<Pick<Verification, "challenge">>(
+                      verificationRoute!,
+                      "POST",
+                      { kind: challenge.kind, code },
+                      googleVerification?.fetcher,
+                    );
+                    setVerification((value) => ({ ...value, ...result }));
+                    form.reset();
+                  }, googleVerification ?? undefined);
+                }}
+              >
+                {challenge.kind === "captcha" && (
+                  <img
+                    class="account-onboarding-captcha"
+                    src={challenge.image}
+                    alt="Google 图形验证码"
+                  />
+                )}
+                <label>
+                  {challenge.kind === "captcha" ? "图形验证码" : "短信验证码"}
+                  <input
+                    name="code"
+                    required
+                    disabled={busy}
+                    maxLength={challenge.kind === "captcha" ? 20 : 6}
+                    pattern={challenge.kind === "captcha" ? undefined : "[0-9]{6}"}
+                    inputMode={challenge.kind === "captcha" ? undefined : "numeric"}
+                    autoComplete={challenge.kind === "sms" ? "one-time-code" : "off"}
+                  />
+                </label>
+                <div class="user-panel-actions">
+                  <button type="submit" class="user-panel-save" disabled={busy}>
+                    {busy ? "提交中…" : "验证"}
+                  </button>
+                </div>
+              </form>
+            )}
+            {(challenge?.kind === "complete" || challenge?.kind === "declined") && (
+              <p role="status">注册流程已结束，资料已提交到 Google。</p>
+            )}
+            <div class="user-panel-actions">
+              {challenge?.kind !== "complete" && challenge?.kind !== "declined" && (
+                <button type="button" disabled={busy} onClick={() => openTab(step.tab)}>
+                  查看 Google 页面
+                </button>
+              )}
+              {challenge?.kind === "complete" || challenge?.kind === "declined" ? (
+                <button type="button" onClick={() => finishGoogle()}>
+                  完成
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => finishGoogle("Google 注册已取消。")}
+                >
+                  取消向导
+                </button>
+              )}
             </div>
           </section>
         )}

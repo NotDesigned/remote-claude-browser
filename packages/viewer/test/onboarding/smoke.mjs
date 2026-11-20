@@ -23,6 +23,7 @@ try {
   const relayRequests = [];
   let relayEmail;
   let googleRequests = 0;
+  let googleStage = "sms";
   let stage = "captcha";
   let allowSms = false;
   let allowTerms = false;
@@ -32,10 +33,22 @@ try {
     route.fulfill({ json: { enabled: false, addresses: [] } }),
   );
   await page.route(/\/onboarding\/google(?:$|\?|\/)/, (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/google/google-tab"))
+      return route.fulfill({ json: { filled: true, stage: googleStage } });
     if (route.request().method() === "DELETE") return route.fulfill({ status: 204 });
     googleRequests++;
     return route.fulfill({
       json: { attempt: "google-attempt", tab: "google-tab", url: "https://mail.google.com/" },
+    });
+  });
+  await page.route(/\/onboarding\/google\/google-tab\/verification/, (route) => {
+    if (route.request().method() === "POST") {
+      googleStage = "complete";
+      return route.fulfill({ json: { challenge: { kind: "complete" } } });
+    }
+    return route.fulfill({
+      json: { ready: false, expired: false, challenge: { kind: googleStage } },
     });
   });
   await page.route(/\/onboarding\/apple(?:\/|\?)/, (route) => {
@@ -114,9 +127,17 @@ try {
   );
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/test/onboarding/`);
   await page.getByRole("button", { name: "注册 Google 账户" }).click();
-  await page.getByRole("heading", { name: "继续 Google 注册" }).waitFor();
+  await page.getByRole("heading", { name: "填写 Google 注册资料" }).waitFor();
   assert.equal(googleRequests, 1);
-  await page.getByRole("button", { name: "取消向导", exact: true }).click();
+  await page.getByRole("button", { name: "生成示例", exact: true }).click();
+  await page.getByLabel("密码", { exact: true }).fill("ExamplePass123!");
+  await page.getByLabel("确认密码", { exact: true }).fill("ExamplePass123!");
+  await page.getByRole("button", { name: "继续", exact: true }).click();
+  await page.getByRole("heading", { name: "验证 Google 账户" }).waitFor();
+  await page.getByLabel("短信验证码", { exact: true }).fill("123456");
+  await page.getByRole("button", { name: "验证", exact: true }).click();
+  await page.getByRole("heading", { name: "Google 账户已创建" }).waitFor();
+  await page.getByRole("button", { name: "完成", exact: true }).click();
   await page.getByRole("button", { name: "注册 Apple 账户" }).click();
   await page.getByRole("button", { name: "生成示例" }).click();
   const generatedLastName = await page.getByLabel("姓氏").inputValue();

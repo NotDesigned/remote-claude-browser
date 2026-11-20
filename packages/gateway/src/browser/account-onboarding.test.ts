@@ -223,6 +223,23 @@ describe("onboarding endpoints", () => {
           })
         ).json(),
       ).toEqual({ active: true, tab: "google-tab" });
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: `/api/client/session/session/onboarding/google/google-tab?attempt=${attempt}`,
+            payload: {
+              firstName: "First",
+              lastName: "Last",
+              birthday: "2000-01-02",
+              gender: "female",
+              username: "first.last",
+              password: "ExamplePass123!",
+              passwordConfirmation: "DifferentPass123!",
+            },
+          })
+        ).statusCode,
+      ).toBe(400);
       targets = [];
       expect(
         (

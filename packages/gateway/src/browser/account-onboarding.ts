@@ -35,6 +35,7 @@ const APPLE_FORM = "https://appleid.apple.com/widget/account/";
 const APPLE_TERMS = [ICLOUD, APPLE_FORM, APPLE_SIGN_IN, APPLE_ACCOUNT];
 const CLAUDE_LOGIN = "https://claude.ai/login";
 const GOOGLE_MAIL = "https://mail.google.com/";
+const GOOGLE_ACCOUNTS = "https://accounts.google.com";
 const APPLE_AUTH = ["https://appleid.apple.com", "https://idmsa.apple.com"];
 const ICLOUD_FLOW_MS = 35_000;
 const APPLE_REGISTRATION_MS = 30_000;
@@ -83,6 +84,18 @@ interface GoogleQuery {
   attempt?: string;
 }
 
+interface GoogleDetails {
+  firstName: string;
+  lastName: string;
+  birthday: string;
+  gender: string;
+  username: string;
+  password: string;
+  passwordConfirmation: string;
+  phone?: string;
+  recoveryEmail?: string;
+}
+
 const attemptQuery = {
   type: "object",
   properties: {
@@ -104,6 +117,17 @@ const appleDetails = {
   birthday: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
   phoneCode: { type: "string", pattern: "^[A-Z]{2}$" },
   phone: requiredText(40),
+};
+const googleDetails = {
+  firstName: requiredText(100),
+  lastName: requiredText(100),
+  birthday: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+  gender: requiredText(32),
+  username: { type: "string", pattern: "^[a-zA-Z0-9._-]{1,30}$" },
+  password: requiredText(256),
+  passwordConfirmation: requiredText(256),
+  phone: { type: "string", maxLength: 40 },
+  recoveryEmail: { ...emailField, nullable: true },
 };
 const mailBody = (
   properties: Record<string, unknown> = {},
@@ -159,7 +183,16 @@ export function registerAccountOnboarding(
   const attempts = createAppleAttempts();
   const googleAttempts = new Map<
     string,
-    { sid: string; browser: Browser; tab: string; control: AbortController; timer: NodeJS.Timeout }
+    {
+      sid: string;
+      browser: Browser;
+      tab: string;
+      control: AbortController;
+      timer: NodeJS.Timeout;
+      details?: GoogleDetails;
+      submitting?: boolean;
+      termsOutcome?: "complete" | "declined";
+    }
   >();
   const shutdown = new AbortController();
   app.addHook("onClose", async () => {
@@ -251,6 +284,10 @@ export function registerAccountOnboarding(
   const route = "/api/client/session/:sid/onboarding";
   const googleKey = (sid: string, id: string) => `${sid}:${id.toLowerCase()}`;
   const googleAttempt = (sid: string, id: string) => googleAttempts.get(googleKey(sid, id));
+  const googleTabAttempt = (sid: string, tab: string, id: string) => {
+    const attempt = googleAttempt(sid, id);
+    return attempt?.tab === tab && findPage(attempt.browser, tab) ? attempt : undefined;
+  };
   const rememberGoogle = (sid: string, browser: Browser, tab: string) => {
     const id = randomUUID();
     const control = new AbortController();
@@ -268,6 +305,143 @@ export function registerAccountOnboarding(
     const { id } = rememberGoogle(request.params.sid, current.browser, tab);
     return { attempt: id, tab, url: GOOGLE_MAIL };
   });
+  app.post<{ Params: TabParams; Querystring: GoogleQuery; Body: GoogleDetails }>(
+    `${route}/google/:tab`,
+    {
+      preHandler: requireSession,
+      bodyLimit: 4096,
+      schema: {
+        querystring: { ...attemptQuery, required: ["attempt"] },
+        body: {
+          type: "object",
+          required: [
+            "firstName",
+            "lastName",
+            "birthday",
+            "gender",
+            "username",
+            "password",
+            "passwordConfirmation",
+          ],
+          additionalProperties: false,
+          properties: googleDetails,
+        },
+      },
+    },
+    async (request, reply) => {
+      const { sid, tab } = request.params;
+      const attempt = googleAttempt(sid, request.query.attempt!);
+      if (!attempt || attempt.tab !== tab || !findPage(attempt.browser, tab))
+        return googleGone(reply);
+      if (request.body.password !== request.body.passwordConfirmation)
+        return reply.code(400).send({ error: "两次输入的 Google 密码不一致" });
+      const result = await fillGoogleRegistration(
+        attempt.browser,
+        tab,
+        request.body,
+        attempt.control.signal,
+      );
+      if (!result)
+        return reply.code(409).send({ error: "未找到 Google 注册表单，请在官方页面继续" });
+      attempt.details = request.body;
+      return { filled: true, stage: result };
+    },
+  );
+  app.get<{ Params: TabParams; Querystring: GoogleQuery }>(
+    `${route}/google/:tab/verification`,
+    {
+      preHandler: requireSession,
+      schema: { querystring: { ...attemptQuery, required: ["attempt"] } },
+    },
+    async (request, reply) => {
+      const attempt = googleTabAttempt(
+        request.params.sid,
+        request.params.tab,
+        request.query.attempt!,
+      );
+      if (!attempt) return googleGone(reply);
+      if (attempt.termsOutcome)
+        return { ready: false, expired: true, challenge: { kind: attempt.termsOutcome } };
+      const challenge = await readGoogleChallenge(
+        attempt.browser,
+        attempt.tab,
+        attempt.control.signal,
+      );
+      return { ready: false, expired: false, challenge };
+    },
+  );
+  app.post<{
+    Params: TabParams;
+    Querystring: GoogleQuery;
+    Body:
+      { kind: "captcha" | "sms"; code: string } | { kind: "terms"; choice: "agree" | "disagree" };
+  }>(
+    `${route}/google/:tab/verification`,
+    {
+      preHandler: requireSession,
+      schema: {
+        querystring: { ...attemptQuery, required: ["attempt"] },
+        body: {
+          anyOf: [
+            {
+              type: "object",
+              required: ["kind", "code"],
+              additionalProperties: false,
+              properties: {
+                kind: { enum: ["captcha", "sms"] },
+                code: requiredText(20),
+              },
+            },
+            {
+              type: "object",
+              required: ["kind", "choice"],
+              additionalProperties: false,
+              properties: { kind: { const: "terms" }, choice: { enum: ["agree", "disagree"] } },
+            },
+          ],
+        },
+      },
+    },
+    async (request, reply) => {
+      const attempt = googleTabAttempt(
+        request.params.sid,
+        request.params.tab,
+        request.query.attempt!,
+      );
+      if (!attempt) return googleGone(reply);
+      if (attempt.submitting)
+        return reply.code(409).send({ error: "请等待 Google 处理上一次提交" });
+      attempt.submitting = true;
+      try {
+        const signal = attempt.control.signal;
+        const body = request.body;
+        if (body.kind === "terms") {
+          const result = await submitGoogleTerms(attempt.browser, attempt.tab, body.choice, signal);
+          if (!result) return reply.code(409).send({ error: "未找到 Google 条款确认按钮" });
+          if (body.choice === "disagree") {
+            attempt.termsOutcome = "declined";
+            return { challenge: { kind: "declined" } };
+          }
+          return { challenge: { kind: "waiting" } };
+        }
+        if (body.kind === "sms" && !/^\d{6}$/.test(body.code))
+          return reply.code(409).send({ error: "请输入六位验证码" });
+        const submitted = await submitGoogleCode(
+          attempt.browser,
+          attempt.tab,
+          body.kind,
+          body.code,
+          signal,
+        );
+        if (!submitted) return reply.code(409).send({ error: "未能提交 Google 验证码，请重试" });
+        if (attempt.details)
+          await advanceGoogleRegistration(attempt.browser, attempt.tab, attempt.details, signal);
+        return { submitted: true };
+      } finally {
+        attempt.submitting = false;
+      }
+    },
+  );
   app.delete<{ Params: SessionParams; Querystring: GoogleQuery }>(
     `${route}/google`,
     {
@@ -780,6 +954,251 @@ export function registerAccountOnboarding(
       return { opened: true };
     },
   );
+}
+
+type GoogleStage =
+  | "name"
+  | "birthday"
+  | "credentials"
+  | "phone"
+  | "recovery"
+  | "sms"
+  | "captcha"
+  | "terms"
+  | "complete"
+  | "waiting";
+type GoogleChallenge =
+  { kind: "captcha"; image: string } | { kind: "sms" | "terms" | "complete" | "waiting" };
+
+async function fillGoogleRegistration(
+  browser: Browser,
+  tab: string,
+  details: GoogleDetails,
+  signal: AbortSignal,
+) {
+  const started = await waitForForm<boolean>(
+    browser,
+    tab,
+    [GOOGLE_MAIL, GOOGLE_ACCOUNTS],
+    `
+      const visible = (element) => element.getClientRects().length &&
+        getComputedStyle(element).visibility !== "hidden" && !element.closest('[inert],[aria-hidden="true"]');
+      if (location.origin === ${JSON.stringify(GOOGLE_ACCOUNTS)} && /\\/signup(?:\\/|$)/.test(location.pathname)) return true;
+      if (location.origin !== ${JSON.stringify(GOOGLE_MAIL)}) return null;
+      const link = [...document.querySelectorAll('a,button,[role="button"]')].find((element) =>
+        visible(element) && /create account/i.test([element.innerText, element.getAttribute('aria-label'), element.getAttribute('href')].join(' ')));
+      if (!link) return null;
+      link.click();
+      return true;
+    `,
+    { mainFrameOnly: true, userGesture: true, signal, originOnly: true },
+    Date.now() + 10_000,
+  );
+  if (!started) return null;
+  return advanceGoogleRegistration(browser, tab, details, signal);
+}
+
+async function advanceGoogleRegistration(
+  browser: Browser,
+  tab: string,
+  details: GoogleDetails,
+  signal: AbortSignal,
+): Promise<GoogleStage> {
+  for (let index = 0; index < 12; index++) {
+    const result = await waitForForm<GoogleStage>(
+      browser,
+      tab,
+      GOOGLE_ACCOUNTS,
+      googleRegistrationStep(details),
+      { mainFrameOnly: true, userGesture: true, signal, originOnly: true },
+      Date.now() + 8_000,
+    );
+    if (!result) return "waiting";
+    if (["sms", "captcha", "terms", "complete", "waiting"].includes(result.value))
+      return result.value;
+  }
+  return "waiting";
+}
+
+function googleRegistrationStep(details: GoogleDetails) {
+  return `
+    ${SET_VALUE}
+    const details = ${JSON.stringify(details)};
+    const visible = (element) => element.getClientRects().length &&
+      getComputedStyle(element).visibility !== "hidden" && !element.closest('[inert],[aria-hidden="true"]');
+    const writable = (element) => visible(element) && !element.disabled && !element.readOnly;
+    const field = (...selectors) => selectors.flatMap((selector) => [...document.querySelectorAll(selector)])
+      .find(writable);
+    const button = (labels) => [...document.querySelectorAll('button,[role="button"],input[type="submit"]')]
+      .find((element) => visible(element) && !element.matches(':disabled,[aria-disabled="true"]') &&
+        labels.some((label) => new RegExp('^' + label + '$', 'i').test((element.innerText || element.value || '').trim())));
+    const next = () => button(['next', 'continue', 'create account']);
+    const text = document.body.innerText.replace(/\\s+/g, ' ').toLowerCase();
+    if (/account created|welcome to your google account|you\\'re all set/.test(text)) return 'complete';
+    if (/privacy and terms|terms of service/.test(text) && button(['i agree', 'agree', 'accept'])) return 'terms';
+    const code = field('input[autocomplete="one-time-code"]', 'input[name="code"]', 'input[name="pin"]');
+    if (code && /verify|code|phone|text message/.test(text)) return 'sms';
+    const first = field('input[name="firstName"]', 'input[autocomplete="given-name"]');
+    const last = field('input[name="lastName"]', 'input[autocomplete="family-name"]');
+    if (first && last) {
+      if (!setValue(first, details.firstName) || !setValue(last, details.lastName)) return null;
+      next()?.click();
+      return 'name';
+    }
+    const month = field('select[name="month"]');
+    const day = field('input[name="day"]');
+    const year = field('input[name="year"]');
+    if (month && day && year) {
+      const [yearValue, monthValue, dayValue] = details.birthday.split('-');
+      const monthOption = [...month.options].find((option) =>
+        option.value === String(Number(monthValue)) || option.textContent?.trim().startsWith(String(Number(monthValue))));
+      if (!monthOption || !setValue(month, monthOption.value) || !setValue(day, dayValue) || !setValue(year, yearValue)) return null;
+      const gender = field('select[name="gender"]');
+      if (gender) {
+        const option = [...gender.options].find((item) =>
+          new RegExp(details.gender === 'female' ? 'female|woman' : details.gender === 'male' ? 'male|man' : details.gender === 'other' ? 'custom|other' : 'rather', 'i').test(item.textContent ?? ''));
+        if (option && !setValue(gender, option.value)) return null;
+      }
+      next()?.click();
+      return 'birthday';
+    }
+    const username = field('input[name="Username"]', 'input[autocomplete="username"]');
+    const password = field('input[name="Passwd"]', 'input[type="password"]');
+    const confirmation = field('input[name="PasswdAgain"]');
+    if (username && password) {
+      if (!setValue(username, details.username) || !setValue(password, details.password)) return null;
+      if (confirmation && !setValue(confirmation, details.passwordConfirmation)) return null;
+      next()?.click();
+      return 'credentials';
+    }
+    const phone = field('input[name="phoneNumber"]', 'input[type="tel"]');
+    if (phone) {
+      if (details.phone && !setValue(phone, details.phone)) return null;
+      if (details.phone) next()?.click();
+      return 'phone';
+    }
+    const recovery = field('input[name="recoveryEmail"]', 'input[type="email"]');
+    if (recovery && details.recoveryEmail) {
+      setValue(recovery, details.recoveryEmail);
+      next()?.click();
+      return 'recovery';
+    }
+    return null;
+  `;
+}
+
+async function readGoogleChallenge(
+  browser: Browser,
+  tab: string,
+  signal: AbortSignal,
+): Promise<GoogleChallenge> {
+  const result = await checkForm<
+    { kind: "captcha"; src: string } | { kind: "sms" | "terms" | "complete" }
+  >(
+    browser,
+    tab,
+    GOOGLE_ACCOUNTS,
+    `
+      const visible = (element) => element.getClientRects().length &&
+        getComputedStyle(element).visibility !== "hidden" && !element.closest('[inert],[aria-hidden="true"]');
+      const text = document.body.innerText.replace(/\\s+/g, ' ').toLowerCase();
+      if (/account created|welcome to your google account|you\\'re all set/.test(text)) return { kind: 'complete' };
+      if (/privacy and terms|terms of service/.test(text) &&
+          [...document.querySelectorAll('button,[role="button"]')].some((element) => visible(element) && /^(?:i agree|agree|accept)$/i.test(element.innerText.trim())))
+        return { kind: 'terms' };
+      const image = [...document.images].find((element) => visible(element) && element.naturalWidth &&
+        /captcha|recaptcha|challenge/i.test([element.id, element.alt, element.currentSrc].join(' ')));
+      if (image) return { kind: 'captcha', src: image.currentSrc };
+      const code = [...document.querySelectorAll('input')].find((element) => visible(element) &&
+        !element.disabled && !element.readOnly && (element.autocomplete === 'one-time-code' || /verification|code|pin/i.test(element.name + ' ' + element.id + ' ' + element.placeholder)));
+      if (code && /verify|code|phone|text message/.test(text)) return { kind: 'sms' };
+      return null;
+    `,
+    { mainFrameOnly: true, originOnly: true, signal },
+  );
+  if (!result) return { kind: "waiting" };
+  if (result.value.kind !== "captcha") return result.value;
+  if (/^data:image\/(?:jpeg|png|gif|webp);base64,[\w+/=]+$/i.test(result.value.src))
+    return { kind: "captcha", image: result.value.src };
+  const resource = (await browser
+    .send(result.sessionId, "Page.getResourceContent", {
+      frameId: result.frameId,
+      url: result.value.src,
+    })
+    .catch(() => undefined)) as Protocol.Page.GetResourceContentResponse | undefined;
+  signal.throwIfAborted();
+  if (!resource?.base64Encoded || resource.content.length > 400_000) return { kind: "waiting" };
+  const format = resource.content.startsWith("iVBORw0KGgo")
+    ? "png"
+    : resource.content.startsWith("/9j/")
+      ? "jpeg"
+      : resource.content.startsWith("R0lGOD")
+        ? "gif"
+        : undefined;
+  return format
+    ? { kind: "captcha", image: `data:image/${format};base64,${resource.content}` }
+    : { kind: "waiting" };
+}
+
+async function submitGoogleCode(
+  browser: Browser,
+  tab: string,
+  kind: "captcha" | "sms",
+  code: string,
+  signal: AbortSignal,
+) {
+  const result = await waitForForm<boolean>(
+    browser,
+    tab,
+    GOOGLE_ACCOUNTS,
+    `
+      ${SET_VALUE}
+      const code = ${JSON.stringify(code)};
+      const visible = (element) => element.getClientRects().length &&
+        getComputedStyle(element).visibility !== "hidden" && !element.closest('[inert],[aria-hidden="true"]');
+      const field = [...document.querySelectorAll('input')].find((element) => visible(element) &&
+        !element.disabled && !element.readOnly && (${JSON.stringify(kind)} === 'captcha'
+          ? /captcha|challenge/i.test(element.name + ' ' + element.id + ' ' + element.placeholder)
+          : element.autocomplete === 'one-time-code' || /verification|code|pin/i.test(element.name + ' ' + element.id + ' ' + element.placeholder)));
+      if (!field || !setValue(field, code)) return null;
+      const scope = field.form ?? field.closest('dialog,[role="dialog"]') ?? document;
+      const button = [...scope.querySelectorAll('button,[role="button"],input[type="submit"]')].find((element) =>
+        visible(element) && !element.matches(':disabled,[aria-disabled="true"]') && /^(?:next|continue|verify|submit)$/i.test((element.innerText || element.value || '').trim()));
+      if (!button) return true;
+      button.click();
+      return true;
+    `,
+    { mainFrameOnly: true, originOnly: true, userGesture: true, signal },
+    Date.now() + 4_000,
+  );
+  return !!result?.value;
+}
+
+async function submitGoogleTerms(
+  browser: Browser,
+  tab: string,
+  choice: "agree" | "disagree",
+  signal: AbortSignal,
+) {
+  const result = await waitForForm<boolean>(
+    browser,
+    tab,
+    GOOGLE_ACCOUNTS,
+    `
+      const choice = ${JSON.stringify(choice)};
+      const visible = (element) => element.getClientRects().length &&
+        getComputedStyle(element).visibility !== "hidden" && !element.closest('[inert],[aria-hidden="true"]');
+      const labels = choice === 'agree' ? /^(?:i agree|agree|accept)$/i : /^(?:i don\\'t agree|disagree|cancel)$/i;
+      const button = [...document.querySelectorAll('button,[role="button"],input[type="submit"]')].find((element) =>
+        visible(element) && !element.matches(':disabled,[aria-disabled="true"]') && labels.test((element.innerText || element.value || '').trim()));
+      if (!button) return null;
+      button.click();
+      return true;
+    `,
+    { mainFrameOnly: true, originOnly: true, userGesture: true, signal },
+    Date.now() + 4_000,
+  );
+  return !!result?.value;
 }
 
 async function openClaudeLink(browser: Browser, tab: string, url: string) {
