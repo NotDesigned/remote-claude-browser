@@ -92,7 +92,10 @@ interface Verification {
   challenge?:
     | { kind: "captcha"; image: string }
     | { kind: "terms"; tab: string }
-    | { kind: "email" | "sms" | "complete" | "declined" | "waiting" | "closed" };
+    | {
+        kind:
+          "email" | "sms" | "phone" | "recovery" | "complete" | "declined" | "waiting" | "closed";
+      };
 }
 
 interface AccountOnboardingProps {
@@ -784,18 +787,26 @@ export function AccountOnboarding({
                 正在读取 Google 注册步骤…
               </p>
             ) : null}
-            {(challenge?.kind === "captcha" || challenge?.kind === "sms") && (
+            {(challenge?.kind === "captcha" ||
+              challenge?.kind === "sms" ||
+              challenge?.kind === "phone" ||
+              challenge?.kind === "recovery") && (
               <form
                 class="user-panel-form"
                 onSubmit={(event) => {
                   event.preventDefault();
                   const form = event.currentTarget;
-                  const code = String(new FormData(form).get("code") ?? "").trim();
+                  const isCode = challenge.kind === "captcha" || challenge.kind === "sms";
+                  const value = String(
+                    new FormData(form).get(isCode ? "code" : "value") ?? "",
+                  ).trim();
                   void perform(async () => {
                     const result = await apiRequest<Pick<Verification, "challenge">>(
                       verificationRoute!,
                       "POST",
-                      { kind: challenge.kind, code },
+                      isCode
+                        ? { kind: challenge.kind, code: value }
+                        : { kind: challenge.kind, value },
                       googleVerification?.fetcher,
                     );
                     setVerification((value) => ({ ...value, ...result }));
@@ -811,14 +822,25 @@ export function AccountOnboarding({
                   />
                 )}
                 <label>
-                  {challenge.kind === "captcha" ? "图形验证码" : "短信验证码"}
+                  {challenge.kind === "captcha"
+                    ? "图形验证码"
+                    : challenge.kind === "sms"
+                      ? "短信验证码"
+                      : challenge.kind === "phone"
+                        ? "手机号"
+                        : "恢复邮箱"}
                   <input
-                    name="code"
+                    name={
+                      challenge.kind === "captcha" || challenge.kind === "sms" ? "code" : "value"
+                    }
+                    type={challenge.kind === "recovery" ? "email" : "text"}
                     required
                     disabled={busy}
-                    maxLength={challenge.kind === "captcha" ? 20 : 6}
-                    pattern={challenge.kind === "captcha" ? undefined : "[0-9]{6}"}
-                    inputMode={challenge.kind === "captcha" ? undefined : "numeric"}
+                    maxLength={
+                      challenge.kind === "captcha" ? 20 : challenge.kind === "sms" ? 6 : 254
+                    }
+                    pattern={challenge.kind === "sms" ? "[0-9]{6}" : undefined}
+                    inputMode={challenge.kind === "sms" ? "numeric" : undefined}
                     autoComplete={challenge.kind === "sms" ? "one-time-code" : "off"}
                   />
                 </label>

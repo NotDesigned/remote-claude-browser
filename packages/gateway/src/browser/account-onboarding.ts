@@ -374,7 +374,9 @@ export function registerAccountOnboarding(
     Params: TabParams;
     Querystring: GoogleQuery;
     Body:
-      { kind: "captcha" | "sms"; code: string } | { kind: "terms"; choice: "agree" | "disagree" };
+      | { kind: "captcha" | "sms"; code: string }
+      | { kind: "phone" | "recovery"; value: string }
+      | { kind: "terms"; choice: "agree" | "disagree" };
   }>(
     `${route}/google/:tab/verification`,
     {
@@ -390,6 +392,15 @@ export function registerAccountOnboarding(
               properties: {
                 kind: { enum: ["captcha", "sms"] },
                 code: requiredText(20),
+              },
+            },
+            {
+              type: "object",
+              required: ["kind", "value"],
+              additionalProperties: false,
+              properties: {
+                kind: { enum: ["phone", "recovery"] },
+                value: requiredText(254),
               },
             },
             {
@@ -426,6 +437,21 @@ export function registerAccountOnboarding(
         }
         if (body.kind === "sms" && !/^\d{6}$/.test(body.code))
           return reply.code(409).send({ error: "请输入六位验证码" });
+        if (body.kind === "phone" || body.kind === "recovery") {
+          const submitted = await submitGoogleField(
+            attempt.browser,
+            attempt.tab,
+            body.kind,
+            body.value,
+            signal,
+          );
+          if (!submitted) return reply.code(409).send({ error: "未能提交 Google 资料，请重试" });
+          if (attempt.details)
+            await advanceGoogleRegistration(attempt.browser, attempt.tab, attempt.details, signal);
+          return { submitted: true };
+        }
+        if (body.kind !== "captcha" && body.kind !== "sms")
+          return reply.code(400).send({ error: "不支持的 Google 验证步骤" });
         const submitted = await submitGoogleCode(
           attempt.browser,
           attempt.tab,
@@ -968,7 +994,8 @@ type GoogleStage =
   | "complete"
   | "waiting";
 type GoogleChallenge =
-  { kind: "captcha"; image: string } | { kind: "sms" | "terms" | "complete" | "waiting" };
+  | { kind: "captcha"; image: string }
+  | { kind: "phone" | "recovery" | "sms" | "terms" | "complete" | "waiting" };
 
 async function fillGoogleRegistration(
   browser: Browser,
@@ -1073,13 +1100,15 @@ function googleRegistrationStep(details: GoogleDetails) {
     }
     const phone = field('input[name="phoneNumber"]', 'input[type="tel"]');
     if (phone) {
-      if (details.phone && !setValue(phone, details.phone)) return null;
-      if (details.phone) next()?.click();
+      if (!details.phone) return 'phone';
+      if (!setValue(phone, details.phone)) return null;
+      next()?.click();
       return 'phone';
     }
     const recovery = field('input[name="recoveryEmail"]', 'input[type="email"]');
-    if (recovery && details.recoveryEmail) {
-      setValue(recovery, details.recoveryEmail);
+    if (recovery) {
+      if (!details.recoveryEmail) return 'recovery';
+      if (!setValue(recovery, details.recoveryEmail)) return null;
       next()?.click();
       return 'recovery';
     }
@@ -1093,7 +1122,7 @@ async function readGoogleChallenge(
   signal: AbortSignal,
 ): Promise<GoogleChallenge> {
   const result = await checkForm<
-    { kind: "captcha"; src: string } | { kind: "sms" | "terms" | "complete" }
+    { kind: "captcha"; src: string } | { kind: "phone" | "recovery" | "sms" | "terms" | "complete" }
   >(
     browser,
     tab,
@@ -1112,6 +1141,12 @@ async function readGoogleChallenge(
       const code = [...document.querySelectorAll('input')].find((element) => visible(element) &&
         !element.disabled && !element.readOnly && (element.autocomplete === 'one-time-code' || /verification|code|pin/i.test(element.name + ' ' + element.id + ' ' + element.placeholder)));
       if (code && /verify|code|phone|text message/.test(text)) return { kind: 'sms' };
+      const phone = [...document.querySelectorAll('input[type="tel"],input[name="phoneNumber"]')]
+        .find((element) => visible(element) && !element.disabled && !element.readOnly);
+      if (phone) return { kind: 'phone' };
+      const recovery = [...document.querySelectorAll('input[type="email"],input[name="recoveryEmail"]')]
+        .find((element) => visible(element) && !element.disabled && !element.readOnly);
+      if (recovery) return { kind: 'recovery' };
       return null;
     `,
     { mainFrameOnly: true, originOnly: true, signal },
@@ -1164,6 +1199,39 @@ async function submitGoogleCode(
       const scope = field.form ?? field.closest('dialog,[role="dialog"]') ?? document;
       const button = [...scope.querySelectorAll('button,[role="button"],input[type="submit"]')].find((element) =>
         visible(element) && !element.matches(':disabled,[aria-disabled="true"]') && /^(?:next|continue|verify|submit)$/i.test((element.innerText || element.value || '').trim()));
+      if (!button) return true;
+      button.click();
+      return true;
+    `,
+    { mainFrameOnly: true, originOnly: true, userGesture: true, signal },
+    Date.now() + 4_000,
+  );
+  return !!result?.value;
+}
+
+async function submitGoogleField(
+  browser: Browser,
+  tab: string,
+  kind: "phone" | "recovery",
+  value: string,
+  signal: AbortSignal,
+) {
+  const result = await waitForForm<boolean>(
+    browser,
+    tab,
+    GOOGLE_ACCOUNTS,
+    `
+      ${SET_VALUE}
+      const value = ${JSON.stringify(value)};
+      const kind = ${JSON.stringify(kind)};
+      const visible = (element) => element.getClientRects().length &&
+        getComputedStyle(element).visibility !== "hidden" && !element.closest('[inert],[aria-hidden="true"]');
+      const selector = kind === 'phone' ? 'input[type="tel"],input[name="phoneNumber"]' : 'input[type="email"],input[name="recoveryEmail"]';
+      const field = [...document.querySelectorAll(selector)].find((element) => visible(element) && !element.disabled && !element.readOnly);
+      if (!field || !setValue(field, value)) return null;
+      const scope = field.form ?? field.closest('dialog,[role="dialog"]') ?? document;
+      const button = [...scope.querySelectorAll('button,[role="button"],input[type="submit"]')].find((element) =>
+        visible(element) && !element.matches(':disabled,[aria-disabled="true"]') && /^(?:next|continue|send|verify)$/i.test((element.innerText || element.value || '').trim()));
       if (!button) return true;
       button.click();
       return true;
