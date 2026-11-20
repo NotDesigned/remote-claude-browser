@@ -105,7 +105,7 @@ function ExampleField({
         name={name}
         type={type}
         autoComplete={autoComplete}
-        maxLength={type === "date" ? undefined : 100}
+        maxLength={type === "date" ? undefined : name === "username" ? 30 : 100}
         onInput={(event) => {
           const field = event.currentTarget;
           if (field.value !== field.dataset.example) delete field.dataset.example;
