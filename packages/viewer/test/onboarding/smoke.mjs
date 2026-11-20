@@ -22,6 +22,7 @@ try {
   const archiveId = "saved-example";
   const relayRequests = [];
   let relayEmail;
+  let googleRequests = 0;
   let stage = "captcha";
   let allowSms = false;
   let allowTerms = false;
@@ -30,6 +31,13 @@ try {
   await page.route("**/api/me/mailboxes", (route) =>
     route.fulfill({ json: { enabled: false, addresses: [] } }),
   );
+  await page.route(/\/onboarding\/google(?:$|\?|\/)/, (route) => {
+    if (route.request().method() === "DELETE") return route.fulfill({ status: 204 });
+    googleRequests++;
+    return route.fulfill({
+      json: { attempt: "google-attempt", tab: "google-tab", url: "https://mail.google.com/" },
+    });
+  });
   await page.route(/\/onboarding\/apple(?:\/|\?)/, (route) => {
     const url = new URL(route.request().url());
     if (url.pathname.endsWith("/accounts/" + archiveId + "/claude")) {
@@ -105,6 +113,10 @@ try {
     route.fulfill({ json: { ready: false, expired: false } }),
   );
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/test/onboarding/`);
+  await page.getByRole("button", { name: "注册 Google 账户" }).click();
+  await page.getByRole("heading", { name: "继续 Google 注册" }).waitFor();
+  assert.equal(googleRequests, 1);
+  await page.getByRole("button", { name: "取消向导", exact: true }).click();
   await page.getByRole("button", { name: "注册 Apple 账户" }).click();
   await page.getByRole("button", { name: "生成示例" }).click();
   const generatedLastName = await page.getByLabel("姓氏").inputValue();

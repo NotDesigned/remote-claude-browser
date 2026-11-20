@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { createVerification, type OnboardingMailbox } from "./account-onboarding-mail";
 import { registerAccountOnboarding } from "./account-onboarding";
+import type { TargetRef } from "../types";
 
 function mailFixture() {
   const email = "workspace@example.test";
@@ -192,6 +193,57 @@ describe("mail verification", () => {
 });
 
 describe("onboarding endpoints", () => {
+  it("opens Gmail for Google registration and tracks the same tab", async () => {
+    const app = Fastify();
+    let targets: TargetRef[] = [{ targetId: "google-tab", type: "page", sessionId: "cdp" }];
+    const browser = {
+      targets: () => targets,
+      send: vi.fn(async () => ({})),
+    };
+    const open = vi.fn(async () => "google-tab");
+    registerAccountOnboarding(
+      app,
+      async () => {},
+      () => ({ browser, open }),
+      { currentUserId: () => "alice" },
+    );
+    try {
+      const opened = await app.inject({
+        method: "POST",
+        url: "/api/client/session/session/onboarding/google",
+      });
+      expect(open).toHaveBeenCalledExactlyOnceWith("https://mail.google.com/", true);
+      expect(opened.statusCode).toBe(200);
+      expect(opened.json()).toMatchObject({ tab: "google-tab", url: "https://mail.google.com/" });
+      const { attempt } = opened.json();
+      expect(
+        (
+          await app.inject({
+            url: `/api/client/session/session/onboarding/google/google-tab/status?attempt=${attempt}`,
+          })
+        ).json(),
+      ).toEqual({ active: true, tab: "google-tab" });
+      targets = [];
+      expect(
+        (
+          await app.inject({
+            url: `/api/client/session/session/onboarding/google/google-tab/status?attempt=${attempt}`,
+          })
+        ).statusCode,
+      ).toBe(410);
+      expect(
+        (
+          await app.inject({
+            method: "DELETE",
+            url: `/api/client/session/session/onboarding/google?attempt=${attempt}`,
+          })
+        ).statusCode,
+      ).toBe(204);
+    } finally {
+      await app.close();
+    }
+  });
+
   it.each([false, true])("opens the Apple widget with a slow iCloud sign-in=%s", async (slow) => {
     const home = "https://www.icloud.com/";
     const account = "https://account.apple.com/account";

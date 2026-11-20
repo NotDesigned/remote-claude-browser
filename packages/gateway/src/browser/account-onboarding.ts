@@ -1,4 +1,5 @@
 import type { IncomingMessage } from "node:http";
+import { randomUUID } from "node:crypto";
 import { setTimeout as pause } from "node:timers/promises";
 import type {
   FastifyInstance,
@@ -33,6 +34,7 @@ const APPLE_ACCOUNT = "https://account.apple.com/account";
 const APPLE_FORM = "https://appleid.apple.com/widget/account/";
 const APPLE_TERMS = [ICLOUD, APPLE_FORM, APPLE_SIGN_IN, APPLE_ACCOUNT];
 const CLAUDE_LOGIN = "https://claude.ai/login";
+const GOOGLE_MAIL = "https://mail.google.com/";
 const APPLE_AUTH = ["https://appleid.apple.com", "https://idmsa.apple.com"];
 const ICLOUD_FLOW_MS = 35_000;
 const APPLE_REGISTRATION_MS = 30_000;
@@ -77,6 +79,10 @@ interface AppleQuery {
   guided?: boolean;
 }
 
+interface GoogleQuery {
+  attempt?: string;
+}
+
 const attemptQuery = {
   type: "object",
   properties: {
@@ -86,6 +92,8 @@ const attemptQuery = {
 };
 const appleGone = (reply: FastifyReply) =>
   reply.code(410).send({ error: "Apple 注册已结束，请重新打开向导" });
+const googleGone = (reply: FastifyReply) =>
+  reply.code(410).send({ error: "Google 注册已结束，请重新打开向导" });
 
 const requiredText = (maxLength: number) => ({ type: "string", minLength: 1, maxLength });
 const emailField = { ...requiredText(254), pattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$" };
@@ -149,11 +157,20 @@ export function registerAccountOnboarding(
   };
   const verification = createVerification(mailboxService);
   const attempts = createAppleAttempts();
+  const googleAttempts = new Map<
+    string,
+    { sid: string; browser: Browser; tab: string; control: AbortController; timer: NodeJS.Timeout }
+  >();
   const shutdown = new AbortController();
   app.addHook("onClose", async () => {
     shutdown.abort();
     attempts.close();
     verification.close();
+    for (const [key, attempt] of googleAttempts) {
+      clearTimeout(attempt.timer);
+      attempt.control.abort();
+      googleAttempts.delete(key);
+    }
   });
   const applePreHandler: preHandlerAsyncHookHandler = async (request, reply) => {
     if ((request.query as AppleQuery).attempt) return requireSession.call(app, request, reply);
@@ -232,6 +249,58 @@ export function registerAccountOnboarding(
     return true;
   };
   const route = "/api/client/session/:sid/onboarding";
+  const googleKey = (sid: string, id: string) => `${sid}:${id.toLowerCase()}`;
+  const googleAttempt = (sid: string, id: string) => googleAttempts.get(googleKey(sid, id));
+  const rememberGoogle = (sid: string, browser: Browser, tab: string) => {
+    const id = randomUUID();
+    const control = new AbortController();
+    const key = googleKey(sid, id);
+    const timer = setTimeout(() => {
+      googleAttempts.delete(key);
+      control.abort();
+    }, 10 * 60_000).unref();
+    googleAttempts.set(key, { sid, browser, tab, control, timer });
+    return { id, control };
+  };
+  app.post<{ Params: SessionParams }>(`${route}/google`, { preHandler }, async (request) => {
+    const current = session(request.params.sid)!;
+    const tab = await current.open(GOOGLE_MAIL, true);
+    const { id } = rememberGoogle(request.params.sid, current.browser, tab);
+    return { attempt: id, tab, url: GOOGLE_MAIL };
+  });
+  app.delete<{ Params: SessionParams; Querystring: GoogleQuery }>(
+    `${route}/google`,
+    {
+      preHandler: requireSession,
+      schema: {
+        querystring: {
+          type: "object",
+          required: ["attempt"],
+          properties: { attempt: { type: "string" } },
+        },
+      },
+    },
+    (request, reply) => {
+      const key = googleKey(request.params.sid, request.query.attempt!);
+      const attempt = googleAttempts.get(key);
+      if (attempt) {
+        clearTimeout(attempt.timer);
+        attempt.control.abort();
+        googleAttempts.delete(key);
+      }
+      return reply.code(204).send();
+    },
+  );
+  app.get<{ Params: TabParams; Querystring: GoogleQuery }>(
+    `${route}/google/:tab/status`,
+    { preHandler, schema: { querystring: { type: "object", required: ["attempt"] } } },
+    (request, reply) => {
+      const attempt = googleAttempt(request.params.sid, request.query.attempt!);
+      if (!attempt || attempt.tab !== request.params.tab || !findPage(attempt.browser, attempt.tab))
+        return googleGone(reply);
+      return { active: true, tab: attempt.tab };
+    },
+  );
   app.get<{ Params: SessionParams }>(
     `${route}/apple/accounts`,
     { preHandler },

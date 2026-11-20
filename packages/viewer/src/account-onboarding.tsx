@@ -24,6 +24,13 @@ interface AppleAttempt {
   seenTabs: Set<string>;
 }
 
+interface GoogleAttempt {
+  id: string;
+  controller: AbortController;
+  tab: string;
+  seenTabs: Set<string>;
+}
+
 const appleAccountStates = {
   pending: "待验证",
   created: "已创建",
@@ -48,6 +55,7 @@ interface SavedAppleDetails {
 
 type Step =
   | { name: "start" }
+  | { name: "google"; attempt: string; tab: string }
   | {
       name: "saved";
       accounts: SavedAppleAccount[];
@@ -110,6 +118,7 @@ export function AccountOnboarding({
   onOpenTab,
 }: AccountOnboardingProps) {
   const appleAttempt = useRef<AppleAttempt | null>(null);
+  const googleAttempt = useRef<GoogleAttempt | null>(null);
   const autoStarted = useRef(false);
   const autoAgreed = useRef<string>();
   const [password, setPassword] = useState("");
@@ -130,10 +139,14 @@ export function AccountOnboarding({
   const [pending, setPending] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const busy = pending || appleAttempt.current?.controller.signal.aborted === true;
+  const busy =
+    pending ||
+    appleAttempt.current?.controller.signal.aborted === true ||
+    googleAttempt.current?.controller.signal.aborted === true;
   const route = `/api/client/session/${encodeURIComponent(sid)}/onboarding`;
   const applePath = (attempt: AppleAttempt, suffix = "") =>
     `${route}/apple${suffix}?attempt=${attempt.id}`;
+  const googlePath = (attempt: GoogleAttempt) => `${route}/google?attempt=${attempt.id}`;
   const appleTab =
     step.name === "apple" ? step.apple.tab : step.name === "apple-verification" ? step.tab : null;
   const appleVerification = step.name === "apple-verification" ? appleAttempt.current : null;
@@ -152,6 +165,13 @@ export function AccountOnboarding({
     attempt.controller.abort();
     void apiRequest(applePath(attempt), "DELETE").catch(() => {});
   };
+  const stopGoogle = () => {
+    const attempt = googleAttempt.current;
+    if (!attempt) return;
+    googleAttempt.current = null;
+    attempt.controller.abort();
+    void apiRequest(googlePath(attempt), "DELETE").catch(() => {});
+  };
   const goTo = (next: Step) => {
     setStep(next);
     setMailboxValue(undefined);
@@ -167,6 +187,12 @@ export function AccountOnboarding({
     goTo({ name: "start" });
     setPending(false);
     setCanceling(false);
+    if (message) setError(message);
+  };
+  const finishGoogle = (message?: string) => {
+    stopGoogle();
+    goTo({ name: "start" });
+    setPending(false);
     if (message) setError(message);
   };
   const cancelApple = async () => {
@@ -187,7 +213,13 @@ export function AccountOnboarding({
     }
   };
 
-  useEffect(() => () => stopApple(), [route]);
+  useEffect(
+    () => () => {
+      stopApple();
+      stopGoogle();
+    },
+    [route],
+  );
   useEffect(() => {
     const attempt = appleAttempt.current;
     if (!attempt || !browserConnected || !tabs.length) return;
@@ -200,6 +232,14 @@ export function AccountOnboarding({
     )
       resetApple(APPLE_TAB_CLOSED);
   }, [appleTab, browserConnected, pending, tabs]);
+
+  useEffect(() => {
+    const attempt = googleAttempt.current;
+    if (!attempt || step.name !== "google" || !browserConnected) return;
+    for (const tab of tabs) attempt.seenTabs.add(tab.id);
+    if (attempt.seenTabs.has(step.tab) && !tabs.some(({ id }) => id === step.tab))
+      finishGoogle("Google 注册页面已关闭，可以重新开始。");
+  }, [browserConnected, step, tabs]);
 
   useEffect(() => {
     if (!open) return;
@@ -279,7 +319,7 @@ export function AccountOnboarding({
     verification.challenge?.kind,
   ]);
 
-  const perform = async (task: () => Promise<void>, attempt?: AppleAttempt) => {
+  const perform = async (task: () => Promise<void>, attempt?: Pick<AppleAttempt, "controller">) => {
     setPending(true);
     setError(null);
     try {
@@ -333,6 +373,29 @@ export function AccountOnboarding({
           options: options?.countries.length && options.phoneCodes.length ? options : null,
         },
       });
+    }, attempt);
+  };
+  const openGoogle = () => {
+    if (googleAttempt.current || appleAttempt.current) return;
+    const controller = new AbortController();
+    const attempt: GoogleAttempt = {
+      id: crypto.randomUUID(),
+      controller,
+      tab: "",
+      seenTabs: new Set(),
+    };
+    googleAttempt.current = attempt;
+    void perform(async () => {
+      const result = await apiRequest<{ attempt: string; tab: string }>(
+        `${route}/google`,
+        "POST",
+        undefined,
+        (input, init) => fetch(input, { ...init, signal: controller.signal }),
+      );
+      if (controller.signal.aborted) return;
+      attempt.id = result.attempt;
+      attempt.tab = result.tab;
+      goTo({ name: "google", attempt: result.attempt, tab: result.tab });
     }, attempt);
   };
   useEffect(() => {
@@ -525,7 +588,7 @@ export function AccountOnboarding({
         ref={panel}
       >
         <header class="user-panel-heading">
-          <h2 id="account-onboarding-title">Apple 账户与 Claude 登录</h2>
+          <h2 id="account-onboarding-title">账户注册与 Claude 登录</h2>
           <button type="button" class="user-panel-close" aria-label="关闭" onClick={close}>
             ×
           </button>
@@ -539,12 +602,15 @@ export function AccountOnboarding({
           <section class="user-panel-form">
             {pending && (
               <p class="user-panel-muted" role="status">
-                正在加载 Apple 注册表单…
+                正在加载注册页面…
               </p>
             )}
             <div class="user-panel-actions">
               <button type="button" class="user-panel-save" disabled={busy} onClick={openApple}>
                 注册 Apple 账户
+              </button>
+              <button type="button" disabled={busy} onClick={openGoogle}>
+                注册 Google 账户
               </button>
               <button type="button" disabled={busy} onClick={() => goTo({ name: "claude" })}>
                 登录 Claude
@@ -564,6 +630,30 @@ export function AccountOnboarding({
                 已保存的 Apple 账户
               </button>
               {appleAttempt.current && cancelAppleButton}
+              {googleAttempt.current && (
+                <button type="button" disabled={busy} onClick={() => finishGoogle()}>
+                  取消 Google 向导
+                </button>
+              )}
+            </div>
+          </section>
+        )}
+        {step.name === "google" && (
+          <section class="user-panel-form">
+            <h3>继续 Google 注册</h3>
+            <p class="user-panel-muted" role="status">
+              Google 官方页面已打开。请在同一个浏览器标签完成注册，后续页面会继续被跟踪。
+            </p>
+            <div class="user-panel-actions">
+              <button type="button" class="user-panel-save" onClick={() => openTab(step.tab)}>
+                前往 Google 注册
+              </button>
+              <button type="button" onClick={() => finishGoogle()}>
+                完成并返回
+              </button>
+              <button type="button" onClick={() => finishGoogle("Google 注册已取消。")}>
+                取消向导
+              </button>
             </div>
           </section>
         )}
