@@ -454,7 +454,13 @@ export async function startProfileBroker({
           MIRROR_BROWSER_DOH_TEMPLATE: egress.dohTemplate,
           ...options.env,
         },
-        stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"],
+        stdio: [
+          "ignore",
+          "ignore",
+          process.env.MIRROR_DIAGNOSTIC_STDERR === "1" ? "inherit" : "ignore",
+          "pipe",
+          "pipe",
+        ],
       },
     );
     const item = {

@@ -13,6 +13,7 @@ services:
     security_opt:
       - apparmor=unconfined
     environment:
+      MIRROR_DIAGNOSTIC_STDERR: "1"
       MIRROR_PROFILE_EGRESS: "1"
       MIRROR_RUNTIME_SOCKET: /run/remote-browser/runtime.sock
       SMOKE_GEO_URL: ${SMOKE_FIXTURE_ORIGIN}/geo
