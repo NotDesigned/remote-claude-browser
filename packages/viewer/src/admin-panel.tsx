@@ -1,5 +1,6 @@
 import { useDialog } from "./dialog";
 import { useEffect, useRef, useState } from "preact/hooks";
+import { adminMailboxApi, mailboxLabel } from "./mailboxes";
 import {
   createUser,
   deleteUser,
@@ -32,6 +33,80 @@ const emptyUser = (): UserFields => ({
   enabled: true,
   maxSessions: "",
 });
+
+function UserMailboxes({ userId, enabled }: { userId: string; enabled: boolean }) {
+  const [mailboxes, setMailboxes] =
+    useState<Awaited<ReturnType<typeof adminMailboxApi.addresses>>>();
+  const [assigning, setAssigning] = useState(false);
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    void adminMailboxApi
+      .addresses(userId)
+      .then(setMailboxes, (failure: Error) => setError(failure.message));
+  }, [userId]);
+
+  if (!mailboxes?.enabled && !error) return null;
+  const assign = async (form: HTMLFormElement) => {
+    const current = mailboxes!;
+    const address = String(new FormData(form).get("address"));
+    setAssigning(true);
+    setError(undefined);
+    try {
+      const result = await adminMailboxApi.assign(userId, address);
+      setMailboxes({ ...current, addresses: [...current.addresses, result.address] });
+      form.reset();
+    } catch (failure) {
+      setError((failure as Error).message);
+    } finally {
+      setAssigning(false);
+    }
+  };
+  return (
+    <form
+      class="user-panel-form admin-mailboxes"
+      aria-busy={assigning}
+      onSubmit={(event) => {
+        event.preventDefault();
+        void assign(event.currentTarget);
+      }}
+    >
+      <h3>收件地址</h3>
+      {mailboxes?.addresses.length ? (
+        <ul>
+          {mailboxes.addresses.map((address) => (
+            <li key={address.id}>{mailboxLabel(address)}</li>
+          ))}
+        </ul>
+      ) : (
+        mailboxes && <p class="user-panel-muted">尚未分配地址</p>
+      )}
+      {mailboxes?.enabled && enabled && (
+        <>
+          <label>
+            已有邮箱地址
+            <input
+              type="email"
+              name="address"
+              maxLength={254}
+              placeholder={mailboxes.domain ? `name@${mailboxes.domain}` : undefined}
+              autoComplete="off"
+              autoCapitalize="none"
+              spellcheck={false}
+              disabled={assigning}
+              required
+            />
+          </label>
+          <div class="user-panel-actions">
+            <button type="submit" class="user-panel-save" disabled={assigning}>
+              {assigning ? "正在分配…" : "分配地址"}
+            </button>
+          </div>
+        </>
+      )}
+      {error && <p role="alert">{error}</p>}
+    </form>
+  );
+}
 
 export function AdminPanel({
   current,
@@ -295,124 +370,138 @@ export function AdminPanel({
                 </button>
               ))}
             </nav>
-            <form
-              class="user-panel-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void save();
-              }}
-            >
-              <h3>{fields.id === null ? "新建用户" : "编辑用户"}</h3>
-              <label>
-                用户名
-                <input
-                  name="username"
-                  autoComplete="off"
-                  autoCapitalize="none"
-                  spellcheck={false}
-                  required
-                  maxLength={64}
-                  value={fields.username}
-                  disabled={pending}
-                  onInput={(event) => setFields({ ...fields, username: event.currentTarget.value })}
-                />
-              </label>
-              <label>
-                {fields.id === null ? "初始密码" : "新密码（留空则保持）"}
-                <input
-                  name="password"
-                  type="password"
-                  autoComplete="new-password"
-                  required={fields.id === null}
-                  value={fields.password}
-                  disabled={pending}
-                  onInput={(event) => setFields({ ...fields, password: event.currentTarget.value })}
-                />
-              </label>
-              {fields.id !== null && (
-                <p class="user-panel-muted">设置新密码后，该用户需要重新登录。</p>
-              )}
-              <label>
-                权限
-                <select
-                  name="role"
-                  value={fields.role}
-                  disabled={pending}
-                  onChange={(event) =>
-                    setFields({ ...fields, role: event.currentTarget.value as UserRole })
-                  }
-                >
-                  <option value="user">普通用户</option>
-                  <option value="admin">管理员</option>
-                </select>
-              </label>
-              <label>
-                会话上限（留空不限）
-                <input
-                  type="number"
-                  min="0"
-                  step="1"
-                  value={fields.maxSessions}
-                  disabled={pending}
-                  onInput={(event) =>
-                    setFields({ ...fields, maxSessions: event.currentTarget.value })
-                  }
-                />
-              </label>
-              <p class="user-panel-muted">
-                包含在线和休眠会话。0 禁止新建；调整上限不结束已有会话，重连不占新名额。
-              </p>
-              {fields.id !== null && (
-                <button
-                  type="button"
-                  class="admin-view-sessions"
-                  onClick={() => {
-                    setSessionUser(fields.id!);
-                    setTab("sessions");
-                  }}
-                >
-                  查看此用户的会话
-                </button>
-              )}
-              {fields.id !== null && (
-                <label class="user-panel-check">
+            <div>
+              <form
+                class="user-panel-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void save();
+                }}
+              >
+                <h3>{fields.id === null ? "新建用户" : "编辑用户"}</h3>
+                <label>
+                  用户名
                   <input
-                    type="checkbox"
-                    checked={fields.enabled}
-                    disabled={pending || fields.id === current.id}
-                    onChange={(event) =>
-                      setFields({ ...fields, enabled: event.currentTarget.checked })
+                    name="username"
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    spellcheck={false}
+                    required
+                    maxLength={64}
+                    value={fields.username}
+                    disabled={pending}
+                    onInput={(event) =>
+                      setFields({ ...fields, username: event.currentTarget.value })
                     }
                   />
-                  启用账号
                 </label>
-              )}
-              {fields.id !== null && (
-                <p class="user-panel-muted">
-                  停用会立即结束所有浏览器会话、停止私有 CPA，并使该用户的个人 API Key
-                  无法调用；浏览器数据和授权凭据保留，重新启用后可继续使用。私有 CPA 需要手动启动。
-                </p>
-              )}
-              <footer class="user-panel-actions">
-                <button
-                  class="user-panel-save"
-                  type="submit"
-                  disabled={pending || loading || !hasChanges}
-                >
-                  {pending ? "处理中…" : fields.id === null ? "创建用户" : "保存更改"}
-                </button>
-                {fields.id !== null && fields.id !== current.id && (
-                  <button
-                    class="user-panel-delete"
-                    type="button"
+                <label>
+                  {fields.id === null ? "初始密码" : "新密码（留空则保持）"}
+                  <input
+                    name="password"
+                    type="password"
+                    autoComplete="new-password"
+                    required={fields.id === null}
+                    value={fields.password}
                     disabled={pending}
-                    onClick={() => void remove()}
+                    onInput={(event) =>
+                      setFields({ ...fields, password: event.currentTarget.value })
+                    }
+                  />
+                </label>
+                {fields.id !== null && (
+                  <p class="user-panel-muted">设置新密码后，该用户需要重新登录。</p>
+                )}
+                <label>
+                  权限
+                  <select
+                    name="role"
+                    value={fields.role}
+                    disabled={pending}
+                    onChange={(event) =>
+                      setFields({ ...fields, role: event.currentTarget.value as UserRole })
+                    }
                   >
-                    删除用户与数据
+                    <option value="user">普通用户</option>
+                    <option value="admin">管理员</option>
+                  </select>
+                </label>
+                <label>
+                  会话上限（留空不限）
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={fields.maxSessions}
+                    disabled={pending}
+                    onInput={(event) =>
+                      setFields({ ...fields, maxSessions: event.currentTarget.value })
+                    }
+                  />
+                </label>
+                <p class="user-panel-muted">
+                  包含在线和休眠会话。0 禁止新建；调整上限不结束已有会话，重连不占新名额。
+                </p>
+                {fields.id !== null && (
+                  <button
+                    type="button"
+                    class="admin-view-sessions"
+                    onClick={() => {
+                      setSessionUser(fields.id!);
+                      setTab("sessions");
+                    }}
+                  >
+                    查看此用户的会话
                   </button>
                 )}
-              </footer>
-            </form>
+                {fields.id !== null && (
+                  <label class="user-panel-check">
+                    <input
+                      type="checkbox"
+                      checked={fields.enabled}
+                      disabled={pending || fields.id === current.id}
+                      onChange={(event) =>
+                        setFields({ ...fields, enabled: event.currentTarget.checked })
+                      }
+                    />
+                    启用账号
+                  </label>
+                )}
+                {fields.id !== null && (
+                  <p class="user-panel-muted">
+                    停用会立即结束所有浏览器会话、停止私有 CPA，并使该用户的个人 API Key
+                    无法调用；浏览器数据和授权凭据保留，重新启用后可继续使用。私有 CPA
+                    需要手动启动。
+                  </p>
+                )}
+                <footer class="user-panel-actions">
+                  <button
+                    class="user-panel-save"
+                    type="submit"
+                    disabled={pending || loading || !hasChanges}
+                  >
+                    {pending ? "处理中…" : fields.id === null ? "创建用户" : "保存更改"}
+                  </button>
+                  {fields.id !== null && fields.id !== current.id && (
+                    <button
+                      class="user-panel-delete"
+                      type="button"
+                      disabled={pending}
+                      onClick={() => void remove()}
+                    >
+                      删除用户与数据
+                    </button>
+                  )}
+                </footer>
+              </form>
+              {fields.id !== null && (
+                <UserMailboxes
+                  key={fields.id}
+                  userId={fields.id}
+                  enabled={baseline.current!.enabled}
+                />
+              )}
+            </div>
           </div>
         )}
         {tab === "sessions" && (

@@ -517,7 +517,7 @@ export function AccountOnboarding({
     let identity: { mailboxId: string } | { email: string };
     if (selectedMailbox === NEW_ADDRESS) {
       const label = profileName ? `${profileName.slice(0, 70)} · ${service}` : service;
-      const { address } = await mailboxApi.create(label, attempt?.fetcher);
+      const { address } = await mailboxApi.create({ label }, attempt?.fetcher);
       if (attempt?.controller.signal.aborted) return;
       setMailboxes((current) => ({
         enabled: true,

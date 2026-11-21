@@ -2110,6 +2110,30 @@ export async function startClientGateway(
       return clientError(reply, error);
     }
   });
+  const mailboxUser = (request: FastifyRequest<{ Params: { id: string } }>) => {
+    requireAdmin(request.raw);
+    const user = userStore.getUser(request.params.id);
+    if (!user) throw new UserStoreError(404, "USER_UNKNOWN", "没有这个用户");
+    return user;
+  };
+  app.get<{ Params: { id: string } }>("/api/users/:id/mailboxes", async (request, reply) => {
+    const user = mailboxUser(request);
+    return reply.header("cache-control", "no-store").send({
+      enabled: mailbox.enabled,
+      domain: mailbox.domain,
+      addresses: mailbox.listAddresses(user.id),
+    });
+  });
+  app.post<{ Params: { id: string }; Body: { address?: unknown; label?: unknown } }>(
+    "/api/users/:id/mailboxes",
+    { bodyLimit: 4096 },
+    async (request, reply) => {
+      const user = mailboxUser(request);
+      if (!user.enabled) throw new UserStoreError(409, "USER_DISABLED", "请先启用这个用户");
+      const address = mailbox.assignAddress(user.id, request.body?.address, request.body?.label);
+      return reply.code(201).header("cache-control", "no-store").send({ address });
+    },
+  );
   app.get("/api/admin/overview", async (request, reply) => {
     try {
       requireAdmin(request.raw);

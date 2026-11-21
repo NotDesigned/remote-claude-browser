@@ -12,6 +12,7 @@ export function MailboxPanel({ onClose }: { onClose(): void }) {
   const [mailboxes, setMailboxes] = useState<Awaited<ReturnType<typeof mailboxApi.addresses>>>();
   const [addressId, setAddressId] = useState("");
   const [creating, setCreating] = useState(false);
+  const [localPart, setLocalPart] = useState("");
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [messages, setMessages] = useState<MailboxMessage[]>();
@@ -77,14 +78,15 @@ export function MailboxPanel({ onClose }: { onClose(): void }) {
   }, [addressId, selectedMessage]);
 
   const createAddress = async (label: string) => {
+    const current = mailboxes!;
     setSaving(true);
     setError("");
     try {
-      const { address } = await mailboxApi.create(label);
-      setMailboxes((current) => ({
-        enabled: true,
-        addresses: [...(current?.addresses ?? []), address],
-      }));
+      const { address } = await mailboxApi.create({
+        label,
+        ...(localPart && { localPart }),
+      });
+      setMailboxes({ ...current, addresses: [...current.addresses, address] });
       selectAddress(address.id);
       setCreating(false);
     } catch (failure) {
@@ -174,9 +176,38 @@ export function MailboxPanel({ onClose }: { onClose(): void }) {
                       void createAddress(String(new FormData(event.currentTarget).get("label")));
                     }}
                   >
+                    {mailboxes.domain && (
+                      <>
+                        <label>
+                          地址名称（选填）
+                          <input
+                            name="localPart"
+                            placeholder="留空生成双词地址"
+                            title="使用英文字母、数字和中间的连字符"
+                            pattern="[A-Za-z0-9](?:[A-Za-z0-9\-]{0,56}[A-Za-z0-9])?"
+                            maxLength={58}
+                            value={localPart}
+                            disabled={saving}
+                            autoCapitalize="none"
+                            spellcheck={false}
+                            onInput={(event) => setLocalPart(event.currentTarget.value)}
+                          />
+                        </label>
+                        {localPart && (
+                          <p class="mailbox-address user-panel-muted">
+                            inbox-{localPart.toLowerCase()}@{mailboxes.domain}
+                          </p>
+                        )}
+                      </>
+                    )}
                     <label>
                       地址备注（选填）
-                      <input name="label" maxLength={80} placeholder="工作浏览器" />
+                      <input
+                        name="label"
+                        maxLength={80}
+                        placeholder="工作浏览器"
+                        disabled={saving}
+                      />
                     </label>
                     <div class="user-panel-actions">
                       <button type="submit" class="user-panel-save" disabled={saving}>
@@ -194,7 +225,10 @@ export function MailboxPanel({ onClose }: { onClose(): void }) {
                         type="button"
                         class="user-panel-save"
                         disabled={saving}
-                        onClick={() => setCreating(true)}
+                        onClick={() => {
+                          setLocalPart("");
+                          setCreating(true);
+                        }}
                       >
                         新建地址
                       </button>

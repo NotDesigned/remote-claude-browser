@@ -50,7 +50,9 @@ export interface MailboxMessage extends MailboxMessageSummary {
 
 export interface MailboxService {
   readonly enabled: boolean;
-  createAddress(userId: string, label?: unknown): MailboxAddress;
+  readonly domain?: string;
+  createAddress(userId: string, label?: unknown, localPart?: unknown): MailboxAddress;
+  assignAddress(userId: string, address: unknown, label?: unknown): MailboxAddress;
   deleteAddress(userId: string, addressId: string): void;
   getAddress(userId: string, addressId: string): MailboxAddress | undefined;
   listAddresses(userId: string): MailboxAddress[];
@@ -135,7 +137,7 @@ export async function createMailboxService(options: {
   const addMessage = db.prepare(`
     INSERT INTO mailbox_messages (address_id, id, sender, subject, received_at)
     SELECT a.id, ?, ?, ?, ? FROM mailbox_addresses a
-    WHERE a.address IN (SELECT value FROM json_each(?))
+    WHERE a.created_at <= ? AND a.address IN (SELECT value FROM json_each(?))
     ON CONFLICT(address_id, id) DO NOTHING
   `);
   const deleteUser = db.prepare("DELETE FROM mailbox_addresses WHERE user_id = ?");
@@ -145,23 +147,56 @@ export async function createMailboxService(options: {
     if (!receiving) throw new MailboxError(503, "收件箱尚未启用");
     return receiving;
   };
+  function mailboxLabel(label: unknown) {
+    if (label !== undefined && typeof label !== "string")
+      throw new MailboxError(400, "请输入收件地址名称");
+    const name = label?.trim() ?? "";
+    if ([...name].length > 80) throw new MailboxError(400, "收件地址名称最多 80 个字");
+    return name;
+  }
+  function insertAddress(userId: string, address: string, label: string) {
+    const id = randomUUID();
+    const createdAt = now();
+    if (addAddress.run(id, userId, address, label, createdAt, address).changes)
+      return { id, address, label, createdAt };
+  }
+  function assignAvailable(userId: string, address: string, label: string) {
+    const assigned = insertAddress(userId, address, label);
+    if (!assigned) throw new MailboxError(409, "这个收件地址已被分配或停用");
+    return assigned;
+  }
   return {
     enabled: !!receiving,
-    createAddress(userId, label) {
+    domain: receiving ? domain : undefined,
+    createAddress(userId, label, localPart) {
       requireReceiving();
-      if (label !== undefined && typeof label !== "string")
-        throw new MailboxError(400, "请输入收件地址名称");
-      const name = label?.trim() ?? "";
-      if ([...name].length > 80) throw new MailboxError(400, "收件地址名称最多 80 个字");
-      const id = randomUUID();
-      const createdAt = now();
+      const name = mailboxLabel(label);
+      if (localPart !== undefined) {
+        const part = typeof localPart === "string" ? localPart.trim().toLowerCase() : "";
+        if (!/^[a-z0-9](?:[a-z0-9-]{0,56}[a-z0-9])?$/.test(part))
+          throw new MailboxError(400, "地址名称须为 1–58 个英文字母、数字或中间的连字符");
+        return assignAvailable(userId, `inbox-${part}@${domain}`, name);
+      }
       for (let attempt = 0; attempt < 32; attempt++) {
         const words = Array.from({ length: 2 }, () => addressWords[randomInt(addressWords.length)]);
-        const address = `${words.join("-")}@${domain}`;
-        if (addAddress.run(id, userId, address, name, createdAt, address).changes)
-          return { id, address, label: name, createdAt };
+        const address = insertAddress(userId, `${words.join("-")}@${domain}`, name);
+        if (address) return address;
       }
       throw new MailboxError(503, "暂时无法分配新的邮箱地址");
+    },
+    assignAddress(userId, value, label) {
+      requireReceiving();
+      const address = typeof value === "string" ? value.trim().toLowerCase() : "";
+      const [local, host, extra] = address.split("@");
+      if (
+        host !== domain ||
+        extra !== undefined ||
+        !local ||
+        local.length > 64 ||
+        !/^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*$/.test(local)
+      )
+        throw new MailboxError(400, `请输入有效的 @${domain} 收件地址`);
+      return assignAvailable(userId, address, mailboxLabel(label));
     },
     deleteAddress(userId, addressId) {
       if (!deleteAddress.run(userId, addressId).changes)
@@ -190,6 +225,7 @@ export async function createMailboxService(options: {
           event.id,
           event.from,
           event.subject,
+          event.receivedAt,
           event.receivedAt,
           JSON.stringify(event.to),
         );
@@ -223,13 +259,22 @@ export function registerMailboxRoutes(
     const userId = userIdFor(request, reply);
     return {
       enabled: service.enabled,
+      domain: service.domain,
       addresses: service.enabled ? service.listAddresses(userId) : [],
     };
   });
-  app.post<{ Body: { label?: unknown } | null }>(MAILBOX_PATH, async (request, reply) => {
-    const address = service.createAddress(userIdFor(request, reply), request.body?.label);
-    return reply.code(201).send({ address });
-  });
+  app.post<{ Body: { label?: unknown; localPart?: unknown } | null }>(
+    MAILBOX_PATH,
+    { bodyLimit: 4096 },
+    async (request, reply) => {
+      const address = service.createAddress(
+        userIdFor(request, reply),
+        request.body?.label,
+        request.body?.localPart,
+      );
+      return reply.code(201).send({ address });
+    },
+  );
   app.delete<{ Params: { addressId: string } }>(
     `${MAILBOX_PATH}/:addressId`,
     async (request, reply) => {

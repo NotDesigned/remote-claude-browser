@@ -25,7 +25,10 @@ const regular = {
   maxSessions: null,
   createdAt: 2,
 };
-const users = new Map([[admin.id, { ...admin }]]);
+const users = new Map([admin, regular].map((user) => [user.id, { ...user }]));
+const mailDomain = "fixture.test";
+const existingAddress = "existing@fixture.test";
+const mailboxes = new Map();
 const checks = {};
 const pageErrors = [];
 let lastPasswordChanged = false;
@@ -88,6 +91,29 @@ const server = createServer(async (request, response) => {
       accountPasswordChanged = value.password === "fixture-personal-password";
       return response.writeHead(204).end();
     }
+    const mailboxesMatch = /^\/api\/(?:me|users\/([^/]+))\/mailboxes$/.exec(url.pathname);
+    if (mailboxesMatch) {
+      const [, userId] = mailboxesMatch;
+      if (userId && current.role !== "admin")
+        return json(response, 403, { error: "需要管理员权限" });
+      const owner = userId ?? current.id;
+      const addresses = mailboxes.get(owner) ?? [];
+      if (request.method === "GET")
+        return json(response, 200, { enabled: true, addresses, domain: mailDomain });
+      const body = await bodyJson(request);
+      const address = {
+        id: `address-${addresses.length}`,
+        address: userId
+          ? body.address
+          : `${body.localPart ? `inbox-${body.localPart.toLowerCase()}` : "amber-dawn"}@${mailDomain}`,
+        label: body.label ?? "",
+        createdAt: 1,
+      };
+      mailboxes.set(owner, [...addresses, address]);
+      return json(response, 201, { address });
+    }
+    if (/^\/api\/me\/mailboxes\/[^/]+\/messages$/.test(url.pathname))
+      return json(response, 200, { messages: [] });
     if (url.pathname === "/logout") return response.writeHead(204).end();
     if (url.pathname === "/gate")
       return response.writeHead(200, { "content-type": "text/html" }).end("<h1>登录</h1>");
@@ -324,6 +350,13 @@ try {
   assert.equal(adminSessionEnded, true);
   checks.adminEndSession = true;
   checks.adminOverviewAndSessionFilter = true;
+  await panel.getByRole("button", { name: "用户", exact: true }).click();
+  await panel.getByRole("button", { name: /^reader.*普通用户/ }).click();
+  await panel.getByLabel("已有邮箱地址", { exact: true }).fill(existingAddress);
+  await panel.getByRole("button", { name: "分配地址", exact: true }).click();
+  await panel.getByText(existingAddress, { exact: true }).waitFor();
+  assert.equal(mailboxes.get(regular.id)[0].address, existingAddress);
+  checks.adminAssignedMailbox = true;
 
   const persisted = await page.evaluate(() =>
     JSON.stringify([Object.values(localStorage), Object.values(sessionStorage)]),
@@ -380,6 +413,9 @@ try {
   assert.ok(await phonePanel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1));
   await phonePanel.getByRole("button", { name: "用户", exact: true }).tap();
   assert.equal(await phonePanel.getByLabel("用户名", { exact: true }).inputValue(), "手机用户");
+  await phonePanel.getByRole("button", { name: /^reader.*普通用户/ }).tap();
+  await phonePanel.getByText(existingAddress, { exact: true }).waitFor();
+  assert.ok(await phonePanel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1));
   await phonePanel.getByRole("button", { name: "关闭管理后台", exact: true }).tap();
   checks.phoneTouchAndLayout = true;
 
@@ -409,6 +445,23 @@ try {
   assert.equal(await reader.evaluate(async () => (await fetch("/api/users")).status), 403);
   assert.equal(await reader.evaluate(async () => (await fetch("/api/admin/overview")).status), 403);
   checks.regularUserNoAdminEntry = true;
+  await reader.getByRole("button", { name: "收件箱", exact: true }).click();
+  const inbox = reader.getByRole("dialog", { name: "收件箱", exact: true });
+  const mailboxAddress = inbox.locator(".mailbox-address");
+  await mailboxAddress.filter({ hasText: existingAddress }).waitFor();
+  await inbox.getByRole("button", { name: "新建地址", exact: true }).click();
+  await inbox.getByLabel("地址名称（选填）", { exact: true }).fill("Mixed-Case");
+  await mailboxAddress.filter({ hasText: "inbox-mixed-case@fixture.test" }).waitFor();
+  await inbox.getByRole("button", { name: "创建地址", exact: true }).click();
+  await inbox.getByRole("button", { name: "新建地址", exact: true }).waitFor();
+  await mailboxAddress.filter({ hasText: "inbox-mixed-case@fixture.test" }).waitFor();
+  assert.equal(mailboxes.get(regular.id)[1].address, "inbox-mixed-case@fixture.test");
+  await inbox.getByRole("button", { name: "新建地址", exact: true }).click();
+  await inbox.getByRole("button", { name: "创建地址", exact: true }).click();
+  await mailboxAddress.filter({ hasText: "amber-dawn@fixture.test" }).waitFor();
+  await inbox.getByRole("button", { name: "关闭", exact: true }).click();
+  checks.assignedAndSelfServiceMailboxes = true;
+  await reader.getByRole("button", { name: "工作台", exact: true }).click();
   await reader.getByRole("button", { name: "我的账号", exact: true }).click();
   const account = reader.getByRole("dialog", { name: "我的账号", exact: true });
   await account.getByText("手机上的会话", { exact: true }).waitFor();

@@ -30,7 +30,7 @@ function signed(body: string, timestamp = now / 1000) {
   };
 }
 
-function event(to: string[], receivedFor: string[] = []) {
+function event(to: string[], receivedFor: string[] = [], receivedAt = now) {
   return JSON.stringify(
     {
       type: "email.received",
@@ -39,7 +39,7 @@ function event(to: string[], receivedFor: string[] = []) {
         to,
         from: "sender@example.com",
         subject: "Verify your email",
-        created_at: new Date(now).toISOString(),
+        created_at: new Date(receivedAt).toISOString(),
         received_for: receivedFor,
       },
     },
@@ -79,6 +79,7 @@ it("routes verified delivery to matching addresses and serves message bodies onl
     expect(first.address).not.toBe(second.address);
     expect((await app.inject({ url: mailboxPath, headers: owner })).json()).toEqual({
       enabled: true,
+      domain: provider.domain,
       addresses: [first, second].sort((a, b) => a.id.localeCompare(b.id)),
     });
 
@@ -142,6 +143,23 @@ it("routes verified delivery to matching addresses and serves message bodies onl
     expect(store.listMessages("owner", second.id)).toEqual([summary]);
   } finally {
     await app.close();
+    store.close();
+  }
+});
+
+it("only indexes mail received after an address was assigned and never reuses a retired address", async () => {
+  const store = await createMailboxService({ file: ":memory:", ...provider });
+  try {
+    const { id, address } = store.assignAddress("owner", "Existing@MAIL.EXAMPLE.COM");
+    const earlier = event([address], [], now - 1);
+    store.receive(Buffer.from(earlier), signed(earlier));
+    expect(store.listMessages("owner", id)).toEqual([]);
+    const current = event([address]);
+    store.receive(Buffer.from(current), signed(current));
+    expect(store.listMessages("owner", id)).toHaveLength(1);
+    store.deleteAddress("owner", id);
+    expect(() => store.assignAddress("other", address)).toThrow("已被分配或停用");
+  } finally {
     store.close();
   }
 });

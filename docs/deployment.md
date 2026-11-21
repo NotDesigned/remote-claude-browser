@@ -175,7 +175,11 @@ docker compose up -d
 
 在 Resend 中启用自有域名的 Receiving，并按控制台要求配置 MX。创建订阅 `email.received` 的 Webhook，目标为工作台公开地址下的 `/api/webhooks/resend`。在服务端 `.env` 设置 `RESEND_RECEIVING_DOMAIN`、有读取收件权限的 `RESEND_API_KEY` 和该 Webhook 的签名密钥 `RESEND_WEBHOOK_SECRET`，然后重建 `server` 容器。三个配置齐备时工作台会启用收件箱。
 
-每个工作台用户可以创建多个固定邮箱地址，并在浏览器注册或登录时选择其中一个。收件箱归工作台用户所有，随用户删除。备份 `data` 卷时一并保留 `mailboxes.sqlite`。邮件源文保存在 Resend，工作台按需读取正文。
+每个工作台用户可以在「收件箱」创建多个地址，并在浏览器注册或登录时选择其中一个。留空地址名称会随机生成双词地址，填写名称会创建 `inbox-名称@收件域名`。部署时将 `inbox-` 留给工作台自建地址。
+
+已有收件地址由管理员从「管理后台 → 用户」分配给指定用户。管理员可查看分配的地址，邮件列表和正文仅该地址所属用户可读。分配后开始收录新邮件，已分配或删除停用的地址不得再次分配。
+
+收件箱随工作台用户删除。备份 `data` 卷时一并保留 `mailboxes.sqlite`。邮件源文保存在 Resend，工作台按需读取正文。
 
 ## 兼容：独立入口机和 SSH 隧道
 
