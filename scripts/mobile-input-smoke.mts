@@ -497,6 +497,24 @@ try {
         selection.text === "Nested scrolling" &&
         selection.backward === backward;
     }
+    await paragraph.evaluate((el) => {
+      el.addEventListener(
+        "contextmenu",
+        (event) => {
+          el.setAttribute("data-native-menu", String(event.isTrusted && !event.defaultPrevented));
+        },
+        { once: true },
+      );
+    });
+    const rightClickCount = () =>
+      received.filter((message) => message.t === "ptr" && message.button === 2).length;
+    const beforeRightClick = rightClickCount();
+    await page.mouse.click((left + right) / 2, y, { button: "right" });
+    await settle();
+    checks.selectedTextOpensNativeMenu =
+      (await paragraph.getAttribute("data-native-menu")) === "true" &&
+      (await readSelection()).text === "Nested scrolling";
+    checks.textRightClickStaysLocal = rightClickCount() === beforeRightClick;
     await remoteCdp.send("Emulation.setTouchEmulationEnabled", {
       enabled: true,
       maxTouchPoints: 5,

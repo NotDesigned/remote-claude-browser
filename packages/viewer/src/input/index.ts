@@ -1,7 +1,7 @@
 import type { Replayer } from "@rrweb/replay";
 import type { TabId } from "@mirror/protocol";
 import { attachChangeCapture } from "./change";
-import { attachDefaultActionContainment } from "./default-actions";
+import { attachDefaultActionContainment, opensLocalTextMenu } from "./default-actions";
 import { attachFileCapture } from "./files";
 import { createForwardedInputClock } from "./forwarded";
 import { attachKeyCapture, deepActiveElement, isEchoField, type EditableFocus } from "./keys";
@@ -89,12 +89,14 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
         send: options.send,
         ignoreMouse: mouseFilter.ignore,
         opensLocally: (event) =>
-          event.button === 0 &&
-          !event.altKey &&
-          !event.ctrlKey &&
-          !event.metaKey &&
-          !event.shiftKey &&
-          (options.linkToOpen?.(event.target) ?? null) !== null,
+          event.type === "contextmenu" || event.button === 2
+            ? opensLocalTextMenu(event.target)
+            : event.button === 0 &&
+              !event.altKey &&
+              !event.ctrlKey &&
+              !event.metaKey &&
+              !event.shiftKey &&
+              (options.linkToOpen?.(event.target) ?? null) !== null,
         beforePointerDown: () => {
           const focused = deepActiveElement(rootDoc);
           if (focused && isEchoField(focused)) change.flush(focused, true);

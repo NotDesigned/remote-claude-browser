@@ -47,7 +47,7 @@ export interface PointerCaptureOptions {
   getNodeId(node: Node): number;
   send: SendInput;
   beforePointerDown?(): void;
-  /** A link this press belongs to is opened here, so the remote page must not be clicked. */
+  /** Links opened on this device and native text menus stay local. */
   opensLocally?(event: MouseEvent): boolean;
   ignoreMouse?(event: MouseEvent): boolean;
   now?: () => number;
@@ -227,7 +227,7 @@ export function attachPointerCapture(options: PointerCaptureOptions): () => void
     else sendPointer(event, "up");
   };
   const onContextMenu = (event: MouseEvent) => {
-    if (event.isTrusted) event.preventDefault();
+    if (event.isTrusted && !options.opensLocally?.(event)) event.preventDefault();
   };
 
   options.doc.addEventListener("mousemove", onMouseMove, true);

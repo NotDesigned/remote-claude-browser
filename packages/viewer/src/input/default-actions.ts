@@ -4,6 +4,7 @@
  * Pointer/key relay is attached separately: cancelling these browser defaults must never cancel
  * the semantic input message sent to the authoritative remote browser.
  */
+import { isTextEditable } from "./keys";
 import { isElement } from "./pointer";
 
 export interface DefaultActionContainmentOptions {
@@ -94,4 +95,19 @@ export function externalLink(
 /** Includes image-map areas; anchor descendants are the ordinary rrweb replay case. */
 export function closestNavigationLink(target: EventTarget | null): Element | null {
   return isElement(target) ? target.closest("a[href],area[href]") : null;
+}
+
+/** Ordinary text and local editors can use the device's copy, paste and spelling menu. */
+export function opensLocalTextMenu(target: EventTarget | null): boolean {
+  if (!isElement(target) || closestNavigationLink(target)) return false;
+  if (target.closest("button,summary,select,img,video,audio,canvas,[role=button],[role=menuitem]"))
+    return false;
+  if (isTextEditable(target)) return true;
+  const selection = target.ownerDocument.getSelection();
+  return (
+    (selection !== null && !selection.isCollapsed && selection.containsNode(target, true)) ||
+    Array.from(target.childNodes).some(
+      (node) => node.nodeType === Node.TEXT_NODE && !!node.textContent?.trim(),
+    )
+  );
 }
