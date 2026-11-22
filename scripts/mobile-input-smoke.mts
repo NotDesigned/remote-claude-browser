@@ -30,13 +30,13 @@ const thinkingIndicator = `<svg id="thinking-indicator" width="24" height="24" v
   <circle cx="17" cy="7" r="2" fill="coral"/><circle cx="7" cy="17" r="2" fill="coral"/><circle cx="17" cy="17" r="2" fill="coral"/>
 </svg>`;
 const workingMark = `<span data-testid="TurnStatusClayMark" style="display:block;height:20px;overflow:hidden">
-  <span id="working-mark-strip" style="display:block;height:80px">Thinking</span>
+  <span id="working-mark-strip" style="display:block;width:20px;height:160px;background:linear-gradient(#da7655 25%,#f9d5c9 25% 50%,#b95739 50% 75%,#f2a792 75%)"></span>
 </span>
 <script>
   const strip = document.getElementById("working-mark-strip");
-  window.workingMarkAnimation = strip.animate(
-    [0, -20, -40, -60].map(y => ({transform: "translateY(" + y + "px)"})),
-    {duration: 30000, easing: "steps(4, jump-none)", fill: "forwards"}
+  window.startWorkingMark = () => window.workingMarkAnimation = strip.animate(
+    Array.from({length: 8}, (_, i) => ({transform: "translateY(" + (-20 * i) + "px)"})),
+    {duration: 1000, easing: "steps(8, jump-none)", fill: "forwards"}
   );
 </script>`;
 const fixture = remoteHtml.replace(
@@ -270,6 +270,7 @@ try {
   const workingMarkStrip = local.locator("#working-mark-strip");
   const activeAnimation = () =>
     workingMarkStrip.evaluate((strip) => strip.getAnimations().at(0)?.playState);
+  await remote.evaluate(() => (window as any).startWorkingMark());
   await page.waitForFunction(
     () =>
       document
@@ -279,9 +280,25 @@ try {
         .at(0)?.playState === "running",
   );
   await remote.evaluate(() => {
+    ((window as any).workingMarkAnimation.effect as KeyframeEffect).updateTiming({
+      iterations: Infinity,
+    });
+  });
+  checks.jsWorkingMarkAnimatesPastFirstCycle = await workingMarkStrip.evaluate(async (strip) => {
+    const transforms = new Set<string>();
+    const deadline = performance.now() + 2400;
+    while (performance.now() < deadline) {
+      await new Promise(requestAnimationFrame);
+      const time = Number(strip.getAnimations().at(0)?.currentTime);
+      if (time > 1000) transforms.add(getComputedStyle(strip).transform);
+      if (transforms.size >= 4) return true;
+    }
+    return false;
+  });
+  await remote.evaluate(() => {
     const animation = (window as unknown as { workingMarkAnimation: Animation })
       .workingMarkAnimation;
-    animation.currentTime = 23_000;
+    animation.currentTime = 1_700;
     animation.pause();
   });
   await page.waitForFunction(

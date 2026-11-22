@@ -9,6 +9,7 @@ export interface WorkingMarkTrack {
   }[];
   duration: number;
   easing: string;
+  iterations: number | null; // null represents Infinity on the wire.
   time: number;
   paused: boolean;
 }

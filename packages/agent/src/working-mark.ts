@@ -4,13 +4,20 @@ import {
   type WorkingMarkUpdate,
 } from "@mirror/protocol";
 
+interface SampledAnimation {
+  animation: Animation;
+  effect: KeyframeEffect;
+  state: AnimationPlayState;
+  iterations: number;
+}
+
 export function startWorkingMarkCapture(
   getId: (node: Node) => number,
   emit: (tag: string, data: WorkingMarkUpdate) => void,
 ) {
-  let previous = new Map<number, { animation: Animation; state: AnimationPlayState }[]>();
+  let previous = new Map<number, SampledAnimation[]>();
   function sample() {
-    const current = new Map<number, { animation: Animation; state: AnimationPlayState }[]>();
+    const current = new Map<number, SampledAnimation[]>();
     for (const mark of document.querySelectorAll('[data-testid="TurnStatusClayMark"]')) {
       for (const animation of mark.getAnimations({ subtree: true })) {
         if (animation instanceof CSSAnimation || animation instanceof CSSTransition) continue;
@@ -20,7 +27,12 @@ export function startWorkingMarkCapture(
         const id = getId(effect.target);
         if (id < 0 || typeof animation.currentTime !== "number") continue;
         const entries = current.get(id) ?? [];
-        entries.push({ animation, state: animation.playState });
+        entries.push({
+          animation,
+          effect,
+          state: animation.playState,
+          iterations: effect.getTiming().iterations ?? 1,
+        });
         current.set(id, entries);
       }
     }
@@ -30,13 +42,14 @@ export function startWorkingMarkCapture(
         before?.length === entries.length &&
         entries.every(
           (entry, i) =>
-            entry.animation === before[i]?.animation && entry.state === before[i]?.state,
+            entry.animation === before[i]?.animation &&
+            entry.state === before[i]?.state &&
+            entry.iterations === before[i]?.iterations,
         )
       )
         continue;
       const tracks: WorkingMarkTrack[] = [];
-      for (const { animation, state } of entries) {
-        const effect = animation.effect as KeyframeEffect;
+      for (const { animation, effect, state, iterations } of entries) {
         const { duration, easing } = effect.getTiming();
         if (typeof duration !== "number" || duration <= 0) continue;
         const frames = effect
@@ -55,6 +68,7 @@ export function startWorkingMarkCapture(
           frames,
           duration,
           easing: easing ?? "linear",
+          iterations: iterations === Infinity ? null : iterations,
           time: Number(animation.currentTime),
           paused: state !== "running",
         });

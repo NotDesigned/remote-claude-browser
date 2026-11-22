@@ -21,14 +21,19 @@ export function workingMarkReplay() {
       playing.delete(id);
       const target = replayer.getMirror().getNode(id) as HTMLElement | null;
       if (!target?.closest?.('[data-testid="TurnStatusClayMark"]')) return;
-      const animations = tracks.map(({ frames, duration, easing, time, paused }) => {
+      const animations = tracks.map(({ frames, duration, easing, iterations, time, paused }) => {
         const keyframes = frames.map(({ offset, easing, transform, opacity }) => ({
           offset,
           easing,
           transform,
           opacity,
         }));
-        const animation = target.animate(keyframes, { duration, easing, fill: "forwards" });
+        const animation = target.animate(keyframes, {
+          duration,
+          easing,
+          iterations: iterations === null ? Infinity : iterations,
+          fill: "forwards",
+        });
         if (paused) animation.pause();
         animation.currentTime = time;
         return animation;
