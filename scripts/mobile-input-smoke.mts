@@ -403,6 +403,40 @@ try {
   checks.domTypedTextReachesRemote = await remote
     .locator("#editor")
     .evaluate((el) => el.textContent === "分析AI问题");
+  if (!webkitViewer) {
+    const editor = local.locator("#editor");
+    checks.editorFocusRingHidden = await editor.evaluate(
+      (el) => getComputedStyle(el).outlineStyle === "none",
+    );
+    const readPreedit = () =>
+      editor.evaluate((el) => {
+        const view = el.ownerDocument.defaultView as Window & typeof globalThis;
+        const highlight = view.CSS.highlights.get("mirror-ime-preedit");
+        const range = highlight?.values().next().value;
+        return [range?.toString(), range?.startOffset];
+      });
+    const ime = await context.newCDPSession(page);
+    await ime.send("Input.imeSetComposition", {
+      text: "zhong",
+      selectionStart: 2,
+      selectionEnd: 2,
+    });
+    assert.deepEqual(await readPreedit(), ["zhong", "分析AI问题".length]);
+    await ime.send("Input.imeSetComposition", { text: "中文", selectionStart: 2, selectionEnd: 2 });
+    assert.deepEqual(await readPreedit(), ["中文", "分析AI问题".length]);
+    await ime.send("Input.insertText", { text: "中文" });
+    await settle();
+    checks.imeCommitRestoresTextColor = (await readPreedit())[0] === undefined;
+    checks.imeCommitReachesRemote = await remote
+      .locator("#editor")
+      .evaluate((el) => el.textContent === "分析AI问题中文");
+    await ime.send("Input.imeSetComposition", { text: "ni", selectionStart: 2, selectionEnd: 2 });
+    assert.deepEqual(await readPreedit(), ["ni", "分析AI问题中文".length]);
+    await ime.send("Input.imeSetComposition", { text: "", selectionStart: 0, selectionEnd: 0 });
+    checks.imeCancellationRestoresText =
+      (await readPreedit())[0] === undefined && (await editor.textContent()) === "分析AI问题中文";
+    await ime.detach();
+  }
   checks.websiteScriptsRemainBlocked = await page.evaluate(
     () => (window as any).__mirrorWebsiteScriptRan === false,
   );

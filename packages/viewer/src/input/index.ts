@@ -1,10 +1,10 @@
 import type { Replayer } from "@rrweb/replay";
 import type { TabId } from "@mirror/protocol";
+import { attachCompositionHighlight } from "./appearance";
 import { attachChangeCapture } from "./change";
 import { attachDefaultActionContainment } from "./default-actions";
 import { attachFileCapture } from "./files";
 import { createForwardedInputClock } from "./forwarded";
-import { attachCompositionUnderline } from "./ime";
 import { attachKeyCapture, deepActiveElement, isEchoField, type EditableFocus } from "./keys";
 import { attachPointerCapture, createTouchMouseFilter, type SendInput } from "./pointer";
 import { attachTouchCapture } from "./touch";
@@ -116,7 +116,7 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
         },
       }),
       change.dispose,
-      attachCompositionUnderline({ doc }),
+      attachCompositionHighlight(doc),
       attachKeyCapture({
         doc,
         focusRoot: rootDoc,

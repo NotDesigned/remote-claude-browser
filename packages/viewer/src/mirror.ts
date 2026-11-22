@@ -32,6 +32,7 @@ import {
 } from "./media/canvas-rtc";
 import { REPLAY_ANCHOR_RULES } from "./replay-anchors";
 import { REPLAY_THUMBNAIL_RULES } from "./replay-thumbnails";
+import { REPLAY_EDITING_APPEARANCE } from "./input/appearance";
 import { createCanvasCompositor, type CanvasCompositor } from "./media/canvas";
 import { workingMarkReplay } from "./working-mark";
 
@@ -516,6 +517,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
         // Keep replay cursor chrome visible, but permanently remove it from hit testing.
         insertStyleRules: [
           REPLAY_CURSOR_PASSTHROUGH_RULE,
+          REPLAY_EDITING_APPEARANCE,
           ...REPLAY_THUMBNAIL_RULES,
           ...REPLAY_ANCHOR_RULES,
         ],
