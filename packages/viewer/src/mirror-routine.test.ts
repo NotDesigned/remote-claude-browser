@@ -992,6 +992,7 @@ describe("D10 recovery triggers", () => {
       data: [full(1_000)],
     });
     expect(fakeRrweb.FakeReplayer.instances[0]?.config.plugins).toEqual([
+      expect.objectContaining({ handler: expect.any(Function) }),
       controllers[0]?.replayPlugin,
     ]);
     mirror.handle({

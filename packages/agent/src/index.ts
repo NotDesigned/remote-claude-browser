@@ -37,6 +37,7 @@ import {
 import { record } from "@rrweb/record";
 import { addFontsToSnapshot, installFontCapture } from "./font-capture";
 import { captureDocumentContext } from "./document-context";
+import { startWorkingMarkCapture } from "./working-mark";
 import {
   broadcastStitchSync,
   createReturnedDocumentCheck,
@@ -166,6 +167,15 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
       : null;
   let crossOriginIframeMirror: CrossOriginIframeMirror | null = null;
   const recordReadiness = createRecordReadiness();
+  const resetWorkingMark =
+    isTop && location.hostname === "claude.ai"
+      ? startWorkingMarkCapture(
+          (node) => record.mirror.getId(node),
+          (tag, payload) => {
+            if (recordReadiness.isStarted()) record.addCustomEvent(tag, payload);
+          },
+        )
+      : undefined;
   const canvasRtc = legacyBridge
     ? installCanvasRtcRecord({
         constructors: rtcConstructors,
@@ -252,6 +262,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
             if (event.type === EventType.FullSnapshot) {
               addFontsToSnapshot(event.data.node, fontCapture.css());
               recordReadiness.markStarted();
+              resetWorkingMark?.();
               // A new snapshot here means new frames in the replay, so what is inside them has to
               // report after it. A request passed down before a delayed snapshot came too early.
               if (!isTop) broadcastStitchSync();

@@ -33,6 +33,7 @@ import {
 import { REPLAY_ANCHOR_RULES } from "./replay-anchors";
 import { REPLAY_THUMBNAIL_RULES } from "./replay-thumbnails";
 import { createCanvasCompositor, type CanvasCompositor } from "./media/canvas";
+import { workingMarkReplay } from "./working-mark";
 
 /** How long the page in view waits for the snapshot of the tab that is replacing it. */
 const TAB_SWITCH_WAIT_MS = 1_500;
@@ -529,7 +530,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
         // is revealed by a CSS entrance animation (opacity 0->1). This mirror never exposes a
         // paused/scrub UI, so keep author animations live.
         pauseAnimation: false,
-        ...(rtc === null ? {} : { plugins: [rtc.controller.replayPlugin] }),
+        plugins: [workingMarkReplay(), ...(rtc === null ? [] : [rtc.controller.replayPlugin])],
       });
 
       // rrweb opens the replay document during rebuild. Closing it starts SVG animation timelines.

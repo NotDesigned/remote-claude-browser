@@ -29,6 +29,21 @@ const thinkingIndicator = `<svg id="thinking-indicator" width="24" height="24" v
   <circle cx="7" cy="7" r="2" fill="coral"><animate attributeName="r" values="2;4;2" dur="1s" repeatCount="indefinite"/></circle>
   <circle cx="17" cy="7" r="2" fill="coral"/><circle cx="7" cy="17" r="2" fill="coral"/><circle cx="17" cy="17" r="2" fill="coral"/>
 </svg>`;
+const workingMark = `<span data-testid="TurnStatusClayMark" style="display:block;height:20px;overflow:hidden">
+  <span id="working-mark-strip" style="display:block;height:80px">Thinking</span>
+</span>
+<script>
+  const strip = document.getElementById("working-mark-strip");
+  window.workingMarkAnimation = strip.animate(
+    [0, -20, -40, -60].map(y => ({transform: "translateY(" + y + "px)"})),
+    {duration: 30000, easing: "steps(4, jump-none)", fill: "forwards"}
+  );
+</script>`;
+const fixture = remoteHtml.replace(
+  "</body>",
+  `<div style="position:absolute;top:560px">${thinkingIndicator}${workingMark}</div></body>`,
+);
+const remoteUrl = "https://claude.ai/remote-mirror-fixture";
 const server = createServer(async (request, response) => {
   const path = new URL(request.url!, "http://fixture").pathname;
   if (path === "/api/client/session") {
@@ -39,17 +54,6 @@ const server = createServer(async (request, response) => {
         sharedAccount: true,
       }),
     );
-    return;
-  }
-  if (path === "/remote") {
-    response
-      .writeHead(200, { "content-type": "text/html" })
-      .end(
-        remoteHtml.replace(
-          "</body>",
-          `<div style="position:absolute;top:560px">${thinkingIndicator}</div></body>`,
-        ),
-      );
     return;
   }
   const file = resolve(root, path === "/" ? "index.html" : "." + path);
@@ -127,7 +131,10 @@ try {
       if (mode === "dom" || down.t === "snapshot") broadcast(down);
   });
   await remote.addInitScript({ content: createAgentBundle({ canvas: { enabled: false } }) });
-  await remote.goto(origin + "/remote");
+  await remote.route(remoteUrl, (route) =>
+    route.fulfill({ contentType: "text/html", body: fixture }),
+  );
+  await remote.goto(remoteUrl);
   await remote.waitForFunction(() => typeof (window as any).__mirror_cmd === "function");
   const remoteCdp = await remote.context().newCDPSession(remote);
   await remoteCdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
@@ -191,7 +198,7 @@ try {
     socket.send(
       JSON.stringify({
         t: "tabs",
-        tabs: [{ id: "mobile", title: "Mobile fixture", url: origin + "/remote", active: true }],
+        tabs: [{ id: "mobile", title: "Mobile fixture", url: remoteUrl, active: true }],
       }),
     );
     for (const down of hub.joinPayload()) socket.send(JSON.stringify(down));
@@ -260,6 +267,38 @@ try {
     () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
   );
   const local = page.frameLocator("#mirror-host iframe");
+  const workingMarkStrip = local.locator("#working-mark-strip");
+  const activeAnimation = () =>
+    workingMarkStrip.evaluate((strip) => strip.getAnimations().at(0)?.playState);
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector<HTMLIFrameElement>("#mirror-host iframe")
+        ?.contentDocument?.querySelector("#working-mark-strip")
+        ?.getAnimations()
+        .at(0)?.playState === "running",
+  );
+  await remote.evaluate(() => {
+    const animation = (window as unknown as { workingMarkAnimation: Animation })
+      .workingMarkAnimation;
+    animation.currentTime = 23_000;
+    animation.pause();
+  });
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector<HTMLIFrameElement>("#mirror-host iframe")
+        ?.contentDocument?.querySelector("#working-mark-strip")
+        ?.getAnimations()
+        .at(0)?.playState === "paused",
+  );
+  const workingMarkTransform = () =>
+    workingMarkStrip.evaluate((strip) => getComputedStyle(strip).transform);
+  const pausedFrame = await remote
+    .locator("#working-mark-strip")
+    .evaluate((strip) => getComputedStyle(strip).transform);
+  assert.notEqual(pausedFrame, "none");
+  checks.jsWorkingMarkRunsAndPauses = (await workingMarkTransform()) === pausedFrame;
   const dot = local.locator("#thinking-indicator circle").first();
   await expectAnimatingDot();
   checks.svgAnimationTimelineRuns = true;
@@ -375,6 +414,8 @@ try {
   await settle();
   await expectAnimatingDot();
   checks.svgAnimationSurvivesSnapshot = true;
+  checks.jsWorkingMarkSurvivesSnapshot =
+    (await activeAnimation()) === "paused" && (await workingMarkTransform()) === pausedFrame;
   await page.keyboard.press("End");
   await page.keyboard.insertText("E");
   await settle();
