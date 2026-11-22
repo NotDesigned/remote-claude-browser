@@ -32,12 +32,21 @@ import {
 } from "./media/canvas-rtc";
 import { REPLAY_ANCHOR_RULES } from "./replay-anchors";
 import { REPLAY_THUMBNAIL_RULES } from "./replay-thumbnails";
-import { REPLAY_EDITING_APPEARANCE } from "./input/appearance";
 import { createCanvasCompositor, type CanvasCompositor } from "./media/canvas";
 import { workingMarkReplay } from "./working-mark";
 
 /** How long the page in view waits for the snapshot of the tab that is replacing it. */
 const TAB_SWITCH_WAIT_MS = 1_500;
+
+const REPLAY_TEXT_FOCUS_RULE = `
+  @media (forced-colors: none) {
+    :is(textarea, [contenteditable]:not([contenteditable="false"]),
+        input:not([type]), input:is([type="text"], [type="search"], [type="email"],
+        [type="tel"], [type="url"], [type="password"], [type="number"])):focus {
+      outline: none !important;
+    }
+  }
+`;
 
 type Snapshot = Extract<Down, { t: "snapshot" }>;
 type Delta = Extract<Down, { t: "delta" }>;
@@ -517,7 +526,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
         // Keep replay cursor chrome visible, but permanently remove it from hit testing.
         insertStyleRules: [
           REPLAY_CURSOR_PASSTHROUGH_RULE,
-          REPLAY_EDITING_APPEARANCE,
+          REPLAY_TEXT_FOCUS_RULE,
           ...REPLAY_THUMBNAIL_RULES,
           ...REPLAY_ANCHOR_RULES,
         ],

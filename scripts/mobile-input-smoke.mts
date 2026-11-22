@@ -8,6 +8,8 @@ import { chromium, webkit } from "playwright";
 import { createAgentBundle } from "../packages/agent/dist/index.js";
 import {
   ChunkReassembler,
+  EventType,
+  IncrementalSource,
   type AgentMsg,
   type AgentCmdInput,
   type CmdRes,
@@ -95,6 +97,7 @@ const dispatches: Promise<unknown>[] = [];
 const checks: Record<string, boolean> = {};
 const passwordNodeIds = new Set<number>();
 let passwordsMasked = true;
+let remoteSelectionEvents = 0;
 const inspectPasswords = (node: any) => {
   if (node.attributes?.type === "password" || node.attributes?.["data-rr-is-password"]) {
     passwordNodeIds.add(node.id);
@@ -119,6 +122,11 @@ try {
     if (!message) return;
     if (message.kind === "rrweb") {
       const event = message.e as any;
+      if (
+        event.type === EventType.IncrementalSnapshot &&
+        event.data.source === IncrementalSource.Selection
+      )
+        remoteSelectionEvents++;
       if (event.type === 2) inspectPasswords(event.data.node);
       if (event.type === 3 && event.data.source === 5 && passwordNodeIds.has(event.data.id))
         passwordsMasked &&= !event.data.text || /^\*+$/.test(event.data.text);
@@ -408,34 +416,91 @@ try {
     checks.editorFocusRingHidden = await editor.evaluate(
       (el) => getComputedStyle(el).outlineStyle === "none",
     );
-    const readPreedit = () =>
-      editor.evaluate((el) => {
-        const view = el.ownerDocument.defaultView as Window & typeof globalThis;
-        const highlight = view.CSS.highlights.get("mirror-ime-preedit");
-        const range = highlight?.values().next().value;
-        return [range?.toString(), range?.startOffset];
-      });
     const ime = await context.newCDPSession(page);
     await ime.send("Input.imeSetComposition", {
       text: "zhong",
       selectionStart: 2,
       selectionEnd: 2,
     });
-    assert.deepEqual(await readPreedit(), ["zhong", "分析AI问题".length]);
+    assert.equal(await editor.textContent(), "分析AI问题zhong");
     await ime.send("Input.imeSetComposition", { text: "中文", selectionStart: 2, selectionEnd: 2 });
-    assert.deepEqual(await readPreedit(), ["中文", "分析AI问题".length]);
+    assert.equal(await editor.textContent(), "分析AI问题中文");
     await ime.send("Input.insertText", { text: "中文" });
     await settle();
-    checks.imeCommitRestoresTextColor = (await readPreedit())[0] === undefined;
     checks.imeCommitReachesRemote = await remote
       .locator("#editor")
       .evaluate((el) => el.textContent === "分析AI问题中文");
     await ime.send("Input.imeSetComposition", { text: "ni", selectionStart: 2, selectionEnd: 2 });
-    assert.deepEqual(await readPreedit(), ["ni", "分析AI问题中文".length]);
+    assert.equal(await editor.textContent(), "分析AI问题中文ni");
     await ime.send("Input.imeSetComposition", { text: "", selectionStart: 0, selectionEnd: 0 });
-    checks.imeCancellationRestoresText =
-      (await readPreedit())[0] === undefined && (await editor.textContent()) === "分析AI问题中文";
+    checks.imeCancellationRestoresText = (await editor.textContent()) === "分析AI问题中文";
     await ime.detach();
+
+    await editor.evaluate((el) => {
+      const text = el.firstChild!;
+      el.ownerDocument.getSelection()!.setBaseAndExtent(text, 6, text, 2);
+    });
+    await sendCmd("mobile", { cmd: "snapshot" });
+    await settle();
+    checks.backwardEditorSelectionSurvivesSnapshot = await editor.evaluate((el) => {
+      const selection = el.ownerDocument.getSelection()!;
+      return selection.anchorOffset === 6 && selection.focusOffset === 2;
+    });
+
+    await remoteCdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+    const paragraph = local.locator("#nested-content");
+    const box = (await paragraph.boundingBox())!;
+    const line = await paragraph.evaluate((el) => {
+      const range = el.ownerDocument.createRange();
+      range.selectNodeContents(el);
+      const text = range.getBoundingClientRect();
+      const block = el.getBoundingClientRect();
+      return {
+        width: block.width,
+        left: text.left - block.left,
+        right: text.right - block.left,
+        y: (text.top + text.bottom) / 2 - block.top,
+      };
+    });
+    const scale = box.width / line.width;
+    const left = box.x + (line.left + 1) * scale;
+    const right = box.x + (line.right + 1) * scale;
+    const y = box.y + line.y * scale;
+    const readSelection = () =>
+      paragraph.evaluate((el) => {
+        const selection = el.ownerDocument.getSelection()!;
+        return {
+          text: selection.toString(),
+          backward: selection.anchorOffset > selection.focusOffset,
+        };
+      });
+    for (const backward of [false, true]) {
+      // Chromium treats a drag inside an existing selection as dragging the selected text.
+      await paragraph.evaluate((el) => el.ownerDocument.getSelection()?.removeAllRanges());
+      await remote.evaluate(() => document.getSelection()?.removeAllRanges());
+      await settle();
+      const before = remoteSelectionEvents;
+      await page.mouse.move(backward ? right : left, y);
+      await page.mouse.down();
+      await page.mouse.move((left + right) / 2, y, { steps: 6 });
+      await settle();
+      const midway = await readSelection();
+      await page.mouse.move(backward ? left : right, y, { steps: 6 });
+      await page.mouse.up();
+      await settle();
+      assert.ok(remoteSelectionEvents > before, "Remote recorder echoed the mouse selection");
+      const selection = await readSelection();
+      checks[backward ? "backwardSelectionRemainsLocal" : "forwardSelectionRemainsLocal"] =
+        midway.text.length > 0 &&
+        midway.text.length < selection.text.length &&
+        midway.backward === backward &&
+        selection.text === "Nested scrolling" &&
+        selection.backward === backward;
+    }
+    await remoteCdp.send("Emulation.setTouchEmulationEnabled", {
+      enabled: true,
+      maxTouchPoints: 5,
+    });
   }
   checks.websiteScriptsRemainBlocked = await page.evaluate(
     () => (window as any).__mirrorWebsiteScriptRan === false,

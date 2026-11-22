@@ -1,6 +1,5 @@
 import type { Replayer } from "@rrweb/replay";
 import type { TabId } from "@mirror/protocol";
-import { attachCompositionHighlight } from "./appearance";
 import { attachChangeCapture } from "./change";
 import { attachDefaultActionContainment } from "./default-actions";
 import { attachFileCapture } from "./files";
@@ -116,7 +115,6 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
         },
       }),
       change.dispose,
-      attachCompositionHighlight(doc),
       attachKeyCapture({
         doc,
         focusRoot: rootDoc,

@@ -11,7 +11,7 @@ import { NetworkPanel } from "./network-panel";
 import { cpaApi, type CpaBrowserAuthorization } from "./network-api";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import type { AgentMsg, Down, eventWithTime, TabId } from "@mirror/protocol";
-import { EventType } from "@mirror/protocol";
+import { EventType, IncrementalSource } from "@mirror/protocol";
 import { createMirror, type Mirror } from "./mirror";
 import { attachMirrorInput } from "./input";
 import { EventPipeline } from "./pipeline";
@@ -588,6 +588,16 @@ export function App() {
       }
     };
     const pipeline = new EventPipeline()
+      .use((event) => {
+        // The browser already paints the local selection. rrweb would replace it with a
+        // delayed range ordered by document position, losing the direction of a backward drag.
+        if (
+          event.type === EventType.IncrementalSnapshot &&
+          event.data.source === IncrementalSource.Selection
+        )
+          return null;
+        return event;
+      })
       .use(echo)
       .use(scroll)
       .onReset(echo.reset)

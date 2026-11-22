@@ -24,10 +24,10 @@ interface InputSelection {
 
 interface RangeSelection {
   kind: "range";
-  start: NodeAddress;
-  startOffset: number;
-  end: NodeAddress;
-  endOffset: number;
+  anchor: NodeAddress;
+  anchorOffset: number;
+  focus: NodeAddress;
+  focusOffset: number;
 }
 
 interface ScrollState {
@@ -233,17 +233,16 @@ function captureSelection(
   }
 
   const selection = document.getSelection();
-  if (selection === null || selection.rangeCount === 0) return null;
-  const range = selection.getRangeAt(0);
-  const start = nodeAddress(range.startContainer, active);
-  const end = nodeAddress(range.endContainer, active);
-  if (start === null || end === null) return null;
+  if (!selection?.anchorNode || !selection.focusNode) return null;
+  const anchor = nodeAddress(selection.anchorNode, active);
+  const focus = nodeAddress(selection.focusNode, active);
+  if (anchor === null || focus === null) return null;
   return {
     kind: "range",
-    start,
-    startOffset: range.startOffset,
-    end,
-    endOffset: range.endOffset,
+    anchor,
+    anchorOffset: selection.anchorOffset,
+    focus,
+    focusOffset: selection.focusOffset,
   };
 }
 
@@ -263,15 +262,10 @@ function restoreSelection(
     return;
   }
 
-  const start = resolveNode(state.start, active);
-  const end = resolveNode(state.end, active);
-  if (start === null || end === null) return;
-  const range = document.createRange();
-  range.setStart(start, state.startOffset);
-  range.setEnd(end, state.endOffset);
-  const selection = document.getSelection();
-  selection?.removeAllRanges();
-  selection?.addRange(range);
+  const anchor = resolveNode(state.anchor, active);
+  const focus = resolveNode(state.focus, active);
+  if (anchor === null || focus === null) return;
+  document.getSelection()?.setBaseAndExtent(anchor, state.anchorOffset, focus, state.focusOffset);
 }
 
 export const interactionRestoreHook: RebuildRestoreHook<InteractionState> = {
