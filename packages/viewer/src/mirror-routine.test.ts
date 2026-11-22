@@ -74,6 +74,7 @@ const fakeRrweb = vi.hoisted(() => {
         sandbox: ["allow-same-origin", "allow-scripts"],
         style: { pointerEvents: "none" },
         contentDocument: {
+          close: vi.fn(),
           querySelectorAll: () => this.mediaElements,
           querySelector: () => null,
         },

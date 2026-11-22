@@ -532,6 +532,9 @@ export function createMirror(opts: MirrorOpts): Mirror {
         ...(rtc === null ? {} : { plugins: [rtc.controller.replayPlugin] }),
       });
 
+      // rrweb opens the replay document during rebuild. Closing it starts SVG animation timelines.
+      const iframe = replayer.iframe;
+      replayer.on("fullsnapshot-rebuilded", () => iframe.contentDocument?.close());
       cancelRestore = armRestore(
         replayer,
         restorePoint,

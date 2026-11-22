@@ -25,6 +25,10 @@ const root = resolve("packages/viewer/dist");
 const remoteHtml = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>
 body{margin:0;height:1800px;background:linear-gradient(#fff,#ddd);font:16px sans-serif}#editor{position:absolute;left:20px;top:20px;width:280px;height:80px;border:1px solid #555}#tap{position:absolute;left:20px;top:125px;width:160px;height:36px}.hover-row{position:absolute;left:20px;top:180px;width:280px;height:40px;background:#eee}.hover-button{position:absolute;right:4px;top:0;width:0;height:40px;opacity:0;pointer-events:none}.hover-row:hover .hover-button{width:40px;opacity:1;pointer-events:auto}@media(pointer:coarse){.hover-button{width:40px;opacity:1;pointer-events:auto}}#nested{position:absolute;left:20px;top:270px;width:280px;height:150px;overflow:auto;border:1px solid #333}#nested-content{height:1000px;background:linear-gradient(#cde,#7ad)}#bottom{position:absolute;top:1500px}#slider{position:absolute;left:20px;top:450px;width:280px;height:44px;background:#ddd}#thumb{position:absolute;width:44px;height:44px;background:#777;touch-action:none}
 #password,#existing-password{position:absolute;left:20px;top:225px;width:280px;height:30px}#existing-password{top:510px}</style></head><body><input id="password" type="password" autocomplete="current-password"><input id="existing-password" type="password" value="Existing-Ab9!"><div id="editor" contenteditable="true" role="textbox"></div><button id="tap" onclick="window.tapCount++">Tap button</button><div class="hover-row">Hover menu<button class="hover-button" id="menu" onclick="window.menuCount++">⋯</button></div><div id="nested"><div id="nested-content">Nested scrolling</div></div><div id="slider"><div id="thumb"></div></div><p id="bottom">Bottom of page</p><script>window.tapCount=0;window.menuCount=0;window.dragX=0;window.dragEvents=[];let startX=null;const thumb=document.getElementById('thumb');thumb.addEventListener('touchstart',e=>{e.preventDefault();startX=e.touches[0].clientX;window.dragEvents.push(e.type)}, {passive:false});document.addEventListener('touchmove',e=>{if(startX===null)return;e.preventDefault();window.dragX=e.touches[0].clientX-startX;thumb.style.transform='translateX('+window.dragX+'px)';window.dragEvents.push(e.type)}, {passive:false});document.addEventListener('touchend',()=>{if(startX===null)return;startX=null;window.dragEvents.push('touchend')});</script></body></html>`;
+const thinkingIndicator = `<svg id="thinking-indicator" width="24" height="24" viewBox="0 0 24 24">
+  <circle cx="7" cy="7" r="2" fill="coral"><animate attributeName="r" values="2;4;2" dur="1s" repeatCount="indefinite"/></circle>
+  <circle cx="17" cy="7" r="2" fill="coral"/><circle cx="7" cy="17" r="2" fill="coral"/><circle cx="17" cy="17" r="2" fill="coral"/>
+</svg>`;
 const server = createServer(async (request, response) => {
   const path = new URL(request.url!, "http://fixture").pathname;
   if (path === "/api/client/session") {
@@ -38,7 +42,14 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (path === "/remote") {
-    response.writeHead(200, { "content-type": "text/html" }).end(remoteHtml);
+    response
+      .writeHead(200, { "content-type": "text/html" })
+      .end(
+        remoteHtml.replace(
+          "</body>",
+          `<div style="position:absolute;top:560px">${thinkingIndicator}</div></body>`,
+        ),
+      );
     return;
   }
   const file = resolve(root, path === "/" ? "index.html" : "." + path);
@@ -249,6 +260,21 @@ try {
     () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
   );
   const local = page.frameLocator("#mirror-host iframe");
+  const dot = local.locator("#thinking-indicator circle").first();
+  await expectAnimatingDot();
+  checks.svgAnimationTimelineRuns = true;
+  async function expectAnimatingDot() {
+    await dot.evaluate(async (node) => {
+      const radius = (node as SVGCircleElement).r;
+      const initial = radius.animVal.value;
+      const deadline = performance.now() + 1500;
+      while (performance.now() < deadline) {
+        await new Promise(requestAnimationFrame);
+        if (Math.abs(radius.animVal.value - initial) > 0.1) return;
+      }
+      throw new Error("Mirrored SVG stayed still");
+    });
+  }
   await page.evaluate(() => {
     (window as any).__mirrorWebsiteScriptRan = false;
     const doc = document.querySelector<HTMLIFrameElement>("#mirror-host iframe")!.contentDocument!;
@@ -347,6 +373,8 @@ try {
   await settle();
   await sendCmd("mobile", { cmd: "snapshot" });
   await settle();
+  await expectAnimatingDot();
+  checks.svgAnimationSurvivesSnapshot = true;
   await page.keyboard.press("End");
   await page.keyboard.insertText("E");
   await settle();
