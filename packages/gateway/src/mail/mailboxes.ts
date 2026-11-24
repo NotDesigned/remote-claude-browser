@@ -1,4 +1,4 @@
-import { randomInt, randomUUID } from "node:crypto";
+import { createHmac, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmod, mkdir, open } from "node:fs/promises";
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import { dirname } from "node:path";
@@ -8,6 +8,9 @@ import { createResendReceiving, MailboxError } from "./resend";
 
 export const RESEND_WEBHOOK_PATH = "/api/webhooks/resend";
 const MAILBOX_PATH = "/api/me/mailboxes";
+const CLAIM_PATH = `${MAILBOX_PATH}/claims`;
+const CLAIM_VALID_MS = 10 * 60_000;
+const CLAIM_RESEND_MS = 60_000;
 const addressWords = `
   acorn alder almond amber anchor apple arbor aster autumn bamboo basil bay beach beech berry
   birch bloom blossom blue breeze briar brook brush butter candle canyon cape caramel cedar
@@ -48,10 +51,27 @@ export interface MailboxMessage extends MailboxMessageSummary {
   authenticated: boolean;
 }
 
+interface MailboxClaim {
+  address: string;
+  codeHash: string;
+  sentAt: number;
+  attempts: number;
+}
+
 export interface MailboxService {
   readonly enabled: boolean;
   readonly domain?: string;
-  createAddress(userId: string, label?: unknown, localPart?: unknown): MailboxAddress;
+  readonly domains: string[];
+  readonly canClaim: boolean;
+  pendingClaim(userId: string): string | undefined;
+  startClaim(userId: string, address: unknown): Promise<string>;
+  confirmClaim(userId: string, address: unknown, code: unknown): MailboxAddress;
+  createAddress(
+    userId: string,
+    label?: unknown,
+    localPart?: unknown,
+    domain?: unknown,
+  ): MailboxAddress;
   assignAddress(userId: string, address: unknown, label?: unknown): MailboxAddress;
   deleteAddress(userId: string, addressId: string): void;
   getAddress(userId: string, addressId: string): MailboxAddress | undefined;
@@ -72,17 +92,28 @@ export async function createMailboxService(options: {
   apiKey?: string;
   webhookSecret?: string;
   domain?: string;
+  verificationFrom?: string;
   now?: () => number;
   fetcher?: typeof fetch;
 }): Promise<MailboxService> {
   const { file, apiKey, webhookSecret, now = Date.now, fetcher = fetch } = options;
-  const domain = options.domain?.trim().toLowerCase() ?? "";
+  const domains = (options.domain ?? "").split(",").map((domain) => domain.trim().toLowerCase());
+  const configuredDomains = [...new Set(domains.filter(Boolean))];
   const receiving =
-    apiKey && webhookSecret && domain
+    apiKey && webhookSecret && configuredDomains.length
       ? createResendReceiving(apiKey, webhookSecret, now, fetcher)
       : undefined;
-  if (receiving && !/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(domain))
-    throw new Error("RESEND_RECEIVING_DOMAIN must be a bare email domain");
+  if (
+    receiving &&
+    configuredDomains.some((domain) => !/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(domain))
+  )
+    throw new Error("RESEND_RECEIVING_DOMAIN must contain comma-separated bare email domains");
+  const defaultDomain = configuredDomains[0];
+  const verificationFrom = options.verificationFrom?.trim();
+  const verification =
+    receiving && webhookSecret && verificationFrom
+      ? { sender: verificationFrom, key: webhookSecret, send: receiving.send }
+      : undefined;
 
   if (file !== ":memory:") {
     await mkdir(dirname(file), { recursive: true, mode: 0o700 });
@@ -110,6 +141,10 @@ export async function createMailboxService(options: {
       PRIMARY KEY(address_id, id)
     );
     CREATE INDEX IF NOT EXISTS mailbox_messages_received ON mailbox_messages(address_id, received_at);
+    CREATE TABLE IF NOT EXISTS mailbox_claims (
+      user_id TEXT PRIMARY KEY, address TEXT NOT NULL, code_hash TEXT NOT NULL,
+      sent_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0
+    );
   `);
 
   const listAddresses = db.prepare(`
@@ -142,6 +177,23 @@ export async function createMailboxService(options: {
   `);
   const deleteUser = db.prepare("DELETE FROM mailbox_addresses WHERE user_id = ?");
   const deleteAddress = db.prepare("DELETE FROM mailbox_addresses WHERE user_id = ? AND id = ?");
+  const unavailableAddress = db.prepare(`
+    SELECT 1 FROM mailbox_addresses WHERE address = ?
+    UNION ALL SELECT 1 FROM retired_mailbox_addresses WHERE address = ?
+  `);
+  const getClaim = db.prepare(`
+    SELECT address, code_hash AS codeHash, sent_at AS sentAt, attempts
+    FROM mailbox_claims WHERE user_id = ?
+  `);
+  const setClaim = db.prepare(`
+    INSERT INTO mailbox_claims (user_id, address, code_hash, sent_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET address = excluded.address, code_hash = excluded.code_hash,
+      sent_at = excluded.sent_at, attempts = 0
+  `);
+  const failedClaim = db.prepare(
+    "UPDATE mailbox_claims SET attempts = attempts + 1 WHERE user_id = ?",
+  );
+  const deleteClaim = db.prepare("DELETE FROM mailbox_claims WHERE user_id = ?");
 
   const requireReceiving = () => {
     if (!receiving) throw new MailboxError(503, "收件箱尚未启用");
@@ -154,6 +206,31 @@ export async function createMailboxService(options: {
     if ([...name].length > 80) throw new MailboxError(400, "收件地址名称最多 80 个字");
     return name;
   }
+  function configuredAddress(value: unknown) {
+    const address = typeof value === "string" ? value.trim().toLowerCase() : "";
+    const [local, host, extra] = address.split("@");
+    if (
+      !host ||
+      !configuredDomains.includes(host) ||
+      extra !== undefined ||
+      !local ||
+      local.length > 64 ||
+      !/^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*$/.test(local)
+    )
+      throw new MailboxError(400, "请输入已启用域名下的有效收件地址");
+    return address;
+  }
+  const requireVerification = () => {
+    if (!verification) throw new MailboxError(503, "邮箱绑定验证尚未启用");
+    return verification;
+  };
+  const claimFor = (userId: string) => getClaim.get(userId) as unknown as MailboxClaim | undefined;
+  const activeClaim = (claim: MailboxClaim | undefined) =>
+    claim && now() - claim.sentAt < CLAIM_VALID_MS && claim.attempts < 5 ? claim : undefined;
+  const claimHash = (key: string, userId: string, address: string, code: string) =>
+    createHmac("sha256", key)
+      .update(JSON.stringify([userId, address, code]))
+      .digest();
   function insertAddress(userId: string, address: string, label: string) {
     const id = randomUUID();
     const createdAt = now();
@@ -167,9 +244,60 @@ export async function createMailboxService(options: {
   }
   return {
     enabled: !!receiving,
-    domain: receiving ? domain : undefined,
-    createAddress(userId, label, localPart) {
+    domain: receiving ? defaultDomain : undefined,
+    domains: receiving ? configuredDomains : [],
+    canClaim: !!verification,
+    pendingClaim(userId) {
+      return verification ? activeClaim(claimFor(userId))?.address : undefined;
+    },
+    async startClaim(userId, value) {
+      const { sender, key, send } = requireVerification();
+      const address = configuredAddress(value);
+      if (unavailableAddress.get(address, address))
+        throw new MailboxError(409, "这个收件地址已被分配或停用");
+      const sentAt = now();
+      const previous = claimFor(userId);
+      if (previous && sentAt - previous.sentAt < CLAIM_RESEND_MS)
+        throw new MailboxError(429, "请在 1 分钟后重新发送验证码");
+      const code = randomInt(100_000_000).toString().padStart(8, "0");
+      setClaim.run(userId, address, claimHash(key, userId, address, code).toString("hex"), sentAt);
+      await send({
+        from: sender,
+        to: address,
+        subject: "收件箱绑定验证码",
+        text: `你的收件箱绑定验证码为 ${code}，10 分钟内有效。`,
+      });
+      return address;
+    },
+    confirmClaim(userId, requestedAddress, value) {
+      const { key } = requireVerification();
+      const claim = activeClaim(claimFor(userId));
+      if (!claim) throw new MailboxError(400, "请重新获取验证码");
+      const address = configuredAddress(requestedAddress);
+      if (address !== claim.address) throw new MailboxError(400, "请为这个地址重新获取验证码");
+      const code = typeof value === "string" ? value.trim() : "";
+      const hash = claimHash(key, userId, address, code);
+      if (!timingSafeEqual(hash, Buffer.from(claim.codeHash, "hex"))) {
+        failedClaim.run(userId);
+        throw new MailboxError(400, "验证码不正确");
+      }
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const assigned = assignAvailable(userId, address, "");
+        deleteClaim.run(userId);
+        db.exec("COMMIT");
+        return assigned;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+    createAddress(userId, label, localPart, requestedDomain = defaultDomain) {
       requireReceiving();
+      const domain =
+        typeof requestedDomain === "string" ? requestedDomain.trim().toLowerCase() : "";
+      if (!configuredDomains.includes(domain))
+        throw new MailboxError(400, "请选择已启用的收件域名");
       const name = mailboxLabel(label);
       if (localPart !== undefined) {
         const part = typeof localPart === "string" ? localPart.trim().toLowerCase() : "";
@@ -186,17 +314,7 @@ export async function createMailboxService(options: {
     },
     assignAddress(userId, value, label) {
       requireReceiving();
-      const address = typeof value === "string" ? value.trim().toLowerCase() : "";
-      const [local, host, extra] = address.split("@");
-      if (
-        host !== domain ||
-        extra !== undefined ||
-        !local ||
-        local.length > 64 ||
-        !/^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*$/.test(local)
-      )
-        throw new MailboxError(400, `请输入有效的 @${domain} 收件地址`);
-      return assignAvailable(userId, address, mailboxLabel(label));
+      return assignAvailable(userId, configuredAddress(value), mailboxLabel(label));
     },
     deleteAddress(userId, addressId) {
       if (!deleteAddress.run(userId, addressId).changes)
@@ -232,6 +350,7 @@ export async function createMailboxService(options: {
     },
     deleteUser(userId) {
       deleteUser.run(userId);
+      deleteClaim.run(userId);
     },
     close() {
       db.close();
@@ -260,10 +379,12 @@ export function registerMailboxRoutes(
     return {
       enabled: service.enabled,
       domain: service.domain,
+      domains: service.domains,
+      ...(service.canClaim && { canClaim: true, pendingClaim: service.pendingClaim(userId) }),
       addresses: service.enabled ? service.listAddresses(userId) : [],
     };
   });
-  app.post<{ Body: { label?: unknown; localPart?: unknown } | null }>(
+  app.post<{ Body: { label?: unknown; localPart?: unknown; domain?: unknown } | null }>(
     MAILBOX_PATH,
     { bodyLimit: 4096 },
     async (request, reply) => {
@@ -271,6 +392,27 @@ export function registerMailboxRoutes(
         userIdFor(request, reply),
         request.body?.label,
         request.body?.localPart,
+        request.body?.domain,
+      );
+      return reply.code(201).send({ address });
+    },
+  );
+  app.post<{ Body: { address?: unknown } | null }>(
+    CLAIM_PATH,
+    { bodyLimit: 1024 },
+    async (request, reply) => {
+      const address = await service.startClaim(userIdFor(request, reply), request.body?.address);
+      return { address };
+    },
+  );
+  app.post<{ Body: { address?: unknown; code?: unknown } | null }>(
+    `${CLAIM_PATH}/confirm`,
+    { bodyLimit: 1024 },
+    async (request, reply) => {
+      const address = service.confirmClaim(
+        userIdFor(request, reply),
+        request.body?.address,
+        request.body?.code,
       );
       return reply.code(201).send({ address });
     },

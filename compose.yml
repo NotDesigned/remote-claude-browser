@@ -40,6 +40,7 @@ services:
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       RESEND_WEBHOOK_SECRET: ${RESEND_WEBHOOK_SECRET:-}
       RESEND_RECEIVING_DOMAIN: ${RESEND_RECEIVING_DOMAIN:-}
+      RESEND_VERIFICATION_FROM: ${RESEND_VERIFICATION_FROM:-}
       MIRROR_CANVAS_SNAPSHOTS: "0"
       # Sites whose canvases the page view samples. Unset means the verification challenges.
       MIRROR_CANVAS_SITES: ${MIRROR_CANVAS_SITES:-}

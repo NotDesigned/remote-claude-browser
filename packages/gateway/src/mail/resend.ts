@@ -130,5 +130,24 @@ export function createResendReceiving(
         throw new MailboxError(502, "暂时无法读取邮件内容，请重试");
       }
     },
+    async send(message: {
+      from: string;
+      to: string;
+      subject: string;
+      text: string;
+    }): Promise<void> {
+      try {
+        const response = await fetcher("https://api.resend.com/emails", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ ...message, to: [message.to] }),
+          redirect: "error",
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!response.ok) throw new Error();
+      } catch {
+        throw new MailboxError(502, "暂时无法发送验证码，请稍后重试");
+      }
+    },
   };
 }

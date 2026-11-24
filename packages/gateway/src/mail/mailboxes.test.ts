@@ -57,7 +57,13 @@ it("routes verified delivery to matching addresses and serves message bodies onl
       authentication: { dmarc: "pass" },
     }),
   );
-  const store = await createMailboxService({ file: ":memory:", ...provider, fetcher });
+  const secondDomain = "inbox.example.net";
+  const store = await createMailboxService({
+    file: ":memory:",
+    ...provider,
+    domain: `${provider.domain}, ${secondDomain}`,
+    fetcher,
+  });
   const app = Fastify();
   registerMailboxRoutes(app, store, (request) => request.headers["x-test-user"] as string);
   try {
@@ -72,14 +78,15 @@ it("routes verified delivery to matching addresses and serves message bodies onl
     });
     expect(response.statusCode).toBe(201);
     const { address: first } = response.json();
-    const second = store.createAddress("owner");
+    const second = store.createAddress("owner", undefined, undefined, secondDomain);
     const third = store.createAddress("other");
     expect(first.label).toBe("我的账号");
     expect(first.address).toMatch(/^[a-z]+-[a-z]+@mail\.example\.com$/);
-    expect(first.address).not.toBe(second.address);
+    expect(second.address).toMatch(/^[a-z]+-[a-z]+@inbox\.example\.net$/);
     expect((await app.inject({ url: mailboxPath, headers: owner })).json()).toEqual({
       enabled: true,
       domain: provider.domain,
+      domains: [provider.domain, secondDomain],
       addresses: [first, second].sort((a, b) => a.id.localeCompare(b.id)),
     });
 
@@ -164,6 +171,65 @@ it("only indexes mail received after an address was assigned and never reuses a 
   }
 });
 
+it("binds an existing address only after its request owner supplies the delivered code", async () => {
+  let time = now;
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ id: "sent-test" }));
+  const store = await createMailboxService({
+    file: ":memory:",
+    ...provider,
+    domain: `${provider.domain}, amadeus.example.net`,
+    verificationFrom: "verify@mail.example.com",
+    now: () => time,
+    fetcher,
+  });
+  const app = Fastify();
+  registerMailboxRoutes(app, store, (request) => request.headers["x-test-user"] as string);
+  const address = "alice@amadeus.example.net";
+  const claims = `${mailboxPath}/claims`;
+  const owner = { "x-test-user": "owner" };
+  const post = (url: string, payload: object, headers?: typeof owner) =>
+    app.inject({ method: "POST", url, payload, headers });
+  const begin = () => post(claims, { address: address.toUpperCase() }, owner);
+  const confirm = (code: string, headers = owner) =>
+    post(`${claims}/confirm`, { address, code }, headers);
+  const latestCode = () => {
+    const [url, request] = fetcher.mock.lastCall!;
+    expect(url).toBe("https://api.resend.com/emails");
+    const body = JSON.parse(String(request?.body));
+    expect(body).toMatchObject({ from: "verify@mail.example.com", to: [address] });
+    return body.text.match(/\b\d{8}\b/)[0] as string;
+  };
+  try {
+    expect((await post(claims, { address })).statusCode).toBe(401);
+    expect((await post(claims, { address: "alice@example.org" }, owner)).statusCode).toBe(400);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect((await begin()).json()).toEqual({ address });
+    const initialCode = latestCode();
+    expect((await begin()).statusCode).toBe(429);
+    const listed = await app.inject({ url: mailboxPath, headers: owner });
+    expect(listed.json()).toMatchObject({ canClaim: true, pendingClaim: address, addresses: [] });
+    expect(listed.body).not.toContain(initialCode);
+    const early = event([address]);
+    store.receive(Buffer.from(early), signed(early));
+    expect((await confirm(initialCode, { "x-test-user": "other" })).statusCode).toBe(400);
+    expect((await confirm("incorrect")).statusCode).toBe(400);
+    expect(store.listAddresses("owner")).toEqual([]);
+    time += 10 * 60_000;
+    expect((await confirm(initialCode)).statusCode).toBe(400);
+    expect((await begin()).statusCode).toBe(200);
+    const confirmed = await confirm(latestCode());
+    expect(confirmed.statusCode).toBe(201);
+    expect(confirmed.json().address.address).toBe(address);
+    expect(store.listMessages("owner", confirmed.json().address.id)).toEqual([]);
+    expect((await confirm(latestCode())).statusCode).toBe(400);
+    expect((await post(claims, { address }, { "x-test-user": "other" })).statusCode).toBe(409);
+    expect(store.listAddresses("other")).toEqual([]);
+  } finally {
+    await app.close();
+    store.close();
+  }
+});
+
 it("routes messages to existing addresses and deletes them while Resend is disabled", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mirror-mailbox-"));
   const file = join(dir, "mail.sqlite");
@@ -189,6 +255,7 @@ it("routes messages to existing addresses and deletes them while Resend is disab
     try {
       expect((await app.inject({ url: mailboxPath })).json()).toEqual({
         enabled: false,
+        domains: [],
         addresses: [],
       });
       expect((await app.inject({ method: "POST", url: RESEND_WEBHOOK_PATH })).statusCode).toBe(404);

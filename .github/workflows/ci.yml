@@ -74,10 +74,11 @@ jobs:
         run: pnpm smoke:compose
         env:
           CHROME_PATH: /usr/bin/google-chrome
-      - name: Test proxy and CPA management on desktop and phone
+      - name: Test proxy, CPA and user management on desktop and phone
         run: |
           pnpm --filter @mirror/viewer... run build
           pnpm test:network-ui
+          pnpm test:users-ui
         env:
           CHROME_PATH: /usr/bin/google-chrome
       - name: Test Apple account form example submission

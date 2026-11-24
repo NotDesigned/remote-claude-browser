@@ -11,6 +11,9 @@ interface MailboxAddresses {
   enabled: boolean;
   addresses: MailboxAddress[];
   domain?: string;
+  domains?: string[];
+  canClaim?: boolean;
+  pendingClaim?: string;
 }
 
 export interface MailboxMessage {
@@ -34,8 +37,14 @@ const userMailboxesRoute = (userId: string) => `/api/users/${encodeURIComponent(
 
 export const mailboxApi = {
   addresses: () => apiRequest<MailboxAddresses>(route),
-  create: (details: { label: string; localPart?: string }, fetcher?: typeof fetch) =>
-    apiRequest<{ address: MailboxAddress }>(route, "POST", details, fetcher),
+  create: (
+    details: { label: string; localPart?: string; domain?: string },
+    fetcher?: typeof fetch,
+  ) => apiRequest<{ address: MailboxAddress }>(route, "POST", details, fetcher),
+  startClaim: (address: string) =>
+    apiRequest<{ address: string }>(`${route}/claims`, "POST", { address }),
+  confirmClaim: (address: string, code: string) =>
+    apiRequest<{ address: MailboxAddress }>(`${route}/claims/confirm`, "POST", { address, code }),
   remove: (id: string) => apiRequest<void>(`${route}/${encodeURIComponent(id)}`, "DELETE"),
   messages: (addressId: string) =>
     apiRequest<{ messages: MailboxMessage[] }>(messagesRoute(addressId)),

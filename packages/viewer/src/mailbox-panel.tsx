@@ -1,7 +1,13 @@
 import { useEffect, useState } from "preact/hooks";
 import { writeLocalClipboard } from "./chrome/clipboard";
 import { useDialog } from "./dialog";
-import { mailboxApi, mailboxLabel, type MailboxContents, type MailboxMessage } from "./mailboxes";
+import {
+  mailboxApi,
+  mailboxLabel,
+  type MailboxAddress,
+  type MailboxContents,
+  type MailboxMessage,
+} from "./mailboxes";
 import "./user-panel.css";
 import "./mailbox-panel.css";
 
@@ -11,8 +17,10 @@ export function MailboxPanel({ onClose }: { onClose(): void }) {
   const panel = useDialog(true, onClose);
   const [mailboxes, setMailboxes] = useState<Awaited<ReturnType<typeof mailboxApi.addresses>>>();
   const [addressId, setAddressId] = useState("");
-  const [creating, setCreating] = useState(false);
+  const [addressForm, setAddressForm] = useState<"create" | "claim">();
+  const [claimAddress, setClaimAddress] = useState("");
   const [localPart, setLocalPart] = useState("");
+  const [selectedDomain, setSelectedDomain] = useState("");
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [messages, setMessages] = useState<MailboxMessage[]>();
@@ -20,6 +28,8 @@ export function MailboxPanel({ onClose }: { onClose(): void }) {
   const [contents, setContents] = useState<MailboxContents>();
   const [error, setError] = useState("");
   const address = mailboxes?.addresses.find((item) => item.id === addressId);
+  const domains = mailboxes?.domains ?? [];
+  const domain = selectedDomain || mailboxes?.domain;
 
   const selectAddress = (selected: string) => {
     setAddressId(selected);
@@ -77,23 +87,27 @@ export function MailboxPanel({ onClose }: { onClose(): void }) {
     };
   }, [addressId, selectedMessage]);
 
-  const createAddress = async (label: string) => {
-    const current = mailboxes!;
+  const save = async (operation: () => Promise<void>) => {
     setSaving(true);
     setError("");
     try {
-      const { address } = await mailboxApi.create({
-        label,
-        ...(localPart && { localPart }),
-      });
-      setMailboxes({ ...current, addresses: [...current.addresses, address] });
-      selectAddress(address.id);
-      setCreating(false);
+      await operation();
     } catch (failure) {
       setError((failure as Error).message);
     } finally {
       setSaving(false);
     }
+  };
+
+  const addAddress = (added: MailboxAddress) => {
+    const current = mailboxes!;
+    setMailboxes({
+      ...current,
+      addresses: [...current.addresses, added],
+      pendingClaim: addressForm === "claim" ? undefined : current.pendingClaim,
+    });
+    selectAddress(added.id);
+    setAddressForm(undefined);
   };
 
   const deleteAddress = async () => {
@@ -103,19 +117,20 @@ export function MailboxPanel({ onClose }: { onClose(): void }) {
       !window.confirm(`删除 ${address.address}？工作台将移除该地址的所有邮件记录，并停止为它收件。`)
     )
       return;
-    setSaving(true);
-    setError("");
-    try {
+    await save(async () => {
       await mailboxApi.remove(address.id);
       const remaining = mailboxes.addresses.filter((item) => item.id !== address.id);
       setMailboxes({ ...mailboxes, addresses: remaining });
       selectAddress(remaining[0]?.id ?? "");
-    } catch (failure) {
-      setError((failure as Error).message);
-    } finally {
-      setSaving(false);
-    }
+    });
   };
+
+  const sendClaimCode = (target: string) =>
+    save(async () => {
+      const { address } = await mailboxApi.startClaim(target);
+      setClaimAddress(address);
+      setMailboxes((current) => ({ ...current!, pendingClaim: address }));
+    });
 
   return (
     <div class="user-panel-backdrop">
@@ -168,37 +183,57 @@ export function MailboxPanel({ onClose }: { onClose(): void }) {
                     <p class="mailbox-address">{address.address}</p>
                   </>
                 )}
-                {creating ? (
+                {addressForm === "create" ? (
                   <form
                     class="mailbox-create"
                     onSubmit={(event) => {
                       event.preventDefault();
-                      void createAddress(String(new FormData(event.currentTarget).get("label")));
+                      const label = String(new FormData(event.currentTarget).get("label"));
+                      void save(async () => {
+                        const { address } = await mailboxApi.create({
+                          label,
+                          domain,
+                          ...(localPart && { localPart }),
+                        });
+                        addAddress(address);
+                      });
                     }}
                   >
-                    {mailboxes.domain && (
-                      <>
-                        <label>
-                          地址名称（选填）
-                          <input
-                            name="localPart"
-                            placeholder="留空生成双词地址"
-                            title="使用英文字母、数字和中间的连字符"
-                            pattern="[A-Za-z0-9](?:[A-Za-z0-9\-]{0,56}[A-Za-z0-9])?"
-                            maxLength={58}
-                            value={localPart}
-                            disabled={saving}
-                            autoCapitalize="none"
-                            spellcheck={false}
-                            onInput={(event) => setLocalPart(event.currentTarget.value)}
-                          />
-                        </label>
-                        {localPart && (
-                          <p class="mailbox-address user-panel-muted">
-                            inbox-{localPart.toLowerCase()}@{mailboxes.domain}
-                          </p>
-                        )}
-                      </>
+                    {domains.length > 1 && (
+                      <label>
+                        收件域名
+                        <select
+                          value={domain}
+                          disabled={saving}
+                          onChange={(event) => setSelectedDomain(event.currentTarget.value)}
+                        >
+                          {domains.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                    <label>
+                      地址名称（选填）
+                      <input
+                        name="localPart"
+                        placeholder="留空生成双词地址"
+                        title="使用英文字母、数字和中间的连字符"
+                        pattern="[A-Za-z0-9](?:[A-Za-z0-9\-]{0,56}[A-Za-z0-9])?"
+                        maxLength={58}
+                        value={localPart}
+                        disabled={saving}
+                        autoCapitalize="none"
+                        spellcheck={false}
+                        onInput={(event) => setLocalPart(event.currentTarget.value)}
+                      />
+                    </label>
+                    {localPart && (
+                      <p class="mailbox-address user-panel-muted">
+                        inbox-{localPart.toLowerCase()}@{domain}
+                      </p>
                     )}
                     <label>
                       地址备注（选填）
@@ -213,7 +248,93 @@ export function MailboxPanel({ onClose }: { onClose(): void }) {
                       <button type="submit" class="user-panel-save" disabled={saving}>
                         {saving ? "正在创建…" : "创建地址"}
                       </button>
-                      <button type="button" disabled={saving} onClick={() => setCreating(false)}>
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={() => setAddressForm(undefined)}
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </form>
+                ) : addressForm === "claim" ? (
+                  <form
+                    class="mailbox-create"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const fields = new FormData(event.currentTarget);
+                      if (!claimAddress) {
+                        void sendClaimCode(String(fields.get("address")));
+                        return;
+                      }
+                      void save(async () => {
+                        const { address } = await mailboxApi.confirmClaim(
+                          claimAddress,
+                          String(fields.get("code")),
+                        );
+                        addAddress(address);
+                      });
+                    }}
+                  >
+                    {claimAddress ? (
+                      <>
+                        <p class="mailbox-address user-panel-muted" role="status">
+                          在原邮箱或 Resend 收件页查看发往 {claimAddress} 的 8 位验证码。
+                        </p>
+                        <label>
+                          验证码
+                          <input
+                            name="code"
+                            inputMode="numeric"
+                            autoComplete="one-time-code"
+                            pattern="[0-9]{8}"
+                            maxLength={8}
+                            disabled={saving}
+                            required
+                          />
+                        </label>
+                      </>
+                    ) : (
+                      <label>
+                        已有邮箱地址
+                        <input
+                          name="address"
+                          type="email"
+                          autoComplete="email"
+                          placeholder={`name@${domain}`}
+                          maxLength={254}
+                          disabled={saving}
+                          required
+                        />
+                      </label>
+                    )}
+                    <div class="user-panel-actions">
+                      <button type="submit" class="user-panel-save" disabled={saving}>
+                        {claimAddress ? "确认绑定" : "发送验证码"}
+                      </button>
+                      {claimAddress && (
+                        <>
+                          <button
+                            type="button"
+                            disabled={saving}
+                            onClick={() => void sendClaimCode(claimAddress)}
+                          >
+                            重发验证码
+                          </button>
+                          <button
+                            type="button"
+                            disabled={saving}
+                            onClick={() => setClaimAddress("")}
+                          >
+                            修改地址
+                          </button>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={() => setAddressForm(undefined)}
+                      >
                         取消
                       </button>
                     </div>
@@ -227,10 +348,23 @@ export function MailboxPanel({ onClose }: { onClose(): void }) {
                         disabled={saving}
                         onClick={() => {
                           setLocalPart("");
-                          setCreating(true);
+                          setAddressForm("create");
                         }}
                       >
                         新建地址
+                      </button>
+                    )}
+                    {mailboxes.canClaim && (
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={() => {
+                          setError("");
+                          setClaimAddress(mailboxes.pendingClaim ?? "");
+                          setAddressForm("claim");
+                        }}
+                      >
+                        添加已有地址
                       </button>
                     )}
                     {address && (

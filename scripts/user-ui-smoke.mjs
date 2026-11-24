@@ -27,8 +27,10 @@ const regular = {
 };
 const users = new Map([admin, regular].map((user) => [user.id, { ...user }]));
 const mailDomain = "fixture.test";
+const secondMailDomain = "inbox.example.test";
 const existingAddress = "existing@fixture.test";
 const mailboxes = new Map();
+let pendingMailbox;
 const checks = {};
 const pageErrors = [];
 let lastPasswordChanged = false;
@@ -99,17 +101,44 @@ const server = createServer(async (request, response) => {
       const owner = userId ?? current.id;
       const addresses = mailboxes.get(owner) ?? [];
       if (request.method === "GET")
-        return json(response, 200, { enabled: true, addresses, domain: mailDomain });
+        return json(response, 200, {
+          enabled: true,
+          addresses,
+          domain: mailDomain,
+          domains: [mailDomain, secondMailDomain],
+          canClaim: true,
+          pendingClaim: pendingMailbox,
+        });
       const body = await bodyJson(request);
+      const domain = body.domain ?? mailDomain;
       const address = {
         id: `address-${addresses.length}`,
         address: userId
           ? body.address
-          : `${body.localPart ? `inbox-${body.localPart.toLowerCase()}` : "amber-dawn"}@${mailDomain}`,
+          : `${body.localPart ? `inbox-${body.localPart.toLowerCase()}` : "amber-dawn"}@${domain}`,
         label: body.label ?? "",
         createdAt: 1,
       };
       mailboxes.set(owner, [...addresses, address]);
+      return json(response, 201, { address });
+    }
+    if (url.pathname === "/api/me/mailboxes/claims") {
+      pendingMailbox = (await bodyJson(request)).address;
+      return json(response, 200, { address: pendingMailbox });
+    }
+    if (url.pathname === "/api/me/mailboxes/claims/confirm") {
+      const body = await bodyJson(request);
+      if (body.address !== pendingMailbox || body.code !== "12345678")
+        return json(response, 400, { error: "验证码不正确" });
+      const addresses = mailboxes.get(current.id) ?? [];
+      const address = {
+        id: `address-${addresses.length}`,
+        address: pendingMailbox,
+        label: "",
+        createdAt: 1,
+      };
+      pendingMailbox = undefined;
+      mailboxes.set(current.id, [...addresses, address]);
       return json(response, 201, { address });
     }
     if (/^\/api\/me\/mailboxes\/[^/]+\/messages$/.test(url.pathname))
@@ -450,15 +479,34 @@ try {
   const mailboxAddress = inbox.locator(".mailbox-address");
   await mailboxAddress.filter({ hasText: existingAddress }).waitFor();
   await inbox.getByRole("button", { name: "新建地址", exact: true }).click();
+  const domain = inbox.getByRole("combobox", { name: "收件域名", exact: true });
+  assert.equal(await domain.inputValue(), mailDomain);
+  await domain.selectOption(secondMailDomain);
   await inbox.getByLabel("地址名称（选填）", { exact: true }).fill("Mixed-Case");
-  await mailboxAddress.filter({ hasText: "inbox-mixed-case@fixture.test" }).waitFor();
+  const customAddress = `inbox-mixed-case@${secondMailDomain}`;
+  await mailboxAddress.filter({ hasText: customAddress }).waitFor();
   await inbox.getByRole("button", { name: "创建地址", exact: true }).click();
   await inbox.getByRole("button", { name: "新建地址", exact: true }).waitFor();
-  await mailboxAddress.filter({ hasText: "inbox-mixed-case@fixture.test" }).waitFor();
-  assert.equal(mailboxes.get(regular.id)[1].address, "inbox-mixed-case@fixture.test");
+  await mailboxAddress.filter({ hasText: customAddress }).waitFor();
+  assert.equal(mailboxes.get(regular.id)[1].address, customAddress);
   await inbox.getByRole("button", { name: "新建地址", exact: true }).click();
+  await domain.selectOption(mailDomain);
   await inbox.getByRole("button", { name: "创建地址", exact: true }).click();
   await mailboxAddress.filter({ hasText: "amber-dawn@fixture.test" }).waitFor();
+  await inbox.getByRole("button", { name: "添加已有地址", exact: true }).click();
+  const claimedAddress = `alice@${secondMailDomain}`;
+  await inbox.getByLabel("已有邮箱地址", { exact: true }).fill(claimedAddress);
+  await inbox.getByRole("button", { name: "发送验证码", exact: true }).click();
+  const code = inbox.getByLabel("验证码", { exact: true });
+  await code.fill("00000001");
+  await inbox.getByRole("button", { name: "确认绑定", exact: true }).click();
+  await inbox.getByRole("alert").getByText("验证码不正确").waitFor();
+  await code.fill("12345678");
+  await inbox.getByRole("button", { name: "确认绑定", exact: true }).click();
+  await inbox.getByRole("button", { name: "添加已有地址", exact: true }).waitFor();
+  await mailboxAddress.filter({ hasText: claimedAddress }).waitFor();
+  assert.equal(mailboxes.get(regular.id).at(-1).address, claimedAddress);
+  checks.existingMailboxVerification = true;
   await inbox.getByRole("button", { name: "关闭", exact: true }).click();
   checks.assignedAndSelfServiceMailboxes = true;
   await reader.getByRole("button", { name: "工作台", exact: true }).click();

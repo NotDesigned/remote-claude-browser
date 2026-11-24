@@ -199,6 +199,7 @@ export async function startClientGateway(
     apiKey: process.env.RESEND_API_KEY,
     webhookSecret: process.env.RESEND_WEBHOOK_SECRET,
     domain: process.env.RESEND_RECEIVING_DOMAIN,
+    verificationFrom: process.env.RESEND_VERIFICATION_FROM,
   });
   userStore.claimLegacyProfiles(
     accountStore.all().map((record) => record.id),
@@ -2121,6 +2122,7 @@ export async function startClientGateway(
     return reply.header("cache-control", "no-store").send({
       enabled: mailbox.enabled,
       domain: mailbox.domain,
+      domains: mailbox.domains,
       addresses: mailbox.listAddresses(user.id),
     });
   });

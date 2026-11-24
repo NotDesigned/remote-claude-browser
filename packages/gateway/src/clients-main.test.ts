@@ -192,6 +192,7 @@ beforeEach(() => {
   vi.stubEnv("RESEND_API_KEY", undefined);
   vi.stubEnv("RESEND_WEBHOOK_SECRET", undefined);
   vi.stubEnv("RESEND_RECEIVING_DOMAIN", undefined);
+  vi.stubEnv("RESEND_VERIFICATION_FROM", undefined);
   vi.stubEnv("GATEWAY_PORT", "3000");
 });
 
@@ -1086,6 +1087,7 @@ describe("multi-user management routes", () => {
     expect((await api(app, admin, "GET", "/api/me/mailboxes")).json()).toEqual({
       enabled: true,
       domain: "mail.example.com",
+      domains: ["mail.example.com"],
       addresses: [],
     });
     expect(hooks.launch).not.toHaveBeenCalled();
@@ -1094,14 +1096,14 @@ describe("multi-user management routes", () => {
   it("allocates a named mailbox only to its owner and restricts exact address assignment to admins", async () => {
     vi.stubEnv("RESEND_API_KEY", "re_test");
     vi.stubEnv("RESEND_WEBHOOK_SECRET", `whsec_${Buffer.from("fixture-key").toString("base64")}`);
-    vi.stubEnv("RESEND_RECEIVING_DOMAIN", "mail.example.com");
+    vi.stubEnv("RESEND_RECEIVING_DOMAIN", "mail.example.com, Inbox.Example.Net");
     const { app } = await fixture();
     const admin = await login(app);
     const bob = await createBob(app, admin);
     const bobCookie = await login(app, "bob", BOB_PASSWORD);
     const personal = "/api/me/mailboxes";
     const managed = `/api/users/${bob.id}/mailboxes`;
-    const existing = { address: "Existing@MAIL.EXAMPLE.COM", label: "原有邮箱" };
+    const existing = { address: "Existing@INBOX.EXAMPLE.NET", label: "原有邮箱" };
     expect((await api(app, bobCookie, "POST", managed, existing)).statusCode).toBe(403);
     expect((await api(app, bobCookie, "GET", managed)).statusCode).toBe(403);
     expect(
@@ -1111,6 +1113,16 @@ describe("multi-user management routes", () => {
     expect(created.statusCode).toBe(201);
     const custom = created.json().address;
     expect(custom.address).toBe("inbox-project-1@mail.example.com");
+    const secondary = await api(app, bobCookie, "POST", personal, {
+      localPart: "Project-1",
+      domain: "inbox.example.net",
+    });
+    expect(secondary.statusCode).toBe(201);
+    const secondaryAddress = secondary.json().address;
+    expect(secondaryAddress.address).toBe("inbox-project-1@inbox.example.net");
+    expect(
+      (await api(app, bobCookie, "POST", personal, { domain: "other.example.com" })).statusCode,
+    ).toBe(400);
     expect((await api(app, admin, "POST", personal, { localPart: "project-1" })).statusCode).toBe(
       409,
     );
@@ -1120,13 +1132,13 @@ describe("multi-user management routes", () => {
     const assigned = await api(app, admin, "POST", managed, existing);
     expect(assigned.statusCode).toBe(201);
     const mailbox = assigned.json().address;
-    expect(mailbox).toMatchObject({ address: "existing@mail.example.com", label: existing.label });
+    expect(mailbox).toMatchObject({ address: "existing@inbox.example.net", label: existing.label });
     expect((await api(app, admin, "POST", managed, existing)).statusCode).toBe(409);
     expect((await api(app, bobCookie, "GET", personal)).json().addresses).toEqual(
-      expect.arrayContaining([custom, mailbox]),
+      expect.arrayContaining([custom, secondaryAddress, mailbox]),
     );
     expect((await api(app, admin, "GET", managed)).json().addresses).toEqual(
-      expect.arrayContaining([custom, mailbox]),
+      expect.arrayContaining([custom, secondaryAddress, mailbox]),
     );
     const messages = `${personal}/${mailbox.id}/messages`;
     expect((await api(app, admin, "GET", messages)).statusCode).toBe(404);
@@ -1140,6 +1152,7 @@ describe("multi-user management routes", () => {
     const admin = await login(app);
     expect((await api(app, admin, "GET", "/api/me/mailboxes")).json()).toEqual({
       enabled: false,
+      domains: [],
       addresses: [],
     });
     const me = (await api(app, admin, "GET", "/api/me")).json().user;
