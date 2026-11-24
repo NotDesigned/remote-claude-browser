@@ -48,8 +48,7 @@ when dependencies or base images change.
 The optional CPA image carries the unmodified [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
 8.0.68 executable, copied from the upstream image pinned by digest in `deploy/Dockerfile.cpa`.
 It is MIT-licensed; its license is retained in `deploy/cpa.LICENSE` and in the image at
-`/usr/share/doc/cliproxyapi/LICENSE`. The optional Xray sidecar retains Xray's MPL-2.0 license as
-described above. The instance's static assets remain in a separate volume; the workbench
+`/usr/share/doc/cliproxyapi/LICENSE`. The instance's static assets remain in a separate volume; the workbench
 serves the pinned management panel described below.
 
 ## CLI Proxy API Management Center

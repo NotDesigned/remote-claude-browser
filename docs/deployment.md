@@ -163,13 +163,11 @@ docker compose pull
 docker compose up -d
 ```
 
-### 可选 CPA 实例与旧面板
+### 可选 CPA 实例
 
 `compose.runtime.yml` 中的 CPA broker 为工作台用户建立独立实例，由「代理与 API」管理授权、每凭据代理和外部 Key。新调用统一使用浏览器网关的 `/v1/*`，不需要另外公开 CPA 管理端口。
 
-原 `compose.cpa.yml` 和 `compose.cpa.https.yml` 的独立服务继续保留。它使用 `/management.html` 面板和部署级 `CPA_API_KEY`，不会自动导入到新的用户实例。未迁移的同入口部署可以增加 `compose.runtime.https.yml` 按新 Key 前缀临时分流。旧授权和调用 Key 迁入指定用户私有实例后，应把整个 `/v1/*` 交给工作台按 Key 归属路由。完整说明见 [CPA 部署](cpa.md)。
-
-迁移后，入口还需将 `/management.html` 和 `/api/cpa/instances/*` 转发到工作台。阻止公开访问原始管理接口的规则只匹配 `/v0/management`、`/v8/management` 及其子路径。
+入口需将 `/v1/*`、`/management.html` 和 `/api/cpa/instances/*` 转发到工作台。阻止公开访问原始管理接口的规则只匹配 `/v0/management`、`/v8/management` 及其子路径。完整说明见 [CPA 部署](cpa.md)。
 
 ## 收件箱
 

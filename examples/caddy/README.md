@@ -56,6 +56,6 @@ node --test examples/caddy/ingress.test.mjs
 
 ## 已有 Compose 部署
 
-根目录的 `compose.https.yml`、`compose.cpa.https.yml` 以及 `client/` 保留原路径，供已有部署和升级使用。不要为了采用这些示例直接删除现有 `.env` 中的 `COMPOSE_FILE`，也不要对已有数据卷执行 `down --volumes`。如需改变入口拓扑，先建立新通道并验证访问，再由部署者切换入口配置。
+根目录的 `compose.https.yml` 以及 `client/` 保留原路径，供已有部署和升级使用。不要为了采用这些示例直接删除现有 `.env` 中的 `COMPOSE_FILE`，也不要对已有数据卷执行 `down --volumes`。如需改变入口拓扑，先建立新通道并验证访问，再由部署者切换入口配置。
 
-CPA 的现有同入口路由见 [`docs/cpa.md`](../../docs/cpa.md)。这些浏览器入口示例不会自动发布 CPA 面板或 API。
+CPA 的入口路由见 [`docs/cpa.md`](../../docs/cpa.md)。这些浏览器入口示例不会自动发布 CPA 面板或 API。
