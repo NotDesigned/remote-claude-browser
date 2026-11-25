@@ -31,6 +31,7 @@ import {
   type CanvasRtcOptions,
 } from "./media/canvas-rtc";
 import { REPLAY_ANCHOR_RULES } from "./replay-anchors";
+import { closeReplayDocument } from "./replay-document";
 import { REPLAY_THUMBNAIL_RULES } from "./replay-thumbnails";
 import { createCanvasCompositor, type CanvasCompositor } from "./media/canvas";
 import { workingMarkReplay } from "./working-mark";
@@ -549,9 +550,10 @@ export function createMirror(opts: MirrorOpts): Mirror {
         ],
       });
 
-      // rrweb opens the replay document during rebuild. Closing it starts SVG animation timelines.
+      // rrweb opens the replay document during rebuild. Closing it starts SVG animation timelines;
+      // the page's doctype goes to the parser first so it keeps the page's standards mode.
       const iframe = replayer.iframe;
-      replayer.on("fullsnapshot-rebuilded", () => iframe.contentDocument?.close());
+      replayer.on("fullsnapshot-rebuilded", () => closeReplayDocument(iframe.contentDocument));
       cancelRestore = armRestore(
         replayer,
         restorePoint,

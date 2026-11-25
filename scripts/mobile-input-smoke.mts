@@ -41,9 +41,13 @@ const workingMark = `<span data-testid="TurnStatusClayMark" style="display:block
     {duration: 1000, easing: "steps(8, jump-none)", fill: "forwards"}
   );
 </script>`;
+// The code page's shape: a scroll pane whose messages take at least its height, and the composer
+// under them. In quirks mode that percentage resolves against the pane, so the pane scrolls past
+// the composer by the composer's height; the page itself is in standards mode and cannot.
+const codePane = `<div id="code-pane" style="position:absolute;left:20px;top:620px;width:280px;height:200px;overflow-y:auto"><div><div style="min-height:100%">Conversation</div><div style="height:60px;background:#ccc">Composer</div></div></div>`;
 const fixture = remoteHtml.replace(
   "</body>",
-  `<div style="position:absolute;top:560px">${thinkingIndicator}${workingMark}</div></body>`,
+  `<div style="position:absolute;top:560px">${thinkingIndicator}${workingMark}</div>${codePane}</body>`,
 );
 const remoteUrl = "https://claude.ai/remote-mirror-fixture";
 const server = createServer(async (request, response) => {
@@ -374,6 +378,13 @@ try {
     await cdp.detach();
     await settle();
   };
+  const paneOverscroll = (pane: Element) => pane.scrollHeight - pane.clientHeight;
+  checks.replayKeepsStandardsMode = await local
+    .locator("#code-pane")
+    .evaluate((pane) => pane.ownerDocument.compatMode === "CSS1Compat");
+  checks.noScrollBelowComposer =
+    (await local.locator("#code-pane").evaluate(paneOverscroll)) ===
+    (await remote.locator("#code-pane").evaluate(paneOverscroll));
   await local.locator("#tap").tap();
   await settle();
   checks.domTapExactlyOnce = await remote.evaluate(() => (window as any).tapCount === 1);
@@ -606,7 +617,8 @@ try {
     await remote.evaluate(() => window.scrollTo(0, 0));
     await local.locator("body").evaluate((el) => el.ownerDocument.defaultView!.scrollTo(0, 0));
     await settle();
-    await page.locator('[data-view-mode="px"]').click();
+    // A phone shows only the current view's button; tapping it switches to the other view.
+    await page.locator('[data-view-mode="dom"][aria-pressed="true"]').click();
     await page.locator("#mirror-host canvas").waitFor();
     await controlWork;
     let canvasRect = (await page.locator("#mirror-host canvas").boundingBox())!;
@@ -644,7 +656,7 @@ try {
     );
   }
   if (!baseline) {
-    await page.locator('[data-view-mode="dom"]').click();
+    await page.locator('[data-view-mode="px"][aria-pressed="true"]').click();
     await page.waitForFunction(
       () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
     );
