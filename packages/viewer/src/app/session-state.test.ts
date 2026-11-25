@@ -27,6 +27,13 @@ describe("client session state", () => {
     });
   });
 
+  it("starts a fresh tab in the picker, not in a session it is about to leave", () => {
+    expect(initialSession("session", false).phase).toBe("picking");
+    expect(initialSession("session", true).phase).toBe("starting");
+    expect(initialSession("closed", false).phase).toBe("closed");
+    expect(initialSession("fixture", false).phase).toBe("ready");
+  });
+
   it("picks, starts and runs", () => {
     const picking = run(initialSession("session"), { type: "pick-needed" });
     expect(picking.phase).toBe("picking");

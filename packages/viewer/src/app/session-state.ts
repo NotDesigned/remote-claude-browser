@@ -42,10 +42,25 @@ export type SessionAction =
   /** Another page took the session over. */
   | { type: "replaced" };
 
-/** The phase a page starts in, from its address (see `clientPageMode`). */
-export function initialSession(pageMode: ReturnType<typeof clientPageMode>): SessionState {
+/**
+ * The phase a page starts in, from its address (see `clientPageMode`) and whether it comes back to
+ * a session it had (`resumesClientSession`). A fresh tab starts in the picker: starting in the
+ * session's view and switching a moment later showed the session bar first, whose menu then
+ * vanished under whoever reached for it.
+ */
+export function initialSession(
+  pageMode: ReturnType<typeof clientPageMode>,
+  resuming = true,
+): SessionState {
   return {
-    phase: pageMode === "closed" ? "closed" : pageMode === "fixture" ? "ready" : "starting",
+    phase:
+      pageMode === "closed"
+        ? "closed"
+        : pageMode === "fixture"
+          ? "ready"
+          : resuming
+            ? "starting"
+            : "picking",
     session: null,
     error: null,
     endFailure: false,

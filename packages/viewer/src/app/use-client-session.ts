@@ -30,9 +30,16 @@ export interface ClientSessionControl {
 }
 
 export function useClientSession(): ClientSessionControl {
-  const [state, dispatch] = useReducer(sessionReducer, undefined, () =>
-    initialSession(clientPageMode(new URL(window.location.href))),
-  );
+  const [state, dispatch] = useReducer(sessionReducer, undefined, () => {
+    const url = new URL(window.location.href);
+    let resuming = false;
+    try {
+      resuming = resumesClientSession(url, window.sessionStorage);
+    } catch {
+      // As below: the picker is still usable when sessionStorage itself is blocked.
+    }
+    return initialSession(clientPageMode(url), resuming);
+  });
   const mountedRef = useRef(false);
   const endControllerRef = useRef<AbortController | null>(null);
   useEffect(() => {
