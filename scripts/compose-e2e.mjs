@@ -17,8 +17,28 @@ assert.ok(
 
 const fixturePage = (html) => `${fixtureOrigin}/?html=${Buffer.from(html).toString("base64url")}`;
 
+/** What the mirror shows of an element, and how far each of its frames is scrolled. */
+const describeMirror = (page, id) =>
+  page
+    .evaluate((id) => {
+      const frames = [];
+      let found = "absent";
+      const visit = (frame, path) => {
+        const doc = frame.contentDocument;
+        if (!doc) return frames.push(`${path}:no document`);
+        frames.push(`${path}:${Math.round(doc.defaultView?.scrollY ?? -1)}`);
+        const node = doc.getElementById(id);
+        if (node) found = JSON.stringify(node.textContent);
+        doc.querySelectorAll("iframe").forEach((child, index) => visit(child, `${path}.${index}`));
+      };
+      const root = document.querySelector("#mirror-host .mirror-stage:not([data-parked]) iframe");
+      if (root) visit(root, "top");
+      return `#${id} is ${found}; frames scrolled to ${frames.join(" ")}`;
+    }, id)
+    .catch((error) => `the mirror could not be read: ${error.message}`);
+
 async function mirrorElement(page, id, { text, inset } = {}) {
-  const match = await page.waitForFunction(
+  const waiting = page.waitForFunction(
     ({ id, text, inset }) => {
       const root = document.querySelector("#mirror-host .mirror-stage:not([data-parked]) iframe");
       const visit = (frame, x, y, sx, sy) => {
@@ -50,6 +70,12 @@ async function mirrorElement(page, id, { text, inset } = {}) {
     { id, text, inset },
     { timeout: 15_000 },
   );
+  const match = await waiting.catch(async (error) => {
+    const wanted = text === undefined ? "" : ` showing ${JSON.stringify(text)}`;
+    throw new Error(`#${id}${wanted} not in the mirror: ${await describeMirror(page, id)}`, {
+      cause: error,
+    });
+  });
   return match.jsonValue();
 }
 
