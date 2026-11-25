@@ -475,6 +475,23 @@ try {
     const panel = page.getByRole("dialog", { name: "网络与接入", exact: true });
     assert.equal(await page.locator('#shell[data-picking="true"]').count(), 1);
     assert.equal(await page.locator(".network-panel-backdrop").isVisible(), true);
+    if (!mobile) {
+      // Arrow keys move between the tabs; a text drag that ends on the backdrop keeps it open.
+      const proxiesTab = page.getByRole("tab", { name: "代理来源", exact: true });
+      await proxiesTab.focus();
+      await page.keyboard.press("ArrowRight");
+      const cpaTab = page.getByRole("tab", { name: "CPA 授权与 Key", exact: true });
+      assert.equal(await cpaTab.getAttribute("aria-selected"), "true");
+      assert.equal(await cpaTab.evaluate((node) => node === document.activeElement), true);
+      await page.keyboard.press("ArrowLeft");
+      assert.equal(await proxiesTab.getAttribute("aria-selected"), "true");
+      const box = await panel.getByLabel("来源名称", { exact: true }).boundingBox();
+      await page.mouse.move(box.x + 8, box.y + box.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(4, 4, { steps: 4 });
+      await page.mouse.up();
+      assert.equal(await panel.isVisible(), true);
+    }
     await click(panel.getByRole("button", { name: "检查出口", exact: true }).first());
     await panel.getByText("203.0.113.30", { exact: true }).waitFor();
     await panel.getByLabel("来源名称", { exact: true }).fill(mobile ? "手机来源" : "桌面来源");
