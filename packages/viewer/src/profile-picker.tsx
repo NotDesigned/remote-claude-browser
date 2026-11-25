@@ -201,7 +201,7 @@ function ProfileCard(props: {
           </p>
           <code class="profile-remote-cc-command">remote-cc rcb use {account.id}</code>
           <p class="profile-remote-cc-note">
-            首次需要 <code>remote-cc login --rcb {account.id}</code>
+            首次需要 <code>remote-cc account login --rcb {account.id}</code>
             ，登录页会在这个配置的浏览器里打开。
           </p>
           <div class="profile-remote-cc-actions">

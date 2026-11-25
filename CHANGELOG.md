@@ -4,6 +4,8 @@ Notable changes to Remote Browser are recorded here.
 
 ## [Unreleased]
 
+- The remote-cc sign-in hint on configuration cards now reads `remote-cc account login --rcb PROFILE`, following remote-cc 0.7.0's noun-verb command names. Requires remote-cc ≥ 0.7.0 (older remote-cc does not know `account login`; run `remote-cc update`).
+
 ## [0.2.0] - 2026-11-25
 
 - Link [remote-cc](https://github.com/NotDesigned/remote-cc): `remote-cc --rcb PROFILE` runs Claude Code as a browser configuration's Claude account, with all its traffic through that configuration's proxy node and its exit time zone. Computers and egress hosts connect by approval in 代理与 API → remote-cc (egress hosts need an administrator); sessions get short-lived grants that only approved egress hosts can redeem for node configurations. Claude Code sign-ins open from a banner in the configuration's browser and the code returns to the terminal by itself. See docs/remote-cc.md.

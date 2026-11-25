@@ -30,7 +30,7 @@ remote-cc 服务器上的出口主机（rcc-egress，主机令牌）──兑换
 
 ## 一键登录 Claude Code
 
-`remote-cc login --rcb 配置` 在服务器上、经该配置的节点运行 `claude auth login`。remote-cc 从 Claude Code 的输出里识别出登录链接，交给工作台：
+`remote-cc account login --rcb 配置` 在服务器上、经该配置的节点运行 `claude auth login`。remote-cc 从 Claude Code 的输出里识别出登录链接，交给工作台：
 
 1. 这个配置的浏览器正开着时，工作台在其中新开一个标签页打开登录链接（优先用户正在看的那个会话）；没开时，用户打开这个配置后自动打开。
 2. 用户在这个浏览器里点「授权」。工作台从这个配置的页面地址里取得授权码，交还 remote-cc，remote-cc 把它输入 Claude Code。用户已经在终端里打过字时，改为打印授权码让用户自己粘贴，以免混在一起。
