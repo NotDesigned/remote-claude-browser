@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import vm from "node:vm";
 
-import { createIdleReaper, PAGE_GENERATING_EXPRESSION, type IdleSession } from "./idle-reaper";
+import {
+  createIdleReaper,
+  MAX_BUSY_OFFLINE_MS,
+  PAGE_GENERATING_EXPRESSION,
+  type IdleSession,
+} from "./idle-reaper";
 
 function setup() {
   let at = 0;
@@ -77,6 +82,41 @@ describe("idle workspace reaper", () => {
     h.time(60_001);
     await h.reaper.sweep();
     expect(h.release).toHaveBeenCalledOnce();
+  });
+
+  it("releases a page that never stops looking busy once it has been offline long enough", async () => {
+    const h = setup();
+    h.busy.mockResolvedValue(true);
+    await h.reaper.sweep();
+    h.time(MAX_BUSY_OFFLINE_MS - 1);
+    await h.reaper.sweep();
+    expect(h.release).not.toHaveBeenCalled();
+    const checks = h.busy.mock.calls.length;
+    h.time(MAX_BUSY_OFFLINE_MS);
+    await h.reaper.sweep();
+    expect(h.release).toHaveBeenCalledOnce();
+    // Past the limit nobody needs to ask the page.
+    expect(h.busy.mock.calls.length).toBe(checks);
+  });
+
+  it("never cuts a configured grace period short with the busy limit", async () => {
+    let at = 0;
+    const release = vi.fn(async () => undefined);
+    const reaper = createIdleReaper({
+      sessions: () => [{ sid: "s", token: 1 }],
+      isOnline: () => false,
+      isBusy: async () => true,
+      release,
+      now: () => at,
+      graceMs: 2 * MAX_BUSY_OFFLINE_MS,
+    });
+    await reaper.sweep();
+    at = 2 * MAX_BUSY_OFFLINE_MS - 1;
+    await reaper.sweep();
+    expect(release).not.toHaveBeenCalled();
+    at = 2 * MAX_BUSY_OFFLINE_MS;
+    await reaper.sweep();
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it("coalesces overlapping sweeps and does not run duplicate releases", async () => {
@@ -200,9 +240,9 @@ describe("PAGE_GENERATING_EXPRESSION", () => {
     getClientRects: () => [{}],
     getAttribute: (name: string) => (name === "aria-label" ? "Stop response" : null),
   };
-  const generating = (pathname: string, buttons: unknown[] = [button]) =>
+  const generating = (pathname: string, buttons: unknown[] = [button], hostname = "claude.ai") =>
     vm.runInNewContext(PAGE_GENERATING_EXPRESSION, {
-      location: { pathname },
+      location: { pathname, hostname },
       document: { querySelectorAll: () => buttons },
     }) as boolean;
 
@@ -212,5 +252,13 @@ describe("PAGE_GENERATING_EXPRESSION", () => {
     expect(generating("/code")).toBe(false);
     expect(generating("/code/session_abc")).toBe(false);
     expect(generating("/codex")).toBe(true);
+  });
+
+  it("looks only at claude.ai, where a stop button means a reply in progress", () => {
+    expect(generating("/chat/abc", [button], "www.claude.ai")).toBe(true);
+    // A video site's stop button, or a lookalike host, is no reason to keep a workspace.
+    expect(generating("/watch", [button], "video.example")).toBe(false);
+    expect(generating("/chat/abc", [button], "notclaude.ai")).toBe(false);
+    expect(generating("/chat/abc", [button], "claude.ai.example")).toBe(false);
   });
 });
