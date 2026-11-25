@@ -73,9 +73,19 @@ describe("SEC-2 roles", () => {
 
   it("tells every connection which viewer build is served", () => {
     const output = collector();
-    const roles = createRoleManager({ now: () => 1, build: "0.4.0+abc.1" });
+    let build: string | undefined = "0.4.0+abc.1";
+    const roles = createRoleManager({ now: () => 1, build: () => build });
     roles.connect({ sessionId: "s1", inviteRole: "driver", viewerId: "a", ...output });
     expect(output.messages[0]).toMatchObject({ t: "hello", build: "0.4.0+abc.1" });
+    // A viewer published while the gateway runs is what the next connection hears of.
+    build = "0.4.1+def.2";
+    const next = collector();
+    roles.connect({ sessionId: "s1", inviteRole: "driver", viewerId: "b", ...next });
+    expect(next.messages[0]).toMatchObject({ t: "hello", build: "0.4.1+def.2" });
+    build = undefined;
+    const none = collector();
+    roles.connect({ sessionId: "s1", inviteRole: "driver", viewerId: "c", ...none });
+    expect(none.messages[0]).not.toHaveProperty("build");
   });
 
   it("transfers input rights and reruns D7 with the new driver's viewport", async () => {
