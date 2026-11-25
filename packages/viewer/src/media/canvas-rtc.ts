@@ -153,7 +153,9 @@ export function createCanvasRtc(options: CanvasRtcOptions): CanvasRtc {
   const canvasIds = new WeakMap<object, number>();
   const videoIds = new WeakMap<object, number>();
   const live = new Map<number, LiveLane>();
-  const renderedStreams = new WeakSet<object>();
+  /** The element each stream is shown on. */
+  const renderedOn = new WeakMap<object, Element>();
+  const stoppedStreams = new WeakSet<object>();
   const observedPeers = new WeakSet<object>();
   const renderTrack = options.renderTrack ?? defaultRenderTrack;
   const video =
@@ -166,6 +168,7 @@ export function createCanvasRtc(options: CanvasRtcOptions): CanvasRtc {
   let disposed = false;
 
   const stopStream = (stream: MediaStream) => {
+    stoppedStreams.add(stream);
     const getTracks = (stream as MediaStream & { getTracks?: () => MediaStreamTrack[] }).getTracks;
     if (typeof getTracks !== "function") return;
     for (const track of getTracks.call(stream)) {
@@ -230,6 +233,22 @@ export function createCanvasRtc(options: CanvasRtcOptions): CanvasRtc {
     for (const [id, lane] of [...live]) downgrade(id, lane.stream, error);
   };
 
+  /**
+   * Whether to show a stream on this element, after ending what was shown for its node. A snapshot
+   * rebuilds the mirrored element, and the agent then announces the same stream again for its
+   * node: the stream moves to the new element and keeps its tracks.
+   */
+  const replaceLane = (id: number, target: Element, stream: MediaStream): boolean => {
+    if (renderedOn.get(stream) === target || stoppedStreams.has(stream)) return false;
+    renderedOn.set(stream, target);
+    const previous = live.get(id);
+    if (previous !== undefined) {
+      live.delete(id);
+      previous.cleanup();
+      if (previous.stream !== stream) stopStream(previous.stream);
+    }
+    return true;
+  };
   // The replay plugin still owns canvas discovery, signaling, stream/node association and peer
   // negotiation. Override only its final renderer so the canvas element is never replaced by a
   // video: retaining that exact node is what makes sampled snapshots a non-blank fallback.
@@ -237,13 +256,7 @@ export function createCanvasRtc(options: CanvasRtcOptions): CanvasRtc {
   plugin.startStream = (target: Element, stream: MediaStream) => {
     if (isVideo(target)) {
       const id = videoIds.get(target);
-      if (id === undefined || renderedStreams.has(stream)) return;
-      renderedStreams.add(stream);
-      const previous = live.get(id);
-      if (previous !== undefined) {
-        previous.cleanup();
-        stopStream(previous.stream);
-      }
+      if (id === undefined || !replaceLane(id, target, stream)) return;
       const lane: LiveLane = { stream, cleanup: () => {} };
       live.set(id, lane);
       try {
@@ -263,14 +276,7 @@ export function createCanvasRtc(options: CanvasRtcOptions): CanvasRtc {
       return;
     }
     const id = canvasIds.get(target);
-    if (id === undefined || renderedStreams.has(stream)) return;
-    renderedStreams.add(stream);
-
-    const previous = live.get(id);
-    if (previous !== undefined) {
-      previous.cleanup();
-      stopStream(previous.stream);
-    }
+    if (id === undefined || !replaceLane(id, target, stream)) return;
     const lane: LiveLane = { stream, cleanup: () => {} };
     live.set(id, lane);
     try {

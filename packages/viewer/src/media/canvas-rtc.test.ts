@@ -178,6 +178,65 @@ describe("canvas WebRTC upgrade lane", () => {
     expect(videoCompositor.dispose).toHaveBeenCalledOnce();
   });
 
+  it("moves a video's stream to the element a snapshot rebuilds, keeping its tracks", async () => {
+    const sent: CanvasRtcMessage[] = [];
+    const fakePlugin = {
+      peer: null,
+      initPlugin: vi.fn(() => ({ onBuild: vi.fn() }) as never),
+      signalReceive: vi.fn(),
+      startStream: vi.fn(),
+    };
+    const cleanups = [vi.fn(), vi.fn()];
+    const videoCompositor = {
+      onBuild: vi.fn(() => "rtc" as const),
+      startStream: vi
+        .fn<VideoCompositor["startStream"]>()
+        .mockReturnValueOnce(cleanups[0]!)
+        .mockReturnValueOnce(cleanups[1]!),
+      showBlocked: vi.fn(),
+      dispose: vi.fn(),
+    } satisfies VideoCompositor;
+    const rtc = createCanvasRtc({
+      send: (message) => sent.push(message),
+      createPlugin: () => fakePlugin,
+      videoCompositor,
+    });
+    const replayPlugin = rtc.replayPlugin as unknown as {
+      onBuild(node: Node, context: { id: number }): void;
+    };
+    const videoTrack = { kind: "video", stop: vi.fn() };
+    const stream = { getTracks: () => [videoTrack] } as unknown as MediaStream;
+    const first = { nodeType: 1, nodeName: "VIDEO" } as unknown as HTMLVideoElement;
+    const rebuilt = { nodeType: 1, nodeName: "VIDEO" } as unknown as HTMLVideoElement;
+
+    replayPlugin.onBuild(first, { id: 8 });
+    await Promise.resolve();
+    fakePlugin.startStream(first, stream);
+    // The same announcement again changes nothing.
+    fakePlugin.startStream(first, stream);
+    expect(videoCompositor.startStream).toHaveBeenCalledOnce();
+
+    replayPlugin.onBuild(rebuilt, { id: 8 });
+    await Promise.resolve();
+    expect(sent).toEqual([
+      { type: "video", id: 8 },
+      { type: "video", id: 8 },
+    ]);
+    fakePlugin.startStream(rebuilt, stream);
+
+    expect(cleanups[0]).toHaveBeenCalledOnce();
+    expect(videoCompositor.startStream).toHaveBeenLastCalledWith(
+      rebuilt,
+      stream,
+      expect.any(Function),
+    );
+    expect(videoTrack.stop).not.toHaveBeenCalled();
+    expect(rtc.isLive(8)).toBe(true);
+    rtc.dispose();
+    expect(cleanups[1]).toHaveBeenCalledOnce();
+    expect(videoTrack.stop).toHaveBeenCalledOnce();
+  });
+
   it("waits for source children appended in the same build before choosing direct playback", async () => {
     const h = setup();
     const sources: { getAttribute(name: string): string | null }[] = [];
