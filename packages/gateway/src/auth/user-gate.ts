@@ -2,6 +2,7 @@
 import type { FastifyInstance, FastifyReply, preHandlerAsyncHookHandler } from "fastify";
 import type { IncomingMessage } from "node:http";
 import { renderGatePage } from "./gate-page";
+import { isOwnOrigin } from "./origin";
 import { SESSION_COOKIE } from "./middleware";
 import { OidcError, type Oidc } from "./oidc";
 import { USER_SESSION_TTL_MS, UserStoreError, type FrontendUser, type UserStore } from "./users";
@@ -9,6 +10,8 @@ import { USER_SESSION_TTL_MS, UserStoreError, type FrontendUser, type UserStore 
 export const USER_COOKIE = "__Host-mirror-user";
 const FORM_TYPE = "application/x-www-form-urlencoded";
 const MAX_ATTEMPTS = 10000;
+/** One password check in flight per client IP, and a bound on scrypt work across all clients. */
+export const MAX_PENDING_LOGINS = 16;
 const RESET_MS = 15 * 60_000;
 interface Attempt {
   failures: number;
@@ -67,8 +70,13 @@ export function createUserGate(options: {
   let pendingLogins = 0;
   const currentUser = (request: IncomingMessage) =>
     options.store.session(userSessionToken(request));
-  const allowedOrigin = (origin: string | undefined, site: string | undefined) =>
-    site !== "cross-site" && (!origin || !options.publicOrigin || origin === options.publicOrigin);
+  // A request without Origin is not a browser's cross-site form or fetch. Otherwise the Origin
+  // must be the configured public origin, or this request's own host when none is configured.
+  const allowedOrigin = (
+    origin: string | undefined,
+    site: string | undefined,
+    host: string | undefined,
+  ) => site !== "cross-site" && (!origin || isOwnOrigin(origin, host, options.publicOrigin));
   const page = (reply: FastifyReply, code = 200, error?: string) =>
     reply
       .code(code)
@@ -108,6 +116,7 @@ export function createUserGate(options: {
       !allowedOrigin(
         request.headers.origin,
         request.headers["sec-fetch-site"] as string | undefined,
+        request.headers.host,
       )
     )
       return reply.code(403).send({ error: "请求来源不受信任" });
@@ -154,7 +163,10 @@ export function createUserGate(options: {
         async (request, reply) => {
           const at = now();
           const previous = attempts.get(request.ip);
-          if ((previous && (previous.pending || previous.until > at)) || pendingLogins >= 4) {
+          if (
+            (previous && (previous.pending || previous.until > at)) ||
+            pendingLogins >= MAX_PENDING_LOGINS
+          ) {
             reply.header("retry-after", "2");
             return page(reply, 429, "尝试次数较多，请稍后再试。");
           }

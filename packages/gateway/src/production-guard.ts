@@ -5,6 +5,7 @@
  *   arbitrary JavaScript inside the logged-in remote page. It must never reach production.
  * - Without a stable HMAC secret every restart invalidates device ownership tokens and orphans
  *   the persisted session ownership records. User logins are stored separately in SQLite.
+ * - MIRROR_PUBLIC_ORIGIN pins the WebSocket and form Origin checks to the one public origin.
  */
 const MIN_SECRET_LENGTH = 16;
 
@@ -19,7 +20,22 @@ export function productionConfigErrors(env: NodeJS.ProcessEnv): string[] {
       `MIRROR_AUTH_SECRET must be set to at least ${MIN_SECRET_LENGTH} characters when NODE_ENV=production (generate with: openssl rand -hex 32)`,
     );
   }
+  const publicOrigin = env.MIRROR_PUBLIC_ORIGIN?.replace(/\/+$/, "") ?? "";
+  if (!isOrigin(publicOrigin)) {
+    errors.push(
+      "MIRROR_PUBLIC_ORIGIN must be set to the exact origin people open (for example https://browser.example.com) when NODE_ENV=production; WebSocket and form origin checks depend on it",
+    );
+  }
   return errors;
+}
+
+function isOrigin(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "https:" || url.protocol === "http:") && url.origin === value;
+  } catch {
+    return false;
+  }
 }
 
 export function assertProductionSafe(env: NodeJS.ProcessEnv = process.env): void {

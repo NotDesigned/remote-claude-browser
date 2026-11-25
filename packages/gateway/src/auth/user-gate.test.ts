@@ -4,7 +4,7 @@ import type { IncomingMessage } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderGatePage } from "./gate-page";
 import { SESSION_COOKIE } from "./middleware";
-import { createUserGate, USER_COOKIE, userSessionToken } from "./user-gate";
+import { createUserGate, MAX_PENDING_LOGINS, USER_COOKIE, userSessionToken } from "./user-gate";
 import { createUserStore, USER_SESSION_TTL_MS, type FrontendUser, type UserStore } from "./users";
 import { registerSecurityHeaders } from "../security-headers";
 
@@ -280,7 +280,7 @@ describe("persisted front-end user gate", () => {
 
   it("bounds pending expensive password checks globally and per IP, then releases capacity", async () => {
     const { store, login } = await fixture();
-    const pending = Array.from({ length: 4 }, () => ({
+    const pending = Array.from({ length: MAX_PENDING_LOGINS }, () => ({
       entered: deferred<void>(),
       result: deferred<FrontendUser | null>(),
     }));
@@ -299,17 +299,55 @@ describe("persisted front-end user gate", () => {
       }
       const sameClient = await login();
       expect(sameClient.statusCode).toBe(429);
-      const fifthClient = await login("admin", PASSWORD, "203.0.113.5");
-      expect(fifthClient.statusCode).toBe(429);
-      expect(fifthClient.headers["retry-after"]).toBe("2");
-      expect(authenticate).toHaveBeenCalledTimes(4);
+      const nextClient = await login("admin", PASSWORD, "198.51.100.1");
+      expect(nextClient.statusCode).toBe(429);
+      expect(nextClient.headers["retry-after"]).toBe("2");
+      expect(authenticate).toHaveBeenCalledTimes(MAX_PENDING_LOGINS);
     } finally {
       for (const entry of pending) entry.result.resolve(null);
       const responses = await Promise.all(requests);
-      expect(responses.map((response) => response.statusCode)).toEqual([401, 401, 401, 401]);
+      expect(responses.map((response) => response.statusCode)).toEqual(
+        Array(MAX_PENDING_LOGINS).fill(401),
+      );
     }
     authenticate.mockResolvedValue(store.bootstrapAdmin);
-    expect((await login("admin", PASSWORD, "203.0.113.5")).statusCode).toBe(303);
+    expect((await login("admin", PASSWORD, "198.51.100.1")).statusCode).toBe(303);
+  });
+
+  it("lets other clients sign in while a few addresses hold slow password checks", async () => {
+    const { store, login } = await fixture();
+    const slow = Array.from({ length: 4 }, () => deferred<FrontendUser | null>());
+    let calls = 0;
+    const authenticate = vi.spyOn(store, "authenticate").mockImplementation(async () => {
+      const entry = slow[calls++];
+      return entry ? entry.promise : store.bootstrapAdmin;
+    });
+    const held = slow.map((_entry, index) => login("admin", "x", `203.0.113.${index + 1}`));
+    await vi.waitFor(() => expect(authenticate).toHaveBeenCalledTimes(4));
+    expect((await login("admin", "x", "203.0.113.1")).statusCode).toBe(429);
+    expect((await login("admin", PASSWORD, "198.51.100.9")).statusCode).toBe(303);
+    for (const entry of slow) entry.resolve(null);
+    await Promise.all(held);
+  });
+
+  it("checks Origin against the request's own host when no public origin is configured", async () => {
+    const { app, store } = await fixture({ publicOrigin: undefined });
+    const authenticate = vi.spyOn(store, "authenticate");
+    const post = (origin: string) =>
+      app.inject({
+        method: "POST",
+        url: "/gate",
+        headers: {
+          host: "127.0.0.1:3010",
+          origin,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        payload: new URLSearchParams({ username: "admin", password: PASSWORD }).toString(),
+      });
+    expect((await post("https://attacker.example")).statusCode).toBe(403);
+    expect((await post("null")).statusCode).toBe(403);
+    expect(authenticate).not.toHaveBeenCalled();
+    expect((await post("http://127.0.0.1:3010")).statusCode).toBe(303);
   });
 
   it("escapes every HTML metacharacter in errors and bounds login request bodies", async () => {

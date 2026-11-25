@@ -22,7 +22,8 @@ if [[ ! -e .env ]]; then
   {
     printf 'MIRROR_ACCESS_PASSWORD=%s\n' "$password"
     printf 'MIRROR_AUTH_SECRET=%s\n' "${MIRROR_AUTH_SECRET:-$(openssl rand -hex 32)}"
-    printf 'MIRROR_PUBLIC_ORIGIN=%s\n' "${MIRROR_PUBLIC_ORIGIN:-}"
+    # Production refuses to start without it; local evaluation opens the published port.
+    printf 'MIRROR_PUBLIC_ORIGIN=%s\n' "${MIRROR_PUBLIC_ORIGIN:-http://127.0.0.1:${SERVER_PORT:-3010}}"
     printf 'SERVER_BIND=%s\n' "${SERVER_BIND:-127.0.0.1}"
     printf 'SERVER_PORT=%s\n' "${SERVER_PORT:-3010}"
   } >"$temp_env"

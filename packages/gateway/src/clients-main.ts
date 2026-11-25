@@ -10,6 +10,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createUserGate } from "./auth/user-gate";
+import { isOwnOrigin } from "./auth/origin";
 import {
   createUserStore,
   USER_SESSION_TTL_MS,
@@ -594,9 +595,10 @@ export async function startClientGateway(
     authorizeUpgrade: async (request) => {
       if (!e2e && (!gate.authorizeUpgrade(request) || !sessionGuard.authorizeUpgrade(request)))
         return false;
+      // Browsers always send Origin on a WebSocket handshake; without a configured public
+      // origin it must at least name the host the handshake was sent to.
       if (
-        process.env.MIRROR_PUBLIC_ORIGIN &&
-        request.headers.origin !== process.env.MIRROR_PUBLIC_ORIGIN
+        !isOwnOrigin(request.headers.origin, request.headers.host, process.env.MIRROR_PUBLIC_ORIGIN)
       )
         return false;
       const sid = sidFromRequest(request);
