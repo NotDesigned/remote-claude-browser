@@ -183,12 +183,17 @@ echo "The firewall blocks private addresses, and names still resolve for public 
 
 # CPA instances from the real cpa-broker: each on its own internal network, out of Compose's view.
 if [[ ${SMOKE_HOSTNET:-} != 1 ]]; then
-  in_server node -e 'const fs = require("node:fs"); fs.writeFileSync("/tmp/compose-cpa-client.mjs", fs.readFileSync(0));' < scripts/compose-cpa-client.mjs
+  # An instance keeps the keys it was created with, as the gateway's store does.
+  declare -A cpa_keys
   as_cpa_client() {
-    in_server setpriv --reuid=browser --regid=browser --clear-groups node /tmp/compose-cpa-client.mjs "$@"
+    # shellcheck disable=SC2086 # the two keys are separate arguments
+    in_server setpriv --reuid=browser --regid=browser --clear-groups \
+      node --input-type=module - "$@" ${cpa_keys[$2]} < scripts/compose-cpa-client.mjs
   }
   for _ in 1 2; do
-    cpa_ids+=("cpa-$(openssl rand -hex 10)")
+    id=cpa-$(openssl rand -hex 10)
+    cpa_ids+=("$id")
+    cpa_keys[$id]="$(openssl rand -hex 32) $(openssl rand -hex 32)"
   done
   for id in "${cpa_ids[@]}"; do
     as_cpa_client ensure "$id"
@@ -222,7 +227,7 @@ if [[ ${SMOKE_HOSTNET:-} != 1 ]]; then
   # Compose leaves them alone. A re-created broker joins their networks again and keeps
   # up-to-date instances as they are.
   before=$(docker inspect --format '{{.Id}}' "$first")
-  "${compose[@]}" --project-name "$project" up --detach --remove-orphans --no-build
+  "${compose[@]}" --project-name "$project" up --detach --remove-orphans --no-build --no-recreate
   "${compose[@]}" --project-name "$project" up --detach --no-build --no-deps --force-recreate cpa-broker
   deadline=$((SECONDS + 60))
   until [[ $(docker inspect --format '{{.State.Health.Status}}' "$project-cpa-broker-1") == healthy ]]; do

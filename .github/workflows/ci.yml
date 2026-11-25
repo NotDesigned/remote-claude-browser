@@ -82,7 +82,10 @@ jobs:
           pnpm run test:pixel-ui
           pnpm run test:mobile-input
       - name: Test video and sound over WebRTC
-        run: xvfb-run --auto-servernum pnpm run test:rtc-media
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg
+          xvfb-run --auto-servernum pnpm run test:rtc-media
 
   containers:
     runs-on: ubuntu-24.04
