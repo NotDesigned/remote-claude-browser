@@ -571,12 +571,12 @@ describe("createScreencast", () => {
     const slowSocket = new MockSocket();
     const fast = new ViewerConn(fastSocket, () => hub.joinPayload());
     const slow = new ViewerConn(slowSocket, () => hub.joinPayload());
-    fanout.addViewer(fast);
-    fanout.addViewer(slow);
+    fanout.addViewer(fast, "s");
+    fanout.addViewer(slow, "s");
     const controller = createScreencast({
       browser,
       hubFor: (tabId) => (tabId === "tab-1" ? hub : undefined),
-      publish: (message) => fanout.publish(message),
+      publish: (message) => fanout.publishToSession("s", message),
     });
     browser.attach({ targetId: "tab-1", sessionId: "cdp-1", type: "page" });
 

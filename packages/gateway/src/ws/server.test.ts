@@ -18,6 +18,7 @@ import {
   KEEPALIVE_MS,
   MAX_RETIRED_KEYS_PER_SESSION,
   type WsServer,
+  type WsServerOpts,
 } from "./server";
 import { STALL_BYTES, ViewerConn, type ViewerSocket } from "./viewerconn";
 import { createRoleManager } from "./roles";
@@ -75,16 +76,14 @@ function readyHub(sessionId: string): TabHub {
 afterEach(() => vi.useRealTimers());
 
 describe("session-scoped WebSocket fanout", () => {
-  it("isolates every message type and keeps legacy broadcasts away from scoped viewers", () => {
+  it("isolates every message type to its session", () => {
     const fanout = new Fanout(30, undefined, false);
     const a = peer();
     const sameSession = peer();
     const b = peer();
-    const legacy = peer();
     fanout.addViewer(a.viewer, "a");
     fanout.addViewer(sameSession.viewer, "a");
     fanout.addViewer(b.viewer, "b");
-    fanout.addViewer(legacy.viewer);
     const messages: Down[] = [
       { t: "hello", viewerId: "owner-a", role: "driver", sessionId: "a" },
       { t: "pong", id: 1, sentTs: 1, serverTs: 2 },
@@ -132,11 +131,6 @@ describe("session-scoped WebSocket fanout", () => {
       for (const message of messages) fanout.publishToSession("a", message);
       expect(a.socket.messages).toEqual(messages);
       expect(sameSession.socket.messages).toEqual(messages);
-      expect(b.socket.messages).toEqual([]);
-      expect(legacy.socket.messages).toEqual([]);
-      fanout.publish({ t: "clip", text: "legacy only" });
-      expect(legacy.socket.messages).toEqual([{ t: "clip", text: "legacy only" }]);
-      expect(a.socket.messages).toHaveLength(messages.length);
       expect(b.socket.messages).toEqual([]);
       expect(fanout.sessionForViewer(a.viewer)).toBe("a");
       expect(() => fanout.addViewer(a.viewer, "b")).toThrow("cannot change sessions");
@@ -226,7 +220,11 @@ describe("session-scoped WebSocket upgrades", () => {
   it("pings each viewer and ends a connection that stops answering", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const server = createServer();
-    const wsServer = createWsServer({ server, hubs: () => [] });
+    const wsServer = createWsServer({
+      server,
+      sessionForRequest: () => "s",
+      hubsForSession: () => [],
+    });
     try {
       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
       const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/ws`;
@@ -257,9 +255,9 @@ describe("session-scoped WebSocket upgrades", () => {
 
   it("requires scoped join hubs instead of falling back to all sessions", () => {
     const server = createServer();
-    expect(() => createWsServer({ server, hubs: () => [], sessionForRequest: () => "a" })).toThrow(
-      "requires hubsForSession",
-    );
+    expect(() =>
+      createWsServer({ server, sessionForRequest: () => "a" } as unknown as WsServerOpts),
+    ).toThrow("sessionForRequest and hubsForSession are required");
   });
 
   it("binds authorized requests to immutable sessions for joins, messages and disconnects", async () => {
@@ -268,7 +266,6 @@ describe("session-scoped WebSocket upgrades", () => {
       ["a", readyHub("a")],
       ["b", readyHub("b")],
     ]);
-    const legacyHubs = vi.fn(() => [...hubs.values()]);
     const resolveSession = vi.fn((request: IncomingMessage) => {
       const value = request.headers["x-test-session"];
       return typeof value === "string" ? value : undefined;
@@ -278,7 +275,6 @@ describe("session-scoped WebSocket upgrades", () => {
     const onDisconnection = vi.fn();
     const wsServer: WsServer = createWsServer({
       server,
-      hubs: legacyHubs,
       authorizeUpgrade: (request) => request.headers["x-test-auth"] === "allowed",
       sessionForRequest: resolveSession,
       hubsForSession: (sid) => (hubs.has(sid) ? [hubs.get(sid)!] : []),
@@ -321,7 +317,6 @@ describe("session-scoped WebSocket upgrades", () => {
       expect(b.messages.every((message) => !("tab" in message) || message.tab === "tab-b")).toBe(
         true,
       );
-      expect(legacyHubs).not.toHaveBeenCalled();
       wsServer.fanout.publishToSession("a", { t: "clip", text: "a private" });
       wsServer.fanout.publishToSession("b", {
         t: "presence",
@@ -443,7 +438,12 @@ describe("session-scoped WebSocket upgrades", () => {
   it("ignores a message type from a newer viewer build instead of closing on it", async () => {
     const server = createServer();
     const onUp = vi.fn();
-    const wsServer = createWsServer({ server, hubs: () => [], onUp });
+    const wsServer = createWsServer({
+      server,
+      sessionForRequest: () => "s",
+      hubsForSession: () => [],
+      onUp,
+    });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/ws`);
     const closed = vi.fn();

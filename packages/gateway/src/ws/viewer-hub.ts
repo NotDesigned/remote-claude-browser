@@ -186,7 +186,6 @@ export function createViewerHub(deps: ViewerHubDeps) {
       }
     },
     onConnection(viewer, request, sid, resumable) {
-      if (!sid) return [];
       const id = `viewer-${nextViewer++}`;
       viewerIds.set(viewer, id);
       viewers.set(id, {
@@ -239,10 +238,10 @@ export function createViewerHub(deps: ViewerHubDeps) {
       if (!id) return;
       roles.disconnect(id);
       viewers.delete(id);
-      const runtime = registry.get(sid ?? "");
+      const runtime = registry.get(sid);
       runtime?.viewport.removeViewer(id);
       runtime?.rtc?.removeViewer(id);
-      if (runtime && !hasViewer(sid!)) {
+      if (runtime && !hasViewer(sid)) {
         for (const hub of runtime.tabs.hubs()) runtime.input.resetTab(hub.tabId);
         void stopPixels(runtime).catch((error) => report("disconnected pixel cleanup", error));
       }
@@ -251,7 +250,7 @@ export function createViewerHub(deps: ViewerHubDeps) {
     async onUp(viewer, message, sid) {
       const id = viewerIds.get(viewer),
         connection = id ? viewers.get(id) : undefined;
-      if (!id || !sid || !connection || !connection.authorized() || registry.isClosing(sid)) return;
+      if (!id || !connection || !connection.authorized() || registry.isClosing(sid)) return;
       const runtime = registry.get(sid);
       if (!runtime) return;
       // A valid driver is still forbidden from naming another client's CDP target.
@@ -262,7 +261,6 @@ export function createViewerHub(deps: ViewerHubDeps) {
   });
   // Full snapshots are the heavy part of page sync: how often, why, how big and how slow.
   ws.fanout.onSnapshot = (sid, message, bytes) => {
-    if (sid === undefined) return;
     const ms = registry.get(sid)?.tabs.hubFor(message.tab)?.lastSnapshotMs;
     console.log(
       `snapshot: ${sid} ${message.reason ?? "page"} ${(bytes / 1048576).toFixed(1)} MB` +
