@@ -250,6 +250,7 @@ export async function startClientGateway(
   };
   const proxyCatalog = await createProxyCatalog({
     file: join(profile, "proxy-sources.json"),
+    allowPrivateSubscriptionTargets: process.env.MIRROR_PROXY_SUBSCRIPTION_ALLOW_PRIVATE === "1",
     usernameFor: (id) => userStore.getUser(id)?.username,
     usageForNodes: (ids) => ({
       profiles: accountStore
