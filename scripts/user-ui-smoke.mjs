@@ -306,7 +306,9 @@ try {
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("dialog", (dialog) => dialog.accept());
   await page.goto(origin);
-  await page.getByRole("button", { name: "工作台", exact: true }).click();
+  await page.getByRole("button", { name: "菜单", exact: true }).click();
+  await page.getByRole("button", { name: "管理后台", exact: true }).waitFor();
+  await page.screenshot({ path: "artifacts/menu-desktop.png" });
   await page.getByRole("button", { name: "管理后台", exact: true }).click();
   const panel = page.getByRole("dialog", { name: "管理后台", exact: true });
   await panel.getByLabel("用户名", { exact: true }).fill("fixture-reader");
@@ -414,7 +416,9 @@ try {
   const phone = await mobile.newPage();
   phone.on("pageerror", (error) => pageErrors.push(error.message));
   await phone.goto(origin);
-  await phone.getByRole("button", { name: "工作台", exact: true }).tap();
+  await phone.getByRole("button", { name: "菜单", exact: true }).tap();
+  await phone.getByRole("button", { name: "管理后台", exact: true }).waitFor();
+  await phone.screenshot({ path: "artifacts/menu-phone.png" });
   await phone.getByRole("button", { name: "管理后台", exact: true }).tap();
   const phonePanel = phone.getByRole("dialog", { name: "管理后台", exact: true });
   await phonePanel.getByLabel("用户名", { exact: true }).tap();
@@ -448,7 +452,7 @@ try {
   await phonePanel.getByRole("button", { name: "关闭管理后台", exact: true }).tap();
   checks.phoneTouchAndLayout = true;
 
-  await phone.getByRole("button", { name: "工作台", exact: true }).tap();
+  await phone.getByRole("button", { name: "菜单", exact: true }).tap();
   await phone.getByRole("button", { name: "我的账号", exact: true }).tap();
   const phoneAccount = phone.getByRole("dialog", { name: "我的账号", exact: true });
   await phoneAccount.getByText("工作配置 · 休眠 · 其他设备", { exact: true }).waitFor();
@@ -465,9 +469,9 @@ try {
   const reader = await ordinary.newPage();
   reader.on("pageerror", (error) => pageErrors.push(error.message));
   await reader.goto(origin);
-  await reader.getByRole("button", { name: "工作台", exact: true }).click();
+  await reader.getByRole("button", { name: "菜单", exact: true }).click();
   await reader
-    .getByRole("navigation", { name: "工作台导航", exact: true })
+    .getByRole("dialog", { name: "菜单", exact: true })
     .getByText("reader", { exact: false })
     .waitFor();
   assert.equal(await reader.getByRole("button", { name: "管理后台", exact: true }).count(), 0);
@@ -509,7 +513,7 @@ try {
   checks.existingMailboxVerification = true;
   await inbox.getByRole("button", { name: "关闭", exact: true }).click();
   checks.assignedAndSelfServiceMailboxes = true;
-  await reader.getByRole("button", { name: "工作台", exact: true }).click();
+  await reader.getByRole("button", { name: "菜单", exact: true }).click();
   await reader.getByRole("button", { name: "我的账号", exact: true }).click();
   const account = reader.getByRole("dialog", { name: "我的账号", exact: true });
   await account.getByText("手机上的会话", { exact: true }).waitFor();
@@ -539,7 +543,7 @@ try {
   );
   checks.personalPasswordChange = true;
   await reader.goto(origin);
-  await reader.getByRole("button", { name: "工作台", exact: true }).click();
+  await reader.getByRole("button", { name: "菜单", exact: true }).click();
   await reader.getByRole("button", { name: "退出登录", exact: true }).click();
   await reader.waitForURL(origin + "/gate");
   checks.logoutReturnsToLogin = true;

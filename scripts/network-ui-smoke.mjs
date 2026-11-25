@@ -467,7 +467,7 @@ try {
     profileProxyId = "proxy-shared";
     await page.reload();
     await page.locator(".map-exit").getByText("共享出口", { exact: true }).waitFor();
-    await click(page.getByRole("button", { name: "工作台", exact: true }));
+    await click(page.getByRole("button", { name: "菜单", exact: true }));
     await click(page.getByRole("button", { name: "网络与接入", exact: true }));
     await click(page.getByRole("tab", { name: "代理来源", exact: true }));
     const panel = page.getByRole("dialog", { name: "网络与接入", exact: true });
@@ -653,7 +653,7 @@ try {
     await click(panel.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
     assert.equal(await panel.getByLabel("授权回调 URL 或授权码").inputValue(), "fixture-draft");
     await click(panel.getByRole("button", { name: "关闭网络与接入", exact: true }));
-    await click(page.getByRole("button", { name: "工作台", exact: true }));
+    await click(page.getByRole("button", { name: "菜单", exact: true }));
     await click(page.getByRole("button", { name: "网络与接入", exact: true }));
     await click(page.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
     await panel.getByLabel("授权回调 URL 或授权码", { exact: true }).waitFor();
@@ -663,7 +663,7 @@ try {
     );
     await page.reload();
     await page.getByRole("button", { name: /默认配置.*未登录/ }).waitFor();
-    await click(page.getByRole("button", { name: "工作台", exact: true }));
+    await click(page.getByRole("button", { name: "菜单", exact: true }));
     await click(page.getByRole("button", { name: "网络与接入", exact: true }));
     await click(page.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
     await panel.getByLabel("授权回调 URL 或授权码", { exact: true }).waitFor();
@@ -701,7 +701,7 @@ try {
       origin + "/v1",
     );
     await click(panel.getByRole("button", { name: "关闭网络与接入", exact: true }));
-    await click(page.getByRole("button", { name: "工作台", exact: true }));
+    await click(page.getByRole("button", { name: "菜单", exact: true }));
     await click(page.getByRole("button", { name: "网络与接入", exact: true }));
     await click(page.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
     await panel.waitFor();
@@ -764,7 +764,7 @@ try {
     assert.equal(sessions.length, sessionsBeforeExit);
     await click(page.getByRole("button", { name: /默认配置.*未登录/ }));
     await page.waitForURL((url) => url.searchParams.has("sid"));
-    await click(page.getByRole("button", { name: "工作台", exact: true }));
+    await click(page.getByRole("button", { name: "菜单", exact: true }));
     await click(page.getByRole("button", { name: "浏览器配置", exact: true }));
     await page.getByRole("button", { name: "返回会话", exact: true }).waitFor();
     const toolbarLayout = await page.locator(".profile-topbar").evaluate((node) => ({
@@ -779,7 +779,7 @@ try {
         toolbarLayout.right <= toolbarLayout.viewport + 1 &&
         toolbarLayout.scroll <= toolbarLayout.width + 1,
     );
-    await click(page.getByRole("button", { name: "工作台", exact: true }));
+    await click(page.getByRole("button", { name: "菜单", exact: true }));
     await click(page.getByRole("button", { name: "网络与接入", exact: true }));
     await click(page.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
     await panel.waitFor();
@@ -839,7 +839,7 @@ try {
       0,
       "remote OAuth must dismiss the profile picker",
     );
-    await click(page.getByRole("button", { name: "工作台", exact: true }));
+    await click(page.getByRole("button", { name: "菜单", exact: true }));
     await click(page.getByRole("button", { name: "网络与接入", exact: true }));
     await click(page.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
     await remoteOpen.waitFor();
@@ -901,7 +901,7 @@ try {
       await route.continue();
     });
     await page.goto(origin);
-    await page.getByRole("button", { name: "工作台", exact: true }).click();
+    await page.getByRole("button", { name: "菜单", exact: true }).click();
     await page.getByRole("button", { name: "网络与接入", exact: true }).click();
     await page.getByRole("tab", { name: "CPA 授权与 Key", exact: true }).click();
     await requested;

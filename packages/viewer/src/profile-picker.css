@@ -141,8 +141,7 @@
   opacity: 0.5;
   cursor: wait;
 }
-.profile-tools > button,
-.profile-tools .workspace-menu-trigger {
+.profile-tools > button {
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
   background: transparent;
@@ -154,14 +153,16 @@
   min-width: 44px;
   min-height: 36px;
 }
-.profile-tools > button:hover,
-.profile-tools .workspace-menu-trigger:hover {
+.profile-tools > button:hover {
   background: var(--hover);
 }
 @media (pointer: coarse) {
   .profile-tools > button,
   .profile-tools .workspace-menu-trigger {
     min-height: 44px;
+  }
+  .profile-tools .workspace-menu-trigger {
+    width: 44px;
   }
 }
 .profile-tools button:focus-visible {

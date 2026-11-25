@@ -1274,8 +1274,8 @@ export function App() {
           onChanged={refreshAccounts}
           onDeleted={() => window.location.reload()}
           workspace={workspace}
-          dark={theme === "dark"}
-          onTheme={() => setThemePreference(theme === "dark" ? "light" : "dark")}
+          theme={themePreference}
+          onTheme={setThemePreference}
           logoutError={userError}
         />
       )}

@@ -1,9 +1,14 @@
 /**
  * The unified page's single top bar: view switch (页面 / 画面), the browser's tabs when it is
  * showing, the time where the remote browser is, the connection status pill (which opens the
- * 「连接」 popover) and the ⋯ menu of settings.
+ * 「连接」 popover) and the ⋯ menu: the workbench's pages, the settings, and the account.
  */
-import { WorkspaceMenu, type WorkspaceMenuProps } from "./workspace-menu";
+import {
+  MenuIcon,
+  WorkspaceAccount,
+  WorkspaceNav,
+  type WorkspaceMenuProps,
+} from "./workspace-menu";
 import type { PxQuality } from "@mirror/protocol";
 import { Diagnostics, formatSpeed, resyncStormTabs, type DiagnosticsProps } from "./hud";
 import type { ComponentChildren } from "preact";
@@ -144,7 +149,6 @@ export function ShellBar(props: ShellBarProps) {
       <div class="shell-bar-tabs">{props.children}</div>
 
       <div class="shell-bar-end">
-        {props.workspace && <WorkspaceMenu {...props.workspace} />}
         {clock && (
           <span id="shell-clock" title={clock.title} aria-label={`出口当地时间 ${clock.title}`}>
             {clock.label}
@@ -173,16 +177,12 @@ export function ShellBar(props: ShellBarProps) {
           type="button"
           class="shell-icon"
           id="shell-menu-toggle"
-          aria-label="更多"
+          aria-label="菜单"
           aria-haspopup="true"
           aria-expanded={open === "menu"}
           onClick={() => toggle("menu")}
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-            <circle cx="5" cy="12" r="1.2" />
-            <circle cx="12" cy="12" r="1.2" />
-            <circle cx="19" cy="12" r="1.2" />
-          </svg>
+          <MenuIcon />
         </button>
       </div>
 
@@ -211,7 +211,8 @@ export function ShellBar(props: ShellBarProps) {
       )}
 
       {open === "menu" && (
-        <div id="shell-menu" ref={menuRef} role="dialog" aria-label="更多">
+        <div id="shell-menu" ref={menuRef} role="dialog" aria-label="菜单">
+          {props.workspace && <WorkspaceNav {...props.workspace} onDone={() => setOpen(null)} />}
           <div class="shell-menu-section" role="group" aria-label="画面清晰度">
             <span>画面模式：越清晰，服务器负担越重</span>
             <div class="shell-menu-choices">
@@ -275,6 +276,7 @@ export function ShellBar(props: ShellBarProps) {
               ))}
             </div>
           </div>
+          {props.workspace && <WorkspaceAccount {...props.workspace} />}
         </div>
       )}
     </header>

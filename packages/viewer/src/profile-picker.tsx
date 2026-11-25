@@ -1,4 +1,11 @@
 import { WorkspaceMenu, type WorkspaceMenuProps } from "./workspace-menu";
+import type { ThemePreference } from "./shell-bar";
+
+const THEMES: [ThemePreference, string][] = [
+  ["auto", "跟随系统"],
+  ["light", "浅色"],
+  ["dark", "深色"],
+];
 /**
  * The first thing a new tab shows after signing in: which browser configuration to open. Each is a
  * Chrome of its own, so the card says who it is signed in to Claude as.
@@ -277,8 +284,8 @@ export function ProfilePicker(props: {
   workspace?: WorkspaceMenuProps;
   proxyManagerOpen?: boolean;
   requiredProxyId?: string;
-  dark: boolean;
-  onTheme(): void;
+  theme: ThemePreference;
+  onTheme(theme: ThemePreference): void;
 
   logoutError: string | null;
 }) {
@@ -597,15 +604,30 @@ export function ProfilePicker(props: {
     <main class="profile-picker">
       <div class="profile-topbar">
         <div class="profile-tools">
-          {props.workspace && <WorkspaceMenu {...props.workspace} />}
           {props.onBack && (
             <button type="button" disabled={busy} onClick={props.onBack}>
               {props.requiredProxyId ? "返回 API" : "返回会话"}
             </button>
           )}
-          <button type="button" onClick={props.onTheme} aria-label="切换外观">
-            {props.dark ? "浅色" : "深色"}
-          </button>
+          {props.workspace && (
+            <WorkspaceMenu {...props.workspace}>
+              <div class="shell-menu-section" role="group" aria-label="外观">
+                <span>外观</span>
+                <div class="shell-menu-choices">
+                  {THEMES.map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      aria-pressed={props.theme === value}
+                      onClick={() => props.onTheme(value)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </WorkspaceMenu>
+          )}
         </div>
       </div>
       <div class="profile-body">
