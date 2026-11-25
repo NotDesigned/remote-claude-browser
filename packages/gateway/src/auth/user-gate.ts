@@ -1,6 +1,7 @@
 /** Persisted service logins; a remembered device alone never grants another user's browser. */
 import type { FastifyInstance, FastifyReply, preHandlerAsyncHookHandler } from "fastify";
 import type { IncomingMessage } from "node:http";
+import { readCookie } from "./cookies";
 import { renderGatePage } from "./gate-page";
 import { isOwnOrigin } from "./origin";
 import { SESSION_COOKIE } from "./middleware";
@@ -21,22 +22,10 @@ interface Attempt {
 }
 
 export function userSessionToken(request: IncomingMessage): string | undefined {
-  for (const part of request.headers.cookie?.split(";") ?? []) {
-    const index = part.indexOf("=");
-    if (index < 0) continue;
-    if (part.slice(0, index).trim() === USER_COOKIE) return part.slice(index + 1).trim();
-  }
-  return undefined;
+  return readCookie(request, USER_COOKIE);
 }
 
 const OIDC_STATE_COOKIE = "mirror-oidc-state";
-function cookieValue(request: IncomingMessage, name: string): string | undefined {
-  for (const part of request.headers.cookie?.split(";") ?? []) {
-    const index = part.indexOf("=");
-    if (index >= 0 && part.slice(0, index).trim() === name) return part.slice(index + 1).trim();
-  }
-  return undefined;
-}
 function oidcMessage(error: unknown): string {
   if (error instanceof OidcError) return error.message;
   console.error("OIDC sign-in failed:", error instanceof Error ? error.message : error);
@@ -47,13 +36,8 @@ function oidcMessage(error: unknown): string {
 const REMOTE_CC_COOKIE = "mirror-remote-cc";
 const REMOTE_CC_CODE = /^[A-Z2-9]{4}-?[A-Z2-9]{4}$/;
 function remoteCcCode(request: IncomingMessage): string | undefined {
-  for (const part of request.headers.cookie?.split(";") ?? []) {
-    const index = part.indexOf("=");
-    if (index < 0 || part.slice(0, index).trim() !== REMOTE_CC_COOKIE) continue;
-    const value = part.slice(index + 1).trim();
-    return REMOTE_CC_CODE.test(value) ? value : undefined;
-  }
-  return undefined;
+  const value = readCookie(request, REMOTE_CC_COOKIE);
+  return value !== undefined && REMOTE_CC_CODE.test(value) ? value : undefined;
 }
 
 export function createUserGate(options: {
@@ -238,7 +222,7 @@ export function createUserGate(options: {
           const clear = stateCookie("", 0);
           try {
             const url = new URL(request.raw.url ?? "/", oidc.settings.redirectUri);
-            const done = await oidc.finish(url, cookieValue(request.raw, OIDC_STATE_COOKIE));
+            const done = await oidc.finish(url, readCookie(request.raw, OIDC_STATE_COOKIE));
             if (done.purpose === "link") {
               const user = currentUser(request.raw);
               if (!user || user.id !== done.userId)
