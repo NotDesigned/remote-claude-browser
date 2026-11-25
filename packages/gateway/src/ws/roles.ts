@@ -37,8 +37,11 @@ export interface RoleManagerOptions {
   now?: () => number;
   /** Integration feeds the saved `view` back into ViewportAgreement to lock and rerun D7. */
   onDriverChange?: (change: DriverChange) => void;
-  /** The viewer build served alongside, sent in every `hello` (see viewerBuildId). */
-  build?: string;
+  /**
+   * The viewer build served alongside, sent in every `hello` (see viewerBuildId). Asked for each
+   * connection: the viewer can be published again while the gateway keeps running.
+   */
+  build?: () => string | undefined;
 }
 
 export type UpDisposition = "forwarded" | "handled" | "dropped";
@@ -121,6 +124,7 @@ export function createRoleManager(options: RoleManagerOptions = {}): RoleManager
         session.driverId = viewerId;
       }
 
+      const build = options.build?.();
       send(peer, {
         t: "hello",
         viewerId,
@@ -129,7 +133,7 @@ export function createRoleManager(options: RoleManagerOptions = {}): RoleManager
         serverTs: now(),
         ...(connection.viewportLimit && { viewportLimit: connection.viewportLimit }),
         ...(connection.resumed?.length ? { resumed: [...connection.resumed] } : {}),
-        ...(options.build === undefined ? {} : { build: options.build }),
+        ...(build === undefined ? {} : { build }),
       });
       broadcastState(session);
       return viewerId;

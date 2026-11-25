@@ -578,9 +578,9 @@ export async function startClientGateway(
     if (error instanceof Error && error.name === "TargetCloseError") return;
     if (!stopping) console.error(message, error);
   };
-  const viewerBuild = viewerBuildId();
   const roles = createRoleManager({
-    ...(viewerBuild === undefined ? {} : { build: viewerBuild }),
+    // Read for each connection: deploy-viewer.sh publishes a viewer without restarting this.
+    build: () => viewerBuildId(),
     onDriverChange(change) {
       const runtime = runtimes.get(change.sessionId);
       if (runtime && change.viewport) runtime.viewport.handle(change.to, change.viewport);
