@@ -232,6 +232,8 @@ try {
   await page.waitForFunction(
     () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
   );
+  // Phones show only the current view's button; switch at desktop width, where both show.
+  await page.setViewportSize({ width: 1360, height: 1000 });
   await page.locator('[data-view-mode="px"]').click();
   const canvas = page.locator("#mirror-host canvas");
   await canvas.evaluate((element) => (element.dataset.fixture = "original"));
