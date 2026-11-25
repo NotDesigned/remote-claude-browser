@@ -1,4 +1,4 @@
-import { ApiError } from "./api";
+import { apiRequest } from "./api";
 /** Viewer shell layout. */
 import { listAccounts, switchAccount, type AccountList } from "./accounts";
 import { currentUser, logout, myBrowserSessions, type FrontendUser } from "./users";
@@ -7,9 +7,19 @@ import { AccountPanel } from "./account-panel";
 import { MailboxPanel } from "./mailbox-panel";
 import type { WorkspaceDestination, WorkspaceMenuProps } from "./workspace-menu";
 import { NetworkPanel, type NetworkTab } from "./network-panel";
-import { cpaApi, type CpaBrowserAuthorization } from "./network-api";
+import { cpaApi, isCpaBrowserAuthorization, type CpaBrowserAuthorization } from "./network-api";
+import {
+  localArea,
+  readItem,
+  readJson,
+  removeItem,
+  removePrefixed,
+  sessionArea,
+  writeItem,
+  writeJson,
+} from "./storage";
 import { takeRemoteCcLink, RemoteCcLoginBanner } from "./network-remote-cc-panel";
-import { useCallback, useEffect, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { AgentMsg, Down, eventWithTime, TabId } from "@mirror/protocol";
 import { EventType, IncrementalSource } from "@mirror/protocol";
 import { createMirror, type Mirror } from "./mirror";
@@ -103,16 +113,17 @@ async function replayFixture(path: string, mirror: Mirror, signal?: AbortSignal)
   }
 }
 
-/** Accessing localStorage itself throws when site data is blocked; fall back to no memory. */
+/** Preferences in localStorage; blocked or full storage just means no memory. */
 function viewStorage(): Pick<Storage, "getItem" | "setItem"> {
-  try {
-    return window.localStorage;
-  } catch {
-    return { getItem: () => null, setItem: () => undefined };
-  }
+  return {
+    getItem: (key) => readItem(localArea(), key),
+    setItem: (key, value) => writeItem(localArea(), key, value),
+  };
 }
 
 const THEME_CHECK_MS = 3_000;
+/** A CPA authorization waiting for the person to choose its browser. */
+const CPA_BROWSER_KEY = "mirror-cpa-browser";
 /** How long after a click on a mirror file input the page's file request belongs to that click. */
 const MIRROR_PICKER_WINDOW_MS = 5_000;
 
@@ -150,10 +161,17 @@ export function App() {
   const [mailboxOpen, setMailboxOpen] = useState(false);
   const [profilePickerOpen, setProfilePickerOpen] = useState(false);
   const [browserAuthorization, setBrowserAuthorization] = useState<CpaBrowserAuthorization | null>(
-    () => JSON.parse(sessionStorage.getItem("mirror-cpa-browser") ?? "null"),
+    () => readJson(sessionArea(), CPA_BROWSER_KEY, isCpaBrowserAuthorization),
   );
+  const forgetBrowserAuthorization = () => {
+    removeItem(sessionArea(), CPA_BROWSER_KEY);
+    setBrowserAuthorization(null);
+  };
   const [logoutPending, setLogoutPending] = useState(false);
-  const [userError, setUserError] = useState<string | null>(null);
+  /** Signing out failed: shown in the ⋯ menu (or on the picker), where 退出登录 was pressed. */
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+  /** A CPA authorization could not open in its browser: shown on the CPA tab. */
+  const [authorizationError, setAuthorizationError] = useState<string | null>(null);
   /** The configuration this tab's picker chose; a reload resumes without one. */
   const [pickedAccount, setPickedAccount] = useState<string | null>(null);
   const [clientPhase, setClientPhase] = useState<
@@ -167,10 +185,7 @@ export function App() {
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const [connection, setConnection] = useState<GatewayConnectionState>("connecting");
   const [serverStatus, setServerStatus] = useState<ReceivedServerStatus | null>(null);
-  const [, setStatusReachable] = useState(false);
   const [statusAuthRejected, setStatusAuthRejected] = useState(false);
-  // Re-render each second so the menu notices when the last status sample turns stale.
-  const [, setStatusNow] = useState(Date.now);
   const [inputReady, setInputReady] = useState(false);
   const [inputFailures, setInputFailures] = useState<Record<TabId, boolean>>({});
   /** Why each failed tab's field sync failed, for the UI to show beside 「输入未同步」. */
@@ -200,6 +215,7 @@ export function App() {
   const [rttMs, setRttMs] = useState<number | null>(null);
   const [speedBps, setSpeedBps] = useState<number | null>(null);
   const [frameRates, setFrameRates] = useState<FrameRates | null>(null);
+  const pixelModeRef = useRef(false);
   const [peakSpeedBps, setPeakSpeedBps] = useState<number | null>(null);
   const [bufferMs, setBufferMs] = useState(DEFAULT_LIVE_BUFFER_MS);
   const [viewerId, setViewerId] = useState<string | null>(null);
@@ -280,25 +296,43 @@ export function App() {
   // The same choice as Claude's Appearance setting. This page's choice goes first, and is repeated
   // until a Claude page has taken it. Only then can a change made under Settings come back.
   const themeSid = clientPhase === "ready" ? (clientSession?.sid ?? null) : null;
+  // Only the newest request may answer: an older one (another session's) can finish after it.
+  const accountRequests = useRef(0);
   const refreshAccounts = useCallback(() => {
+    const request = ++accountRequests.current;
     if (themeSid === null) return;
     void listAccounts(themeSid)
-      .then(setAccountList)
+      .then((list) => {
+        if (mountedRef.current && request === accountRequests.current) setAccountList(list);
+      })
       .catch(() => {
         // The menu keeps whatever it last showed.
       });
   }, [themeSid]);
   useEffect(refreshAccounts, [refreshAccounts]);
+  /** The user this page loaded for: everything on it (session, profiles, panels) is theirs. */
+  const loadedUserId = useRef<string | null>(null);
+  const userRequests = useRef(0);
   const refreshUser = useCallback(() => {
     if (fixturePath !== null) return;
+    const request = ++userRequests.current;
+    // A 401 goes to the gate from the API client itself.
     void currentUser()
       .then((loaded) => {
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || request !== userRequests.current) return;
+        // Another tab signed in as someone else: this page's session, profiles and panels belong
+        // to the previous user, so start over as the new one.
+        if (loadedUserId.current !== null && loadedUserId.current !== loaded.id) {
+          runtimeCleanupRef.current?.();
+          window.location.reload();
+          return;
+        }
+        loadedUserId.current = loaded.id;
         setUser(loaded);
         if (loaded.role !== "admin") setUserPanelOpen(false);
       })
-      .catch((error) => {
-        if (error instanceof ApiError && error.status === 401) window.location.assign("/gate");
+      .catch(() => {
+        // The menu keeps the user it last showed.
       });
   }, [fixturePath]);
   useEffect(refreshUser, [refreshUser]);
@@ -327,15 +361,15 @@ export function App() {
   const signOut = async () => {
     if (logoutPending) return;
     setLogoutPending(true);
-    setUserError(null);
+    setLogoutError(null);
     try {
+      // An already expired sign-in counts as signed out.
       await logout();
-      for (const key of Object.keys(sessionStorage))
-        if (key.startsWith("mirror-cpa-")) sessionStorage.removeItem(key);
+      removePrefixed(sessionArea(), "mirror-cpa-");
       runtimeCleanupRef.current?.();
       window.location.assign("/gate");
     } catch (error) {
-      setUserError(error instanceof Error ? error.message : "退出失败，请稍后重试。");
+      setLogoutError(error instanceof Error ? error.message : "退出失败，请稍后重试。");
       setLogoutPending(false);
     }
   };
@@ -346,14 +380,11 @@ export function App() {
     let active = true;
     const url = `/s/${encodeURIComponent(themeSid)}/theme`;
     const send = async () => {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ theme: themePreference, systemDark }),
+      const result = await apiRequest<{ applied?: boolean } | undefined>(url, "POST", {
+        theme: themePreference,
+        systemDark,
       });
-      if (!response.ok) return;
-      const { applied } = (await response.json()) as { applied: boolean };
-      if (active && applied) syncedThemeRef.current = themeKey;
+      if (active && result?.applied) syncedThemeRef.current = themeKey;
     };
     const sync = async () => {
       if (document.hidden) return;
@@ -361,10 +392,9 @@ export function App() {
         await send();
         return;
       }
-      const response = await fetch(url);
-      if (!response.ok) return;
-      const { theme: remote } = (await response.json()) as { theme: ThemePreference | null };
-      if (!active) return;
+      const result = await apiRequest<{ theme?: ThemePreference | null } | undefined>(url);
+      if (!active || result === undefined) return;
+      const remote = result.theme ?? null;
       // The gateway has restarted and does not know this client's choice.
       if (remote === null) {
         syncedThemeRef.current = null;
@@ -445,11 +475,6 @@ export function App() {
     };
   }, [bootstrapAttempt, pickedAccount]);
 
-  useEffect(() => {
-    const timer = setInterval(() => setStatusNow(Date.now()), 1_000);
-    return () => clearInterval(timer);
-  }, []);
-
   const finishSession = () => {
     runtimeCleanupRef.current?.();
     setInputReady(false);
@@ -488,7 +513,6 @@ export function App() {
   }, [sessionUnreachable, clientSession?.sid]);
 
   useEffect(() => {
-    setStatusReachable(false);
     if (
       fixturePath !== null ||
       clientPhase === "ready" ||
@@ -500,11 +524,8 @@ export function App() {
     return pollServerStatus({
       sid: clientSession?.sid,
       onSample: (value) => {
-        const now = Date.now();
-        setStatusNow(now);
-        setServerStatus((previous) => receiveServerStatus(previous, value, now));
+        setServerStatus((previous) => receiveServerStatus(previous, value, Date.now()));
       },
-      onReachable: setStatusReachable,
       onAuthFailure: () => setStatusAuthRejected(true),
     });
   }, [clientPhase, clientSession?.sid, clientError?.status, fixturePath, statusAuthRejected]);
@@ -590,17 +611,15 @@ export function App() {
         name: `正在把粘贴的${files.length > 1 ? ` ${files.length} 个文件` : "图片"}作为附件传到远端…`,
       });
       try {
-        const response = await fetch(`/s/${encodeURIComponent(sid)}/uploads/prepare`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ tab }),
-          signal: request.signal,
-        });
-        const result = (await response.json()) as Extract<Down, { t: "filepick" }> & {
-          error?: string;
-        };
+        const result = await apiRequest<Extract<Down, { t: "filepick" }> | undefined>(
+          `/s/${encodeURIComponent(sid)}/uploads/prepare`,
+          "POST",
+          { tab },
+          undefined,
+          { signal: request.signal },
+        );
         if (disposed || request.signal.aborted) return;
-        if (!response.ok) throw new Error(result.error || "远端附件入口尚未就绪");
+        if (result === undefined) throw new Error("远端附件入口尚未就绪");
         uploads.handlePick(result, sid);
       } catch (error) {
         if (disposed || request.signal.aborted) return;
@@ -737,8 +756,13 @@ export function App() {
       },
     });
     inputResyncRef.current = inputResync;
+    // Frame rates only mean something in the pixel view: elsewhere, do not redraw the page for them.
+    let sampledFrames = false;
     const frameRateTimer = setInterval(() => {
-      setFrameRates({ ...gatewayFrames, display: paintedFrames });
+      const sample = pixelModeRef.current;
+      if (sample) setFrameRates({ ...gatewayFrames, display: paintedFrames });
+      else if (sampledFrames) setFrameRates(null);
+      sampledFrames = sample;
       paintedFrames = 0;
     }, 1_000);
     const resizeObserver = new ResizeObserver(presentation.resized);
@@ -810,9 +834,7 @@ export function App() {
         }
 
         if (message.t === "server-status") {
-          const now = Date.now();
-          setStatusNow(now);
-          setServerStatus((previous) => receiveServerStatus(previous, message, now));
+          setServerStatus((previous) => receiveServerStatus(previous, message, Date.now()));
           return;
         }
         if (message.t === "px-capacity") setPixelAvailable(message.available);
@@ -833,12 +855,19 @@ export function App() {
           setPageStates({});
           sessionId = message.sessionId;
           setViewerId(message.viewerId);
-          void fetch(`/s/${encodeURIComponent(message.sessionId)}/downloads`, {
-            signal: controller.signal,
-          })
-            .then(async (response) => {
-              if (!response.ok || disposed) return;
-              const listed = (await response.json()) as DownloadEntry[];
+          void apiRequest<DownloadEntry[] | undefined>(
+            `/s/${encodeURIComponent(message.sessionId)}/downloads`,
+            "GET",
+            undefined,
+            undefined,
+            { signal: controller.signal },
+          )
+            .then((response) => {
+              if (disposed || !Array.isArray(response)) return;
+              // Closed here before a reconnect: it stays closed.
+              const listed = response.filter(
+                (entry) => !dismissedDownloadIdsRef.current.has(entry.id),
+              );
               setDownloads(listed);
               // Finished before this page connected: offer the link briefly, never re-download.
               for (const entry of listed) {
@@ -983,10 +1012,30 @@ export function App() {
     }
   };
   const pixelMode = activeTab !== null && modeByTab[activeTab] === "px";
+  pixelModeRef.current = pixelMode;
   const activeChrome = activeTab === null ? null : (chromeByTab[activeTab] ?? null);
   const currentProfile = accountList?.accounts.find(
     (account) => account.id === accountList.current,
   );
+  // Where the mirror starts, for the load-failure notice drawn over it; read after layout.
+  const [hostTop, setHostTop] = useState(0);
+  const pageFailureShown =
+    activeChrome !== null &&
+    (!!oauthCallbacks[activeChrome.tab] || (activeChrome.failed === true && !pixelMode));
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    if (!pageFailureShown || host === null) return;
+    const measure = () => setHostTop(host.offsetTop);
+    measure();
+    const observer = new ResizeObserver(measure);
+    // Banners above the mirror push it down, and shrink it as they do.
+    observer.observe(host);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [pageFailureShown]);
   const resyncInput = useCallback(
     () => (activeTab === null ? false : (inputResyncRef.current?.resync(activeTab) ?? false)),
     [activeTab],
@@ -1012,11 +1061,9 @@ export function App() {
   };
 
   const navigateWorkspace = (destination: WorkspaceDestination) => {
-    setUserError(null);
-    if (destination === "profiles") {
-      sessionStorage.removeItem("mirror-cpa-browser");
-      setBrowserAuthorization(null);
-    }
+    setLogoutError(null);
+    setAuthorizationError(null);
+    if (destination === "profiles") forgetBrowserAuthorization();
     setUserPanelOpen(destination === "admin");
     setAccountPanelOpen(destination === "account");
     setMailboxOpen(destination === "mailboxes");
@@ -1041,12 +1088,12 @@ export function App() {
       return;
     const current = accountList?.accounts.find((account) => account.id === accountList.current);
     if (current?.proxyId !== browserAuthorization.proxyId) return;
-    sessionStorage.removeItem("mirror-cpa-browser");
-    setBrowserAuthorization(null);
+    forgetBrowserAuthorization();
     void cpaApi
       .openOAuth(clientSession.sid, browserAuthorization.instanceId, browserAuthorization.state)
       .catch((error: Error) => {
-        setUserError(error.message);
+        if (!mountedRef.current) return;
+        setAuthorizationError(error.message);
         setNetworkTab("cpa");
         setNetworkPanelOpen(true);
       });
@@ -1064,7 +1111,7 @@ export function App() {
         onNavigate: navigateWorkspace,
         onLogout: () => void signOut(),
         logoutPending,
-        error: userError,
+        error: logoutError,
       }
     : undefined;
 
@@ -1148,7 +1195,7 @@ export function App() {
           key={user.id}
           remoteCcCode={remoteCcLink?.code || null}
           open={networkPanelOpen}
-          error={userError}
+          error={authorizationError}
           tab={networkTab}
           onTabChange={setNetworkTab}
           user={user}
@@ -1160,8 +1207,8 @@ export function App() {
             setProfilePickerOpen(false);
           }}
           onChooseBrowser={(authorization) => {
-            setUserError(null);
-            sessionStorage.setItem("mirror-cpa-browser", JSON.stringify(authorization));
+            setAuthorizationError(null);
+            writeJson(sessionArea(), CPA_BROWSER_KEY, authorization);
             setBrowserAuthorization(authorization);
             setNetworkPanelOpen(false);
             setProfilePickerOpen(clientPhase === "ready");
@@ -1203,11 +1250,7 @@ export function App() {
       {activeChrome &&
         (oauthCallbacks[activeChrome.tab] || (activeChrome.failed === true && !pixelMode)) && (
           // From where the mirror starts: the address bar above it is how to go somewhere else.
-          <section
-            id="page-load-failed"
-            role="alert"
-            style={{ top: `${hostRef.current?.offsetTop ?? 0}px` }}
-          >
+          <section id="page-load-failed" role="alert" style={{ top: `${hostTop}px` }}>
             <h2>
               {oauthCallbacks[activeChrome.tab] === "submitted"
                 ? "授权回调已提交给 CPA"
@@ -1263,8 +1306,7 @@ export function App() {
             profilePickerOpen || browserAuthorization
               ? () => {
                   setProfilePickerOpen(false);
-                  sessionStorage.removeItem("mirror-cpa-browser");
-                  setBrowserAuthorization(null);
+                  forgetBrowserAuthorization();
                   if (browserAuthorization) {
                     setNetworkTab("cpa");
                     setNetworkPanelOpen(true);
@@ -1277,7 +1319,7 @@ export function App() {
           workspace={workspace}
           theme={themePreference}
           onTheme={setThemePreference}
-          logoutError={userError}
+          logoutError={logoutError}
         />
       )}
       {clientPhase !== "ready" && clientPhase !== "picking" && (
@@ -1447,11 +1489,10 @@ export function App() {
             if (!clientSession) return;
             setDownloadError(null);
             try {
-              const response = await fetch(
+              await apiRequest(
                 `/s/${encodeURIComponent(clientSession.sid)}/downloads/${encodeURIComponent(id)}`,
-                { method: "DELETE" },
+                "DELETE",
               );
-              if (!response.ok) throw new Error("取消下载失败，请重试");
             } catch {
               setDownloadError("取消下载失败，请重试");
             }

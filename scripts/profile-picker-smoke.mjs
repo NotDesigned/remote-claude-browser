@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { mkdir, readFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium, webkit } from "playwright";
+import { confirmDialogs } from "./confirm-dialog.mjs";
 
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use scripts/limited-run.sh");
 const root = resolve("packages/viewer/dist");
@@ -259,7 +260,8 @@ async function checkExitWarnings(page, touch = false) {
     messages.push(dialog.message());
     return accept ? dialog.accept() : dialog.dismiss();
   };
-  page.on("dialog", onDialog);
+  const confirms = await confirmDialogs(page);
+  confirms.on(onDialog);
   const editor = page.locator("form.profile-proxy-editor");
   const select = page.getByLabel(`「${account.name}」的网络出口`, { exact: true });
   const press = (button) => (touch ? button.tap() : button.click());
@@ -278,7 +280,9 @@ async function checkExitWarnings(page, touch = false) {
             new URL(value.url()).pathname === `/api/accounts/${account.id}/proxy`,
         )
       : null;
+    const shownBefore = confirms.messages.length;
     await press(page.getByRole("button", { name: "保存出口", exact: true }));
+    if (confirm) await confirms.waitForCount(shownBefore + 1);
     if (response) await response;
     assert.equal(
       messages.length,
@@ -383,7 +387,7 @@ async function checkExitWarnings(page, touch = false) {
       firstBindingNoWarning: true,
     });
   } finally {
-    page.off("dialog", onDialog);
+    confirms.off(onDialog);
     Object.assign(account, original);
     await page.reload();
     await page.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
@@ -406,7 +410,8 @@ async function checkPlatformSelection(page, touch = false) {
     warnings.push(dialog.message());
     return confirm ? dialog.accept() : dialog.dismiss();
   };
-  page.on("dialog", onDialog);
+  const confirms = await confirmDialogs(page);
+  confirms.on(onDialog);
   const open = async () => {
     await openCardMenu(page, account.name, touch);
     await press(page.getByRole("button", { name: "设置系统", exact: true }));
@@ -433,7 +438,9 @@ async function checkPlatformSelection(page, touch = false) {
     }
     const before = platformChanges.length;
     await select.selectOption("macos");
+    const shownBefore = confirms.messages.length;
     await press(editor.getByRole("button", { name: "保存系统", exact: true }));
+    await confirms.waitForCount(shownBefore + 1);
     assert.equal(platformChanges.length, before, "cancel must retain the current system");
     assert.equal(await editor.isVisible(), true);
     assert.equal(await select.inputValue(), "macos");
@@ -469,7 +476,7 @@ async function checkPlatformSelection(page, touch = false) {
       "changing system must not allocate a session",
     );
   } finally {
-    page.off("dialog", onDialog);
+    confirms.off(onDialog);
     Object.assign(account, original);
     await page.reload();
     await page.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
@@ -614,11 +621,14 @@ try {
   await page
     .getByRole("button", { name: "管理「可删除配置」", exact: true })
     .waitFor({ timeout: 10_000 });
-  page.once("dialog", (dialog) => dialog.dismiss());
+  const deleteConfirms = await confirmDialogs(page);
+  deleteConfirms.once((dialog) => dialog.dismiss());
   await openCardMenu(page, "可删除配置");
+  const shownBeforeDelete = deleteConfirms.messages.length;
   await page.getByRole("button", { name: "删除「可删除配置」", exact: true }).click();
+  await deleteConfirms.waitForCount(shownBeforeDelete + 1);
   assert.equal(deletions.length, 0);
-  page.once("dialog", (dialog) => dialog.accept());
+  deleteConfirms.once((dialog) => dialog.accept());
   await openCardMenu(page, "可删除配置");
   await page.getByRole("button", { name: "删除「可删除配置」", exact: true }).click();
   await page
@@ -699,7 +709,8 @@ try {
     switchDialogs.push(dialog.message());
     return dialog.dismiss();
   };
-  page.on("dialog", onSwitchDialog);
+  const switchConfirms = await confirmDialogs(page);
+  switchConfirms.on(onSwitchDialog);
   await page.route("**/api/client/session/client-1/account", (route) =>
     route.fulfill({
       status: 503,
@@ -729,7 +740,7 @@ try {
   await page.locator(".profile-picker").waitFor({ state: "hidden" });
   await switchInitialized;
   assert.equal(switches.at(-1).account, "default");
-  page.off("dialog", onSwitchDialog);
+  switchConfirms.off(onSwitchDialog);
   assert.deepEqual(switchDialogs, [], "opening a different configuration must not prompt");
   await page.routeWebSocket(/\/ws(?:\?|$)/, () => {});
   await page.goto(origin + "/?new=1&sid=client-1");
@@ -958,11 +969,14 @@ try {
     () => document.querySelector("button.profile-card .profile-name")?.textContent === "默认配置",
   );
   const beforePhoneDelete = deletions.length;
-  phone.once("dialog", (dialog) => dialog.dismiss());
+  const phoneConfirms = await confirmDialogs(phone);
+  phoneConfirms.once((dialog) => dialog.dismiss());
   await openCardMenu(phone, "配置 7", true);
+  const shownBeforePhoneDelete = phoneConfirms.messages.length;
   await phone.getByRole("button", { name: "删除「配置 7」", exact: true }).tap();
+  await phoneConfirms.waitForCount(shownBeforePhoneDelete + 1);
   assert.equal(deletions.length, beforePhoneDelete);
-  phone.once("dialog", (dialog) => dialog.accept());
+  phoneConfirms.once((dialog) => dialog.accept());
   await openCardMenu(phone, "配置 7", true);
   await phone.getByRole("button", { name: "删除「配置 7」", exact: true }).tap();
   await phone

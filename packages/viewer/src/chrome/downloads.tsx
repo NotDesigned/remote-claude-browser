@@ -1,5 +1,6 @@
 /** Download UI outside the mirrored document. */
 import type { Down } from "@mirror/protocol";
+import { safeDownloadHref } from "../auto-download";
 
 export type DownloadEntry = Extract<Down, { t: "download" }>;
 
@@ -100,10 +101,14 @@ function DownloadItem({
       {download.state === "done" && (
         <div class="download-complete">
           <span class="download-status">已完成</span>
-          {download.href === undefined ? (
+          {safeDownloadHref(download.href) === null ? (
             <span class="download-preparing">准备中…</span>
           ) : (
-            <a class="download-save" href={download.href} download={download.name}>
+            <a
+              class="download-save"
+              href={safeDownloadHref(download.href)!}
+              download={download.name}
+            >
               保存文件
             </a>
           )}

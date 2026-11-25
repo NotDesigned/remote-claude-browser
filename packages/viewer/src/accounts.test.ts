@@ -40,9 +40,13 @@ function fetcher(responses: Record<string, unknown>) {
     const key = `${init.method ?? "GET"} ${path}`;
     const value = responses[key];
     if (value instanceof Error)
-      return new Response(JSON.stringify({ error: value.message }), { status: 409 });
+      return new Response(JSON.stringify({ error: value.message }), {
+        status: 409,
+        headers: { "content-type": "application/json" },
+      });
     return new Response(value === undefined ? null : JSON.stringify(value), {
       status: value === undefined ? 204 : 200,
+      headers: { "content-type": "application/json" },
     });
   }) as unknown as typeof fetch;
   return { fn, calls };

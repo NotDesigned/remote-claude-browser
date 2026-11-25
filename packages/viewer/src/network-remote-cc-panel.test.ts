@@ -87,7 +87,13 @@ describe("remote-cc logins API", () => {
   it("surfaces a cancel of a sign-in that is gone", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ error: "not found" }), { status: 404 })),
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ error: "not found" }), {
+            status: 404,
+            headers: { "content-type": "application/json" },
+          }),
+      ),
     );
     await expect(remoteCcApi.cancelLogin("x")).rejects.toThrow("not found");
   });

@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { RemoteCcGuide } from "./remote-cc-guide";
+import { useAsyncAction } from "./async-action";
+import { useConfirm } from "./panel";
+import { createSharedPoll, useSharedPoll } from "./polling";
 import {
   remoteCcApi,
   type RemoteCcDeviceRequest,
@@ -10,6 +13,15 @@ import type { FrontendUser } from "./users";
 
 const KIND_LABEL = { client: "电脑上的 remote-cc", host: "出口主机" } as const;
 const LINK_PARAM = "remote-cc";
+
+/**
+ * Pending Claude Code sign-ins, polled once for the banner over the browser and the remote-cc tab
+ * alike, while either is shown.
+ */
+export const remoteCcLogins = createSharedPoll(
+  async () => (await remoteCcApi.logins()).logins,
+  3000,
+);
 
 export const normalizeRemoteCcCode = (value: string) => value.trim().toUpperCase();
 
@@ -71,7 +83,7 @@ export function RemoteCcPanel({
   initialCode?: string | null;
 }) {
   const [tokens, setTokens] = useState<RemoteCcToken[]>([]);
-  const [logins, setLogins] = useState<RemoteCcLogin[]>([]);
+  const polled = useSharedPoll(remoteCcLogins, open);
   const [code, setCode] = useState(() => normalizeRemoteCcCode(initialCode ?? ""));
   const [fromLink, setFromLink] = useState(() => Boolean(initialCode?.trim()));
   // The code as typed alongside the request it found, since the gateway may format it differently.
@@ -80,28 +92,18 @@ export function RemoteCcPanel({
   const decided = useRef(new Set<string>());
   const cancelled = useRef(new Set<string>());
   const [now, setNow] = useState(Date.now);
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const run = async (operation: () => Promise<void>) => {
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await operation();
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "操作失败");
-    } finally {
-      setBusy(false);
-    }
-  };
+  const { busy, error, notice, setError, setNotice, run } = useAsyncAction();
+  const { confirm, dialog } = useConfirm();
   // A poll that started before a cancel must not bring the cancelled sign-in back.
-  const showLogins = (next: RemoteCcLogin[]) =>
-    setLogins(next.filter((login) => !cancelled.current.has(login.id)));
+  const logins = (polled.data ?? []).filter((login) => !cancelled.current.has(login.id));
+  const tokenLoads = useRef(0);
+  const loadTokens = async () => {
+    const load = ++tokenLoads.current;
+    const { tokens } = await remoteCcApi.tokens();
+    if (load === tokenLoads.current) setTokens(tokens);
+  };
   const reload = async () => {
-    const [t, l] = await Promise.all([remoteCcApi.tokens(), remoteCcApi.logins()]);
-    setTokens(t.tokens);
-    showLogins(l.logins);
+    await Promise.all([loadTokens(), remoteCcLogins.refresh()]);
   };
   const lookup = (value: string) => {
     const wanted = normalizeRemoteCcCode(value);
@@ -127,19 +129,14 @@ export function RemoteCcPanel({
     setCode(prefill);
     setFromLink(true);
   }, [initialCode]);
+  // Pending sign-ins change as the browser opens them and the user clicks: remoteCcLogins polls
+  // them while the tab is open. The tokens load each time it opens.
   useEffect(() => {
     if (!open) return;
-    void run(reload);
-    // Pending sign-ins change as the browser opens them and the user clicks.
-    const timer = setInterval(
-      () =>
-        void remoteCcApi.logins().then(
-          (l) => showLogins(l.logins),
-          () => {},
-        ),
-      3000,
-    );
-    return () => clearInterval(timer);
+    void run(loadTokens);
+    return () => {
+      tokenLoads.current++;
+    };
   }, [open]);
   useEffect(() => {
     if (!open || !request) return;
@@ -181,6 +178,11 @@ export function RemoteCcPanel({
       {error && (
         <p class="network-message network-error" role="alert">
           {error}
+        </p>
+      )}
+      {polled.error && polled.error !== error && (
+        <p class="network-message network-error" role="alert">
+          {polled.error}
         </p>
       )}
       {notice && (
@@ -348,8 +350,15 @@ export function RemoteCcPanel({
                       class="network-danger"
                       disabled={busy}
                       aria-label={`断开「${token.name}」`}
-                      onClick={() => {
-                        if (window.confirm(`断开「${token.name}」？它将立即失去访问。`))
+                      onClick={async () => {
+                        if (
+                          await confirm({
+                            title: `断开「${token.name}」？`,
+                            message: "它将立即失去访问。",
+                            confirmLabel: "断开",
+                            danger: true,
+                          })
+                        )
                           void run(async () => {
                             await remoteCcApi.removeToken(token.id);
                             await reload();
@@ -366,6 +375,7 @@ export function RemoteCcPanel({
         );
       })}
       <RemoteCcGuide origin={window.location.origin} />
+      {dialog}
     </div>
   );
 }
@@ -375,25 +385,17 @@ export function RemoteCcPanel({
  * the user opens the sign-in page in the browser they are looking at.
  */
 export function RemoteCcLoginBanner({ sid, profileId }: { sid: string; profileId: string }) {
-  const [logins, setLogins] = useState<RemoteCcLogin[]>([]);
+  // The same poll as the remote-cc tab; a failed poll keeps the last answer.
+  const { data: logins = [] } = useSharedPoll(remoteCcLogins);
   const [opened, setOpened] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let stopped = false;
-    const poll = () =>
-      void remoteCcApi.logins().then(
-        (value) => {
-          if (!stopped) setLogins(value.logins);
-        },
-        () => {},
-      );
-    poll();
-    const timer = setInterval(poll, 4000);
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-    };
-  }, [sid, profileId]);
+  const mounted = useRef(true);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    [],
+  );
   const login = logins.find((item) => item.profileId === profileId && item.status !== "done");
   if (!login) return null;
   return (
@@ -409,8 +411,12 @@ export function RemoteCcLoginBanner({ sid, profileId }: { sid: string; profileId
         onClick={() => {
           setError(null);
           void remoteCcApi.openLogin(sid, login.id).then(
-            () => setOpened(login.id),
-            (failure: Error) => setError(failure.message),
+            () => {
+              if (mounted.current) setOpened(login.id);
+            },
+            (failure: Error) => {
+              if (mounted.current) setError(failure.message);
+            },
           );
         }}
       >

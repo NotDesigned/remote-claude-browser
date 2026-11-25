@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium, webkit } from "playwright";
+import { confirmDialogs } from "./confirm-dialog.mjs";
 const engine = process.env.USER_UI_BROWSER ?? "chromium";
 
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use scripts/limited-run.sh");
@@ -304,7 +305,7 @@ try {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const page = await context.newPage();
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  page.on("dialog", (dialog) => dialog.accept());
+  (await confirmDialogs(page)).on((dialog) => dialog.accept());
   await page.goto(origin);
   await page.getByRole("button", { name: "菜单", exact: true }).click();
   await page.getByRole("button", { name: "管理后台", exact: true }).waitFor();
@@ -511,13 +512,13 @@ try {
   await mailboxAddress.filter({ hasText: claimedAddress }).waitFor();
   assert.equal(mailboxes.get(regular.id).at(-1).address, claimedAddress);
   checks.existingMailboxVerification = true;
-  await inbox.getByRole("button", { name: "关闭", exact: true }).click();
+  await inbox.getByRole("button", { name: "关闭收件箱", exact: true }).click();
   checks.assignedAndSelfServiceMailboxes = true;
   await reader.getByRole("button", { name: "菜单", exact: true }).click();
   await reader.getByRole("button", { name: "我的账号", exact: true }).click();
   const account = reader.getByRole("dialog", { name: "我的账号", exact: true });
   await account.getByText("手机上的会话", { exact: true }).waitFor();
-  reader.on("dialog", (dialog) => dialog.accept());
+  (await confirmDialogs(reader)).on((dialog) => dialog.accept());
   await account.getByRole("button", { name: "结束会话「手机上的会话」", exact: true }).click();
   await account
     .getByRole("button", { name: "结束会话「手机上的会话」", exact: true })

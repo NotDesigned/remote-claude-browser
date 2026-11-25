@@ -1,3 +1,4 @@
+import { apiFetch, readJsonBody } from "./api";
 import type { PxQuality } from "@mirror/protocol";
 export const CLIENT_KEY_STORAGE_KEY = "mirror.client-session.key";
 
@@ -146,18 +147,14 @@ async function requestApi(
 ): Promise<Response> {
   let response: Response;
   try {
-    response = await (options.fetcher ?? fetch)(path, {
-      ...init,
-      credentials: "same-origin",
-      cache: "no-store",
-      signal: options.signal,
-    });
+    // The shared client: same-origin, uncached, and a 401 goes back to the gate.
+    response = await apiFetch(path, init, options);
   } catch (error) {
     if (options.signal?.aborted) throw error;
     throw new ClientSessionError(0, "CLIENT_NETWORK", "暂时无法连接会话服务，请检查网络后重试。");
   }
   if (response.ok) return response;
-  const body: unknown = await response.json().catch(() => null);
+  const body = await readJsonBody(response);
   const code = isRecord(body) && typeof body.code === "string" ? body.code : "CLIENT_REQUEST";
   const ownedSessions =
     isRecord(body) && Array.isArray(body.ownedSessions)
