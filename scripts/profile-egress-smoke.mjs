@@ -686,12 +686,13 @@ async function inside() {
   // Long enough for the broker's automatic recovery (three restarts, 1 + 2 + 4 s apart, each
   // starting Mihomo and checking it) on a busy runner.
   const waitHealth = async (id, predicate) => {
+    let health;
     for (const deadline = Date.now() + 45_000; Date.now() < deadline;) {
-      const health = await api(`/egress/${id}/status`, "GET");
+      health = await api(`/egress/${id}/status`, "GET");
       if (predicate(health)) return health;
       await delay(100);
     }
-    assert.fail(`exit ${id} did not reach the expected state`);
+    assert.fail(`exit ${id} did not reach the expected state; last: ${JSON.stringify(health)}`);
   };
   const proxyStatus = (token) =>
     new Promise((done, fail) => {
