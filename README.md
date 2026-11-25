@@ -15,7 +15,7 @@ Remote Claude Browser（RCB）在你自己的服务器上运行真实的 Chromiu
 - **页面模式和画面模式**：页面模式低带宽、支持中文输入法；画面模式用于登录和验证码。见[使用](docs/usage.md)。
 - **用户**：用用户名和密码登录工作台，也可以启用单点登录（OpenID Connect）；每个用户只看到自己的浏览器配置和会话，管理员在「管理后台」管理用户。见[管理](docs/admin.md)。
 - **浏览器配置**：每个配置有独立的 Chrome 进程、网站登录资料、屏幕尺寸和字体；同一用户可以开多个会话。见[使用](docs/usage.md)。
-- **系统身份**：每个配置可以「设置系统」；可选安装 AliasMode 内核。见[使用](docs/usage.md)和[部署](docs/deployment.md)。
+- **系统身份**：每个配置可以「设置系统」；可选安装 AliasMode 内核。见[使用](docs/usage.md)和[部署](docs/deployment.md)。使用 AliasMode 时，Windows 和 Mac 的字体要由部署者自己准备，本项目不提供，见[部署 · AliasMode 内核](docs/deployment.md#aliasmode-内核)。
 - **出口**：每个配置必须绑定一个节点，网页、DNS 和 WebRTC 都经这个节点出去；浏览器的当地时间跟随出口。见[使用](docs/usage.md)。
 - **CPA**：每个用户可以有自己的 CPA 实例，用调用 Key 访问 `/v1`。见[使用 · CPA](docs/usage.md#cpa)。
 - **收件箱**：通过 Resend 接收邮件，用于网站注册和验证。见[使用](docs/usage.md)。

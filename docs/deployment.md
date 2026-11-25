@@ -181,7 +181,8 @@ scripts/fingerprint-fonts.sh check                                   # 各身份
 ```
 
 - 字体放在 `FINGERPRINT_FONTS_DIR`（默认 `local/fingerprint-fonts`），只挂进浏览器看得到的位置；原生 Chromium 的配置看不到它们，字体清单不受影响。服务端容器每次启动时为它们建立字体缓存。
-- 这些字体需要部署者自己准备，本项目不分发。
+- **这些字体需要部署者自己准备**：本项目不分发，也不要提交进仓库（`local/` 已被 git 忽略）。Windows 字体可以复制自己 Windows 电脑的 `C:\Windows\Fonts`，Mac 字体复制自己 Mac 的 `/System/Library/Fonts`、`/System/Library/Fonts/Supplemental`、`/Library/Fonts`。字体的授权由部署者自己负责。
+- 没装字体时 AliasMode 照常能用，只是 Windows、Mac 身份更容易被识别；升级或换服务器后记得重新运行 `scripts/fingerprint-fonts.sh check`。
 - 即使是真实的字体文件，文字由 Linux 的字体引擎绘制，和真实系统仍有细微差别。
 
 - 只有之后新建的配置使用 AliasMode，已有配置保留原来的内核。要让新配置恢复用原生 Chromium，设置 `MIRROR_BROWSER_ENGINE=chromium`。
