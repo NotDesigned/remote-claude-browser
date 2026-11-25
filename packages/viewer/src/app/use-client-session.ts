@@ -8,7 +8,11 @@ import {
   requestClientSession,
   resumesClientSession,
 } from "../client-session";
+import { myBrowserSessions } from "../users";
 import { initialSession, sessionReducer, type SessionState } from "./session-state";
+
+/** How often a session this page lost its connection to is looked for. */
+const SESSION_CHECK_INTERVAL_MS = 5_000;
 
 const replaceAddress = (url: string) => window.history.replaceState(window.history.state, "", url);
 
@@ -128,4 +132,30 @@ export function useClientSession(): ClientSessionControl {
     replaced: () => dispatch({ type: "replaced" }),
     end,
   };
+}
+
+/**
+ * While `sid` is set (the session is ready but not connected), check that it still exists for
+ * this device; `onGone` once it does not. A viewer that never gets input (for example a follower)
+ * must still see the page.
+ */
+export function useSessionWatch(sid: string | null, onGone: () => void): void {
+  const onGoneRef = useRef(onGone);
+  onGoneRef.current = onGone;
+  useEffect(() => {
+    if (sid === null) return;
+    let active = true;
+    const timer = setInterval(() => {
+      void myBrowserSessions()
+        .then((sessions) => {
+          if (active && !sessions.some((session) => session.sid === sid && session.currentDevice))
+            onGoneRef.current();
+        })
+        .catch(() => {});
+    }, SESSION_CHECK_INTERVAL_MS);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [sid]);
 }

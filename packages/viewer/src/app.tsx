@@ -1,7 +1,7 @@
-import { apiRequest } from "./api";
 /** Viewer shell layout. */
+import { apiRequest } from "./api";
 import { listAccounts, switchAccount, type AccountList } from "./accounts";
-import { currentUser, logout, myBrowserSessions, type FrontendUser } from "./users";
+import { currentUser, logout, type FrontendUser } from "./users";
 import { AdminPanel } from "./admin-panel";
 import { AccountPanel } from "./account-panel";
 import { MailboxPanel } from "./mailbox-panel";
@@ -14,121 +14,28 @@ import { viewStorage } from "./app/view-storage";
 import { useTheme } from "./app/use-theme";
 import { takeRemoteCcLink, RemoteCcLoginBanner } from "./network-remote-cc-panel";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
-import type { AgentMsg, Down, eventWithTime, TabId } from "@mirror/protocol";
-import { EventType, IncrementalSource, LOCAL_RESYNC_REASON } from "@mirror/protocol";
-import { createMirror, type Mirror } from "./mirror";
-import { attachMirrorInput } from "./input";
-import { createInputResync, focusedValueMessage, type InputResync } from "./input/resync-input";
-import { EventPipeline } from "./pipeline";
-import { createEchoFilter } from "./pipeline/echo";
-import { createScrollFilter } from "./pipeline/scroll";
-import { createRebuildRestoreHooks } from "./rebuild-restore";
 import { TabStrip } from "./chrome/tabstrip";
 import { UrlBar } from "./chrome/urlbar";
 import { Presence } from "./chrome/presence";
-import { createClipboardWriter } from "./chrome/clipboard";
-import {
-  dismissDownload,
-  DownloadTray,
-  type DownloadEntry,
-  updateDownloads,
-} from "./chrome/downloads";
-import type { FrameRates } from "./hud";
+import { DownloadTray } from "./chrome/downloads";
 import { describeConnection } from "./connection-status";
-import { pollServerStatus, receiveServerStatus, type ReceivedServerStatus } from "./server-status";
 import { ShellBar, type LinkTarget } from "./shell-bar";
-import { createVoiceLink, type VoiceLink } from "./media/voice";
-import { createServerClock, DEFAULT_LIVE_BUFFER_MS } from "./clock";
-import { createResyncController, type ResyncTabState, RESYNC_WINDOW_MS } from "./resync";
-import { connectGateway, type GatewayConnectionState, type GatewaySocket } from "./ws";
-import { createFileUploadRelay, type FileUploadRelay, type UploadState } from "./uploads";
-import { externalLink } from "./input/default-actions";
-import { createPresentation } from "./presentation";
-import { createBuildSkew } from "./build-skew";
-import { deepActiveElement, isTextEditable } from "./input/keys";
-import {
-  PX_QUALITY_STORAGE_KEY,
-  preferredPxQuality,
-  preferredViewMode,
-  rememberViewMode,
-  type ViewMode,
-  clientGatewayUrl,
-  clientReturnUrl,
-} from "./client-session";
-import { useClientSession } from "./app/use-client-session";
+import { PX_QUALITY_STORAGE_KEY, preferredPxQuality, clientReturnUrl } from "./client-session";
+import { useClientSession, useSessionWatch } from "./app/use-client-session";
+import { useMirrorRuntime } from "./app/use-mirror-runtime";
+import { inputFailureReasonOf, pixelModeOf } from "./app/runtime-state";
+import { useServerStatusPoll } from "./app/use-server-status-poll";
 import { ProfilePicker } from "./profile-picker";
 import "@rrweb/replay/dist/style.css";
 import "./app.css";
 import "./shell.css";
-import { DOWNLOAD_NOTICE_MS, startClientDownload } from "./auto-download";
-
-/** A viewer that never gets input (for example a follower) must still see the page. */
-const SESSION_CHECK_INTERVAL_MS = 5_000;
-
-function configuredResyncWindowMs(): number {
-  const raw = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env
-    ?.VITE_P2_RESYNC_WINDOW_MS;
-  if (raw === undefined || raw === "") return RESYNC_WINDOW_MS;
-  const value = Number(raw);
-  return Number.isSafeInteger(value) && value > 0 ? value : RESYNC_WINDOW_MS;
-}
-
-async function replayFixture(path: string, mirror: Mirror, signal?: AbortSignal): Promise<void> {
-  const response = await fetch(path, { signal });
-  if (!response.ok) throw new Error(`fixture request failed: ${response.status}`);
-  const messages = (await response.json()) as AgentMsg[];
-  if (signal?.aborted) return;
-  const events = messages.flatMap((message): eventWithTime[] =>
-    message.kind === "rrweb" ? [message.e] : [],
-  );
-  const snapshotEnd = events.findIndex((event) => event.type === EventType.FullSnapshot);
-  if (snapshotEnd < 0) throw new Error("fixture has no FullSnapshot");
-  const tab = "fixture-tab";
-  mirror.handle({
-    t: "snapshot",
-    tab,
-    epoch: 1,
-    seq: snapshotEnd + 1,
-    data: events.slice(0, snapshotEnd + 1),
-  });
-  const tail = events.slice(snapshotEnd + 1);
-  if (tail.length > 0) {
-    mirror.handle({
-      t: "delta",
-      tab,
-      epoch: 1,
-      seq: snapshotEnd + 2,
-      data: tail,
-    });
-  }
-}
-
-/** This tab's own memory; sessionStorage itself throws when site data is blocked. */
-function sessionStorageOrNull(): Pick<Storage, "getItem" | "setItem"> | null {
-  try {
-    return window.sessionStorage;
-  } catch {
-    return null;
-  }
-}
 
 /** A CPA authorization waiting for the person to choose its browser. */
 const CPA_BROWSER_KEY = "mirror-cpa-browser";
-/** How long after a click on a mirror file input the page's file request belongs to that click. */
-const MIRROR_PICKER_WINDOW_MS = 5_000;
 
 export function App() {
-  const uploadRef = useRef<FileUploadRelay | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const uploadRequestRef = useRef<AbortController | null>(null);
-  const [shownDownloadIds, setShownDownloadIds] = useState<ReadonlySet<string>>(new Set());
-  const [uploadState, setUploadState] = useState<UploadState | null>(null);
   const hostRef = useRef<HTMLElement>(null);
-  const socketRef = useRef<GatewaySocket | null>(null);
-  const presentationRef = useRef<ReturnType<typeof createPresentation> | null>(null);
-  const inputResyncRef = useRef<InputResync | null>(null);
-  const dismissedDownloadIdsRef = useRef(new Set<string>());
-  const runtimeCleanupRef = useRef<(() => void) | null>(null);
   const mountedRef = useRef(false);
   const fixturePath = useRef(new URLSearchParams(window.location.search).get("fixture")).current;
   // remote-cc approval links: /?remote-cc=ABCD-EFGH opens the remote-cc tab with the code filled in.
@@ -150,7 +57,6 @@ export function App() {
   const [accountList, setAccountList] = useState<AccountList | null>(null);
   const [user, setUser] = useState<FrontendUser | null>(null);
   const [panels, dispatchPanels] = usePanels();
-  const [oauthCallbacks, setOAuthCallbacks] = useState<Record<string, "submitted" | "error">>({});
   const [browserAuthorization, setBrowserAuthorization] = useState<CpaBrowserAuthorization | null>(
     () => readJson(sessionArea(), CPA_BROWSER_KEY, isCpaBrowserAuthorization),
   );
@@ -163,92 +69,56 @@ export function App() {
   const [logoutError, setLogoutError] = useState<string | null>(null);
   /** A CPA authorization could not open in its browser: shown on the CPA tab. */
   const [authorizationError, setAuthorizationError] = useState<string | null>(null);
-  const [connection, setConnection] = useState<GatewayConnectionState>("connecting");
-  const [serverStatus, setServerStatus] = useState<ReceivedServerStatus | null>(null);
-  const [statusAuthRejected, setStatusAuthRejected] = useState(false);
-  const [inputReady, setInputReady] = useState(false);
-  const [inputFailures, setInputFailures] = useState<Record<TabId, boolean>>({});
-  /** Why each failed tab's field sync failed, for the UI to show beside 「输入未同步」. */
-  const [inputFailureReasons, setInputFailureReasons] = useState<Record<TabId, string>>({});
-  const [pageStates, setPageStates] = useState<Record<TabId, "recovering" | "ready" | "failed">>(
-    {},
-  );
-  const [activeTab, setActiveTab] = useState<TabId | null>(null);
-  const voiceRef = useRef<VoiceLink | null>(null);
-  useEffect(() => {
-    const voice = createVoiceLink();
-    voiceRef.current = voice;
-    const unlock = () => voice.unlock();
-    window.addEventListener("pointerdown", unlock, true);
-    window.addEventListener("keydown", unlock, true);
-    return () => {
-      window.removeEventListener("pointerdown", unlock, true);
-      window.removeEventListener("keydown", unlock, true);
-      voiceRef.current = null;
-      voice.dispose();
-    };
-  }, []);
-  const [tabs, setTabs] = useState<Extract<Down, { t: "tabs" }>["tabs"]>([]);
-  const [modeByTab, setModeByTab] = useState<Record<TabId, "dom" | "px" | undefined>>({});
-  const [pixelAvailable, setPixelAvailable] = useState(true);
-  const [resyncByTab, setResyncByTab] = useState<Record<TabId, ResyncTabState | undefined>>({});
-  const [rttMs, setRttMs] = useState<number | null>(null);
-  const [speedBps, setSpeedBps] = useState<number | null>(null);
-  const [frameRates, setFrameRates] = useState<FrameRates | null>(null);
-  const pixelModeRef = useRef(false);
-  const [peakSpeedBps, setPeakSpeedBps] = useState<number | null>(null);
-  const [bufferMs, setBufferMs] = useState(DEFAULT_LIVE_BUFFER_MS);
-  const [viewerId, setViewerId] = useState<string | null>(null);
-  const [driverId, setDriverId] = useState<string | null>(null);
-  const [viewers, setViewers] = useState<Extract<Down, { t: "presence" }>["viewers"]>([]);
-  const [clipboardError, setClipboardError] = useState<string | null>(null);
-  const [buildStale, setBuildStale] = useState(false);
-  const [downloadError, setDownloadError] = useState<string | null>(null);
-  const [downloads, setDownloads] = useState<DownloadEntry[]>([]);
-  const [viewMode, setViewMode] = useState<ViewMode>(() => {
-    if (fixturePath !== null) return "dom";
-    const requested = new URLSearchParams(window.location.search).get("mode");
-    return requested === "dom" || requested === "px" ? requested : preferredViewMode(viewStorage());
-  });
-  // The view the entry URL or memory asks for applies once tabs exist.
-  const pendingModeRef = useRef<"dom" | "px" | null>(viewMode);
-  const pageKey = useRef(globalThis.crypto.randomUUID()).current;
   const [pxQuality, setPxQuality] = useState(() => preferredPxQuality(viewStorage()));
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const [linkTarget, setLinkTarget] = useState<LinkTarget>(() =>
     viewStorage().getItem("mirror.links") === "device" ? "device" : "inside",
   );
-  const linkTargetRef = useRef(linkTarget);
-  linkTargetRef.current = linkTarget;
   useEffect(() => {
     viewStorage().setItem("mirror.links", linkTarget);
   }, [linkTarget]);
-  const [chromeByTab, setChromeByTab] = useState<
-    Record<TabId, Extract<Down, { t: "chrome" }> | undefined>
-  >({});
-  const activeTitle = tabs.find((tab) => tab.id === activeTab)?.title.trim() ?? "";
-
-  useEffect(() => {
-    document.title = activeTitle || "远程 Claude";
-  }, [activeTitle]);
-
-  // Keep the current view in the address so a reload reopens it.
-  useEffect(() => {
-    if (fixturePath !== null) return;
-    const url = new URL(window.location.href);
-    if (url.searchParams.get("mode") === viewMode) return;
-    url.searchParams.set("mode", viewMode);
-    window.history.replaceState(
-      window.history.state,
-      "",
-      `${url.pathname}${url.search}${url.hash}`,
-    );
-  }, [viewMode]);
+  const runtime = useMirrorRuntime({
+    hostRef,
+    fileInputRef,
+    enabled: clientPhase === "ready",
+    sid: clientSession?.sid,
+    fixturePath,
+    linkTarget,
+    onEnded: () => finishSession(),
+    onReplaced: () => clientSessionControl.replaced(),
+  });
+  const {
+    connection,
+    inputReady,
+    pageStates,
+    activeTab,
+    tabs,
+    modeByTab,
+    viewMode,
+    pixelAvailable,
+    resyncByTab,
+    rttMs,
+    speedBps,
+    peakSpeedBps,
+    frameRates,
+    bufferMs,
+    viewerId,
+    driverId,
+    viewers,
+    clipboardError,
+    buildStale,
+    downloads,
+    shownDownloadIds,
+    uploadState,
+    chromeByTab,
+    oauthCallbacks,
+    serverStatus,
+  } = runtime.state;
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      runtimeCleanupRef.current?.();
     };
   }, []);
 
@@ -286,7 +156,7 @@ export function App() {
         // Another tab signed in as someone else: this page's session, profiles and panels belong
         // to the previous user, so start over as the new one.
         if (loadedUserId.current !== null && loadedUserId.current !== loaded.id) {
-          runtimeCleanupRef.current?.();
+          runtime.stop();
           window.location.reload();
           return;
         }
@@ -328,7 +198,7 @@ export function App() {
       // An already expired sign-in counts as signed out.
       await logout();
       removePrefixed(sessionArea(), "mirror-cpa-");
-      runtimeCleanupRef.current?.();
+      runtime.stop();
       window.location.assign("/gate");
     } catch (error) {
       setLogoutError(error instanceof Error ? error.message : "退出失败，请稍后重试。");
@@ -337,539 +207,28 @@ export function App() {
   };
 
   const finishSession = () => {
-    runtimeCleanupRef.current?.();
-    setInputReady(false);
-    setConnection("closed");
-    setActiveTab(null);
-    setTabs([]);
-    setViewers([]);
-    setViewerId(null);
-    setDriverId(null);
-    setDownloads([]);
+    runtime.reset("closed");
     clientSessionControl.finish();
     dispatchPanels({ type: "picker", open: false });
   };
   // Observe existing sessions after a disconnect; only an explicit action opens a new one.
-  const sessionUnreachable =
-    clientPhase === "ready" && clientSession !== null && connection !== "open";
-  useEffect(() => {
-    if (!sessionUnreachable || clientSession === null) return;
-    let active = true;
-    const sid = clientSession.sid;
-    const timer = setInterval(() => {
-      void myBrowserSessions()
-        .then((sessions) => {
-          if (active && !sessions.some((session) => session.sid === sid && session.currentDevice))
-            finishSession();
-        })
-        .catch(() => {});
-    }, SESSION_CHECK_INTERVAL_MS);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, [sessionUnreachable, clientSession?.sid]);
+  useSessionWatch(
+    clientPhase === "ready" && connection !== "open" ? (clientSession?.sid ?? null) : null,
+    finishSession,
+  );
 
-  useEffect(() => {
-    if (
-      fixturePath !== null ||
-      clientPhase === "ready" ||
-      statusAuthRejected ||
-      clientError?.status === 401 ||
-      clientError?.status === 403
-    )
-      return;
-    return pollServerStatus({
-      sid: clientSession?.sid,
-      onSample: (value) => {
-        setServerStatus((previous) => receiveServerStatus(previous, value, Date.now()));
-      },
-      onAuthFailure: () => setStatusAuthRejected(true),
-    });
-  }, [clientPhase, clientSession?.sid, clientError?.status, fixturePath, statusAuthRejected]);
+  useServerStatusPoll(
+    fixturePath === null &&
+      clientPhase !== "ready" &&
+      clientError?.status !== 401 &&
+      clientError?.status !== 403,
+    clientSession?.sid,
+    `${clientPhase}:${clientError?.status}`,
+    runtime.receiveServerStatus,
+  );
 
-  useEffect(() => {
-    const host = hostRef.current;
-    if (host === null || clientPhase !== "ready") return;
-    let disposed = false;
-    const controller = new AbortController();
-    let socket: GatewaySocket | null = null;
-    let sessionId: string | null = null;
-    const pageUrls = new Map<TabId, string>();
-    const autoStarted = new Set<string>();
-    const shownDownloads = new Set<string>();
-    const showDownload = (id: string) => {
-      if (disposed || shownDownloads.has(id)) return;
-      shownDownloads.add(id);
-      setShownDownloadIds(new Set(shownDownloads));
-    };
-    const dismissDownloadSoon = (id: string) => {
-      const timer = setTimeout(() => {
-        if (disposed) return;
-        dismissedDownloadIdsRef.current.add(id);
-        setDownloads((current) => dismissDownload(current, id));
-      }, DOWNLOAD_NOTICE_MS);
-      downloadTimers.add(timer);
-    };
-    const downloadTimers = new Set<ReturnType<typeof setTimeout>>();
-    const clipboard = createClipboardWriter({
-      onCopied: () => {
-        if (!disposed) setClipboardError(null);
-      },
-      onError: () => {
-        if (!disposed) setClipboardError("复制失败，请允许浏览器访问剪贴板");
-      },
-    });
-    // A page from before a deploy reloads into the new build when that interrupts nothing.
-    const buildSkew = createBuildSkew({
-      busy: () => {
-        if (uploading) return true;
-        const active = deepActiveElement(document);
-        return active !== null && active !== document.body && isTextEditable(active);
-      },
-      reload: () => window.location.reload(),
-      onStale: (stale) => {
-        if (!disposed) setBuildStale(stale);
-      },
-      storage: sessionStorageOrNull(),
-    });
-    const echo = createEchoFilter({
-      // Through the mirror and its rate limit, like any recovery. The reason asks the gateway to
-      // answer this page alone from its cached state, not every viewer from a new page snapshot.
-      onContenteditableReconcile: () => {
-        const tab = presentation.activeTab();
-        if (tab !== null && presentation.canInput(tab, "dom") && mirror.getActiveTab() === tab)
-          mirror.recover(LOCAL_RESYNC_REASON);
-      },
-      nodeFor: (id) => mirror.getReplayer()?.getMirror().getNode(id) ?? null,
-    });
-    // A file input in the mirror opens its own picker, and the same click reaches the remote page.
-    let mirrorPickerOpenedAt = Number.NEGATIVE_INFINITY;
-    let uploading = false;
-    const uploads = createFileUploadRelay({
-      // A finished upload needs no notice: the page shows the attachment itself.
-      onState: (state) => {
-        uploading = state?.phase === "uploading" || state?.phase === "picking";
-        if (!disposed) setUploadState(state?.phase === "done" ? null : state);
-      },
-      openPicker: (multiple) => {
-        if (Date.now() - mirrorPickerOpenedAt < MIRROR_PICKER_WINDOW_MS) return true;
-        const input = fileInputRef.current;
-        if (input === null || typeof input.showPicker !== "function") return false;
-        input.multiple = multiple;
-        try {
-          input.showPicker();
-          return true;
-        } catch {
-          return false;
-        }
-      },
-    });
-    uploadRef.current = uploads;
-    const scroll = createScrollFilter({
-      send(message) {
-        if (presentation.canInput(message.tab, "dom")) socket?.send(message);
-      },
-    });
-    // Pasted images become attachments of the remote page: stage the files, then open the
-    // remote attachment input. Its `filepick` (also published over the socket) pairs with them.
-    const uploadPastedFiles = async (tab: TabId, files: File[], sid: string): Promise<void> => {
-      uploadRequestRef.current?.abort();
-      const request = new AbortController();
-      uploadRequestRef.current = request;
-      uploads.selectFiles(tab, files);
-      setUploadState({
-        tab,
-        phase: "uploading",
-        multiple: files.length > 1,
-        loaded: 0,
-        total: 0,
-        name: `正在把粘贴的${files.length > 1 ? ` ${files.length} 个文件` : "图片"}作为附件传到远端…`,
-      });
-      try {
-        const result = await apiRequest<Extract<Down, { t: "filepick" }> | undefined>(
-          `/s/${encodeURIComponent(sid)}/uploads/prepare`,
-          "POST",
-          { tab },
-          undefined,
-          { signal: request.signal },
-        );
-        if (disposed || request.signal.aborted) return;
-        if (result === undefined) throw new Error("远端附件入口尚未就绪");
-        uploads.handlePick(result, sid);
-      } catch (error) {
-        if (disposed || request.signal.aborted) return;
-        uploads.clear();
-        setUploadState({
-          tab,
-          phase: "error",
-          multiple: false,
-          loaded: 0,
-          total: 0,
-          name: `粘贴的附件未能上传：${error instanceof Error ? error.message : "请重试"}`,
-        });
-      } finally {
-        if (uploadRequestRef.current === request) uploadRequestRef.current = null;
-      }
-    };
-    const pipeline = new EventPipeline()
-      .use((event) => {
-        // The browser already paints the local selection. rrweb would replace it with a
-        // delayed range ordered by document position, losing the direction of a backward drag.
-        if (
-          event.type === EventType.IncrementalSnapshot &&
-          event.data.source === IncrementalSource.Selection
-        )
-          return null;
-        return event;
-      })
-      .use(echo)
-      .use(scroll)
-      .onReset(echo.reset)
-      .onReset(scroll.reset);
-    const restoreHooks = createRebuildRestoreHooks().use(echo.restoreHook);
-    const clock = createServerClock({ bufferMs: DEFAULT_LIVE_BUFFER_MS });
-    const resync = createResyncController({
-      windowMs: configuredResyncWindowMs(),
-      send: (message) => socket?.send(message),
-      onStateChange(state) {
-        if (disposed) return;
-        setResyncByTab((current) => ({ ...current, [state.tab]: state }));
-      },
-    });
-    const mirror = createMirror({
-      container: host,
-      pipeline,
-      clock,
-      // Each hidden tab costs this browser its page's memory, which a phone has least of.
-      parkedTabs: /\bMobi/.test(navigator.userAgent) ? 1 : 2,
-      onBufferApplied: (buffer) => {
-        if (!disposed) setBufferMs(buffer);
-      },
-      restoreHooks,
-      rtc: {
-        // A site's video has no other way here. Canvases are few on these pages, and blank is fine.
-        requestCanvases: false,
-        send(tab, lane, payload) {
-          socket?.send({ t: "rtc-sig", tab, lane, payload });
-        },
-        onError(error) {
-          console.warn("mirror media WebRTC unavailable", error);
-        },
-      },
-      onSnapshotApplied(snapshot) {
-        if (disposed) return;
-        resync.recovered(snapshot.tab);
-        presentation.snapshotApplied(snapshot);
-      },
-      requestResync(tab, reason) {
-        resync.request(tab, reason);
-      },
-      attachInteraction(tab, replayer) {
-        // A press inside the mirror happens in its frame, out of the page's listeners' sight.
-        const frame = replayer.iframe.contentWindow;
-        const unlock = () => voiceRef.current?.unlock();
-        frame?.addEventListener("pointerdown", unlock, true);
-        frame?.addEventListener("keydown", unlock, true);
-        return attachMirrorInput({
-          replayer,
-          tab,
-          send: (message) => {
-            if (presentation.canInput(tab, "dom")) socket?.send(message);
-          },
-          onEditableFocus: echo.setFocused,
-          onEditableInput: echo.input,
-          onKeyDown: echo.keyDown,
-          onFileSelection: (tab, input) => {
-            if (presentation.canInput(tab, "dom")) uploads.select(tab, input);
-            else input.value = "";
-          },
-          linkToOpen: (target) =>
-            linkTargetRef.current === "device" ? externalLink(target, pageUrls.get(tab)) : null,
-          openLink: (url) => {
-            window.open(url, "_blank", "noopener,noreferrer");
-          },
-          onFilePickerOpened: () => {
-            mirrorPickerOpenedAt = Date.now();
-          },
-          onFilePickerCanceled: (tab) => uploads.cancelPick(tab),
-          onPasteFiles: (tab, files) => {
-            if (presentation.canInput(tab, "dom") && sessionId !== null)
-              void uploadPastedFiles(tab, files, sessionId);
-          },
-          scrollFilter: scroll,
-        });
-      },
-    });
-    let paintedFrames = 0;
-    let gatewayFrames = { capture: 0, encode: 0, drop: 0 };
-    const presentation = createPresentation({
-      host,
-      mirror,
-      send: (message) => socket?.send(message),
-      entryTab: new URLSearchParams(window.location.search).get("tab"),
-      entryMode: pendingModeRef.current,
-      preferredQuality: () => preferredPxQuality(viewStorage()),
-      onTab: setActiveTab,
-      onViewMode: setViewMode,
-      onTabMode: (tab, mode) => setModeByTab((current) => ({ ...current, [tab]: mode })),
-      onInputReady: (ready) => {
-        if (mountedRef.current) setInputReady(ready);
-      },
-      onPaint: () => paintedFrames++,
-    });
-    presentationRef.current = presentation;
-    pendingModeRef.current = null;
-    const inputResync = createInputResync({
-      valueFor: (tab) => {
-        const replayer = mirror.getReplayer();
-        const root = replayer?.iframe.contentDocument;
-        if (!replayer || !root || mirror.getActiveTab() !== tab) return null;
-        return focusedValueMessage(root, tab, (node) => replayer.getMirror().getId(node));
-      },
-      send: (message) => {
-        if (presentation.canInput(message.tab, "dom")) socket?.send(message);
-      },
-    });
-    inputResyncRef.current = inputResync;
-    // Frame rates only mean something in the pixel view: elsewhere, do not redraw the page for them.
-    let sampledFrames = false;
-    const frameRateTimer = setInterval(() => {
-      const sample = pixelModeRef.current;
-      if (sample) setFrameRates({ ...gatewayFrames, display: paintedFrames });
-      else if (sampledFrames) setFrameRates(null);
-      sampledFrames = sample;
-      paintedFrames = 0;
-    }, 1_000);
-    const resizeObserver = new ResizeObserver(presentation.resized);
-    resizeObserver.observe(host);
-    window.addEventListener("resize", presentation.resized);
-    const cleanup = () => {
-      if (disposed) return;
-      disposed = true;
-      clearInterval(frameRateTimer);
-      controller.abort();
-      for (const timer of downloadTimers) clearTimeout(timer);
-      socket?.close();
-      resizeObserver.disconnect();
-      window.removeEventListener("resize", presentation.resized);
-      socketRef.current = null;
-      voiceRef.current?.setSender(null);
-      presentationRef.current = null;
-      presentation.dispose();
-      inputResync.dispose();
-      inputResyncRef.current = null;
-      resync.dispose();
-      clipboard.dispose();
-      buildSkew.dispose();
-      uploads.dispose();
-      uploadRef.current = null;
-      uploadRequestRef.current?.abort();
-      setUploadState(null);
-      if (mountedRef.current) setPixelAvailable(true);
-      if (runtimeCleanupRef.current === cleanup) runtimeCleanupRef.current = null;
-    };
-    runtimeCleanupRef.current = cleanup;
-
-    if (fixturePath !== null) {
-      setActiveTab("fixture-tab");
-      setConnection("open");
-      void replayFixture(fixturePath, mirror, controller.signal).catch((error: unknown) => {
-        if (disposed) return;
-        host.dataset.mirrorState = "error";
-        host.textContent = error instanceof Error ? error.message : String(error);
-      });
-      return cleanup;
-    }
-
-    socket = connectGateway(
-      clientGatewayUrl(window.location.href, clientSession?.sid),
-      (message: Down) => {
-        if (disposed) return;
-        if (message.t === "audio") {
-          voiceRef.current?.play(message.pcm);
-          return;
-        }
-        if (message.t === "mic") {
-          voiceRef.current?.setMic(message.tab, message.on);
-          return;
-        }
-        if (message.t === "input-status") {
-          setInputFailures((previous) => ({ ...previous, [message.tab]: message.failed }));
-          setInputFailureReasons((previous) => {
-            const next = { ...previous };
-            if (message.failed) next[message.tab] = message.reason ?? "远端页面未接受这次输入";
-            else delete next[message.tab];
-            return next;
-          });
-          inputResync.status(message.tab, message.failed);
-          return;
-        }
-        if (message.t === "cpa-oauth") {
-          setOAuthCallbacks((previous) => ({ ...previous, [message.tab]: message.status }));
-          return;
-        }
-
-        if (message.t === "server-status") {
-          setServerStatus((previous) => receiveServerStatus(previous, message, Date.now()));
-          return;
-        }
-        if (message.t === "px-capacity") setPixelAvailable(message.available);
-        if (message.t === "px-stats") {
-          gatewayFrames = {
-            capture: message.captureFps,
-            encode: message.encodeFps,
-            drop: message.dropFps,
-          };
-          return;
-        }
-        presentation.handle(message);
-        if (message.t === "hello") {
-          buildSkew.observe(message.build);
-          setOAuthCallbacks({});
-          // The gateway follows `hello` with the input-status of every tab still failed.
-          setInputFailures({});
-          setInputFailureReasons({});
-          setPageStates({});
-          sessionId = message.sessionId;
-          setViewerId(message.viewerId);
-          void apiRequest<DownloadEntry[] | undefined>(
-            `/s/${encodeURIComponent(message.sessionId)}/downloads`,
-            "GET",
-            undefined,
-            undefined,
-            { signal: controller.signal },
-          )
-            .then((response) => {
-              if (disposed || !Array.isArray(response)) return;
-              // Closed here before a reconnect: it stays closed.
-              const listed = response.filter(
-                (entry) => !dismissedDownloadIdsRef.current.has(entry.id),
-              );
-              setDownloads(listed);
-              // Finished before this page connected: offer the link briefly, never re-download.
-              for (const entry of listed) {
-                autoStarted.add(entry.id);
-                showDownload(entry.id);
-                if (entry.state !== "active") dismissDownloadSoon(entry.id);
-              }
-            })
-            .catch(() => undefined);
-          if (message.role === "driver") setDriverId(message.viewerId);
-        }
-        if (message.t === "driver") {
-          setDriverId(message.viewerId);
-          if (!presentation.isDriver()) {
-            uploads.clear();
-            uploadRequestRef.current?.abort();
-          }
-        }
-        if (message.t === "presence") setViewers(message.viewers);
-        if (message.t === "clip") {
-          clipboard.write(message.text);
-        }
-        if (message.t === "chrome") {
-          pageUrls.set(message.tab, message.url);
-          setChromeByTab((current) => ({ ...current, [message.tab]: message }));
-        }
-        if (message.t === "tab-state")
-          setPageStates((current) => ({ ...current, [message.tab]: message.state }));
-        if (message.t === "tabs") setTabs(message.tabs);
-        if (message.t === "download" && !dismissedDownloadIdsRef.current.has(message.id)) {
-          setDownloads((current) => updateDownloads(current, message));
-          // The link works from the start: the browser saves the file as it arrives, and shows that.
-          if (message.href && !autoStarted.has(message.id)) {
-            autoStarted.add(message.id);
-            startClientDownload(message.href, message.name);
-          }
-          if (message.state === "canceled") showDownload(message.id);
-          if (message.state === "done") {
-            // A phone's browser may refuse a save nobody tapped for, so it keeps the button.
-            if (/\bMobi/.test(navigator.userAgent)) showDownload(message.id);
-            if (shownDownloads.has(message.id)) dismissDownloadSoon(message.id);
-            else setDownloads((current) => dismissDownload(current, message.id));
-          }
-        }
-        if (message.t === "filepick" && presentation.isDriver() && sessionId !== null) {
-          uploads.handlePick(message, sessionId);
-        }
-      },
-      {
-        visible: !document.hidden,
-        connectionKey: pageKey,
-        onRttSample(sample) {
-          if (disposed) return;
-          mirror.observeRtt(sample);
-          setRttMs(sample);
-        },
-        onSpeedSample(sample) {
-          if (disposed) return;
-          setSpeedBps(sample);
-          setPeakSpeedBps((peak) => Math.max(peak ?? 0, sample));
-        },
-        resumeParam: presentation.resumeParam,
-        onStateChange(state, reconnected) {
-          if (disposed) return;
-          setConnection(state);
-          presentation.connectionChanged(state, reconnected);
-          if (state === "ended") {
-            finishSession();
-            return;
-          }
-          if (state === "replaced") {
-            cleanup();
-            setActiveTab(null);
-            setTabs([]);
-            setViewers([]);
-            setViewerId(null);
-            setDriverId(null);
-            setDownloads([]);
-            clientSessionControl.replaced();
-            return;
-          }
-        },
-        onProtocolError(error) {
-          // Not a replay failure: a garbled delta shows up as a sequence gap, which recovers
-          // on its own. Asking for a snapshot here only turned build skew into resync storms.
-          if (!disposed) console.warn("mirror: undecodable gateway message", error);
-        },
-      },
-    );
-    socketRef.current = socket;
-    voiceRef.current?.setSender((message) => socket?.send(message));
-
-    return cleanup;
-  }, [clientPhase, clientSession?.sid, fixturePath]);
-
-  useEffect(() => {
-    const report = () => {
-      socketRef.current?.setVisible(!document.hidden);
-      if (!document.hidden) socketRef.current?.probe();
-    };
-    document.addEventListener("visibilitychange", report);
-    window.addEventListener("pageshow", report);
-    window.addEventListener("online", report);
-    return () => {
-      document.removeEventListener("visibilitychange", report);
-      window.removeEventListener("pageshow", report);
-      window.removeEventListener("online", report);
-    };
-  }, []);
-
-  const closeClientSession = () =>
-    clientSessionControl.end(() => {
-      runtimeCleanupRef.current?.();
-      setInputReady(false);
-      setConnection("closed");
-      setActiveTab(null);
-      setTabs([]);
-      setViewers([]);
-      setViewerId(null);
-      setDriverId(null);
-      setDownloads([]);
-    });
-  const pixelMode = activeTab !== null && modeByTab[activeTab] === "px";
-  pixelModeRef.current = pixelMode;
+  const closeClientSession = () => clientSessionControl.end(() => runtime.reset("closed"));
+  const pixelMode = pixelModeOf(runtime.state);
   const activeChrome = activeTab === null ? null : (chromeByTab[activeTab] ?? null);
   const currentProfile = accountList?.accounts.find(
     (account) => account.id === accountList.current,
@@ -893,29 +252,13 @@ export function App() {
       window.removeEventListener("resize", measure);
     };
   }, [pageFailureShown]);
-  const resyncInput = useCallback(
-    () => (activeTab === null ? false : (inputResyncRef.current?.resync(activeTab) ?? false)),
-    [activeTab],
-  );
-  // The gateway's short reason while the active tab's input is not synced.
-  const inputFailureReason =
-    activeTab !== null && inputFailures[activeTab] ? inputFailureReasons[activeTab] : undefined;
   const shellStatus = describeConnection({
     clientPhase,
     connection,
-    inputUnsynced: activeTab !== null && !!inputFailures[activeTab],
-    inputFailureReason,
+    inputUnsynced: activeTab !== null && !!runtime.state.inputFailures[activeTab],
+    inputFailureReason: inputFailureReasonOf(runtime.state),
     inputReady,
   });
-  const changeView = (mode: ViewMode, remember = true) => {
-    if (remember) rememberViewMode(viewStorage(), mode);
-    if (mode === viewMode) return;
-    if (presentationRef.current) presentationRef.current.requestMode(mode, pxQuality);
-    else {
-      pendingModeRef.current = mode;
-      setViewMode(mode);
-    }
-  };
 
   const navigateWorkspace = (destination: WorkspaceDestination) => {
     setLogoutError(null);
@@ -971,7 +314,7 @@ export function App() {
     >
       <ShellBar
         viewMode={(activeTab !== null && modeByTab[activeTab]) || viewMode}
-        onViewMode={changeView}
+        onViewMode={(mode) => runtime.changeView(mode, pxQuality)}
         pixelAvailable={pixelAvailable}
         status={shellStatus}
         theme={themePreference}
@@ -984,15 +327,15 @@ export function App() {
         onPxQuality={(quality) => {
           setPxQuality(quality);
           viewStorage().setItem(PX_QUALITY_STORAGE_KEY, quality);
-          presentationRef.current?.updateQuality(quality);
+          runtime.updateQuality(quality);
         }}
         serverStatus={serverStatus}
         rttMs={rttMs}
         speedBps={speedBps}
         frameRate={pixelMode ? (frameRates?.display ?? null) : null}
         profileName={currentProfile?.name}
-        onReconnect={clientPhase === "ready" ? () => socketRef.current?.reconnect() : undefined}
-        onResyncInput={clientPhase === "ready" ? () => void resyncInput() : undefined}
+        onReconnect={clientPhase === "ready" ? runtime.reconnect : undefined}
+        onResyncInput={clientPhase === "ready" ? () => void runtime.resyncInput() : undefined}
         diagnostics={
           clientPhase === "ready"
             ? {
@@ -1013,8 +356,8 @@ export function App() {
         <TabStrip
           tabs={tabs}
           chromeByTab={chromeByTab}
-          onActivate={(tab) => presentationRef.current?.activate(tab)}
-          send={(message) => socketRef.current?.send(message)}
+          onActivate={runtime.activate}
+          send={runtime.send}
         />
       </ShellBar>
       {panels.open === "admin" && user?.role === "admin" && (
@@ -1069,7 +412,7 @@ export function App() {
         tab={activeTab}
         chrome={activeChrome}
         fallbackUrl={tabs.find((tab) => tab.id === activeTab)?.url ?? ""}
-        send={(message) => socketRef.current?.send(message)}
+        send={runtime.send}
       />
       <div id="shell-banners">
         {user && currentProfile && clientSession && clientPhase === "ready" && (
@@ -1096,12 +439,7 @@ export function App() {
           </p>
         )}
         {fixturePath !== null && (
-          <Presence
-            viewers={viewers}
-            viewerId={viewerId}
-            driverId={driverId}
-            send={(message) => socketRef.current?.send(message)}
-          />
+          <Presence viewers={viewers} viewerId={viewerId} driverId={driverId} send={runtime.send} />
         )}
       </div>
       <main id="mirror-host" data-input-ready={inputReady ? "true" : "false"} ref={hostRef} />
@@ -1134,9 +472,7 @@ export function App() {
             {oauthCallbacks[activeChrome.tab] !== "submitted" && (
               <button
                 type="button"
-                onClick={() =>
-                  socketRef.current?.send({ t: "nav", tab: activeChrome.tab, action: "reload" })
-                }
+                onClick={() => runtime.send({ t: "nav", tab: activeChrome.tab, action: "reload" })}
               >
                 重新加载
               </button>
@@ -1285,10 +621,10 @@ export function App() {
           hidden
           onChange={(event) => {
             if (uploadState === null) event.currentTarget.value = "";
-            else uploadRef.current?.select(uploadState.tab, event.currentTarget);
+            else runtime.selectFiles(uploadState.tab, event.currentTarget);
           }}
           onCancel={() => {
-            if (uploadState !== null) uploadRef.current?.cancelPick(uploadState.tab);
+            if (uploadState !== null) runtime.cancelFilePick(uploadState.tab);
           }}
         />
         {/* Uploading: a thin bar along the bottom edge, over everything, taking no room. */}
@@ -1328,13 +664,7 @@ export function App() {
                   <small>单文件 ≤100 MB，单批 ≤500 MB</small>
                 </>
               )}
-              <button
-                type="button"
-                onClick={() => {
-                  uploadRequestRef.current?.abort();
-                  uploadRef.current?.cancel();
-                }}
-              >
+              <button type="button" onClick={runtime.cancelUpload}>
                 {uploadState.phase === "picking" ? "取消上传" : "关闭"}
               </button>
             </section>
@@ -1354,10 +684,7 @@ export function App() {
               setDownloadError("取消下载失败，请重试");
             }
           }}
-          onDismiss={(id) => {
-            dismissedDownloadIdsRef.current.add(id);
-            setDownloads((current) => dismissDownload(current, id));
-          }}
+          onDismiss={runtime.dismissDownload}
         />
       </aside>
     </div>
