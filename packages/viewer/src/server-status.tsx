@@ -1,5 +1,6 @@
 /** Server B telemetry; receipt time avoids comparing clocks on different machines. */
 import type { ServerStatusMsg } from "@mirror/protocol";
+import { apiFetch } from "./api";
 
 export const SERVER_STATUS_STALE_MS = 10_000;
 export const SERVER_STATUS_POLL_MS = 3_000;
@@ -25,7 +26,7 @@ export function pollServerStatus({
   onSample,
   onReachable,
   onAuthFailure,
-  fetcher = fetch,
+  fetcher,
 }: {
   sid?: string;
   onSample(value: ServerStatusMsg): void;
@@ -41,13 +42,11 @@ export function pollServerStatus({
     pending = controller;
     const timeout = setTimeout(() => controller.abort(), 4_000);
     try {
-      const response = await fetcher(
+      // A 401 here stops this poll; it is not an expired sign-in to send to the gate.
+      const response = await apiFetch(
         sid ? `/api/status?sid=${encodeURIComponent(sid)}` : "/api/status",
-        {
-          credentials: "same-origin",
-          cache: "no-store",
-          signal: controller.signal,
-        },
+        {},
+        { fetcher, signal: controller.signal, allowUnauthorized: true },
       );
       if (stopped) return;
       if (response.status === 401 || response.status === 403) {
