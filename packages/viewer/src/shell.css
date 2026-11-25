@@ -644,9 +644,33 @@ body {
   .shell-status-text {
     display: none;
   }
-  .shell-views button {
+  /* One button: the current view, with a swap mark; a tap switches (shell-bar.tsx). */
+  .shell-views {
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+  .shell-views button[aria-pressed="false"] {
+    display: none;
+  }
+  .shell-views button[aria-pressed="true"] {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     min-width: 0;
-    padding: 0 8px;
+    padding: 0 8px 0 10px;
+    border: 1px solid var(--line-strong);
+    background: var(--surface);
+    box-shadow: none;
+  }
+  .shell-views button[aria-pressed="true"]::after {
+    content: "⇄";
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 400;
+  }
+  .shell-views button[data-switch-blocked="true"]::after {
+    opacity: 0.35;
   }
   #shell-status {
     width: 30px;

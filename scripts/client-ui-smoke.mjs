@@ -468,8 +468,14 @@ async function captureHeader(page, name, viewport) {
       host: box(host),
       address: box(document.querySelector('#urlbar input[aria-label="Address"]')),
       tabTitle: box(document.querySelector('.browser-tab[data-active="true"] .tab-title')),
+      // Phones show only the current view's button; it switches views itself.
+      views: [...document.querySelectorAll("#shell-bar [data-view-mode]")].filter((element) =>
+        element.checkVisibility(),
+      ).length,
       controls: [
-        ...document.querySelectorAll("#shell-bar [data-view-mode]"),
+        ...[...document.querySelectorAll("#shell-bar [data-view-mode]")].filter((element) =>
+          element.checkVisibility(),
+        ),
         document.querySelector("#shell-menu-toggle"),
         document.querySelector("#shell-status"),
       ].map((element) => {
@@ -483,6 +489,7 @@ async function captureHeader(page, name, viewport) {
   layouts[name] = layout;
   assert(layout.header.bottom <= layout.host.y + 1, `${name}: header overlaps the content`);
   assert(layout.tabTitle.width >= 20, `${name}: active tab title is squeezed out`);
+  assert.equal(layout.views, viewport.width <= 760 ? 1 : 2, `${name}: view buttons`);
   for (const control of layout.controls) {
     assert(control.width > 0 && control.height > 0, `${name}: ${control.id} has no visible size`);
     assert(
@@ -796,6 +803,13 @@ try {
 
   await captureHeader(firstPage, "desktop", { width: 1360, height: 900 });
   await captureHeader(firstPage, "mobile", { width: 375, height: 812 });
+  // On a phone the one visible view button switches to the other view.
+  await viewButton("dom").click();
+  await firstPage.locator('#shell-bar [data-view-mode="px"][aria-pressed="true"]').waitFor();
+  assert.equal(await viewButton("dom").isVisible(), false);
+  await viewButton("px").click();
+  await firstPage.locator('#shell-bar [data-view-mode="dom"][aria-pressed="true"]').waitFor();
+  checks.phoneViewButtonSwitches = true;
   await firstPage.locator("#shell-menu-toggle").click();
   await firstPage.locator("#shell-menu").getByRole("button", { name: "深色", exact: true }).click();
   await firstPage.locator('#shell[data-theme="dark"]').waitFor();

@@ -58,6 +58,9 @@ const VIEWS: { mode: ViewMode; label: string; title: string }[] = [
   { mode: "px", label: "画面", title: "画面：远程浏览器的实时图像，用于验证码等" },
 ];
 
+/** Phones show one view button, the current one; a tap switches to the other view. */
+const COMPACT_VIEWS = "(max-width: 760px)";
+
 type Popup = "menu" | "connection";
 
 export function ShellBar(props: ShellBarProps) {
@@ -113,19 +116,29 @@ export function ShellBar(props: ShellBarProps) {
   return (
     <header id="shell-bar">
       <div class="shell-views" role="group" aria-label="视图">
-        {VIEWS.map((view) => (
-          <button
-            key={view.mode}
-            type="button"
-            data-view-mode={view.mode}
-            title={view.title}
-            aria-pressed={props.viewMode === view.mode}
-            disabled={view.mode === "px" && props.viewMode !== "px" && !props.pixelAvailable}
-            onClick={() => props.onViewMode(view.mode)}
-          >
-            {view.label}
-          </button>
-        ))}
+        {VIEWS.map((view) => {
+          const current = props.viewMode === view.mode;
+          const other = VIEWS.find((item) => item.mode !== view.mode)!;
+          const otherBlocked = other.mode === "px" && !props.pixelAvailable;
+          return (
+            <button
+              key={view.mode}
+              type="button"
+              data-view-mode={view.mode}
+              data-switch-blocked={current && otherBlocked ? "true" : undefined}
+              title={current ? `${view.title}（手机上点按切换到${other.label}）` : view.title}
+              aria-pressed={current}
+              disabled={view.mode === "px" && !current && !props.pixelAvailable}
+              onClick={() => {
+                if (!current) props.onViewMode(view.mode);
+                else if (!otherBlocked && window.matchMedia?.(COMPACT_VIEWS).matches)
+                  props.onViewMode(other.mode);
+              }}
+            >
+              {view.label}
+            </button>
+          );
+        })}
       </div>
 
       <div class="shell-bar-tabs">{props.children}</div>
