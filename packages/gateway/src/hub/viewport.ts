@@ -3,7 +3,7 @@
  *
  * Driver `view` messages lock input immediately, debounce bursts for 300ms, apply Chromium device
  * metrics, and force a viewport snapshot. Only an acknowledgement of the final viewport epoch
- * unlocks that viewer. Nav/trim/resync epochs never perturb the geometry gate (H3).
+ * unlocks that viewer. Nav and resync epochs never perturb the geometry gate (H3).
  */
 import { EventType, type Down, type SnapshotReason, type TabId, type Up } from "@mirror/protocol";
 import type { CdpSend } from "../types";

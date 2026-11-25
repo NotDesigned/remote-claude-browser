@@ -22,7 +22,7 @@ import type { IncomingMessage, Server as HttpServer } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer } from "ws";
 import type WebSocket from "ws";
-import type { TabHub } from "../hub/tabhub";
+import { serializedDown, type TabHub } from "../hub/tabhub";
 import { ViewerConn, type ViewerConnOpts, type ViewerSocket } from "./viewerconn";
 
 export const DEFAULT_BATCH_MS = 16;
@@ -584,7 +584,7 @@ export function serializeDown(msg: Down): string | Uint8Array {
   if (msg.t === "vid") return encodeVidBinary(msg);
   if (msg.t === "px" && typeof msg.data === "string")
     return encodePxBinary(msg.tab, msg.w, msg.h, Buffer.from(msg.data, "base64"));
-  return encodeMsg(msg);
+  return serializedDown(msg) ?? encodeMsg(msg);
 }
 
 /** Resume cursors a reconnecting viewer reported in its WebSocket URL. */

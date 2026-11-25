@@ -1,10 +1,9 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MIRROR_NODE_FN_NAME, NODE_IN_FRAME_ERROR, type AgentMsg } from "@mirror/protocol";
+import { NODE_IN_FRAME_ERROR, type AgentMsg } from "@mirror/protocol";
 import {
   createCommandHandler,
   createRecordReadiness,
-  installMirrorNodeHelper,
   type CrossOriginIframeMirror,
   type NodeMirror,
   type RecordReadiness,
@@ -69,6 +68,43 @@ describe("resolve command", () => {
         ok: true,
         data: { kind: "remote", iframeNodeId: 44, remoteId: 37 },
       },
+    ]);
+  });
+
+  it("walks the recorder's nodes only to find frames, and still finds a new or moved one", () => {
+    const first = iframeNode();
+    const second = iframeNode();
+    const remoteMaps = new WeakMap<HTMLIFrameElement, Map<number, number>>([
+      [first, new Map([[901, 37]])],
+      [second, new Map([[902, 38]])],
+    ]);
+    const crossOriginIframeMirror: CrossOriginIframeMirror = {
+      iframeRemoteIdToIdMap: remoteMaps,
+      getRemoteId: (candidate, nodeId) => remoteMaps.get(candidate)?.get(nodeId) ?? -1,
+    };
+    const nodes = new Map<number, Node>([[44, first]]);
+    for (let id = 1; id < 40; id++) nodes.set(id, { nodeType: 1, isConnected: true } as Node);
+    const { handler, messages } = harness(nodes, crossOriginIframeMirror);
+    const getIds = vi.spyOn(nodes, "keys");
+
+    handler({ cmd: "resolve", reqId: 1, nodeId: 901 });
+    handler({ cmd: "resolve", reqId: 2, nodeId: 901 });
+    handler({ cmd: "resolve", reqId: 3, nodeId: 901 });
+    expect(getIds).toHaveBeenCalledTimes(1);
+
+    // A frame added later is found by walking again.
+    nodes.set(55, second);
+    handler({ cmd: "resolve", reqId: 4, nodeId: 902 });
+    // The first frame moves to another id: its old one no longer names a frame.
+    nodes.delete(44);
+    nodes.set(66, first);
+    handler({ cmd: "resolve", reqId: 5, nodeId: 901 });
+    expect(messages.map((message) => (message as { data?: unknown }).data)).toEqual([
+      { kind: "remote", iframeNodeId: 44, remoteId: 37 },
+      { kind: "remote", iframeNodeId: 44, remoteId: 37 },
+      { kind: "remote", iframeNodeId: 44, remoteId: 37 },
+      { kind: "remote", iframeNodeId: 55, remoteId: 38 },
+      { kind: "remote", iframeNodeId: 66, remoteId: 37 },
     ]);
   });
 
@@ -277,23 +313,5 @@ describe("snapshot command readiness", () => {
     expect(messages).toEqual([
       { kind: "cmdres", reqId: 13, ok: false, err: "recorder not ready; retry snapshot" },
     ]);
-  });
-});
-
-describe("mirror node helper", () => {
-  it("exposes the actual recorder-mirror node on the main-world global", () => {
-    const node = { isConnected: true } as Node;
-    const fakeWindow: Record<string, unknown> = {};
-    vi.stubGlobal("window", fakeWindow);
-    const nodeMirror: NodeMirror = {
-      getIds: () => [71],
-      getNode: (nodeId) => (nodeId === 71 ? node : null),
-    };
-
-    installMirrorNodeHelper(() => nodeMirror);
-
-    const helper = fakeWindow[MIRROR_NODE_FN_NAME] as (nodeId: number) => Node | null;
-    expect(helper(71)).toBe(node);
-    expect(helper(999)).toBeNull();
   });
 });

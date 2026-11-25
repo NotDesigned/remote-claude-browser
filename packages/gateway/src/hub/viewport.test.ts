@@ -15,7 +15,7 @@ describe("ViewportInputGate", () => {
     gate.acknowledge("driver", "t1", 2);
     expect(gate.allowsInput("driver", "t1")).toBe(true);
 
-    gate.noteSnapshot(snapshot(3, "trim"));
+    gate.noteSnapshot(snapshot(3, "resync"));
     gate.acknowledge("driver", "t1", 3);
     gate.noteSnapshot(snapshot(4, "nav"));
     gate.noteSnapshot(snapshot(4, "resync"));
@@ -285,7 +285,7 @@ describe("ViewportAgreement", () => {
       expect(agreement.handle("driver", { t: "view-ack", tab: "t1", epoch: 7 })).toBe(true);
       expect(agreement.gate.allowsInput("driver", "t1")).toBe(true);
 
-      agreement.noteSnapshot({ tab: "t1", epoch: 8, reason: "trim" });
+      agreement.noteSnapshot({ tab: "t1", epoch: 8, reason: "resync" });
       agreement.noteSnapshot({ tab: "t1", epoch: 9, reason: "nav" });
       expect(agreement.gate.allowsInput("driver", "t1")).toBe(true);
       agreement.dispose();

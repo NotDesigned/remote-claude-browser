@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { callFrameAgent, ensureAgentBridgeChannel } from "./bridge";
+import vm from "node:vm";
+import { callFrameAgent, ensureAgentBridgeChannel, isolatedAgentBridgeSource } from "./bridge";
 import type { BrowserHandle } from "./launch";
 
 function browserWith(send: (method: string, params: Record<string, unknown>) => unknown) {
@@ -52,6 +53,36 @@ describe("calling a frame's agent", () => {
       callFrameAgent(browser, "session", "frame", "command", [{ cmd: "ping" }]),
     ).resolves.toEqual({ result: {} });
     expect(worlds).toBe(2);
+  });
+
+  it("passes the agent's chunks to the binding as they are, without a JSON envelope", () => {
+    const browser = browserWith(() => ({ result: {} }));
+    const channel = ensureAgentBridgeChannel(browser, "outbound-session");
+    const received: string[] = [];
+    const document = new EventTarget();
+    const context = vm.createContext({
+      EventTarget,
+      CustomEvent,
+      Document: class {
+        querySelectorAll() {
+          return [];
+        }
+      },
+      document,
+      setInterval: () => 1,
+      clearInterval: () => undefined,
+      JSON,
+      Object,
+      [channel.bindingName]: (payload: string) => received.push(payload),
+      [channel.rtcBindingName]: () => undefined,
+    });
+    vm.runInContext(isolatedAgentBridgeSource(channel), context);
+    const chunk = 'M2|1|0|0|1|{"kind":"rrweb","text":"a \\"quoted\\"\\nline"}';
+    document.dispatchEvent(
+      new CustomEvent(channel.outboundEventName, { detail: `agent\n${chunk}` }),
+    );
+    document.dispatchEvent(new CustomEvent(channel.outboundEventName, { detail: "no lane" }));
+    expect(received).toEqual([chunk]);
   });
 
   it("sends a command through the channel's private event, whatever it contains", async () => {
