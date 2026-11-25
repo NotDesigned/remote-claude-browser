@@ -1,5 +1,5 @@
 diff --git a/dist/replay.cjs b/dist/replay.cjs
-index 40e271ca6a7ec2e63fdf898fa1a007ae9bd735b2..05b8e7e53ea185f574ee19d9724ce5b8c490109e 100644
+index 40e271ca6a7ec2e63fdf898fa1a007ae9bd735b2..c224baa987c632d8a50904b4217770e5952601ce 100644
 --- a/dist/replay.cjs
 +++ b/dist/replay.cjs
 @@ -10594,6 +10594,8 @@ function createPlayerService(context, { getCastFn, applyEventsSynchronously, emi
@@ -23,8 +23,26 @@ index 40e271ca6a7ec2e63fdf898fa1a007ae9bd735b2..05b8e7e53ea185f574ee19d9724ce5b8
      const afterAppend = (builtNode, id) => {
        if (builtNode.nodeName === "DIALOG")
          collectedDialogs.add(builtNode);
+@@ -11807,6 +11814,17 @@ class Replayer {
+         (m) => m !== mutationInQueue
+       );
+     }
++    // buildNodeWithSN leaves out what rebuild does last: putting each element back where it was
++    // scrolled. A frame whose document is sent again would otherwise show its top, wherever the
++    // page is, until the page scrolls again.
++    if (!this.usingVirtualDom) {
++      const restoreScroll = (sn) => {
++        const node = mirror2.getNode(sn.id);
++        if (node) handleScroll(node, mirror2);
++        if (sn.childNodes) sn.childNodes.forEach(restoreScroll);
++      };
++      restoreScroll(mutation.node);
++    }
+     collectedDialogs.forEach((d) => applyDialogToTopLevel(d));
+   }
+   collectIframeAndAttachDocument(collected, builtNode) {
 diff --git a/dist/replay.js b/dist/replay.js
-index 55c239020841f7a3340d0caeffeea1fc82a34771..ddb2207e60990b75f66492778ba286fa60b6d79a 100644
+index 55c239020841f7a3340d0caeffeea1fc82a34771..d253d6037b702bf1cbf83664ef289bcc372f9d59 100644
 --- a/dist/replay.js
 +++ b/dist/replay.js
 @@ -10592,6 +10592,8 @@ function createPlayerService(context, { getCastFn, applyEventsSynchronously, emi
@@ -48,3 +66,21 @@ index 55c239020841f7a3340d0caeffeea1fc82a34771..ddb2207e60990b75f66492778ba286fa
      const afterAppend = (builtNode, id) => {
        if (builtNode.nodeName === "DIALOG")
          collectedDialogs.add(builtNode);
+@@ -11805,6 +11812,17 @@ class Replayer {
+         (m) => m !== mutationInQueue
+       );
+     }
++    // buildNodeWithSN leaves out what rebuild does last: putting each element back where it was
++    // scrolled. A frame whose document is sent again would otherwise show its top, wherever the
++    // page is, until the page scrolls again.
++    if (!this.usingVirtualDom) {
++      const restoreScroll = (sn) => {
++        const node = mirror2.getNode(sn.id);
++        if (node) handleScroll(node, mirror2);
++        if (sn.childNodes) sn.childNodes.forEach(restoreScroll);
++      };
++      restoreScroll(mutation.node);
++    }
+     collectedDialogs.forEach((d) => applyDialogToTopLevel(d));
+   }
+   collectIframeAndAttachDocument(collected, builtNode) {

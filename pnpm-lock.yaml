@@ -13,7 +13,7 @@ patchedDependencies:
     hash: e4wv4lvfzdohpzl4ccklwez3vu
     path: patches/@rrweb__record@2.1.1.patch
   '@rrweb/replay@2.1.1':
-    hash: eguyadeso2oc3qtvastkzm5bfu
+    hash: edvz4czl2hyj3vtztg36nlk45i
     path: patches/@rrweb__replay@2.1.1.patch
 
 importers:
@@ -114,7 +114,7 @@ importers:
         version: link:../protocol
       '@rrweb/replay':
         specifier: 2.1.1
-        version: 2.1.1(patch_hash=eguyadeso2oc3qtvastkzm5bfu)
+        version: 2.1.1(patch_hash=edvz4czl2hyj3vtztg36nlk45i)
       '@rrweb/rrweb-plugin-canvas-webrtc-replay':
         specifier: 2.1.1
         version: 2.1.1(rrweb@2.1.1)
@@ -2100,7 +2100,7 @@ snapshots:
       '@rrweb/utils': 2.1.1
       rrweb: 2.1.1
 
-  '@rrweb/replay@2.1.1(patch_hash=eguyadeso2oc3qtvastkzm5bfu)':
+  '@rrweb/replay@2.1.1(patch_hash=edvz4czl2hyj3vtztg36nlk45i)':
     dependencies:
       '@rrweb/types': 2.1.1
       rrweb: 2.1.1
