@@ -1,8 +1,12 @@
 /**
- * True while a reply is being written into a page, which closing the page would cut short. Claude
- * Code shows the same button, but its work runs on another machine and goes on without the page.
+ * True while Claude is writing a reply into a page, which closing the page would cut short. Only
+ * claude.ai counts: any other site may well have a visible "stop" button forever. Claude Code
+ * shows the same button, but its work runs on another machine and goes on without the page.
  */
-export const PAGE_GENERATING_EXPRESSION = `(() => !/^\\/code(\\/|$)/.test(location.pathname) && [...document.querySelectorAll('button')].some(e => e.getClientRects().length > 0 && /stop|停止/i.test((e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-testid') || ''))))()`;
+export const PAGE_GENERATING_EXPRESSION = `(() => /(^|\\.)claude\\.ai$/.test(location.hostname) && !/^\\/code(\\/|$)/.test(location.pathname) && [...document.querySelectorAll('button')].some(e => e.getClientRects().length > 0 && /stop|停止/i.test((e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-testid') || ''))))()`;
+
+/** A busy page holds its workspace at most this long after its last viewer left. */
+export const MAX_BUSY_OFFLINE_MS = 30 * 60_000;
 
 export interface IdleSession {
   sid: string;
@@ -17,6 +21,8 @@ export interface IdleReaperOptions {
   release(sid: string, token: unknown): Promise<void>;
   now?: () => number;
   graceMs?: number;
+  /** Offline this long, a workspace is released even while a page still reports being busy. */
+  maxBusyOfflineMs?: number;
   onError?: (error: unknown) => void;
 }
 
@@ -36,6 +42,11 @@ export function createIdleReaper(options: IdleReaperOptions): {
   const graceMs = options.graceMs ?? 60_000;
   if (!Number.isSafeInteger(graceMs) || graceMs < 0)
     throw new RangeError("graceMs must be a non-negative safe integer");
+  const busyLimit = options.maxBusyOfflineMs ?? MAX_BUSY_OFFLINE_MS;
+  if (!Number.isSafeInteger(busyLimit) || busyLimit < 0)
+    throw new RangeError("maxBusyOfflineMs must be a non-negative safe integer");
+  // A grace period configured longer than the limit is never cut short by it.
+  const maxBusyOfflineMs = Math.max(busyLimit, graceMs);
   const states = new Map<string, IdleState>();
   let disposed = false;
   let pending: Promise<void> | undefined;
@@ -77,7 +88,9 @@ export function createIdleReaper(options: IdleReaperOptions): {
         if (state.offlineSince === null || at < state.offlineSince) state.offlineSince = at;
         if (at - state.offlineSince < graceMs) continue;
         const generation = state.generation;
-        const busy = await options.isBusy(record.sid);
+        // A page that never stops looking busy must not hold its workspace forever.
+        const capped = at - state.offlineSince >= maxBusyOfflineMs;
+        const busy = !capped && (await options.isBusy(record.sid));
         if (disposed || states.get(record.sid) !== state || state.generation !== generation)
           continue;
         const current = options.sessions().find((entry) => entry.sid === record.sid);
