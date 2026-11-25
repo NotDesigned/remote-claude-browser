@@ -254,15 +254,23 @@ export function createOidc(
       return { profile: profileFrom(claims, userinfo), purpose: item.purpose, userId: item.userId };
     },
     /**
-     * The local user for a completed sign-in: an existing identity, or a new account
-     * (auto-provisioning) when the allow-list admits the person. Keeps the role of users
+     * The local user for a completed sign-in, provided the allow-list (still) admits the person:
+     * an existing identity, or a new account (auto-provisioning). Keeps the role of users
      * created by sign-in in step with the admin group.
      */
     async signIn(profile: OidcProfile): Promise<FrontendUser> {
+      // The allow-list applies to every sign-in, not only the first: someone removed from the
+      // allowed groups or domains must not keep signing in through an identity created earlier.
+      // Checked before identityLogin so a refused attempt does not count as a recent sign-in.
+      if (!admitted(settings, profile))
+        throw new OidcError(
+          403,
+          store.identity(profile.issuer, profile.subject)
+            ? "你的单点登录账号已不在这个工作台的允许范围内（用户组或邮箱域名），请联系管理员"
+            : "你的单点登录账号没有使用这个工作台的权限，请联系管理员",
+        );
       let user = store.identityLogin(profile.issuer, profile.subject, profile.email);
       if (!user) {
-        if (!admitted(settings, profile))
-          throw new OidcError(403, "你的单点登录账号没有使用这个工作台的权限，请联系管理员");
         user = store.createIdentityUser({
           issuer: profile.issuer,
           subject: profile.subject,
