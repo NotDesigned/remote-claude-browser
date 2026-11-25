@@ -215,23 +215,19 @@ body {
 #shell summary {
   font-family: inherit;
 }
+/* Only the dot shows; the words are for screen readers, the hover text and the popover. */
 #shell-status {
   position: relative;
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: 6px;
-  max-width: 200px;
+  justify-content: center;
+  width: 30px;
   height: 30px;
-  padding: 0 11px;
+  padding: 0;
   border: 0;
-  border-radius: 15px;
+  border-radius: 50%;
   background: var(--sunken);
-  color: var(--muted);
-  /* Quieter than the bar's controls: CJK text (Microsoft YaHei on Windows) reads heavy at 13px. */
-  font-size: 12px;
-  font-weight: 400;
-  white-space: nowrap;
   cursor: pointer;
 }
 #shell-status:hover,
@@ -252,13 +248,17 @@ body {
   background: var(--warn-ink);
 }
 .shell-status-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
   overflow: hidden;
-  text-overflow: ellipsis;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .shell-status-dot {
   flex: none;
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   background: var(--ok);
 }

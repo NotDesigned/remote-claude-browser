@@ -143,7 +143,7 @@ export function ShellBar(props: ShellBarProps) {
           id="shell-status"
           data-tone={status.tone}
           data-warn={attention ? "true" : undefined}
-          title={status.reason}
+          title={`${status.text}：${status.reason}`}
           aria-label={`连接：${status.text}${attention ? "（有提醒）" : ""}`}
           aria-haspopup="dialog"
           aria-expanded={open === "connection"}
