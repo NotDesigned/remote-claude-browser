@@ -1,6 +1,7 @@
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { IncomingMessage } from "node:http";
 import type { FrontendUser } from "../auth/users";
+import { messageAnswer, type ErrorStyle } from "../http-errors";
 import type { ExitHealth } from "./timezone";
 import {
   ProxyCatalogError,
@@ -8,6 +9,18 @@ import {
   type ProxySourceInput,
   type ProxySourceUpdate,
 } from "./catalog";
+
+/** Proxy routes answer `{ error: message, code }`; anything else is a source the catalog refused. */
+export const proxyErrors: ErrorStyle = (error) =>
+  error instanceof ProxyCatalogError
+    ? messageAnswer(error)
+    : {
+        status: 400,
+        body: {
+          error: error instanceof Error ? error.message : "代理源操作失败",
+          code: "PROXY_SOURCE_INVALID",
+        },
+      };
 
 export function registerProxyRoutes(
   app: FastifyInstance,
@@ -22,94 +35,64 @@ export function registerProxyRoutes(
     if (!user) throw new ProxyCatalogError(401, "LOGIN_REQUIRED", "请重新登录");
     return user;
   };
-  const failed = (reply: FastifyReply, error: unknown) =>
-    error instanceof ProxyCatalogError
-      ? reply.code(error.statusCode).send({ error: error.message, code: error.code })
-      : reply.code(400).send({
-          error: error instanceof Error ? error.message : "代理源操作失败",
-          code: "PROXY_SOURCE_INVALID",
-        });
-  app.get("/api/proxy-sources", async (request, reply) => {
-    try {
-      return reply
-        .header("cache-control", "no-store")
-        .send({ sources: options.catalog.listSources(userFor(request.raw)) });
-    } catch (error) {
-      return failed(reply, error);
-    }
-  });
-  app.get("/api/proxies", async (request, reply) => {
-    try {
-      return reply
-        .header("cache-control", "no-store")
-        .send({ proxies: options.catalog.listNodes(userFor(request.raw)) });
-    } catch (error) {
-      return failed(reply, error);
-    }
-  });
-  app.post<{ Params: { id: string } }>("/api/proxies/:id/check", async (request, reply) => {
-    try {
+  const config = { errors: proxyErrors };
+  const sourceBody = { bodyLimit: 2 * 1024 * 1024, config };
+  app.get("/api/proxy-sources", { config }, async (request, reply) =>
+    reply
+      .header("cache-control", "no-store")
+      .send({ sources: options.catalog.listSources(userFor(request.raw)) }),
+  );
+  app.get("/api/proxies", { config }, async (request, reply) =>
+    reply
+      .header("cache-control", "no-store")
+      .send({ proxies: options.catalog.listNodes(userFor(request.raw)) }),
+  );
+  app.post<{ Params: { id: string } }>(
+    "/api/proxies/:id/check",
+    { config },
+    async (request, reply) => {
       const user = userFor(request.raw);
       options.catalog.getNodeConfig(user, request.params.id);
       return reply.header("cache-control", "no-store").send({
         health: await options.checkProxy(user, request.params.id),
       });
-    } catch (error) {
-      return failed(reply, error);
-    }
-  });
-  app.get<{ Params: { id: string } }>("/api/proxy-sources/:id/usage", async (request, reply) => {
-    try {
-      return reply.header("cache-control", "no-store").send({
-        usage: options.catalog.sourceUsage(userFor(request.raw), request.params.id),
-      });
-    } catch (error) {
-      return failed(reply, error);
-    }
-  });
-  app.post<{ Body: ProxySourceInput }>(
-    "/api/proxy-sources",
-    { bodyLimit: 2 * 1024 * 1024 },
-    async (request, reply) => {
-      try {
-        return { source: await options.catalog.importSource(userFor(request.raw), request.body) };
-      } catch (error) {
-        return failed(reply, error);
-      }
     },
   );
+  app.get<{ Params: { id: string } }>(
+    "/api/proxy-sources/:id/usage",
+    { config },
+    async (request, reply) =>
+      reply.header("cache-control", "no-store").send({
+        usage: options.catalog.sourceUsage(userFor(request.raw), request.params.id),
+      }),
+  );
+  app.post<{ Body: ProxySourceInput }>("/api/proxy-sources", sourceBody, async (request) => ({
+    source: await options.catalog.importSource(userFor(request.raw), request.body),
+  }));
   app.patch<{ Params: { id: string }; Body: ProxySourceUpdate }>(
     "/api/proxy-sources/:id",
-    { bodyLimit: 2 * 1024 * 1024 },
-    async (request, reply) => {
-      try {
-        return {
-          source: await options.catalog.updateSource(
-            userFor(request.raw),
-            request.params.id,
-            request.body,
-          ),
-        };
-      } catch (error) {
-        return failed(reply, error);
-      }
-    },
+    sourceBody,
+    async (request) => ({
+      source: await options.catalog.updateSource(
+        userFor(request.raw),
+        request.params.id,
+        request.body,
+      ),
+    }),
   );
-  app.post<{ Params: { id: string } }>("/api/proxy-sources/:id/refresh", async (request, reply) => {
-    try {
-      return {
-        source: await options.catalog.refreshSource(userFor(request.raw), request.params.id),
-      };
-    } catch (error) {
-      return failed(reply, error);
-    }
-  });
-  app.delete<{ Params: { id: string } }>("/api/proxy-sources/:id", async (request, reply) => {
-    try {
+  app.post<{ Params: { id: string } }>(
+    "/api/proxy-sources/:id/refresh",
+    { config },
+    async (request) => ({
+      source: await options.catalog.refreshSource(userFor(request.raw), request.params.id),
+    }),
+  );
+  app.delete<{ Params: { id: string } }>(
+    "/api/proxy-sources/:id",
+    { config },
+    async (request, reply) => {
       await options.catalog.removeSource(userFor(request.raw), request.params.id);
       return reply.code(204).send();
-    } catch (error) {
-      return failed(reply, error);
-    }
-  });
+    },
+  );
 }

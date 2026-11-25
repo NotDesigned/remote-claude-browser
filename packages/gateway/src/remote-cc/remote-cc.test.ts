@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { registerErrorHandler } from "../http-errors";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -265,6 +266,7 @@ describe("remote-cc routes", () => {
       delay: undefined as Promise<void> | undefined,
     };
     const app = Fastify();
+    registerErrorHandler(app);
     const routes = registerRemoteCcRoutes(app, {
       autoOpen: true,
       store,
@@ -367,7 +369,12 @@ describe("remote-cc routes", () => {
       (await call("GET", "/api/remote-cc/tokens", { user: "alice" })).json().tokens,
     ).toHaveLength(1);
     users.get("alice")!.enabled = false;
-    expect((await call("GET", "/api/remote-cc/v1/profiles", { token })).statusCode).toBe(401);
+    const disabled = await call("GET", "/api/remote-cc/v1/profiles", { token });
+    expect(disabled.statusCode).toBe(401);
+    expect(disabled.json()).toEqual({
+      error: expect.stringMatching(/^REMOTE_CC_/),
+      message: expect.any(String),
+    });
   });
 
   it("gives node credentials only to an admin-approved host, on a user's grant", async () => {
