@@ -51,7 +51,6 @@
     "smoke:profile-egress": "bash scripts/limited-run.sh env PROFILE_EGRESS_SMOKE=1 node scripts/profile-egress-smoke.mjs",
     "check:host": "bash scripts/limited-run.sh bash -c 'bash scripts/check-host.sh'",
     "bootstrap": "bash scripts/limited-run.sh bash -c 'bash scripts/bootstrap.sh'",
-    "invite": "bash scripts/limited-run.sh bash -c 'tsx scripts/invite.ts'",
     "ci": "bash scripts/limited-run.sh bash -c 'node scripts/check-rrweb-versions.mjs && pnpm run build && pnpm run typecheck && pnpm run test && pnpm run test:rtc-media && pnpm run test:browser-lifecycle && pnpm run format:check'",
     "dev": "bash scripts/limited-run.sh pnpm --filter @mirror/viewer run dev"
   },
