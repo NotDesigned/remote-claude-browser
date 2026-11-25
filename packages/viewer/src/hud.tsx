@@ -1,11 +1,11 @@
-/** Compact connection diagnostics outside the mirrored document. */
+/** Connection diagnostics, folded into the 「连接」 popover under 「诊断」. */
 import type { Down, TabId } from "@mirror/protocol";
 import type { GatewayConnectionState } from "./ws";
 import type { ResyncTabState } from "./resync";
 
 type Tab = Extract<Down, { t: "tabs" }>["tabs"][number];
 
-export interface HudProps {
+export interface DiagnosticsProps {
   connection: GatewayConnectionState;
   rttMs: number | null;
   bufferMs: number;
@@ -34,15 +34,16 @@ export function formatSpeed(bytesPerSecond: number | null): string {
   return `${(bytesPerSecond / (1024 * 1024)).toFixed(1)} MB/s`;
 }
 
-export function HudLayer(props: HudProps) {
-  return (
-    <aside id="viewer-hud-layer" aria-label="Viewer diagnostics">
-      <Hud {...props} />
-    </aside>
-  );
+/** Tabs that re-synchronised often lately; the popover warns about them outside 「诊断」. */
+export function resyncStormTabs(
+  resyncByTab: Readonly<Record<TabId, ResyncTabState | undefined>>,
+): TabId[] {
+  return Object.values(resyncByTab)
+    .filter((state): state is ResyncTabState => state !== undefined && state.storm)
+    .map((state) => state.tab);
 }
 
-export function Hud({
+export function Diagnostics({
   connection,
   rttMs,
   bufferMs,
@@ -53,12 +54,12 @@ export function Hud({
   speedBps,
   peakSpeedBps,
   frames,
-}: HudProps) {
+}: DiagnosticsProps) {
   const states = Object.values(resyncByTab).filter(
     (state): state is ResyncTabState => state !== undefined,
   );
   const stateByTab = new Map(states.map((state) => [state.tab, state]));
-  const stormTabs = states.filter((state) => state.storm).map((state) => state.tab);
+  const stormTabs = resyncStormTabs(resyncByTab);
   const totalResyncs = states.reduce((total, state) => total + state.totalResyncs, 0);
   const tabById = new Map(tabs.map((tab) => [tab.id, tab]));
   const tabIds = new Set<TabId>([
@@ -82,28 +83,18 @@ export function Hud({
   return (
     <details
       id="resync-hud"
-      class="connection-hud"
+      class="status-diagnostics"
       data-connection={connection}
       data-resync-storm={stormTabs.length > 0 ? "true" : "false"}
       data-resync-storm-tabs={stormTabs.join(",")}
       data-resync-total={String(totalResyncs)}
       data-rtt-ms={roundedRtt === null ? "" : String(roundedRtt)}
     >
-      <summary
-        aria-label="Toggle connection diagnostics"
-        title="网络往返延迟（RTT）和当前下载速度。延迟不包含页面处理、回放缓冲和图像绘制耗时"
-      >
-        <span class="hud-state-dot" aria-hidden="true" />
-        <span class="hud-summary-text">
-          {roundedRtt === null ? "RTT —" : `RTT ${roundedRtt} ms`}
-          <span class="hud-summary-extra">
-            {speedBps === null ? "" : ` · ${formatSpeed(speedBps)}`}
-            {pixelMode && frames ? ` · ${frames.display} fps` : ""}
-          </span>
-        </span>
-        {stormTabs.length > 0 && <strong class="hud-storm-pill">同步较多</strong>}
+      <summary>
+        <span>诊断</span>
+        {stormTabs.length > 0 && <strong class="status-storm-pill">同步较多</strong>}
         <svg
-          class="hud-chevron"
+          class="status-chevron"
           viewBox="0 0 16 16"
           fill="none"
           aria-hidden="true"
@@ -112,85 +103,77 @@ export function Hud({
           <path d="m4 6 4 4 4-4" />
         </svg>
       </summary>
-      <section class="hud-panel">
-        <dl class="hud-metrics">
-          <div>
-            <dt>连接状态</dt>
-            <dd>{connectionLabel}</dd>
-          </div>
-          <div>
-            <dt>网络往返 RTT</dt>
-            <dd>{roundedRtt === null ? "测量中…" : `${roundedRtt} ms`}</dd>
-          </div>
-          <div>
-            <dt>DOM 回放缓冲</dt>
-            <dd>{pixelMode ? "图像模式不使用" : `${Math.round(bufferMs)} ms`}</dd>
-          </div>
-          <div>
-            <dt>当前速度</dt>
-            <dd>{speedBps === null ? "测量中…" : formatSpeed(speedBps)}</dd>
-          </div>
-          <div>
-            <dt>最高速度</dt>
-            <dd>{formatSpeed(peakSpeedBps)}</dd>
-          </div>
-          {pixelMode && frames && (
-            <>
-              <div>
-                <dt>显示帧率</dt>
-                <dd>{frames.display} fps</dd>
-              </div>
-              <div>
-                <dt>采集帧率</dt>
-                <dd>{frames.capture} fps</dd>
-              </div>
-              <div>
-                <dt>编码帧率</dt>
-                <dd>{frames.encode} fps</dd>
-              </div>
-              <div>
-                <dt>丢弃帧率</dt>
-                <dd>{frames.drop} fps</dd>
-              </div>
-            </>
-          )}
-          <div>
-            <dt>页面重新同步</dt>
-            <dd>{totalResyncs} 次</dd>
-          </div>
-        </dl>
-
-        {stormTabs.length > 0 && (
-          <div class="hud-storm" role="alert">
-            近期有 {stormTabs.length} 个页面频繁重新同步，画面可能短暂停顿。
-          </div>
-        )}
-
-        <div class="hud-tabs" aria-label="Tab modes">
-          <h2>页面状态</h2>
-          {tabIds.size === 0 ? (
-            <p>等待网页加载…</p>
-          ) : (
-            <ul>
-              {[...tabIds].map((tabId) => {
-                const tab = tabById.get(tabId);
-                const resync = stateByTab.get(tabId);
-                return (
-                  <li key={tabId} data-active={tabId === activeTab ? "true" : "false"}>
-                    <span class="hud-tab-title" title={tab?.url ?? tabId}>
-                      {tab?.title || tabId}
-                    </span>
-                    <span class="hud-mode" data-mode={modeByTab[tabId] ?? "dom"}>
-                      {modeByTab[tabId] === "px" ? "图像" : "文字 DOM"}
-                    </span>
-                    <span class="hud-resync-count">{resync?.totalResyncs ?? 0} 次同步</span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+      <dl class="status-diagnostics-metrics">
+        <div>
+          <dt>连接状态</dt>
+          <dd>{connectionLabel}</dd>
         </div>
-      </section>
+        <div title="网络往返延迟（RTT），不包含页面处理、回放缓冲和图像绘制耗时">
+          <dt>网络往返 RTT</dt>
+          <dd>{roundedRtt === null ? "测量中…" : `${roundedRtt} ms`}</dd>
+        </div>
+        <div>
+          <dt>DOM 回放缓冲</dt>
+          <dd>{pixelMode ? "图像模式不使用" : `${Math.round(bufferMs)} ms`}</dd>
+        </div>
+        <div>
+          <dt>当前速度</dt>
+          <dd>{speedBps === null ? "测量中…" : formatSpeed(speedBps)}</dd>
+        </div>
+        <div>
+          <dt>最高速度</dt>
+          <dd>{formatSpeed(peakSpeedBps)}</dd>
+        </div>
+        {pixelMode && frames && (
+          <>
+            <div>
+              <dt>显示帧率</dt>
+              <dd>{frames.display} fps</dd>
+            </div>
+            <div>
+              <dt>采集帧率</dt>
+              <dd>{frames.capture} fps</dd>
+            </div>
+            <div>
+              <dt>编码帧率</dt>
+              <dd>{frames.encode} fps</dd>
+            </div>
+            <div>
+              <dt>丢弃帧率</dt>
+              <dd>{frames.drop} fps</dd>
+            </div>
+          </>
+        )}
+        <div>
+          <dt>页面重新同步</dt>
+          <dd>{totalResyncs} 次</dd>
+        </div>
+      </dl>
+
+      <div class="status-diagnostics-tabs">
+        <h3>页面状态</h3>
+        {tabIds.size === 0 ? (
+          <p>等待网页加载…</p>
+        ) : (
+          <ul>
+            {[...tabIds].map((tabId) => {
+              const tab = tabById.get(tabId);
+              const resync = stateByTab.get(tabId);
+              return (
+                <li key={tabId} data-active={tabId === activeTab ? "true" : "false"}>
+                  <span class="status-tab-title" title={tab?.url ?? tabId}>
+                    {tab?.title || tabId}
+                  </span>
+                  <span class="status-tab-mode" data-mode={modeByTab[tabId] ?? "dom"}>
+                    {modeByTab[tabId] === "px" ? "图像" : "文字 DOM"}
+                  </span>
+                  <span class="status-tab-resyncs">{resync?.totalResyncs ?? 0} 次同步</span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
     </details>
   );
 }

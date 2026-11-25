@@ -1,18 +1,25 @@
 /**
  * The unified page's single top bar: view switch (页面 / 画面), the browser's tabs when it is
- * showing, the time where the remote browser is, connection status and the ⋯ menu.
+ * showing, the time where the remote browser is, the connection status pill (which opens the
+ * 「连接」 popover) and the ⋯ menu of settings.
  */
 import { WorkspaceMenu, type WorkspaceMenuProps } from "./workspace-menu";
 import type { PxQuality } from "@mirror/protocol";
-import { formatSpeed } from "./hud";
+import { Diagnostics, formatSpeed, resyncStormTabs, type DiagnosticsProps } from "./hud";
 import type { ComponentChildren } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { SERVER_STATUS_STALE_MS, type ReceivedServerStatus } from "./server-status";
-import { formatStatusClock, msToNextMinute, remoteClockNow } from "./remote-clock";
+import {
+  formatStatusClock,
+  msToNextMinute,
+  remoteClockNow,
+  type RemoteClockText,
+} from "./remote-clock";
 import type { ViewMode } from "./client-session";
+import type { ConnectionStatus } from "./connection-status";
 
+export type { StatusTone } from "./connection-status";
 export type ThemePreference = "auto" | "light" | "dark";
-export type StatusTone = "ok" | "busy" | "bad";
 export type LinkTarget = "inside" | "device";
 
 export interface ShellBarProps {
@@ -20,7 +27,7 @@ export interface ShellBarProps {
   onViewMode(mode: ViewMode): void;
   /** False when the shared browser cannot start another pixel stream. */
   pixelAvailable: boolean;
-  status: { text: string; tone: StatusTone };
+  status: ConnectionStatus;
   /** The browser's tabs, between the view switch and the status. */
   children?: ComponentChildren;
   theme: ThemePreference;
@@ -32,7 +39,16 @@ export interface ShellBarProps {
   serverStatus: ReceivedServerStatus | null;
   rttMs: number | null;
   speedBps: number | null;
+  /** Only in the pixel view, where it means something. */
   frameRate: number | null;
+  /** The numbers behind 「诊断」; absent until a session is running. */
+  diagnostics?: DiagnosticsProps | null;
+  /** The current browser profile, named next to its exit. */
+  profileName?: string;
+  /** Offered while input is not synchronised; the button is hidden without it. */
+  onResyncInput?: () => void;
+  /** Offered while the connection is down; the button is hidden without it. */
+  onReconnect?: () => void;
   workspace?: WorkspaceMenuProps;
   onMenuOpen?(): void;
 }
@@ -42,27 +58,38 @@ const VIEWS: { mode: ViewMode; label: string; title: string }[] = [
   { mode: "px", label: "画面", title: "画面：远程浏览器的实时图像，用于验证码等" },
 ];
 
+type Popup = "menu" | "connection";
+
 export function ShellBar(props: ShellBarProps) {
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [open, setOpen] = useState<Popup | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
+  const connectionRef = useRef<HTMLDivElement>(null);
+  const statusRef = useRef<HTMLButtonElement>(null);
+  const toggle = (popup: Popup) => setOpen((current) => (current === popup ? null : popup));
 
   useEffect(() => {
-    if (menuOpen) props.onMenuOpen?.();
-  }, [menuOpen]);
+    if (open === "menu") props.onMenuOpen?.();
+    // Keyboard users land inside the popover, as they would in a dialog.
+    if (open === "connection") connectionRef.current?.focus();
+  }, [open]);
 
-  useEffect(() => {
-    if (!menuOpen) return;
+  // Listen as soon as the popup is drawn, not after the next frame: an Escape pressed right
+  // after switching from one popup to the other must still close it.
+  useLayoutEffect(() => {
+    if (open === null) return;
+    const panel = open === "menu" ? menuRef : connectionRef;
+    const trigger = open === "menu" ? toggleRef : statusRef;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setMenuOpen(false);
-        toggleRef.current?.focus();
+        setOpen(null);
+        trigger.current?.focus();
       }
     };
     const onPointer = (event: PointerEvent) => {
       const target = event.target as Node | null;
-      if (target && !menuRef.current?.contains(target) && !toggleRef.current?.contains(target))
-        setMenuOpen(false);
+      if (target && !panel.current?.contains(target) && !trigger.current?.contains(target))
+        setOpen(null);
     };
     document.addEventListener("keydown", onKey);
     document.addEventListener("pointerdown", onPointer, true);
@@ -70,18 +97,18 @@ export function ShellBar(props: ShellBarProps) {
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("pointerdown", onPointer, true);
     };
-  }, [menuOpen]);
+  }, [open]);
 
-  // A sample older than ~10 s is stale: hide numbers rather than show a false reading.
-  const sample =
-    props.serverStatus && Date.now() - props.serverStatus.receivedAt < SERVER_STATUS_STALE_MS
-      ? props.serverStatus.value
-      : null;
-  const warning = sample ? resourceWarning(props.serverStatus) : null;
+  // A sample older than ~10 s is stale: say nothing rather than warn on an old reading.
+  const fresh =
+    props.serverStatus !== null &&
+    Date.now() - props.serverStatus.receivedAt < SERVER_STATUS_STALE_MS;
+  const warning = fresh ? resourceWarning(props.serverStatus) : null;
+  const stormTabs = props.diagnostics ? resyncStormTabs(props.diagnostics.resyncByTab) : [];
   // The zone does not go stale with the numbers: keep showing the last one heard.
   const clock = useRemoteClock(props.serverStatus);
-  const gib = (bytes: number | null | undefined) =>
-    bytes === null || bytes === undefined ? "—" : (bytes / 1024 ** 3).toFixed(1);
+  const { status } = props;
+  const attention = warning !== null || stormTabs.length > 0;
 
   return (
     <header id="shell-bar">
@@ -110,25 +137,33 @@ export function ShellBar(props: ShellBarProps) {
             {clock.label}
           </span>
         )}
-        <span
+        <button
+          ref={statusRef}
+          type="button"
           id="shell-status"
-          role="status"
-          data-tone={props.status.tone}
-          title={props.status.text}
+          data-tone={status.tone}
+          data-warn={attention ? "true" : undefined}
+          title={status.reason}
+          aria-label={`连接：${status.text}${attention ? "（有提醒）" : ""}`}
+          aria-haspopup="dialog"
+          aria-expanded={open === "connection"}
+          aria-controls={open === "connection" ? "shell-connection" : undefined}
+          onClick={() => toggle("connection")}
         >
           <span class="shell-status-dot" aria-hidden="true" />
-          <span class="shell-status-text">{props.status.text}</span>
-        </span>
+          <span class="shell-status-text" aria-live="polite">
+            {status.text}
+          </span>
+        </button>
         <button
           ref={toggleRef}
           type="button"
           class="shell-icon"
           id="shell-menu-toggle"
-          aria-label={warning ? "更多（服务器资源紧张）" : "更多"}
-          data-warn={warning ? "true" : undefined}
+          aria-label="更多"
           aria-haspopup="true"
-          aria-expanded={menuOpen}
-          onClick={() => setMenuOpen((open) => !open)}
+          aria-expanded={open === "menu"}
+          onClick={() => toggle("menu")}
         >
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <circle cx="5" cy="12" r="1.2" />
@@ -138,7 +173,31 @@ export function ShellBar(props: ShellBarProps) {
         </button>
       </div>
 
-      {menuOpen && (
+      {open === "connection" && (
+        <div
+          id="shell-connection"
+          ref={connectionRef}
+          role="dialog"
+          aria-label="连接"
+          tabIndex={-1}
+          data-tone={status.tone}
+        >
+          <ConnectionDetails
+            status={status}
+            warning={warning}
+            clock={clock}
+            rttMs={props.rttMs}
+            speedBps={props.speedBps}
+            frameRate={props.frameRate}
+            profileName={props.profileName}
+            onResyncInput={props.onResyncInput}
+            onReconnect={props.onReconnect}
+            diagnostics={props.diagnostics}
+          />
+        </div>
+      )}
+
+      {open === "menu" && (
         <div id="shell-menu" ref={menuRef} role="dialog" aria-label="更多">
           <div class="shell-menu-section" role="group" aria-label="画面清晰度">
             <span>画面模式：越清晰，服务器负担越重</span>
@@ -203,75 +262,119 @@ export function ShellBar(props: ShellBarProps) {
               ))}
             </div>
           </div>
-          <div class="shell-menu-section" aria-label="服务状态">
-            <span>服务状态</span>
-            {warning && (
-              <p class="shell-menu-warning" role="status">
-                {warning}
-              </p>
-            )}
-            <dl class="shell-menu-stats">
-              {clock && (
-                <div class="shell-menu-clock">
-                  <dt>出口当地时间</dt>
-                  <dd>{clock.title}</dd>
-                </div>
-              )}
-              <div>
-                <dt>在线设备</dt>
-                <dd>{sample?.clientsOnline ?? "—"}</dd>
-              </div>
-              <div>
-                <dt>会话</dt>
-                <dd>{sample?.clientsAllocated ?? "—"}</dd>
-              </div>
-              <div>
-                <dt>CPU</dt>
-                <dd>
-                  {sample?.cpuPercent === null || sample?.cpuPercent === undefined
-                    ? "—"
-                    : `${Math.round(sample.cpuPercent)}%`}
-                </dd>
-              </div>
-              <div>
-                <dt>整机内存</dt>
-                <dd>
-                  {sample
-                    ? `${gib(sample.memoryUsedBytes)} / ${gib(sample.memoryTotalBytes)} GiB`
-                    : "—"}
-                </dd>
-              </div>
-              <div>
-                <dt>服务内存</dt>
-                <dd>
-                  {sample?.browserMemoryBytes === null || sample?.browserMemoryBytes === undefined
-                    ? "—"
-                    : sample.browserMemoryLimitBytes === null
-                      ? `${gib(sample.browserMemoryBytes)} GiB`
-                      : `${gib(sample.browserMemoryBytes)} / ${gib(sample.browserMemoryLimitBytes)} GiB`}
-                </dd>
-              </div>
-              <div>
-                <dt>延迟</dt>
-                <dd>{props.rttMs === null ? "—" : `${Math.round(props.rttMs)} ms`}</dd>
-              </div>
-              <div>
-                <dt>速度</dt>
-                <dd>{formatSpeed(props.speedBps)}</dd>
-              </div>
-              <div>
-                <dt>帧率</dt>
-                <dd>{props.frameRate === null ? "—" : `${props.frameRate} fps`}</dd>
-              </div>
-            </dl>
-          </div>
         </div>
       )}
     </header>
   );
 }
 
-/** Only matters to someone opening a session, so it waits in the menu instead of taking up the page. */
+export interface ConnectionDetailsProps {
+  status: ConnectionStatus;
+  warning: string | null;
+  clock: RemoteClockText | null;
+  rttMs: number | null;
+  speedBps: number | null;
+  frameRate: number | null;
+  profileName?: string;
+  onResyncInput?: () => void;
+  onReconnect?: () => void;
+  diagnostics?: DiagnosticsProps | null;
+}
+
+/** The 「连接」 popover's contents: state and why, what to do, the numbers, and the exit. */
+export function ConnectionDetails({
+  status,
+  warning,
+  clock,
+  rttMs,
+  speedBps,
+  frameRate,
+  profileName,
+  onResyncInput,
+  onReconnect,
+  diagnostics,
+}: ConnectionDetailsProps) {
+  const live =
+    status.kind === "connected" || status.kind === "syncing" || status.kind === "input-unsynced";
+  const showResync = status.kind === "input-unsynced" && onResyncInput !== undefined;
+  const showReconnect =
+    (status.kind === "connecting" || status.kind === "reconnecting") && onReconnect !== undefined;
+  const stormTabs = diagnostics ? resyncStormTabs(diagnostics.resyncByTab) : [];
+  return (
+    <>
+      <section class="status-state" role="status">
+        <h2>
+          <span class="shell-status-dot" aria-hidden="true" />
+          {status.text}
+        </h2>
+        <p>{status.reason}</p>
+      </section>
+      {(showResync || showReconnect) && (
+        <div class="status-actions">
+          {showResync && (
+            <button type="button" class="status-primary" onClick={onResyncInput}>
+              重新同步
+            </button>
+          )}
+          {showReconnect && (
+            <button type="button" class="status-primary" onClick={onReconnect}>
+              重新连接
+            </button>
+          )}
+        </div>
+      )}
+      {live && (
+        <dl class="status-metrics">
+          <div>
+            <dt>延迟</dt>
+            <dd>{rttMs === null ? "—" : `${Math.round(rttMs)} ms`}</dd>
+          </div>
+          <div>
+            <dt>速度</dt>
+            <dd>{formatSpeed(speedBps)}</dd>
+          </div>
+          {frameRate !== null && (
+            <div>
+              <dt>帧率</dt>
+              <dd>{frameRate} fps</dd>
+            </div>
+          )}
+        </dl>
+      )}
+      {warning && <p class="status-warning">{warning}</p>}
+      {stormTabs.length > 0 && (
+        <p class="status-warning">
+          近期有 {stormTabs.length} 个页面频繁重新同步，画面可能短暂停顿。
+        </p>
+      )}
+      {clock && (
+        <section class="status-exit" aria-label="出口">
+          <h3>
+            出口
+            {profileName && <span class="status-profile">{profileName}</span>}
+          </h3>
+          <dl>
+            <div>
+              <dt>位置</dt>
+              <dd>{clock.place}</dd>
+            </div>
+            <div>
+              <dt>当地时间</dt>
+              <dd>{clock.dateTime}</dd>
+            </div>
+            <div>
+              <dt>时区</dt>
+              <dd>{clock.zone}</dd>
+            </div>
+          </dl>
+        </section>
+      )}
+      {diagnostics && <Diagnostics {...diagnostics} />}
+    </>
+  );
+}
+
+/** Only matters to someone opening a session, so it waits in the 「连接」 popover instead of taking up the page. */
 export function resourceWarning(received: ReceivedServerStatus | null): string | null {
   const sample = received?.value;
   if (!sample) return null;

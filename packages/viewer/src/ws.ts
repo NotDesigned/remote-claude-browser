@@ -48,6 +48,11 @@ export interface GatewaySocket {
   close(): void;
   /** The page is on screen again: find out now whether the connection is still alive. */
   probe(): void;
+  /**
+   * Gives up any attempt in progress or wait before the next one and connects now, for the
+   * 「重新连接」 button. Does nothing while connected or in the background.
+   */
+  reconnect(): void;
   /** A background page disconnects until it is visible again. */
   setVisible(visible: boolean): void;
 }
@@ -321,6 +326,11 @@ export function connectGateway(
         probeTimer = null;
         stalled(PROBE_MS);
       }, patience(PROBE_MS));
+    },
+    reconnect() {
+      if (disposed || !visible || socket?.readyState === OPEN) return;
+      dropSocket();
+      open();
     },
     setVisible(next) {
       if (disposed || visible === next) return;

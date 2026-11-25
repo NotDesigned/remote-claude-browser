@@ -468,7 +468,6 @@ async function captureHeader(page, name, viewport) {
       host: box(host),
       address: box(document.querySelector('#urlbar input[aria-label="Address"]')),
       tabTitle: box(document.querySelector('.browser-tab[data-active="true"] .tab-title')),
-      hud: box(document.querySelector("#viewer-hud-layer")),
       controls: [
         ...document.querySelectorAll("#shell-bar [data-view-mode]"),
         document.querySelector("#shell-menu-toggle"),
@@ -483,7 +482,6 @@ async function captureHeader(page, name, viewport) {
   });
   layouts[name] = layout;
   assert(layout.header.bottom <= layout.host.y + 1, `${name}: header overlaps the content`);
-  assert(layout.address.right <= layout.hud.x + 1, `${name}: RTT control overlaps the address`);
   assert(layout.tabTitle.width >= 20, `${name}: active tab title is squeezed out`);
   for (const control of layout.controls) {
     assert(control.width > 0 && control.height > 0, `${name}: ${control.id} has no visible size`);
@@ -700,17 +698,26 @@ try {
   assert.equal(connections.filter((connection) => !connection.closed).length, 2);
   checks.memoryOverlayOwnedLinksAndStableRetry = true;
 
-  await firstPage.locator("#shell-menu-toggle").click();
-  const menu = firstPage.locator("#shell-menu");
-  await menu.waitFor();
+  const status = firstPage.locator("#shell-status");
   await firstPage.waitForFunction(
-    () =>
-      document.querySelector("#shell-menu")?.textContent?.includes("在线设备2") &&
-      document.querySelector("#shell-menu")?.textContent?.includes("3.8 / 4.0 GiB"),
+    () => document.querySelector("#shell-status")?.getAttribute("data-warn") === "true",
   );
-  assert.match(await menu.innerText(), /1\.2 \/ 1\.9 GiB/);
-  assert.match(await menu.innerText(), /3\.8 \/ 4\.0 GiB/);
-  assert.match(await menu.innerText(), /服务器内存紧张/);
+  await status.click();
+  assert.equal(await status.getAttribute("aria-expanded"), "true");
+  const panel = firstPage.locator("#shell-connection");
+  await panel.waitFor();
+  assert.match(await panel.innerText(), /服务器内存紧张/);
+  assert.match(await panel.innerText(), /延迟/);
+  // Server-wide numbers are for the admin's 「资源」 tab, not this popover.
+  assert.doesNotMatch(await panel.innerText(), /在线设备|整机内存|服务内存|CPU/);
+  await firstPage.locator("#shell-menu-toggle").click();
+  await firstPage.locator("#shell-menu").waitFor();
+  await panel.waitFor({ state: "hidden" });
+  assert.doesNotMatch(await firstPage.locator("#shell-menu").innerText(), /服务状态|在线设备/);
+  await firstPage.keyboard.press("Escape");
+  await firstPage.locator("#shell-menu").waitFor({ state: "hidden" });
+  await status.click();
+  await panel.waitFor();
   assert.equal(
     await firstPage.locator("#presence-chrome").count(),
     0,
@@ -728,13 +735,21 @@ try {
         (entry) => entry.kind === "api-call" && entry.path === "/api/status",
       ).length,
   );
-  cpuPercent = 47;
+  // A status pushed over the WebSocket clears the warning while the popover is open.
+  memoryPressure = false;
   broadcastStatus();
-  await firstPage.waitForFunction(() =>
-    document.querySelector("#shell-menu")?.textContent?.includes("CPU47%"),
+  await firstPage.waitForFunction(
+    () => !document.querySelector("#shell-connection")?.textContent?.includes("服务器内存紧张"),
   );
+  memoryPressure = true;
+  broadcastStatus();
   await firstPage.keyboard.press("Escape");
-  await menu.waitFor({ state: "hidden" });
+  await panel.waitFor({ state: "hidden" });
+  assert.equal(
+    await firstPage.evaluate(() => document.activeElement?.id),
+    "shell-status",
+    "Escape returns focus to the status pill",
+  );
   await thirdPage.waitForFunction(
     (before) =>
       window.__clientUiTrace.filter(

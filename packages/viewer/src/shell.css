@@ -104,7 +104,8 @@ body {
   font: inherit;
 }
 #shell-bar :focus-visible,
-#shell-menu :focus-visible {
+#shell-menu :focus-visible,
+#shell-connection :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
@@ -201,27 +202,47 @@ body {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-/* Where tabs need the room, the ⋯ menu still shows it. */
+/* Where tabs need the room, the 「连接」 popover still shows it. */
 @media (max-width: 960px) {
   #shell-clock {
     display: none;
   }
 }
 
-/* Status pill */
+/* Status pill: opens the 「连接」 popover */
 #shell-status {
+  position: relative;
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 6px;
   max-width: 200px;
   height: 30px;
   padding: 0 11px;
-  overflow: hidden;
+  border: 0;
   border-radius: 15px;
   background: var(--sunken);
   color: var(--muted);
   font-size: 13px;
   white-space: nowrap;
+  cursor: pointer;
+}
+#shell-status:hover,
+#shell-status[aria-expanded="true"] {
+  background: var(--hover);
+  color: var(--ink);
+}
+/* Something in the popover deserves a look: memory is short, or pages keep re-synchronising. */
+#shell-status[data-warn]::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 7px;
+  height: 7px;
+  border: 2px solid var(--surface);
+  border-radius: 50%;
+  background: var(--warn-ink);
 }
 .shell-status-text {
   overflow: hidden;
@@ -234,15 +255,18 @@ body {
   border-radius: 50%;
   background: var(--ok);
 }
-#shell-status[data-tone="busy"] .shell-status-dot {
+#shell-status[data-tone="busy"] .shell-status-dot,
+#shell-connection[data-tone="busy"] .shell-status-dot {
   background: var(--busy);
 }
-#shell-status[data-tone="bad"] .shell-status-dot {
+#shell-status[data-tone="bad"] .shell-status-dot,
+#shell-connection[data-tone="bad"] .shell-status-dot {
   background: var(--bad);
 }
 
-/* ⋯ menu */
-#shell-menu {
+/* ⋯ menu and the 「连接」 popover */
+#shell-menu,
+#shell-connection {
   position: absolute;
   top: calc(var(--shellbar-height) - 4px);
   right: 12px;
@@ -292,50 +316,228 @@ body {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
-.shell-menu-warning {
+
+#shell-connection {
+  gap: 0;
+  padding: 6px 0;
+  color: var(--ink);
+}
+#shell-connection:focus {
+  outline: none;
+}
+#shell-connection > * {
   margin: 0;
+  padding: 8px 14px;
+}
+#shell-connection > * + * {
+  border-top: 1px solid var(--line);
+}
+.status-state h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.status-state p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+#shell-connection > .status-actions {
+  display: flex;
+  gap: 8px;
+  border-top: 0;
+  padding-top: 0;
+}
+.status-primary {
+  flex: 1;
+  height: 34px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.status-primary:hover {
+  background: var(--hover);
+}
+.status-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  font-size: 13px;
+}
+.status-metrics div,
+.status-exit div {
+  display: flex;
+  gap: 8px;
+}
+.status-metrics dt,
+.status-exit dt {
+  color: var(--muted);
+}
+.status-metrics dd,
+.status-exit dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.status-metrics dd {
+  font-weight: 600;
+}
+#shell-connection > .status-warning {
+  margin: 4px 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--warn-bg);
   color: var(--warn-ink);
   font-size: 13px;
   line-height: 1.5;
 }
-#shell-menu-toggle[data-warn] {
-  position: relative;
+#shell-connection > .status-warning + * {
+  border-top: 0;
 }
-#shell-menu-toggle[data-warn]::after {
-  content: "";
-  position: absolute;
-  top: 5px;
-  right: 5px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--warn-ink);
+.status-exit h3,
+.status-diagnostics summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
 }
-.shell-menu-stats {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 12px;
+.status-profile {
+  overflow: hidden;
+  color: var(--ink);
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status-exit dl {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
   margin: 0;
   font-size: 13px;
+  line-height: 1.45;
 }
-.shell-menu-stats div {
-  display: flex;
-  gap: 6px;
+.status-exit dt {
+  flex: none;
+  width: 4.5em;
 }
-.shell-menu-stats dt {
-  color: var(--muted);
-}
-.shell-menu-stats dd {
-  margin: 0;
-  color: var(--ink);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-.shell-menu-stats .shell-menu-clock {
-  grid-column: 1 / -1;
-  flex-direction: column;
-  gap: 2px;
+.status-exit dd {
+  min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* 「诊断」, closed until asked for */
+.status-diagnostics summary {
+  align-items: center;
+  margin: 0;
+  padding: 2px 0;
+  cursor: pointer;
+  list-style: none;
+}
+.status-diagnostics summary::-webkit-details-marker {
+  display: none;
+}
+.status-diagnostics summary:hover {
+  color: var(--ink);
+}
+.status-chevron {
+  width: 12px;
+  height: 12px;
+  margin-left: auto;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.status-diagnostics[open] .status-chevron {
+  transform: rotate(180deg);
+}
+.status-storm-pill {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  font-size: 11px;
+  font-weight: 600;
+}
+.status-diagnostics-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin: 8px 0 0;
+}
+.status-diagnostics-metrics div {
+  min-width: 0;
+}
+.status-diagnostics-metrics dt,
+.status-diagnostics-tabs h3,
+.status-diagnostics-tabs p,
+.status-tab-resyncs {
+  color: var(--muted);
+  font-size: 11px;
+}
+.status-diagnostics-metrics dd {
+  overflow: hidden;
+  margin: 2px 0 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status-diagnostics-tabs h3 {
+  margin: 12px 0 6px;
+  font-weight: 600;
+}
+.status-diagnostics-tabs p {
+  margin: 0;
+}
+.status-diagnostics-tabs ul {
+  display: grid;
+  gap: 2px;
+  max-height: 150px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.status-diagnostics-tabs li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 7px;
+  align-items: center;
+  padding: 4px 6px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.status-diagnostics-tabs li[data-active="true"] {
+  background: var(--sunken);
+  color: var(--ink);
+}
+.status-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status-tab-mode {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--sunken);
+  font-size: 11px;
+}
+.status-tab-mode[data-mode="px"] {
+  background: var(--warn-bg);
+  color: var(--warn-ink);
 }
 
 /* Banners */
@@ -435,7 +637,8 @@ body {
     padding: 0;
     justify-content: center;
   }
-  #shell-menu {
+  #shell-menu,
+  #shell-connection {
     position: fixed;
     top: auto;
     right: 0;
@@ -448,7 +651,11 @@ body {
     border-radius: 18px 18px 0 0;
     font-size: 15px;
   }
-  .shell-menu-choices button {
+  #shell-connection {
+    padding: 10px 0 22px;
+  }
+  .shell-menu-choices button,
+  .status-primary {
     height: 44px;
   }
 }
@@ -485,17 +692,6 @@ body {
 #shell #urlbar input::placeholder {
   color: var(--muted);
 }
-#shell .connection-hud {
-  color: var(--ink);
-  background: var(--surface);
-  border-color: var(--line);
-}
-#shell .connection-hud > summary:hover {
-  background: var(--hover);
-}
-#shell .hud-chevron {
-  stroke: var(--muted);
-}
 #shell #urlbar button:disabled {
   opacity: 0.4;
 }
@@ -510,24 +706,6 @@ body {
 #shell .browser-tab:not([data-active="true"]):hover,
 #shell #new-tab:not(:disabled):hover {
   color: var(--ink);
-  background: var(--hover);
-}
-#shell .hud-panel {
-  color: var(--ink);
-  background: var(--surface);
-  border-color: var(--line);
-}
-#shell .hud-metrics dt,
-#shell .hud-tabs h2,
-#shell .hud-tabs p,
-#shell .hud-tabs li {
-  color: var(--muted);
-}
-#shell .hud-metrics dd,
-#shell .hud-tabs li[data-active="true"] {
-  color: var(--ink);
-}
-#shell .hud-tabs li[data-active="true"] {
   background: var(--hover);
 }
 

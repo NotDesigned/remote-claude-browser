@@ -29,7 +29,8 @@ import {
   type DownloadEntry,
   updateDownloads,
 } from "./chrome/downloads";
-import { HudLayer, type FrameRates } from "./hud";
+import type { FrameRates } from "./hud";
+import { describeConnection } from "./connection-status";
 import { pollServerStatus, receiveServerStatus, type ReceivedServerStatus } from "./server-status";
 import { ShellBar, type LinkTarget, type ThemePreference } from "./shell-bar";
 import { createVoiceLink, type VoiceLink } from "./media/voice";
@@ -961,21 +962,6 @@ export function App() {
     }
   };
   const pixelMode = activeTab !== null && modeByTab[activeTab] === "px";
-  const connectionLabel =
-    clientPhase === "replaced"
-      ? "已由另一页面接管"
-      : clientPhase === "closed"
-        ? "已结束"
-        : clientPhase === "ending"
-          ? "结束中"
-          : clientPhase === "error"
-            ? "未连接"
-            : connection === "open"
-              ? "已连接"
-              : connection === "connecting"
-                ? "连接中"
-                : "重新连接中";
-
   const activeChrome = activeTab === null ? null : (chromeByTab[activeTab] ?? null);
   const currentProfile = accountList?.accounts.find(
     (account) => account.id === accountList.current,
@@ -992,16 +978,12 @@ export function App() {
     setStartAppleOnboarding(true);
     setOnboardingOpen(true);
   }, [clientPhase, connection, currentProfile?.id]);
-  const shellStatus: { text: string; tone: "ok" | "busy" | "bad" } =
-    clientPhase !== "ready"
-      ? { text: connectionLabel, tone: clientPhase === "starting" ? "busy" : "bad" }
-      : connection !== "open"
-        ? { text: connectionLabel, tone: "busy" }
-        : activeTab !== null && inputFailures[activeTab]
-          ? { text: "输入未同步", tone: "bad" }
-          : inputReady
-            ? { text: "已连接", tone: "ok" }
-            : { text: "同步中", tone: "busy" };
+  const shellStatus = describeConnection({
+    clientPhase,
+    connection,
+    inputUnsynced: activeTab !== null && !!inputFailures[activeTab],
+    inputReady,
+  });
   const changeView = (mode: ViewMode, remember = true) => {
     if (remember) rememberViewMode(viewStorage(), mode);
     if (mode === viewMode) return;
@@ -1100,6 +1082,24 @@ export function App() {
         rttMs={rttMs}
         speedBps={speedBps}
         frameRate={pixelMode ? (frameRates?.display ?? null) : null}
+        profileName={currentProfile?.name}
+        onReconnect={clientPhase === "ready" ? () => socketRef.current?.reconnect() : undefined}
+        diagnostics={
+          clientPhase === "ready"
+            ? {
+                connection,
+                rttMs,
+                bufferMs,
+                activeTab,
+                tabs,
+                modeByTab,
+                resyncByTab,
+                speedBps,
+                peakSpeedBps,
+                frames: frameRates,
+              }
+            : null
+        }
       >
         <TabStrip
           tabs={tabs}
@@ -1379,18 +1379,8 @@ export function App() {
         </section>
       )}
       {clientPhase === "ready" && (
-        <HudLayer
-          connection={connection}
-          rttMs={rttMs}
-          bufferMs={bufferMs}
-          activeTab={activeTab}
-          tabs={tabs}
-          modeByTab={modeByTab}
-          resyncByTab={resyncByTab}
-          speedBps={speedBps}
-          peakSpeedBps={peakSpeedBps}
-          frames={frameRates}
-        />
+        // Media notices (see media/video.ts) appear here, over the page's top right.
+        <aside id="viewer-hud-layer" aria-label="页面提示" />
       )}
       <aside id="transfer-panels" aria-label="文件与剪贴板">
         <input
