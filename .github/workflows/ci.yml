@@ -39,12 +39,11 @@ jobs:
       - name: Test packages and deployment helpers
         run: pnpm run test
 
-  # Known advisories in production dependencies. Not blocking yet: main has open high-severity
-  # advisories that dependency updates are fixing. Remove continue-on-error once it passes.
+  # High-severity advisories in production dependencies. A separate job, so a newly published
+  # advisory shows on its own instead of hiding the other results.
   audit:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    continue-on-error: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
