@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { mintInvite } from "./auth/invite";
-import { createSessionGuard, SESSION_COOKIE } from "./auth/middleware";
+import { SESSION_COOKIE } from "./auth/middleware";
+import { cookieSessionPreHandler } from "./auth/session-prehandler.test-util";
 import type { BrowserHandle, BrowserSessionEventMap, FlatSessionEventMap } from "./browser/launch";
 import { createDownloadManager, registerDownloadRoutes } from "./downloads";
 import type { TargetRef } from "./types";
@@ -258,8 +259,10 @@ describe("download flow", () => {
       state: "completed",
     });
     const app = Fastify();
-    const guard = createSessionGuard({ key: KEY, now: () => NOW });
-    registerDownloadRoutes(app, { preHandler: guard.preHandler, managerFor: () => manager });
+    registerDownloadRoutes(app, {
+      preHandler: cookieSessionPreHandler(KEY, () => NOW),
+      managerFor: () => manager,
+    });
     const headers = (sid: string) => ({
       cookie: `${SESSION_COOKIE}=${mintInvite({ sid, role: "driver", exp: NOW + 60 }, KEY)}`,
     });
@@ -319,8 +322,10 @@ describe("download flow", () => {
       });
       managers.push(manager);
       const app = Fastify();
-      const guard = createSessionGuard({ key: KEY, now: () => NOW });
-      registerDownloadRoutes(app, { preHandler: guard.preHandler, managerFor: () => manager });
+      registerDownloadRoutes(app, {
+        preHandler: cookieSessionPreHandler(KEY, () => NOW),
+        managerFor: () => manager,
+      });
       const headers = {
         cookie: `${SESSION_COOKIE}=${mintInvite({ sid: "client-1", role: "driver", exp: NOW + 60 }, KEY)}`,
       };
@@ -472,8 +477,10 @@ describe("download flow", () => {
       state: "completed",
     });
     const app = Fastify();
-    const guard = createSessionGuard({ key: KEY, now: () => NOW });
-    registerDownloadRoutes(app, { preHandler: guard.preHandler, managerFor: () => manager });
+    registerDownloadRoutes(app, {
+      preHandler: cookieSessionPreHandler(KEY, () => NOW),
+      managerFor: () => manager,
+    });
     const headers = {
       cookie: `${SESSION_COOKIE}=${mintInvite({ sid: "client-1", role: "driver", exp: NOW + 60 }, KEY)}`,
     };
@@ -595,9 +602,8 @@ describe("download flow", () => {
     });
 
     const app = Fastify();
-    const guard = createSessionGuard({ key: KEY, now: () => NOW });
     registerDownloadRoutes(app, {
-      preHandler: guard.preHandler,
+      preHandler: cookieSessionPreHandler(KEY, () => NOW),
       managerFor: (sessionId) => (sessionId === "s1" ? manager : undefined),
     });
 

@@ -6,7 +6,8 @@ import { mkdtemp } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { mintInvite } from "./auth/invite";
-import { createSessionGuard, SESSION_COOKIE } from "./auth/middleware";
+import { SESSION_COOKIE } from "./auth/middleware";
+import { cookieSessionPreHandler } from "./auth/session-prehandler.test-util";
 import type { BrowserHandle, BrowserSessionEventMap, FlatSessionEventMap } from "./browser/launch";
 import type { TargetRef } from "./types";
 import { createUploadManager, registerUploadRoutes } from "./uploads";
@@ -175,9 +176,8 @@ describe("upload flow", () => {
     ]);
 
     const app = Fastify();
-    const guard = createSessionGuard({ key: KEY, now: () => NOW });
     registerUploadRoutes(app, {
-      preHandler: guard.preHandler,
+      preHandler: cookieSessionPreHandler(KEY, () => NOW),
       managerFor: (sessionId) => (sessionId === "s1" ? manager : undefined),
     });
     const request = {
@@ -242,9 +242,8 @@ describe("upload flow", () => {
     await waitForFilePick(published);
 
     const app = Fastify();
-    const guard = createSessionGuard({ key: KEY, now: () => NOW });
     registerUploadRoutes(app, {
-      preHandler: guard.preHandler,
+      preHandler: cookieSessionPreHandler(KEY, () => NOW),
       managerFor: () => manager,
     });
     const token = mintInvite({ sid: "s1", role: "driver", exp: NOW + 60 }, KEY);

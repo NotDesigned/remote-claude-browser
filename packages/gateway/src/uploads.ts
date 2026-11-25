@@ -11,7 +11,7 @@
  * DOM.setFileInputFiles([]) is a Chromium no-op.
  */
 import type { Down } from "@mirror/protocol";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, preHandlerAsyncHookHandler } from "fastify";
 import { randomBytes } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
@@ -19,7 +19,6 @@ import { isAbsolute, join, resolve } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
-import type { SessionGuard } from "./auth/middleware";
 import type { BrowserHandle, FlatSessionEventMap } from "./browser/launch";
 import type { TargetRef } from "./types";
 
@@ -106,8 +105,8 @@ export interface UploadManager {
 }
 
 export interface UploadRouteOptions {
-  /** SEC-2's exact session-cookie guard; intentionally required with no permissive fallback. */
-  preHandler: SessionGuard["preHandler"];
+  /** The workspace-owner guard; intentionally required with no permissive fallback. */
+  preHandler: preHandlerAsyncHookHandler;
   managerFor(sessionId: string): UploadManager | undefined;
 }
 

@@ -89,7 +89,7 @@ describe("persisted front-end user gate", () => {
     expect((await app.inject({ method: "POST", url: "/api/action" })).statusCode).toBe(401);
     expect(gate.currentUser(request())).toBeNull();
     expect(gate.authorizeUpgrade(request())).toBe(false);
-    expect(gate.hasValidDevice(request(`${SESSION_COOKIE}=remembered-device`))).toBe(false);
+    expect(gate.isSignedIn(request(`${SESSION_COOKIE}=remembered-device`))).toBe(false);
     expect(gate.authorizeUpgrade(request(`${USER_COOKIE}=forged`))).toBe(false);
   });
 
@@ -111,7 +111,7 @@ describe("persisted front-end user gate", () => {
     expect(cookies.join(";")).not.toContain(PASSWORD);
     const cookie = userCookie(response.headers["set-cookie"]);
     expect(gate.currentUser(request(cookie))).toEqual(store.bootstrapAdmin);
-    expect(gate.hasValidDevice(request(cookie))).toBe(true);
+    expect(gate.isSignedIn(request(cookie))).toBe(true);
     expect(gate.authorizeUpgrade(request(cookie))).toBe(true);
     const privateResponse = await app.inject({ url: "/api/private", headers: { cookie } });
     expect(privateResponse.statusCode).toBe(200);

@@ -441,7 +441,7 @@ export async function startClientGateway(
     await gate.preHandler.call(app, request, reply);
     if (reply.sent) return;
     // Upgrade old single-workspace cookies to a stable authenticated device identity.
-    if (gate.hasValidDevice(request.raw) && !currentOwner(request.raw))
+    if (gate.isSignedIn(request.raw) && !currentOwner(request.raw))
       reply.header("set-cookie", deviceCookie(request.raw));
   });
   gate.registerRoutes(app);
@@ -592,7 +592,6 @@ export async function startClientGateway(
     server: app.server,
     replaceSessionOnConnect: true,
     requireConnectionKey: true,
-    hubs: () => [],
     hubsForSession: (sid) => runtimes.get(sid)?.tabs.hubs() ?? [],
     sessionForRequest: (request) => {
       const sid = sidFromRequest(request);

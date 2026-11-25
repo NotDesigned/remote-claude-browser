@@ -130,7 +130,8 @@ export function createUserGate(options: {
   return {
     currentUser,
     preHandler,
-    hasValidDevice: (request: IncomingMessage) => currentUser(request) !== null,
+    /** Whether the request carries a live service login. */
+    isSignedIn: (request: IncomingMessage) => currentUser(request) !== null,
     authorizeUpgrade: (request: IncomingMessage) => currentUser(request) !== null,
     registerRoutes(app: FastifyInstance) {
       if (!app.hasContentTypeParser(FORM_TYPE))

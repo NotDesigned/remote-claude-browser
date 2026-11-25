@@ -15,14 +15,13 @@
  * goes soon after it has been delivered, and otherwise after 30 minutes or when the session ends.
  */
 import type { Down } from "@mirror/protocol";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, preHandlerAsyncHookHandler } from "fastify";
 import { randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { join } from "node:path";
 import { open, readdir, rm, stat, type FileHandle } from "node:fs/promises";
 import { Readable } from "node:stream";
 
-import type { SessionGuard } from "./auth/middleware";
 import type { BrowserHandle, BrowserSessionEventMap } from "./browser/launch";
 
 type DownloadMsg = Extract<Down, { t: "download" }>;
@@ -78,8 +77,8 @@ export interface DownloadManager {
 }
 
 export interface DownloadRouteOptions {
-  /** SEC-2's exact session-cookie guard; intentionally required with no permissive fallback. */
-  preHandler: SessionGuard["preHandler"];
+  /** The workspace-owner guard; intentionally required with no permissive fallback. */
+  preHandler: preHandlerAsyncHookHandler;
   managerFor(sessionId: string): DownloadManager | undefined;
 }
 
