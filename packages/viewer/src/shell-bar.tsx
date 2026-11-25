@@ -20,7 +20,8 @@ export interface ShellBarProps {
   onViewMode(mode: ViewMode): void;
   /** False when the shared browser cannot start another pixel stream. */
   pixelAvailable: boolean;
-  status: { text: string; tone: StatusTone };
+  /** `title` is the hover text, when it says more than `text`. */
+  status: { text: string; tone: StatusTone; title?: string };
   /** The browser's tabs, between the view switch and the status. */
   children?: ComponentChildren;
   theme: ThemePreference;
@@ -114,7 +115,7 @@ export function ShellBar(props: ShellBarProps) {
           id="shell-status"
           role="status"
           data-tone={props.status.tone}
-          title={props.status.text}
+          title={props.status.title ?? props.status.text}
         >
           <span class="shell-status-dot" aria-hidden="true" />
           <span class="shell-status-text">{props.status.text}</span>

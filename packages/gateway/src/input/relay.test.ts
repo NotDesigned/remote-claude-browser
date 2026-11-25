@@ -2,7 +2,7 @@ import type { AgentCmdInput, AgentMsg, CmdRes, Up } from "@mirror/protocol";
 import { Mod, NODE_IN_FRAME_ERROR } from "@mirror/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentLink, CdpSend } from "../types";
-import { createInputRelay, type InputMsg } from "./relay";
+import { createInputRelay, valueFailureReason, type InputMsg } from "./relay";
 
 const pointer = (kind: "move" | "down" | "up" | "wheel"): Extract<Up, { t: "ptr" }> => ({
   t: "ptr",
@@ -186,12 +186,59 @@ describe("InputRelay", () => {
     };
     expect(await h.relay("driver", value)).toBe(false);
     expect(await h.relay("driver", enter)).toBe(false);
-    expect(await h.relay("driver", pointer("down"))).toBe(false);
+    expect(await h.relay("driver", { ...enter, kind: "up" })).toBe(false);
     expect(h.cdp).toEqual([]);
+    // Clicks still pass, so the person can click back into the field and recover.
+    expect(await h.relay("driver", pointer("down"))).toBe(true);
+    expect(await h.relay("driver", pointer("up"))).toBe(true);
+    expect(h.cdp.map(({ params }) => params?.type)).toEqual(["mousePressed", "mouseReleased"]);
+    // Other keys go through: only Enter could submit the stale text.
+    const letter: InputMsg = { ...enter, key: "a", code: "KeyA" };
+    expect(await h.relay("driver", letter)).toBe(true);
+    h.cdp.length = 0;
     failed = false;
     expect(await h.relay("driver", value)).toBe(true);
     expect(await h.relay("driver", enter)).toBe(true);
     expect(h.cdp[0]?.params).toMatchObject({ key: "Enter" });
+  });
+  it("tells a newly connected viewer which tabs failed, and why, until a sync succeeds", async () => {
+    let answer: CmdRes = { reqId: 1, ok: false, err: "editable text does not match" };
+    const statuses: unknown[] = [];
+    const agentLink: AgentLink = {
+      async *msgs(): AsyncIterable<AgentMsg> {},
+      async sendCmd(_tab, command) {
+        if (command.cmd === "resolve") return { reqId: 1, ok: true, data: { kind: "local" } };
+        return answer;
+      },
+    };
+    const relay = createInputRelay({
+      agentLink,
+      send: async () => ({}),
+      sessionFor: () => "session-1",
+      isDriver: () => true,
+      allowsInput: () => true,
+      noteInput: () => {},
+      viewportFor: () => ({ w: 640, h: 480 }),
+      onValueStatus: (tab, failed, reason) => statuses.push({ tab, failed, reason }),
+    });
+    const value: InputMsg = { t: "value", tab: "tab-1", nodeId: 42, value: "x", commit: false };
+    expect(relay.valueStatusMessages()).toEqual([]);
+    await relay("driver", value);
+    expect(relay.valueStatusMessages()).toEqual([
+      { t: "input-status", tab: "tab-1", failed: true, reason: "远端编辑器未接受这次输入" },
+    ]);
+    expect(statuses).toEqual([{ tab: "tab-1", failed: true, reason: "远端编辑器未接受这次输入" }]);
+    answer = { reqId: 2, ok: false, err: "node not found" };
+    await relay("driver", value);
+    expect(relay.valueStatusMessages()[0]?.reason).toBe("远端输入框已被页面替换");
+    answer = { reqId: 3, ok: true };
+    await relay("driver", value);
+    expect(relay.valueStatusMessages()).toEqual([]);
+    expect(statuses.at(-1)).toEqual({ tab: "tab-1", failed: false, reason: undefined });
+  });
+  it("words failure reasons without page content", () => {
+    expect(valueFailureReason(new Error("value command timed out"))).toBe("远端页面响应超时");
+    expect(valueFailureReason("secret page text")).toBe("远端页面未接受这次输入");
   });
   it.each([
     ["move", 700, -5, 640 - Number.EPSILON, 0, "mouseMoved"],

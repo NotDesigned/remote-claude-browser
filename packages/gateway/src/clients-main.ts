@@ -651,6 +651,9 @@ export async function startClientGateway(
         }),
       );
       for (const message of runtime.recovery.status()) viewer.send(message, encodeMsg(message));
+      // After `hello`, which resets the viewer's idea of every tab's field sync.
+      for (const message of runtime.input.valueStatusMessages())
+        viewer.send(message, encodeMsg(message));
       const capacity = { t: "px-capacity", available: pixelCapacity.available() } as const;
       viewer.send(capacity, encodeMsg(capacity));
       const currentStatus = status(sid);
@@ -1223,7 +1226,8 @@ export async function startClientGateway(
         ? createPixelWindow({ sendBrowser: scoped.sendBrowser, display: account.display?.env })
         : undefined;
     const input = createInputRelay({
-      onValueStatus: (tab, failed) => publish(sid, { t: "input-status", tab, failed }),
+      onValueStatus: (tab, failed, reason) =>
+        publish(sid, { t: "input-status", tab, failed, ...(reason ? { reason } : {}) }),
       agentLink: ownAgent,
       send: scoped.send,
       callBridge: (session, method, args) => callAgentBridge(browser, session, method, args),

@@ -126,7 +126,12 @@ export type Down =
   | { t: "delta"; tab: TabId; epoch: number; seq: number; data: eventWithTime[] }
   /** Gateway-initiated: discard all state for the tab; a fresh snapshot follows. */
   | { t: "resync"; tab: TabId }
-  | { t: "input-status"; tab: TabId; failed: boolean }
+  /**
+   * Whether the tab's last field sync failed. While it has, the gateway drops Enter (it would
+   * submit stale text); clicks still pass. `reason` is short user-facing Chinese text, never page
+   * content; older gateways omit it. Sent again to each viewer after `hello`.
+   */
+  | { t: "input-status"; tab: TabId; failed: boolean; reason?: string }
   | { t: "cpa-oauth"; tab: TabId; status: "submitted" | "error" }
   | { t: "mode"; tab: TabId; mode: "dom" | "px" }
   /** Starts or restarts the pixel view's video stream; a keyframe follows. */
