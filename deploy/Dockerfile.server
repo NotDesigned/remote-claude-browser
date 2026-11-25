@@ -84,6 +84,11 @@ RUN if [ -n "$DEBIAN_MIRROR" ]; then \
         fonts-noto-mono fonts-noto-ui-core fonts-open-sans fonts-oxygen fonts-roboto fonts-stix \
         fonts-urw-base35 fonts-wqy-microhei fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/*
+# The root filesystem is read-only at run time; fonts mounted then (AliasMode personas,
+# compose.fingerprint.yml) are cached here, on a tmpfs, by server-entrypoint.sh.
+RUN printf '%s\n' '<?xml version="1.0"?>' '<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">' \
+        '<fontconfig><cachedir>/var/cache/fontconfig-fingerprint</cachedir></fontconfig>' \
+        > /etc/fonts/conf.d/90-fingerprint-cache.conf
 
 COPY --from=build /opt/gateway/ /app/
 COPY --from=build /app/packages/viewer/dist/ /app/viewer/

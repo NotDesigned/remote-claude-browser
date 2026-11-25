@@ -36,6 +36,7 @@ bind_readonly() {
 # Docker mounts the optional engine below /usr. A plain bind of /usr omits submounts.
 if [ -d /usr/local/lib/aliasmode ]; then bind_readonly /usr/local/lib/aliasmode; fi
 if [ -d /usr/local/share/fonts/fingerprint ]; then bind_readonly /usr/local/share/fonts/fingerprint; fi
+if [ -d /var/cache/fontconfig-fingerprint ]; then bind_readonly /var/cache/fontconfig-fingerprint; fi
 for path in /etc/chromium.d /etc/fonts /var/cache/fontconfig /etc/ssl/certs /etc/passwd /etc/group /etc/nsswitch.conf /etc/hosts /etc/resolv.conf /etc/ld.so.cache; do
   bind_readonly "$path"
 done

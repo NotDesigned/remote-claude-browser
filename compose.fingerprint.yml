@@ -9,3 +9,6 @@ services:
       - ${FINGERPRINT_BROWSER_DIR:?Set FINGERPRINT_BROWSER_DIR to the installed AliasMode directory}:/usr/local/lib/aliasmode:ro
       # The Windows and macOS fonts AliasMode personas show (scripts/fingerprint-fonts.sh).
       - ${FINGERPRINT_FONTS_DIR:-./local/fingerprint-fonts}:/usr/local/share/fonts/fingerprint:ro
+    tmpfs:
+      # Their font cache (the root filesystem is read-only).
+      - /var/cache/fontconfig-fingerprint:rw,nosuid,nodev,size=64m,mode=0755
