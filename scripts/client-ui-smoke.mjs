@@ -657,6 +657,7 @@ try {
   // A finished upload leaves no notice behind.
   await waitForUploads(uploadsBeforeDom + 2);
   await firstPage.locator("#upload-panel").waitFor({ state: "hidden" });
+  await firstPage.locator("#upload-progress").waitFor({ state: "hidden" });
   assert.equal(uploadedFiles.at(-2).name, "DOM附件一.txt");
   assert.equal(uploadedFiles.at(-1).text, "附件二");
   await viewButton("px").click();

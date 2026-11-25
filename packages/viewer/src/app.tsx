@@ -1392,36 +1392,54 @@ export function App() {
             if (uploadState !== null) uploadRef.current?.cancelPick(uploadState.tab);
           }}
         />
-        {uploadState !== null && uploadState.phase !== "choosing" && (
-          <section id="upload-panel" role="status">
-            <span>{uploadState.name}</span>
-            {uploadState.phase === "picking" && (
-              <>
-                <button type="button" onClick={() => fileInputRef.current?.click()}>
-                  选择本机文件
-                </button>
-                <small>单文件 ≤100 MB，单批 ≤500 MB</small>
-              </>
-            )}
-            {uploadState.phase === "uploading" && (
-              <>
-                <progress max={uploadState.total || 1} value={uploadState.loaded} />
-                <small>{Math.round((uploadState.loaded / (uploadState.total || 1)) * 100)}%</small>
-              </>
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                uploadRequestRef.current?.abort();
-                uploadRef.current?.cancel();
-              }}
-            >
-              {uploadState.phase === "picking" || uploadState.phase === "uploading"
-                ? "取消上传"
-                : "关闭"}
-            </button>
-          </section>
+        {/* Uploading: a thin bar along the bottom edge, over everything, taking no room. */}
+        {uploadState?.phase === "uploading" && (
+          <div
+            id="upload-progress"
+            role="progressbar"
+            aria-label={uploadState.name || "正在上传附件"}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={
+              uploadState.total > 0
+                ? Math.round((uploadState.loaded / uploadState.total) * 100)
+                : undefined
+            }
+            data-indeterminate={uploadState.total > 0 ? undefined : "true"}
+          >
+            <span
+              style={
+                uploadState.total > 0
+                  ? { width: `${(uploadState.loaded / uploadState.total) * 100}%` }
+                  : undefined
+              }
+            />
+          </div>
         )}
+        {/* Only what needs the person: a tap to open the picker, or a failure. */}
+        {uploadState !== null &&
+          (uploadState.phase === "picking" || uploadState.phase === "error") && (
+            <section id="upload-panel" role="status">
+              <span>{uploadState.name}</span>
+              {uploadState.phase === "picking" && (
+                <>
+                  <button type="button" onClick={() => fileInputRef.current?.click()}>
+                    选择本机文件
+                  </button>
+                  <small>单文件 ≤100 MB，单批 ≤500 MB</small>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  uploadRequestRef.current?.abort();
+                  uploadRef.current?.cancel();
+                }}
+              >
+                {uploadState.phase === "picking" ? "取消上传" : "关闭"}
+              </button>
+            </section>
+          )}
         <DownloadTray
           downloads={downloads.filter((download) => shownDownloadIds.has(download.id))}
           error={downloadError}
