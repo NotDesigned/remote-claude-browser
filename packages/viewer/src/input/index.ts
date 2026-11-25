@@ -211,8 +211,17 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
           attachDocument(doc);
           return;
         }
+        let removed = false;
         for (const record of records) {
           for (const node of record.addedNodes) discoverFrames(node);
+          if (record.removedNodes.length > 0) removed = true;
+        }
+        // rrweb moves nodes by removing and adding them again in one batch: only what is still
+        // out of the document afterwards is gone.
+        if (removed) {
+          for (const frame of [...watchedFrames.keys()]) {
+            if (frame.isConnected === false) forgetFrame(frame);
+          }
         }
       });
       observer.observe(doc, { childList: true, subtree: true });
@@ -227,7 +236,7 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
     // Watch for that rebuild without interrupting gestures on an unchanged child document.
     let attempts = 60;
     const refresh = () => {
-      if (!active) return;
+      if (!active || !watchedFrames.has(frame)) return;
       attachFrameDocument(frame);
       attempts -= 1;
       if (attempts <= 0) return;
@@ -264,6 +273,23 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
     } catch {
       // A transient non-same-origin document is outside this same-origin document set.
       return false;
+    }
+  };
+
+  /**
+   * A frame the page removed: let go of its document's listeners and observer, and of every
+   * frame inside that document, which would otherwise live as long as the replay.
+   */
+  const forgetFrame = (frame: HTMLIFrameElement): void => {
+    watchedFrames.get(frame)?.();
+    watchedFrames.delete(frame);
+    const entry = frameDocuments.get(frame);
+    frameDocuments.delete(frame);
+    if (entry === undefined) return;
+    documents.get(entry.doc)?.();
+    documents.delete(entry.doc);
+    for (const inner of [...watchedFrames.keys()]) {
+      if (inner.ownerDocument === entry.doc) forgetFrame(inner);
     }
   };
 
