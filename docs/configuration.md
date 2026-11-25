@@ -63,10 +63,11 @@
 
 ### AliasMode 内核（`compose.fingerprint.yml`）
 
-| 变量                      | 默认        | 说明                                                                                                  |
-| ------------------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
-| `FINGERPRINT_BROWSER_DIR` | 无          | 使用 `compose.fingerprint.yml` 时必填。`scripts/setup-fingerprint.sh` 安装的 AliasMode 目录的绝对路径 |
-| `MIRROR_BROWSER_ENGINE`   | `aliasmode` | 之后新建的配置用哪个内核：`aliasmode` 或 `chromium`。已有配置保留自己的内核                           |
+| 变量                      | 默认                        | 说明                                                                                                                                                                                  |
+| ------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FINGERPRINT_BROWSER_DIR` | 无                          | 使用 `compose.fingerprint.yml` 时必填。`scripts/setup-fingerprint.sh` 安装的 AliasMode 目录的绝对路径                                                                                 |
+| `FINGERPRINT_FONTS_DIR`   | `./local/fingerprint-fonts` | 使用 `compose.fingerprint.yml` 时，AliasMode 的 Windows、Mac 身份显示的字体所在目录，下分 `windows/`、`macos/`；只挂给浏览器，见[部署 · AliasMode 内核](deployment.md#aliasmode-内核) |
+| `MIRROR_BROWSER_ENGINE`   | `aliasmode`                 | 之后新建的配置用哪个内核：`aliasmode` 或 `chromium`。已有配置保留自己的内核                                                                                                           |
 
 ### 收件箱（Resend）
 

@@ -171,6 +171,19 @@ bash scripts/setup-fingerprint.sh "$PWD/local/aliasmode-155.0.8059.85"
 
 把脚本输出的 `FINGERPRINT_BROWSER_DIR=...` 写进 `.env`，在 `COMPOSE_FILE` 末尾加上 `compose.fingerprint.yml`，然后执行 `docker compose up -d --no-deps server`。
 
+**字体**：AliasMode 只向网页展示所选身份那个系统的字体（Windows 11 的 97 个字体族，Mac 的 184 个，清单在 `scripts/fingerprint-fonts/`），而且只展示主机上真的装了的。内核和本项目的镜像都不带这些字体；一个都没装时，Windows 身份几乎没有字体，真实的 Windows 电脑不会这样，网页量一下文字宽度就能发现。所以使用 AliasMode 时要装上两套字体：
+
+```bash
+scripts/fingerprint-fonts.sh import windows <Windows 字体所在目录>   # 例如复制来的 C:\Windows\Fonts
+scripts/fingerprint-fonts.sh import macos <Mac 字体所在目录>         # /System/Library/Fonts、/Library/Fonts 等
+docker compose up -d --force-recreate server
+scripts/fingerprint-fonts.sh check                                   # 各身份清单上的字体族装了多少、缺哪些
+```
+
+- 字体放在 `FINGERPRINT_FONTS_DIR`（默认 `local/fingerprint-fonts`），只挂进浏览器看得到的位置；原生 Chromium 的配置看不到它们，字体清单不受影响。服务端容器每次启动时为它们建立字体缓存。
+- 这些字体需要部署者自己准备，本项目不分发。
+- 即使是真实的字体文件，文字由 Linux 的字体引擎绘制，和真实系统仍有细微差别。
+
 - 只有之后新建的配置使用 AliasMode，已有配置保留原来的内核。要让新配置恢复用原生 Chromium，设置 `MIRROR_BROWSER_ENGINE=chromium`。
 - 只要还有使用 AliasMode 的配置，就要保留这个目录和挂载。不要只复制 `chrome` 主程序，同目录的字体、语言、图形库和资源都是内核的一部分。
 - AliasMode 以独立的 GPL-3.0 程序运行，从官方发布直接下载，不随本项目的镜像分发。

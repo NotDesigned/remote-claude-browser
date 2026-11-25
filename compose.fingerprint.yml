@@ -7,3 +7,5 @@ services:
       MIRROR_BROWSER_ENGINE: ${MIRROR_BROWSER_ENGINE:-aliasmode}
     volumes:
       - ${FINGERPRINT_BROWSER_DIR:?Set FINGERPRINT_BROWSER_DIR to the installed AliasMode directory}:/usr/local/lib/aliasmode:ro
+      # The Windows and macOS fonts AliasMode personas show (scripts/fingerprint-fonts.sh).
+      - ${FINGERPRINT_FONTS_DIR:-./local/fingerprint-fonts}:/usr/local/share/fonts/fingerprint:ro

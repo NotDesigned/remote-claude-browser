@@ -104,6 +104,13 @@ export function browserIdentity(secret: string, accountId: string): BrowserIdent
 const xml = (text: string) =>
   text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
+/**
+ * The Windows and macOS fonts mounted for AliasMode personas (compose.fingerprint.yml). AliasMode
+ * shows each persona only its own platform's list; native Chromium accounts must not see them at
+ * all, or their font lists would change.
+ */
+export const FINGERPRINT_FONTS_DIR = "/usr/local/share/fonts/fingerprint";
+
 export function fontconfigFor(identity: BrowserIdentity): string {
   const { hintstyle, antialias, autohint } = identity.rendering;
   const rejected = identity.missingFonts
@@ -118,6 +125,7 @@ export function fontconfigFor(identity: BrowserIdentity): string {
   <include ignore_missing="yes">/etc/fonts/fonts.conf</include>
   <selectfont>
     <rejectfont>
+      <glob>${FINGERPRINT_FONTS_DIR}/*</glob>
 ${rejected}
     </rejectfont>
   </selectfont>
