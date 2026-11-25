@@ -200,11 +200,38 @@ export async function startProfileBroker({
       target.timer = undefined;
       if (stopping || desired.get(id) !== target) return;
       void enqueue(id, () => startNetwork(id, target)).then(
-        (item) => metadataForNetwork(item).catch(() => {}),
-        () => scheduleRecovery(id, target),
+        (item) => checkAfterRestart(item),
+        (error) => {
+          // Only the kind of error: messages may carry the node's credentials.
+          console.error(
+            `egress ${id}: restart ${target.attempts} failed (${error?.code ?? error?.name ?? "error"})`,
+          );
+          scheduleRecovery(id, target);
+        },
       );
     }, delay);
     target.timer.unref();
+  };
+  // Right after a restart the first exit check can fail while the node path settles; without
+  // retries the exit would stay in error although it works.
+  const checkAfterRestart = async (item) => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await metadataForNetwork(item, attempt > 0);
+        return;
+      } catch (error) {
+        if (
+          networks.get(item.id) !== item ||
+          item.child.exitCode !== null ||
+          item.child.signalCode !== null
+        )
+          return;
+        console.error(
+          `egress ${item.id}: exit check after restart failed (${error?.code ?? error?.name ?? "error"})`,
+        );
+        await new Promise((done) => setTimeout(done, 1000 * 2 ** attempt).unref());
+      }
+    }
   };
   const ensureNetwork = (id, node) => {
     if (stopping) throw new Error("Runtime is stopping");
