@@ -47,21 +47,15 @@ import { createPresentation } from "./presentation";
 import { createBuildSkew } from "./build-skew";
 import { deepActiveElement, isTextEditable } from "./input/keys";
 import {
-  ClientSessionError,
   PX_QUALITY_STORAGE_KEY,
   preferredPxQuality,
   preferredViewMode,
   rememberViewMode,
   type ViewMode,
   clientGatewayUrl,
-  clientPageMode,
   clientReturnUrl,
-  endClientSession,
-  prepareClientSession,
-  requestClientSession,
-  resumesClientSession,
-  type ClientSession,
 } from "./client-session";
+import { useClientSession } from "./app/use-client-session";
 import { ProfilePicker } from "./profile-picker";
 import "@rrweb/replay/dist/style.css";
 import "./app.css";
@@ -135,7 +129,6 @@ export function App() {
   const inputResyncRef = useRef<InputResync | null>(null);
   const dismissedDownloadIdsRef = useRef(new Set<string>());
   const runtimeCleanupRef = useRef<(() => void) | null>(null);
-  const endControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(false);
   const fixturePath = useRef(new URLSearchParams(window.location.search).get("fixture")).current;
   // remote-cc approval links: /?remote-cc=ABCD-EFGH opens the remote-cc tab with the code filled in.
@@ -146,7 +139,14 @@ export function App() {
     () => new URL(window.location.href).searchParams.get("account") === "linked",
   );
   const accountLinkedShown = useRef(false);
-  const [clientSession, setClientSession] = useState<ClientSession | null>(null);
+  const clientSessionControl = useClientSession();
+  const {
+    phase: clientPhase,
+    session: clientSession,
+    error: clientError,
+    endFailure,
+    picked: pickedAccount,
+  } = clientSessionControl.state;
   const [accountList, setAccountList] = useState<AccountList | null>(null);
   const [user, setUser] = useState<FrontendUser | null>(null);
   const [panels, dispatchPanels] = usePanels();
@@ -163,17 +163,6 @@ export function App() {
   const [logoutError, setLogoutError] = useState<string | null>(null);
   /** A CPA authorization could not open in its browser: shown on the CPA tab. */
   const [authorizationError, setAuthorizationError] = useState<string | null>(null);
-  /** The configuration this tab's picker chose; a reload resumes without one. */
-  const [pickedAccount, setPickedAccount] = useState<string | null>(null);
-  const [clientPhase, setClientPhase] = useState<
-    "picking" | "starting" | "ready" | "error" | "ending" | "closed" | "replaced"
-  >(() => {
-    const mode = clientPageMode(new URL(window.location.href));
-    return mode === "closed" ? "closed" : mode === "fixture" ? "ready" : "starting";
-  });
-  const [clientError, setClientError] = useState<ClientSessionError | null>(null);
-  const [endFailure, setEndFailure] = useState(false);
-  const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const [connection, setConnection] = useState<GatewayConnectionState>("connecting");
   const [serverStatus, setServerStatus] = useState<ReceivedServerStatus | null>(null);
   const [statusAuthRejected, setStatusAuthRejected] = useState(false);
@@ -259,7 +248,6 @@ export function App() {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      endControllerRef.current?.abort();
       runtimeCleanupRef.current?.();
     };
   }, []);
@@ -348,64 +336,6 @@ export function App() {
     }
   };
 
-  useEffect(() => {
-    const url = new URL(window.location.href);
-    const pageMode = clientPageMode(url);
-    if (pageMode === "closed") {
-      setClientPhase("closed");
-      return;
-    }
-    if (pageMode === "fixture") return;
-    let resuming = false;
-    try {
-      resuming = resumesClientSession(url, window.sessionStorage);
-    } catch {
-      // The picker is still usable when accessing sessionStorage itself is blocked.
-    }
-    if (pickedAccount === null && !resuming) {
-      setClientPhase("picking");
-      return;
-    }
-    let active = true;
-    const controller = new AbortController();
-    setClientPhase("starting");
-    setClientError(null);
-    setEndFailure(false);
-    void (async () => {
-      try {
-        const request = prepareClientSession(url, window.sessionStorage, (nextUrl) => {
-          window.history.replaceState(window.history.state, "", nextUrl);
-        });
-        const session = await requestClientSession(
-          pickedAccount === null ? request : { ...request, account: pickedAccount },
-          { signal: controller.signal },
-        );
-        if (!active || !mountedRef.current || controller.signal.aborted) return;
-        const currentUrl = new URL(window.location.href);
-        currentUrl.searchParams.set("sid", session.sid);
-        window.history.replaceState(
-          window.history.state,
-          "",
-          `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`,
-        );
-        setClientSession(session);
-        setClientPhase("ready");
-      } catch (error) {
-        if (!active || !mountedRef.current || controller.signal.aborted) return;
-        setClientError(
-          error instanceof ClientSessionError
-            ? error
-            : new ClientSessionError(0, "CLIENT_START", "无法打开独立会话，请稍后重试。"),
-        );
-        setClientPhase("error");
-      }
-    })();
-    return () => {
-      active = false;
-      controller.abort();
-    };
-  }, [bootstrapAttempt, pickedAccount]);
-
   const finishSession = () => {
     runtimeCleanupRef.current?.();
     setInputReady(false);
@@ -416,11 +346,8 @@ export function App() {
     setViewerId(null);
     setDriverId(null);
     setDownloads([]);
-    setClientError(null);
-    setClientSession(null);
-    setClientPhase("closed");
+    clientSessionControl.finish();
     dispatchPanels({ type: "picker", open: false });
-    window.history.replaceState(window.history.state, "", "/?closed=1");
   };
   // Observe existing sessions after a disconnect; only an explicit action opens a new one.
   const sessionUnreachable =
@@ -897,7 +824,7 @@ export function App() {
             setViewerId(null);
             setDriverId(null);
             setDownloads([]);
-            setClientPhase("replaced");
+            clientSessionControl.replaced();
             return;
           }
         },
@@ -929,41 +856,18 @@ export function App() {
     };
   }, []);
 
-  const closeClientSession = async () => {
-    if (clientSession === null || endControllerRef.current !== null) return;
-    const controller = new AbortController();
-    endControllerRef.current = controller;
-    runtimeCleanupRef.current?.();
-    setInputReady(false);
-    setConnection("closed");
-    setActiveTab(null);
-    setTabs([]);
-    setViewers([]);
-    setViewerId(null);
-    setDriverId(null);
-    setDownloads([]);
-    setClientError(null);
-    setEndFailure(false);
-    setClientPhase("ending");
-    try {
-      await endClientSession(clientSession.sid, { signal: controller.signal });
-      if (!mountedRef.current || controller.signal.aborted) return;
-      setClientSession(null);
-      setClientPhase("closed");
-      window.history.replaceState(window.history.state, "", "/?closed=1");
-    } catch (error) {
-      if (!mountedRef.current || controller.signal.aborted) return;
-      setClientError(
-        error instanceof ClientSessionError
-          ? error
-          : new ClientSessionError(0, "CLIENT_END", "未能结束会话，请重试。当前页面已停止操作。"),
-      );
-      setEndFailure(true);
-      setClientPhase("error");
-    } finally {
-      if (endControllerRef.current === controller) endControllerRef.current = null;
-    }
-  };
+  const closeClientSession = () =>
+    clientSessionControl.end(() => {
+      runtimeCleanupRef.current?.();
+      setInputReady(false);
+      setConnection("closed");
+      setActiveTab(null);
+      setTabs([]);
+      setViewers([]);
+      setViewerId(null);
+      setDriverId(null);
+      setDownloads([]);
+    });
   const pixelMode = activeTab !== null && modeByTab[activeTab] === "px";
   pixelModeRef.current = pixelMode;
   const activeChrome = activeTab === null ? null : (chromeByTab[activeTab] ?? null);
@@ -1245,7 +1149,7 @@ export function App() {
           proxyManagerOpen={panels.open === "network" && panels.networkTab === "proxies"}
           onPick={async (id) => {
             if (!panels.pickerOpen) {
-              setPickedAccount(id);
+              clientSessionControl.pick(id);
               return;
             }
             if (id === accountList?.current) {
@@ -1347,7 +1251,7 @@ export function App() {
                   class="session-primary-action"
                   onClick={() => {
                     if (endFailure) void closeClientSession();
-                    else setBootstrapAttempt((current) => current + 1);
+                    else clientSessionControl.retry();
                   }}
                 >
                   {endFailure ? "重试结束" : "重试"}
