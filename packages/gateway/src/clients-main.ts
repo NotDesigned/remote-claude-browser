@@ -89,6 +89,11 @@ import {
   type ClientRecord,
 } from "./session/clients";
 import { createLifecycleLock } from "./session/lifecycle-lock";
+import {
+  createSessionRuntimeRegistry,
+  SESSION_SLEEP_LIMIT_MS,
+  type RuntimeStart,
+} from "./session/runtime-registry";
 import { registerAccountRoutes } from "./auth/account-routes";
 import { createOidc, oidcSettingsFromEnv } from "./auth/oidc";
 import { createMailboxService, registerMailboxRoutes, RESEND_WEBHOOK_PATH } from "./mail/mailboxes";
@@ -143,8 +148,6 @@ interface ClientRuntime {
 
 /** Frames wait before encoding beyond this, since a viewer cannot skip one once it is encoded. */
 const VIDEO_BACKLOG_BYTES = 512 * 1024;
-/** An account's Chrome nobody has used for this long is closed. It starts again when needed. */
-const SESSION_SLEEP_LIMIT_MS = 24 * 60 * 60 * 1000;
 /** Headroom for another Chrome plus its private Xvfb display before the first page. */
 const ACCOUNT_MEMORY_BYTES = 560 * 1048576;
 
@@ -226,7 +229,7 @@ export async function startClientGateway(
     `scope-${createHash("sha256").update(`${userId}/${nodeId}`).digest("hex").slice(0, 32)}`;
   const resetProfileRuntime = async (id: string) => {
     for (const record of clientSessions.all())
-      if ((record.profile ?? DEFAULT_PROFILE) === id) await teardownSession(record.sid);
+      if ((record.profile ?? DEFAULT_PROFILE) === id) await registry.teardown(record.sid);
     const account = accounts.get(id) ?? (await openingAccounts.get(id));
     if (account) await closeAccount(account);
   };
@@ -412,7 +415,7 @@ export async function startClientGateway(
       const owner = user && ownerForUser(request, user);
       if (owner)
         for (const record of clientSessions.all())
-          if (record.owner === owner) await releaseClient(owner, record.sid);
+          if (record.owner === owner) await registry.release(owner, record.sid);
     },
   });
   app.addHook("preHandler", async (request, reply) => {
@@ -446,9 +449,6 @@ export async function startClientGateway(
     registerCpaManagementRoutes(app, { runtime: cpaRuntime, currentUser });
     registerCpaInferenceRoutes(app, cpaRuntime);
   }
-  /** The profile's live browsers, by session. */
-  const profileRuntimes = (profileId: string) =>
-    [...runtimes].filter(([sid, runtime]) => runtime.account.id === profileId && !closing.has(sid));
   const remoteCc = registerRemoteCcRoutes(app, {
     store: remoteCcStore,
     secret: createHmac("sha256", key).update("remote-cc").digest(),
@@ -462,7 +462,7 @@ export async function startClientGateway(
     browser: {
       // Prefer a session someone is viewing, so the user sees the sign-in tab.
       async open(profileId, url) {
-        const live = profileRuntimes(profileId);
+        const live = registry.liveForProfile(profileId);
         const online = onlineSessions();
         const [sid, runtime] = live.find(([sid]) => online.has(sid)) ?? live[0] ?? [];
         if (!sid || !runtime) return undefined;
@@ -476,7 +476,7 @@ export async function startClientGateway(
       },
       // The user may finish the sign-in in any of the profile's sessions.
       pageUrls(profileId) {
-        return profileRuntimes(profileId).flatMap(([, runtime]) =>
+        return registry.liveForProfile(profileId).flatMap(([, runtime]) =>
           [...runtime.targets.values()]
             .filter((target) => target.type === "page")
             .map((target) => runtime.metadata.get(target.targetId)?.url)
@@ -486,7 +486,7 @@ export async function startClientGateway(
       // Callback pages strip the code from their address but show it as text.
       async pageTexts(profileId, origin) {
         const texts: string[] = [];
-        for (const [, runtime] of profileRuntimes(profileId))
+        for (const [, runtime] of registry.liveForProfile(profileId))
           for (const target of runtime.targets.values()) {
             const url = runtime.metadata.get(target.targetId)?.url;
             if (target.type !== "page" || !url || !url.startsWith(origin + "/")) continue;
@@ -500,7 +500,7 @@ export async function startClientGateway(
           }
         return texts;
       },
-      isLive: (sid) => runtimes.has(sid) && !closing.has(sid),
+      isLive: (sid) => registry.isLive(sid),
     },
     currentUser,
     getUser: (id) => userStore.getUser(id),
@@ -519,16 +519,37 @@ export async function startClientGateway(
   await registerViewerStatic(app);
   const requireSession = (sid?: string) => async (request: FastifyRequest, reply: FastifyReply) => {
     const requested = sid ?? (request.params as { sid?: string })?.sid;
-    if (!requested || closing.has(requested) || !ownsSession(request.raw, requested))
+    if (!requested || registry.isClosing(requested) || !ownsSession(request.raw, requested))
       await reply.code(403).send({ error: "这个独立会话不属于当前客户端" });
   };
-  const runtimePromises = new Map<string, Promise<ClientRuntime>>();
-  const runtimes = new Map<string, ClientRuntime>();
-  const closing = new Set<string>();
-  const sleepingWindows = new Map<
-    string,
-    { token: unknown; profile: string; urls: string[]; active: number }
-  >();
+  const registry = createSessionRuntimeRegistry<ClientRuntime>({
+    lock: accountLifecycle,
+    sessions: clientSessions,
+    isStopping: () => stopping,
+    isOnline: (sid) => onlineSessions().has(sid),
+    mayRun(record) {
+      const userId = userIdForOwner(record.owner);
+      return (
+        !!userId &&
+        userStore.getUser(userId)?.enabled === true &&
+        userStore.profileOwner(clientSessions.profileOf(record.sid)) === userId
+      );
+    },
+    now: sessionNow,
+    start: (record, start) => createRuntime(record, start),
+    async disconnect(sid, ended) {
+      ws.closeSession(sid, ended ? 4010 : undefined);
+      await assetFetcher.closeSession(sid);
+      for (const [id, connection] of viewers)
+        if (connection.sid === sid) {
+          roles.disconnect(id);
+          viewers.delete(id);
+        }
+    },
+    closeWindows: (sid, runtime) => closeSessionWindows(sid, runtime),
+    forget: (sid) => ws.forgetSession(sid),
+    onChange: () => broadcastStatus(),
+  });
   const viewerIds = new WeakMap<ViewerConn, string>();
   const viewers = new Map<
     string,
@@ -566,7 +587,7 @@ export async function startClientGateway(
     // Read for each connection: deploy-viewer.sh publishes a viewer without restarting this.
     build: () => viewerBuildId(),
     onDriverChange(change) {
-      const runtime = runtimes.get(change.sessionId);
+      const runtime = registry.get(change.sessionId);
       if (runtime && change.viewport) runtime.viewport.handle(change.to, change.viewport);
     },
   });
@@ -576,10 +597,10 @@ export async function startClientGateway(
     server: app.server,
     replaceSessionOnConnect: true,
     requireConnectionKey: true,
-    hubsForSession: (sid) => runtimes.get(sid)?.tabs.hubs() ?? [],
+    hubsForSession: (sid) => registry.get(sid)?.tabs.hubs() ?? [],
     sessionForRequest: (request) => {
       const sid = sidFromRequest(request);
-      return sid && !closing.has(sid) && ownsSession(request, sid) && runtimes.has(sid)
+      return sid && !registry.isClosing(sid) && ownsSession(request, sid) && registry.has(sid)
         ? sid
         : undefined;
     },
@@ -593,10 +614,10 @@ export async function startClientGateway(
       )
         return false;
       const sid = sidFromRequest(request);
-      if (!sid || !ownsSession(request, sid) || closing.has(sid)) return false;
+      if (!sid || !ownsSession(request, sid) || registry.isClosing(sid)) return false;
       try {
-        await ensureRuntime(sid);
-        return !closing.has(sid) && ownsSession(request, sid);
+        await registry.ensure(sid);
+        return !registry.isClosing(sid) && ownsSession(request, sid);
       } catch (error) {
         report("client websocket unavailable", error);
         return false;
@@ -614,7 +635,7 @@ export async function startClientGateway(
         authorized: () => ownsSession(request, sid),
       });
       idleReaper.touch(sid);
-      const runtime = runtimes.get(sid)!;
+      const runtime = registry.get(sid)!;
       // A reconnect whose replay position is still buffered keeps its geometry agreement: the
       // epoch did not change, so this viewer identity inherits the acknowledgement directly. One
       // that cannot inherit it is not resumed at all: its join payload then carries a snapshot,
@@ -663,9 +684,9 @@ export async function startClientGateway(
       if (!id) return;
       roles.disconnect(id);
       viewers.delete(id);
-      runtimes.get(sid ?? "")?.viewport.removeViewer(id);
-      runtimes.get(sid ?? "")?.rtc?.removeViewer(id);
-      const runtime = runtimes.get(sid ?? "");
+      registry.get(sid ?? "")?.viewport.removeViewer(id);
+      registry.get(sid ?? "")?.rtc?.removeViewer(id);
+      const runtime = registry.get(sid ?? "");
       if (runtime && ![...viewers.values()].some((connection) => connection.sid === sid)) {
         for (const hub of runtime.tabs.hubs()) runtime.input.resetTab(hub.tabId);
         void stopPixels(runtime).catch((error) => report("disconnected pixel cleanup", error));
@@ -681,10 +702,10 @@ export async function startClientGateway(
         !connection ||
         !connection.authorized() ||
         !clientSessions.owns(connection.owner, sid) ||
-        closing.has(sid)
+        registry.isClosing(sid)
       )
         return;
-      const runtime = runtimes.get(sid);
+      const runtime = registry.get(sid);
       if (!runtime) return;
       // A valid driver is still forbidden from naming another client's CDP target.
       if ("tab" in message && message.tab !== "" && !runtime.browser.ownsTarget(message.tab))
@@ -695,16 +716,16 @@ export async function startClientGateway(
   // Full snapshots are the heavy part of page sync: how often, why, how big and how slow.
   ws.fanout.onSnapshot = (sid, message, bytes) => {
     if (sid === undefined) return;
-    const ms = runtimes.get(sid)?.tabs.hubFor(message.tab)?.lastSnapshotMs;
+    const ms = registry.get(sid)?.tabs.hubFor(message.tab)?.lastSnapshotMs;
     console.log(
       `snapshot: ${sid} ${message.reason ?? "page"} ${(bytes / 1048576).toFixed(1)} MB` +
         (ms === null || ms === undefined ? "" : ` in ${ms} ms`),
     );
   };
   function publish(sid: string, message: Down) {
-    if (stopping || closing.has(sid)) return;
+    if (stopping || registry.isClosing(sid)) return;
     if (message.t === "snapshot") {
-      const reason = runtimes.get(sid)?.viewport.noteSnapshot(message);
+      const reason = registry.get(sid)?.viewport.noteSnapshot(message);
       if (reason !== undefined) message.reason = reason;
     }
     ws.fanout.publishToSession(sid, message);
@@ -718,7 +739,7 @@ export async function startClientGateway(
   const pixelCapacity = createPixelCapacity({
     maxActive: Infinity,
     onChange() {
-      for (const sid of runtimes.keys())
+      for (const sid of registry.sids())
         publish(sid, { t: "px-capacity", available: pixelCapacity.available() });
       broadcastStatus();
     },
@@ -737,7 +758,7 @@ export async function startClientGateway(
     lastStatusAt = Math.max(Date.now(), lastStatusAt + 1);
     const stale = Date.now() - resources.sampledAt > 10000;
     const exit = sid
-      ? (runtimes.get(sid)?.account ?? accountStore.get(clientSessions.profileOf(sid)))
+      ? (registry.get(sid)?.account ?? accountStore.get(clientSessions.profileOf(sid)))
       : undefined;
     return {
       ...resources,
@@ -762,7 +783,7 @@ export async function startClientGateway(
   }
   function broadcastStatus() {
     if (stopping) return;
-    for (const sid of runtimes.keys()) publish(sid, status(sid));
+    for (const sid of registry.sids()) publish(sid, status(sid));
   }
   /** Whether a page is writing a reply, which closing or reloading it would cut short. */
   async function pageGenerating(runtime: ClientRuntime, target: TargetRef): Promise<boolean> {
@@ -778,14 +799,14 @@ export async function startClientGateway(
     sessions: () =>
       clientSessions
         .all()
-        .filter((record) => runtimePromises.has(record.sid))
+        .filter((record) => registry.isStarted(record.sid))
         .map((record) => ({
           sid: record.sid,
           token: record,
         })),
     isOnline: (sid) => onlineSessions().has(sid),
     isBusy: async (sid) => {
-      const runtime = runtimes.get(sid);
+      const runtime = registry.get(sid);
       if (!runtime) return false;
       for (const target of runtime.targets.values()) {
         if (target.type !== "page") continue;
@@ -806,29 +827,7 @@ export async function startClientGateway(
       }
       return false;
     },
-    release: (sid, token) =>
-      accountLifecycle.run(async () => {
-        const current = clientSessions.get(sid);
-        if (!current || current !== token || onlineSessions().has(sid)) return;
-        let tabs: Awaited<ReturnType<ClientRuntime["tabs"]["tabsMessage"]>> | null = null;
-        // An offline viewer can reconnect to this identity after its windows are released.
-        await teardownSession(sid, {
-          async beforeStop() {
-            const runtime = runtimes.get(sid);
-            tabs = runtime && runtime.tabs.size > 0 ? await runtime.tabs.tabsMessage() : null;
-          },
-          async afterStop() {
-            if (tabs)
-              sleepingWindows.set(sid, {
-                token,
-                profile: clientSessions.profileOf(sid),
-                urls: tabs.tabs.map((tab) => tab.url),
-                active: tabs.tabs.findIndex((tab) => tab.active),
-              });
-            await clientSessions.setSleeping(current, true);
-          },
-        });
-      }),
+    release: (sid, token) => registry.sleep(sid, token),
     graceMs: sessionIdleGraceMs(process.env.MIRROR_IDLE_GRACE_MS, e2e),
     now: sessionNow,
     onError: (error) => report("idle client cleanup", error),
@@ -841,7 +840,7 @@ export async function startClientGateway(
     return reply.header("cache-control", "no-store").send(status(sid));
   });
   const assetFetcher = createAssetFetcher({
-    proxyFor: (ref) => runtimes.get(ref.sessionId)?.account.proxyUrl,
+    proxyFor: (ref) => registry.get(ref.sessionId)?.account.proxyUrl,
     // A CDP session belongs to one Chrome, and so to one account.
     send: (sessionId, method, params) => {
       const owner = [...accounts.values()].find((account) => account.sessionTargets.has(sessionId));
@@ -850,7 +849,7 @@ export async function startClientGateway(
         : Promise.reject(new Error("Unknown browser session"));
     },
     sessionFor: (ref) => {
-      const runtime = runtimes.get(ref.sessionId);
+      const runtime = registry.get(ref.sessionId);
       const targets = runtime?.targets;
       if (ref.tabId === ANY_SESSION_TAB)
         return [...(targets?.values() ?? [])].find((target) => target.type === "page")?.sessionId;
@@ -861,7 +860,8 @@ export async function startClientGateway(
   });
   registerAssetRoutes(app, {
     serverKey: randomBytes(32),
-    serverKeyForSession: (sid) => (closing.has(sid) ? undefined : runtimes.get(sid)?.assetKey),
+    serverKeyForSession: (sid) =>
+      registry.isClosing(sid) ? undefined : registry.get(sid)?.assetKey,
     cache: createAssetCache(join(profile, "asset-cache")),
     fetcher: assetFetcher,
     lookup: process.env.MIRROR_RUNTIME_SOCKET
@@ -877,7 +877,7 @@ export async function startClientGateway(
   });
   registerUploadRoutes(app, {
     preHandler: requireSession(),
-    managerFor: (sid) => runtimes.get(sid)?.uploads,
+    managerFor: (sid) => registry.get(sid)?.uploads,
   });
 
   const accounts = new Map<string, Account>();
@@ -931,7 +931,7 @@ export async function startClientGateway(
     const pool = createClientBrowserPool(browser, {
       windowSize: identity.screen,
       onSignedIn: () => {
-        for (const runtime of runtimes.values()) {
+        for (const runtime of registry.values()) {
           if (runtime.account.id !== id) continue;
           for (const target of runtime.targets.values()) {
             if (target.type !== "page") continue;
@@ -969,7 +969,7 @@ export async function startClientGateway(
       const owner = await waitForOwner(target, { ownerOf: (targetId) => pool.ownerOf(targetId) });
       if (owner === undefined) return;
       void themeCopies
-        .install(target.sessionId, runtimes.get(owner)?.theme.current() ?? "auto", true)
+        .install(target.sessionId, registry.get(owner)?.theme.current() ?? "auto", true)
         .catch((error) => report("client theme failed", error));
     };
     const agent = createAgentLink(browser, {
@@ -1003,7 +1003,7 @@ export async function startClientGateway(
       downloadDir,
       sessionForFrame: (frame) => {
         const sid = frameOwners.get(frame) ?? pool.ownerOf(frame);
-        return sid && !closing.has(sid) ? sid : undefined;
+        return sid && !registry.isClosing(sid) ? sid : undefined;
       },
       publish: (message, sid) => publish(sid, message),
       onError: (error) => report("client download failed", error),
@@ -1144,12 +1144,10 @@ export async function startClientGateway(
 
   // Every user's Chrome, including the migrated administrator profile, starts on demand.
 
-  /** Whether any session is using the account, or about to. */
-  const accountInUse = (id: string) =>
-    [...runtimes.values()].some((runtime) => runtime.account.id === id) ||
-    [...runtimePromises.keys()].some((sid) => clientSessions.profileOf(sid) === id);
-
-  async function createRuntime(record: ClientRecord): Promise<ClientRuntime> {
+  async function createRuntime(
+    record: ClientRecord,
+    { sleeping, attach, detach }: RuntimeStart<ClientRuntime>,
+  ): Promise<ClientRuntime> {
     const { sid } = record;
     if (!e2e && (await memoryShort()))
       throw new ClientSessionError(
@@ -1378,10 +1376,9 @@ export async function startClientGateway(
         },
         onError: (error) => report("client media failed", error),
       });
-    runtimes.set(sid, runtime);
+    attach(runtime);
     try {
       if (tabs.size === 0) {
-        const sleeping = sleepingWindows.get(sid);
         const urls =
           sleeping && sleeping.token === clientSessions.get(sid) && sleeping.profile === account.id
             ? sleeping.urls
@@ -1409,10 +1406,9 @@ export async function startClientGateway(
           if (result.frameTree) visit(result.frameTree);
         }
       await clientSessions.setSleeping(record, false);
-      sleepingWindows.delete(sid);
       return runtime;
     } catch (error) {
-      runtimes.delete(sid);
+      detach();
       uploads.close();
       runtime.rtc?.dispose();
       recovery.dispose();
@@ -1423,33 +1419,6 @@ export async function startClientGateway(
       await scoped.close().catch((closeError) => report("failed client cleanup", closeError));
       throw error;
     }
-  }
-  async function ensureRuntime(sid: string): Promise<ClientRuntime> {
-    return accountLifecycle.run(() => ensureRuntimeLocked(sid));
-  }
-  async function ensureRuntimeLocked(sid: string): Promise<ClientRuntime> {
-    if (stopping) throw new ClientSessionError(503, "SERVICE_STOPPING", "服务正在重启");
-    if (closing.has(sid))
-      throw new ClientSessionError(503, "CLIENT_CLOSING", "会话正在结束，请稍后重试");
-    const record = clientSessions.get(sid);
-    const userId = record && userIdForOwner(record.owner);
-    if (
-      !record ||
-      !userId ||
-      userStore.getUser(userId)?.enabled !== true ||
-      userStore.profileOwner(clientSessions.profileOf(sid)) !== userId ||
-      (await expireSleepingSessionLocked(record))
-    )
-      throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个会话不属于当前用户");
-    let pending = runtimePromises.get(sid);
-    if (!pending) {
-      pending = createRuntime(record);
-      runtimePromises.set(sid, pending);
-      void pending.catch(() => {
-        if (runtimePromises.get(sid) === pending) runtimePromises.delete(sid);
-      });
-    }
-    return pending;
   }
   async function handle(runtime: ClientRuntime, id: string, message: Up) {
     if ("tab" in message && message.tab && !runtime.browser.ownsTarget(message.tab)) return;
@@ -1551,7 +1520,7 @@ export async function startClientGateway(
             request.body?.clientKey,
             request.body?.sid,
           );
-          if (previous && (await expireSleepingSessionLocked(previous))) previous = undefined;
+          if (previous && (await registry.expireSleepingLocked(previous))) previous = undefined;
           const existing = previous !== undefined;
           if (
             !existing &&
@@ -1582,13 +1551,13 @@ export async function startClientGateway(
               !existing ||
               userStore.profileOwner(clientSessions.profileOf(record.sid)) !== user.id
             ) {
-              if (runtimes.has(record.sid))
+              if (registry.has(record.sid))
                 throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "浏览器不属于当前用户");
               await clientSessions.setProfile(owner, record.sid, profileId);
             }
             idleReaper.touch(record.sid);
             broadcastStatus();
-            await ensureRuntimeLocked(record.sid);
+            await registry.ensureLocked(record.sid);
             return {
               ...clientSessions.describe(record.sid),
               account: clientSessions.profileOf(record.sid),
@@ -1596,9 +1565,9 @@ export async function startClientGateway(
             };
           } catch (error) {
             if (!existing)
-              await releaseClientLocked(owner, record.sid).catch((cleanupError) =>
-                report("new workspace rollback failed", cleanupError),
-              );
+              await registry
+                .releaseLocked(owner, record.sid)
+                .catch((cleanupError) => report("new workspace rollback failed", cleanupError));
             throw error;
           }
         });
@@ -1607,58 +1576,8 @@ export async function startClientGateway(
       }
     },
   );
-  /**
-   * The one way a session's browser goes away: mark it closing (so nothing new reaches it), close
-   * its windows, do what the caller needs while it is still closing, then forget its runtime and
-   * tell every other session the new totals.
-   */
-  async function teardownSession(
-    sid: string,
-    options: {
-      /** The session is over for good: its viewers get the terminal close code. */
-      ended?: boolean;
-      /** Also release the session record, which this owner holds. */
-      release?: string;
-      /** Runs once the session is marked closing, before its windows close. */
-      beforeStop?: () => Promise<void>;
-      /** Runs after the windows closed (and the record was released), still marked closing. */
-      afterStop?: () => Promise<void>;
-      /** Reports a failure to close the windows and goes on instead of failing the teardown. */
-      onStopError?: (error: unknown) => void;
-    } = {},
-  ): Promise<void> {
-    closing.add(sid);
-    try {
-      await options.beforeStop?.();
-      try {
-        await stopRuntime(sid, options.ended);
-      } catch (error) {
-        if (!options.onStopError) throw error;
-        options.onStopError(error);
-      }
-      if (options.release !== undefined) {
-        await clientSessions.release(options.release, sid);
-        ws.forgetSession(sid);
-      }
-      await options.afterStop?.();
-    } finally {
-      runtimes.delete(sid);
-      runtimePromises.delete(sid);
-      closing.delete(sid);
-      broadcastStatus();
-    }
-  }
-  /** Closes a session's windows and forgets its runtime. Only teardownSession calls it. */
-  async function stopRuntime(sid: string, ended = false): Promise<void> {
-    sleepingWindows.delete(sid);
-    ws.closeSession(sid, ended ? 4010 : undefined);
-    await assetFetcher.closeSession(sid);
-    for (const [id, connection] of viewers)
-      if (connection.sid === sid) {
-        roles.disconnect(id);
-        viewers.delete(id);
-      }
-    const runtime = await runtimePromises.get(sid)?.catch(() => undefined);
+  /** Closes the windows of a session being torn down and waits until they are gone. */
+  async function closeSessionWindows(sid: string, runtime: ClientRuntime | undefined) {
     const account = runtime?.account ?? accounts.get(clientSessions.profileOf(sid));
     account?.downloads.revokeSession(sid);
     if (!account) return;
@@ -1676,24 +1595,6 @@ export async function startClientGateway(
     for (const [frame, session] of account.frameOwners)
       if (session === sid) account.frameOwners.delete(frame);
   }
-  async function releaseClient(owner: string, sid: string) {
-    return accountLifecycle.run(() => releaseClientLocked(owner, sid));
-  }
-  async function expireSleepingSessionLocked(record: ClientRecord): Promise<boolean> {
-    if (
-      record.sleepingSince === undefined ||
-      sessionNow() - record.sleepingSince < SESSION_SLEEP_LIMIT_MS
-    )
-      return false;
-    await releaseClientLocked(record.owner, record.sid);
-    return true;
-  }
-  async function releaseClientLocked(owner: string, sid: string) {
-    if (!clientSessions.owns(owner, sid))
-      throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个会话已结束");
-    if (closing.has(sid)) throw new ClientSessionError(409, "CLIENT_CLOSING", "会话正在结束");
-    await teardownSession(sid, { ended: true, release: owner });
-  }
   /** Moves a session to another account. Its windows close; the viewer reconnects to new ones. */
   async function switchAccount(request: IncomingMessage, owner: string, sid: string, id: string) {
     return accountLifecycle.run(() => {
@@ -1708,9 +1609,7 @@ export async function startClientGateway(
     if (userStore.profileOwner(id) !== userIdForOwner(owner))
       throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
     requireBrowserExit(id);
-    if (closing.has(sid)) throw new ClientSessionError(409, "CLIENT_CLOSING", "会话正在结束");
-    if (clientSessions.profileOf(sid) === id) return;
-    await teardownSession(sid, { afterStop: () => clientSessions.setProfile(owner, sid, id) });
+    await registry.switchProfileLocked(owner, sid, id);
   }
   function userIdForOwner(owner: string): string | undefined {
     return e2e && owner.startsWith("test-")
@@ -2038,7 +1937,7 @@ export async function startClientGateway(
     try {
       await accountLifecycle.run(() => {
         requireLiveOwner(request.raw, owner);
-        return releaseClientLocked(owner, request.params.sid);
+        return registry.releaseLocked(owner, request.params.sid);
       });
       return reply.code(204).send();
     } catch (error) {
@@ -2050,7 +1949,7 @@ export async function startClientGateway(
     { preHandler: requireSession() },
     async (request) => ({
       theme:
-        (await runtimes
+        (await registry
           .get(request.params.sid)
           ?.theme.read()
           .catch(() => null)) ?? null,
@@ -2090,7 +1989,7 @@ export async function startClientGateway(
               "CPA_BROWSER_EXIT",
               "当前浏览器出口与授权节点不同，请选择出口一致的浏览器配置",
             );
-          const runtime = await ensureRuntimeLocked(request.params.sid);
+          const runtime = await registry.ensureLocked(request.params.sid);
           requireLiveOwner(request.raw, owner);
           await runtime.tabs.handle({
             t: "nav",
@@ -2118,7 +2017,7 @@ export async function startClientGateway(
             throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个会话不属于当前客户端");
           const user = requireLiveOwner(request.raw, owner);
           const sid = request.params.sid;
-          const runtime = await ensureRuntimeLocked(sid);
+          const runtime = await registry.ensureLocked(sid);
           requireLiveOwner(request.raw, owner);
           await remoteCc.openLoginIn(
             user.id,
@@ -2150,7 +2049,7 @@ export async function startClientGateway(
       const { theme, systemDark } = request.body ?? {};
       if (!isClaudeTheme(theme)) return reply.code(400).send({ error: "未知的外观" });
       const applied =
-        (await runtimes.get(request.params.sid)?.theme.set(theme, systemDark === true)) ?? false;
+        (await registry.get(request.params.sid)?.theme.set(theme, systemDark === true)) ?? false;
       return { applied };
     },
   );
@@ -2171,10 +2070,12 @@ export async function startClientGateway(
     }
     for (const record of clientSessions.all()) {
       if (userIdForOwner(record.owner) !== userId) continue;
-      await teardownSession(record.sid, {
-        release: record.owner,
-        onStopError: (error) => report("revoked workspace cleanup failed", error),
-      }).catch((error: unknown) => failures.push(error));
+      await registry
+        .teardown(record.sid, {
+          release: record.owner,
+          onStopError: (error) => report("revoked workspace cleanup failed", error),
+        })
+        .catch((error: unknown) => failures.push(error));
     }
     for (const id of profiles) {
       const account = accounts.get(id);
@@ -2214,7 +2115,7 @@ export async function startClientGateway(
     userIdForOwner,
     profileName: (id) => accountStore.all().find((record) => record.id === id)?.name ?? id,
     onlineSessions,
-    stopSession: releaseClientLocked,
+    stopSession: registry.releaseLocked,
     oidc: oidc ? { label: oidc.settings.label, issuer: oidc.settings.issuer } : undefined,
     onPasswordChanged: (userId) => {
       for (const connection of viewers.values())
@@ -2271,7 +2172,7 @@ export async function startClientGateway(
           profileId,
           profileName: accountStore.get(profileId)?.name ?? profileId,
           online: online.has(record.sid),
-          running: runtimes.has(record.sid),
+          running: registry.has(record.sid),
           currentDevice: record.owner === currentOwner(request.raw),
           createdAt: record.createdAt,
         };
@@ -2299,7 +2200,7 @@ export async function startClientGateway(
         requireAdmin(request.raw);
         const record = clientSessions.get(request.params.sid);
         if (!record) throw new ClientSessionError(404, "CLIENT_UNKNOWN", "这个会话已结束");
-        await releaseClientLocked(record.owner, record.sid);
+        await registry.releaseLocked(record.owner, record.sid);
       });
       return reply.code(204).send();
     } catch (error) {
@@ -2393,7 +2294,7 @@ export async function startClientGateway(
   });
   app.get("/healthz", async (_request, reply) => {
     const alive = [...accounts.values()].every((account) => account.browser.isAlive?.() !== false),
-      pages = [...runtimes.values()].flatMap((runtime) =>
+      pages = [...registry.values()].flatMap((runtime) =>
         runtime.recovery.status().map(({ state }) => state),
       );
     const ok = alive && pages.length === 0;
@@ -2401,7 +2302,7 @@ export async function startClientGateway(
       ok,
       browser: alive,
       pages,
-      clients: runtimes.size,
+      clients: registry.size,
     });
   });
   if (e2e) {
@@ -2421,7 +2322,7 @@ export async function startClientGateway(
       const sid = request.query.sid;
       if (!sid || !clientSessions.owns(currentOwner(request.raw), sid))
         return reply.code(403).send({ error: "Forbidden" });
-      const runtime = await ensureRuntime(sid);
+      const runtime = await registry.ensure(sid);
       return {
         sid,
         tabs: [...runtime.tabs.hubs()].map((hub) => ({
@@ -2439,7 +2340,7 @@ export async function startClientGateway(
         const { sid, tab, expression } = request.body;
         if (!sid || !clientSessions.owns(currentOwner(request.raw), sid))
           return reply.code(403).send({ error: "Forbidden" });
-        const runtime = await ensureRuntime(sid),
+        const runtime = await registry.ensure(sid),
           target = tab
             ? runtime.targets.get(tab)
             : [...runtime.targets.values()].find((item) => item.type === "page");
@@ -2471,9 +2372,9 @@ export async function startClientGateway(
           if (account.browser.isAlive?.() !== false) continue;
           // Wait for old cleanup before another operation can reuse a SID or profile.
           console.error(`Chrome for account ${account.id} died; closing its sessions`);
-          for (const runtime of [...runtimes.values()]) {
+          for (const runtime of [...registry.values()]) {
             if (runtime.account !== account) continue;
-            await teardownSession(runtime.sid, {
+            await registry.teardown(runtime.sid, {
               onStopError: (error) => report("crashed workspace cleanup", error),
             });
           }
@@ -2508,17 +2409,17 @@ export async function startClientGateway(
     accountLifecycle.run(async () => {
       if (stopping) return;
       for (const record of clientSessions.all()) {
-        if (runtimePromises.has(record.sid)) continue;
+        if (registry.isStarted(record.sid)) continue;
         try {
           if (record.sleepingSince === undefined) await clientSessions.setSleeping(record, true);
-          else await expireSleepingSessionLocked(record);
+          else await registry.expireSleepingLocked(record);
         } catch (error) {
           report("sleeping client cleanup", error);
         }
       }
       const now = Date.now();
       for (const account of [...accounts.values()]) {
-        if (accountInUse(account.id)) {
+        if (registry.profileInUse(account.id)) {
           account.unusedSince = null;
           continue;
         }
@@ -2569,11 +2470,7 @@ export async function startClientGateway(
       await oauthSync;
       await cpaRuntime?.drain();
       await accountLifecycle.run(async () => {
-        for (const runtime of runtimes.values()) {
-          await runtime.stop().catch((error) => report("client shutdown failed", error));
-        }
-        runtimes.clear();
-        runtimePromises.clear();
+        await registry.stopAll((error) => report("client shutdown failed", error));
         for (const account of [...accounts.values()]) await closeAccount(account);
         userStore.close();
         cpaStore?.close();
