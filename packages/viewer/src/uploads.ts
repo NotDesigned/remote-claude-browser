@@ -117,7 +117,7 @@ export function createFileUploadRelay(options: FileUploadRelayOptions = {}): Fil
             multiple: false,
             loaded: 1,
             total: 1,
-            name: "附件已传至远端，请等待官网处理完成",
+            name: "",
           });
       })
       .catch((error) => {

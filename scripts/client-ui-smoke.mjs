@@ -24,6 +24,12 @@ const checks = {};
 const layouts = {};
 const pageErrors = [];
 const uploadedFiles = [];
+const waitForUploads = async (count) => {
+  for (const deadline = Date.now() + 10_000; uploadedFiles.length < count;) {
+    assert(Date.now() < deadline, `expected ${count} uploaded files, got ${uploadedFiles.length}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+};
 const nativeStreams = new Set();
 let uploadSerial = 0;
 let chooserOpened = false;
@@ -643,14 +649,16 @@ try {
     }),
   );
   await pickerReady(firstPage);
+  const uploadsBeforeDom = uploadedFiles.length;
   await firstPage.locator("#local-file-picker").setInputFiles([
     { name: "DOM附件一.txt", mimeType: "text/plain", buffer: Buffer.from("附件一") },
     { name: "DOM附件二.txt", mimeType: "text/plain", buffer: Buffer.from("附件二") },
   ]);
-  await firstPage.getByText("附件已传至远端，请等待官网处理完成", { exact: true }).waitFor();
+  // A finished upload leaves no notice behind.
+  await waitForUploads(uploadsBeforeDom + 2);
+  await firstPage.locator("#upload-panel").waitFor({ state: "hidden" });
   assert.equal(uploadedFiles.at(-2).name, "DOM附件一.txt");
   assert.equal(uploadedFiles.at(-1).text, "附件二");
-  await firstPage.locator("#upload-panel button").click();
   await viewButton("px").click();
   await firstPage.locator('#shell-bar [data-view-mode="px"][aria-pressed="true"]').waitFor();
   await firstPage.evaluate(() =>
@@ -661,14 +669,15 @@ try {
     }),
   );
   await pickerReady(firstPage);
+  const uploadsBeforePx = uploadedFiles.length;
   await firstPage.locator("#local-file-picker").setInputFiles({
     name: "图像附件.txt",
     mimeType: "text/plain",
     buffer: Buffer.from("图像模式中文附件"),
   });
-  await firstPage.getByText("附件已传至远端，请等待官网处理完成", { exact: true }).waitFor();
+  await waitForUploads(uploadsBeforePx + 1);
+  await firstPage.locator("#upload-panel").waitFor({ state: "hidden" });
   assert.equal(uploadedFiles.at(-1).text, "图像模式中文附件");
-  await firstPage.locator("#upload-panel button").click();
   await viewButton("dom").click();
   await firstPage.locator('#shell-bar [data-view-mode="dom"][aria-pressed="true"]').waitFor();
   checks.domAndPixelAttachmentUploads = true;

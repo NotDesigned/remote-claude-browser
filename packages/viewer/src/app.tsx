@@ -551,8 +551,9 @@ export function App() {
     // A file input in the mirror opens its own picker, and the same click reaches the remote page.
     let mirrorPickerOpenedAt = Number.NEGATIVE_INFINITY;
     const uploads = createFileUploadRelay({
+      // A finished upload needs no notice: the page shows the attachment itself.
       onState: (state) => {
-        if (!disposed) setUploadState(state);
+        if (!disposed) setUploadState(state?.phase === "done" ? null : state);
       },
       openPicker: (multiple) => {
         if (Date.now() - mirrorPickerOpenedAt < MIRROR_PICKER_WINDOW_MS) return true;
