@@ -1,6 +1,7 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { FrontendUser } from "./users";
+import { onOutsidePress } from "./outside-press";
 import "./workspace-menu.css";
 
 export type WorkspaceDestination =
@@ -83,19 +84,19 @@ export function WorkspaceMenu(props: WorkspaceMenuProps & { children?: Component
   };
   useEffect(() => {
     if (!open) return;
-    const onPointer = (event: PointerEvent) => {
-      if (!root.current!.contains(event.target as Node)) setOpen(false);
-    };
+    const stopOutside = onOutsidePress(
+      (target) => target instanceof Node && !!root.current?.contains(target),
+      () => setOpen(false),
+    );
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
         close();
       }
     };
-    document.addEventListener("pointerdown", onPointer);
     document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("pointerdown", onPointer);
+      stopOutside();
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);

@@ -12,6 +12,7 @@ import {
 import type { PxQuality } from "@mirror/protocol";
 import { Diagnostics, formatSpeed, resyncStormTabs, type DiagnosticsProps } from "./hud";
 import type { ComponentChildren } from "preact";
+import { onOutsidePress } from "./outside-press";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { SERVER_STATUS_STALE_MS, type ReceivedServerStatus } from "./server-status";
 import {
@@ -94,16 +95,16 @@ export function ShellBar(props: ShellBarProps) {
         trigger.current?.focus();
       }
     };
-    const onPointer = (event: PointerEvent) => {
-      const target = event.target as Node | null;
-      if (target && !panel.current?.contains(target) && !trigger.current?.contains(target))
-        setOpen(null);
-    };
+    const stopOutside = onOutsidePress(
+      (target) =>
+        target instanceof Node &&
+        (!!panel.current?.contains(target) || !!trigger.current?.contains(target)),
+      () => setOpen(null),
+    );
     document.addEventListener("keydown", onKey);
-    document.addEventListener("pointerdown", onPointer, true);
     return () => {
       document.removeEventListener("keydown", onKey);
-      document.removeEventListener("pointerdown", onPointer, true);
+      stopOutside();
     };
   }, [open]);
 

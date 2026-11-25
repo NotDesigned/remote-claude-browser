@@ -723,6 +723,15 @@ try {
   assert.doesNotMatch(await firstPage.locator("#shell-menu").innerText(), /服务状态|在线设备/);
   await firstPage.keyboard.press("Escape");
   await firstPage.locator("#shell-menu").waitFor({ state: "hidden" });
+  // A press on the mirrored page, which is inside an iframe, closes the menu too.
+  await firstPage.locator("#shell-menu-toggle").click();
+  await firstPage.locator("#shell-menu").waitFor();
+  await firstPage
+    .frameLocator("#mirror-host iframe")
+    .locator("body")
+    .click({ position: { x: 40, y: 300 } });
+  await firstPage.locator("#shell-menu").waitFor({ state: "hidden", timeout: 3000 });
+  checks.menuClosesOnPagePress = true;
   await status.click();
   await panel.waitFor();
   assert.equal(
