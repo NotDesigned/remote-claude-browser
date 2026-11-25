@@ -223,6 +223,53 @@ describe("mirror input document set", () => {
     detach();
     expect(child.observers.size).toBe(0);
   });
+  it("lets go of a removed frame's document, and the frames inside it, at once", () => {
+    const root = new FakeDocument();
+    const frame = new FakeElement(root, 10, "IFRAME");
+    const child = new FakeDocument(frame);
+    frame.contentDocument = child;
+    root.add(frame);
+    const inner = new FakeElement(child, 20, "IFRAME");
+    const grandchild = new FakeDocument(inner);
+    inner.contentDocument = grandchild;
+    child.add(inner);
+    const detach = attachMirrorInput({
+      replayer: {
+        iframe: { contentDocument: root },
+        getMirror: () => ({ getId: (node: FakeElement) => node.nodeId }),
+      } as unknown as Replayer,
+      tab: "T1",
+      send: () => undefined,
+    });
+    expect(child.observers.size).toBe(1);
+    expect(grandchild.observers.size).toBe(1);
+    expect(frame.listeners.get("load")?.size).toBe(1);
+
+    // Moved: removed and added again in one batch. Still in use.
+    const notify = () => {
+      for (const observer of [...root.observers])
+        observer.callback(
+          [{ addedNodes: [], removedNodes: [frame] }] as unknown as MutationRecord[],
+          observer as never,
+        );
+    };
+    notify();
+    expect(child.observers.size).toBe(1);
+
+    (frame as unknown as { isConnected: boolean }).isConnected = false;
+    notify();
+    expect(child.observers.size).toBe(0);
+    expect(child.listeners.get("keydown")?.size ?? 0).toBe(0);
+    expect(grandchild.observers.size).toBe(0);
+    expect(grandchild.listeners.get("keydown")?.size ?? 0).toBe(0);
+    expect(frame.listeners.get("load")?.size).toBe(0);
+    expect(inner.listeners.get("load")?.size).toBe(0);
+    // The refresh that follows a frame's discovery does not bring it back.
+    for (let i = 0; i < 60; i++) root.flushAnimationFrame();
+    expect(child.observers.size).toBe(0);
+    detach();
+  });
+
   it("keeps a child touch drag across frame-listener refreshes", () => {
     const root = new FakeDocument();
     const frame = new FakeElement(root, 10, "IFRAME", {
