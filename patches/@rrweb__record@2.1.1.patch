@@ -1,5 +1,5 @@
 diff --git a/dist/record.js b/dist/record.js
-index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..76a47289f68c0469d17c43a5cc5f7152113c26ca 100644
+index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..b76814da38a44a384c954945848b1ecb1e3d9b63 100644
 --- a/dist/record.js
 +++ b/dist/record.js
 @@ -3568,6 +3568,8 @@ class CrossOriginIframeMirror {
@@ -19,7 +19,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..76a47289f68c0469d17c43a5cc5f7152
      if (this.recordCrossOriginIframes) {
        window.addEventListener("message", this.handleMessage.bind(this));
      }
-@@ -3635,6 +3638,10 @@ class IframeManager {
+@@ -3635,13 +3638,18 @@ class IframeManager {
      if (crossOriginMessageEvent.data.type !== "rrweb" || // To filter out the rrweb messages which are forwarded by some sites.
      crossOriginMessageEvent.origin !== crossOriginMessageEvent.data.origin)
        return;
@@ -30,3 +30,28 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..76a47289f68c0469d17c43a5cc5f7152
      const iframeSourceWindow = message.source;
      if (!iframeSourceWindow) return;
      const iframeEl = this.crossOriginIframeMap.get(message.source);
+     if (!iframeEl) return;
+     const transformedEvent = this.transformCrossOriginEvent(
+       iframeEl,
+-      crossOriginMessageEvent.data.event
++      crossOriginMessageEvent.data.event,
++      crossOriginMessageEvent.data.isCheckout === true
+     );
+     if (transformedEvent)
+       this.wrappedEmit(
+@@ -3649,11 +3657,13 @@ class IframeManager {
+         crossOriginMessageEvent.data.isCheckout
+       );
+   }
+-  transformCrossOriginEvent(iframeEl, e) {
++  transformCrossOriginEvent(iframeEl, e, isCheckout = false) {
+     var _a2;
+     switch (e.type) {
+       case EventType.FullSnapshot: {
+-        this.crossOriginIframeMirror.reset(iframeEl);
++        // A checkout is the same document sent again: the remote ids still name the same nodes,
++        // which a mirror's reset can use to keep resolving the ids it gave out before.
++        this.crossOriginIframeMirror.reset(iframeEl, isCheckout);
+         this.crossOriginIframeStyleMirror.reset(iframeEl);
+         this.replaceIdOnNode(e.data.node, iframeEl);
+         const rootId = e.data.node.id;

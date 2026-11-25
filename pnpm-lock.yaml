@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   '@rrweb/record@2.1.1':
-    hash: e4wv4lvfzdohpzl4ccklwez3vu
+    hash: dzkuf7clekfl6uv2eq6bwmvpje
     path: patches/@rrweb__record@2.1.1.patch
   '@rrweb/replay@2.1.1':
     hash: nrpqmsqd645cqyk6be2cudggce
@@ -39,7 +39,7 @@ importers:
         version: link:../protocol
       '@rrweb/record':
         specifier: 2.1.1
-        version: 2.1.1(patch_hash=e4wv4lvfzdohpzl4ccklwez3vu)
+        version: 2.1.1(patch_hash=dzkuf7clekfl6uv2eq6bwmvpje)
       '@rrweb/rrweb-plugin-canvas-webrtc-record':
         specifier: 2.1.1
         version: 2.1.1(rrweb@2.1.1)
@@ -2107,7 +2107,7 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.62.2':
     optional: true
 
-  '@rrweb/record@2.1.1(patch_hash=e4wv4lvfzdohpzl4ccklwez3vu)':
+  '@rrweb/record@2.1.1(patch_hash=dzkuf7clekfl6uv2eq6bwmvpje)':
     dependencies:
       '@rrweb/types': 2.1.1
       '@rrweb/utils': 2.1.1

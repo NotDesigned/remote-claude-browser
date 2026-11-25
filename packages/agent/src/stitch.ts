@@ -18,7 +18,12 @@ export const STITCH_SYNC_MIN_INTERVAL_MS = 250;
 export interface StitchSyncDependencies {
   isRecorderStarted(): boolean;
   onRecorderStarted(listener: () => void): () => void;
-  takeFullSnapshot(): void;
+  /**
+   * `framesAsked`: the request has just been passed to the frames below, so the snapshot need not
+   * ask them again. A second request has them send their documents twice, and replay rebuilds the
+   * frame a moment after it first showed, under whoever is already using it.
+   */
+  takeFullSnapshot(framesAsked: boolean): void;
   now?: () => number;
 }
 
@@ -145,7 +150,7 @@ export function installStitchSyncListener(
   let pendingSnapshot = false;
   let pendingTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const honorPendingSnapshot = (): void => {
+  const honorPendingSnapshot = (framesAsked = false): void => {
     if (!pendingSnapshot || !dependencies.isRecorderStarted()) return;
 
     const snapshotAt = now();
@@ -161,7 +166,7 @@ export function installStitchSyncListener(
     }
 
     try {
-      dependencies.takeFullSnapshot();
+      dependencies.takeFullSnapshot(framesAsked);
       pendingSnapshot = false;
       lastSnapshotAt = snapshotAt;
       if (pendingTimer !== null) clearTimeout(pendingTimer);
@@ -191,7 +196,9 @@ export function installStitchSyncListener(
     broadcastStitchSync(target);
 
     pendingSnapshot = true;
-    honorPendingSnapshot();
+    // Only a snapshot taken now follows the request on its way down. One taken later, after the
+    // frames below have answered, rebuilds them in the replay and has to ask them again.
+    honorPendingSnapshot(true);
   };
 
   target.addEventListener("message", onMessage);

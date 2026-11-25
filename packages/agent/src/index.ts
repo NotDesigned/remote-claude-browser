@@ -36,6 +36,7 @@ import {
 } from "./canvas-sampler";
 import { record } from "@rrweb/record";
 import { addFontsToSnapshot, installFontCapture } from "./font-capture";
+import { retainCheckoutIds, type ResettableIframeMirror } from "./frame-ids";
 import { captureDocumentContext } from "./document-context";
 import { startWorkingMarkCapture } from "./working-mark";
 import { startFocusReport } from "./focus-report";
@@ -210,11 +211,20 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   let canvasSampler: CanvasSampler | null = null;
 
   installStitchReadyListener(window);
+  /** Set while a snapshot is taken whose request the frames below already have. */
+  let framesAsked = false;
   if (isCrossOriginChild()) {
     installStitchSyncListener(window, {
       isRecorderStarted: recordReadiness.isStarted,
       onRecorderStarted: recordReadiness.onStarted,
-      takeFullSnapshot: () => record.takeFullSnapshot(true),
+      takeFullSnapshot: (asked) => {
+        framesAsked = asked;
+        try {
+          record.takeFullSnapshot(true);
+        } finally {
+          framesAsked = false;
+        }
+      },
     });
   } else if (window !== window.top) {
     installStitchSyncForwarder(window);
@@ -266,7 +276,9 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
           name: "@mirror/cross-origin-iframe-mirror",
           options: {},
           getMirror: (mirrors) => {
-            crossOriginIframeMirror = mirrors.crossOriginIframeMirror;
+            crossOriginIframeMirror = retainCheckoutIds(
+              mirrors.crossOriginIframeMirror as unknown as ResettableIframeMirror,
+            );
           },
           eventProcessor: (event) => {
             captureDocumentContext(event, mirrorNode);
@@ -280,7 +292,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
               focusReport?.snapshotTaken();
               // A new snapshot here means new frames in the replay, so what is inside them has to
               // report after it. A request passed down before a delayed snapshot came too early.
-              if (!isTop) broadcastStitchSync();
+              if (!isTop && !framesAsked) broadcastStitchSync();
               // Its canvases are blank in the replay until they are sent again.
               canvasSampler?.reset();
             }

@@ -126,6 +126,28 @@ describe("stitch-sync", () => {
     expect(takeFullSnapshot).toHaveBeenCalledTimes(2);
   });
 
+  it("lets only a snapshot taken with the request skip asking the frames below again", async () => {
+    vi.useFakeTimers();
+    const descendant = windowHarness();
+    const child = windowHarness([descendant.window]);
+    const takeFullSnapshot = vi.fn();
+    const readiness = createRecordReadiness();
+    readiness.markStarted();
+    installStitchSyncListener(child.window, stitchDependencies(readiness, takeFullSnapshot));
+    await Promise.resolve();
+
+    child.dispatch({ type: STITCH_SYNC_MESSAGE_TYPE });
+    expect(descendant.window.postMessage).toHaveBeenCalledOnce();
+    expect(takeFullSnapshot).toHaveBeenLastCalledWith(true);
+
+    // Too soon for another: the frames below answer this one before the snapshot is taken.
+    child.dispatch({ type: STITCH_SYNC_MESSAGE_TYPE });
+    expect(descendant.window.postMessage).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(takeFullSnapshot).toHaveBeenCalledTimes(2);
+    expect(takeFullSnapshot).toHaveBeenLastCalledWith(false);
+  });
+
   it("queues a snapshot received before readiness and still forwards it", async () => {
     const parent = windowHarness();
     const descendant = windowHarness();
@@ -146,6 +168,8 @@ describe("stitch-sync", () => {
     await Promise.resolve();
 
     expect(takeFullSnapshot).toHaveBeenCalledOnce();
+    // Taken after the frames below were asked, so it asks them again.
+    expect(takeFullSnapshot).toHaveBeenCalledWith(false);
     expect(parent.window.postMessage).toHaveBeenCalledWith(
       { type: STITCH_READY_MESSAGE_TYPE },
       "*",
