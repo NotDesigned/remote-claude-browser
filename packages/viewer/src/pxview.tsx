@@ -8,14 +8,14 @@
  */
 import { createVideoStream, videoOption, type VideoStream } from "./px-video";
 import { GRID_COLUMNS, changedTiles, type TileGrid } from "./px-tiles";
-import { Mod, type Down, type TabId, type Up } from "@mirror/protocol";
+import type { Down, TabId, Up } from "@mirror/protocol";
 import { attachPxKeyboard } from "./px-ime";
 import { createTouchMouseFilter } from "./input/pointer";
+import { pointerMessage, type PointerFields, type PointerMessage } from "./input/encode";
 
 type ModeMessage = Extract<Down, { t: "mode" }>;
 type PxFrame = Extract<Down, { t: "px" }>;
 type VideoMessage = Extract<Down, { t: "vid-cfg" | "vid" }>;
-type PointerMessage = Extract<Up, { t: "ptr" }>;
 
 export interface PxViewOptions {
   container: HTMLElement;
@@ -325,18 +325,7 @@ interface PxInputOptions {
   clearTimer?: typeof clearTimeout;
 }
 
-type PxPointerEvent = Pick<
-  MouseEvent,
-  | "clientX"
-  | "clientY"
-  | "button"
-  | "buttons"
-  | "detail"
-  | "altKey"
-  | "ctrlKey"
-  | "metaKey"
-  | "shiftKey"
-> & { deltaX?: number; deltaY?: number };
+type PxPointerEvent = Pick<MouseEvent, "clientX" | "clientY"> & PointerFields;
 
 /** Attach input directly to the canvas; nodeId=-1 is the frozen wire's node-less sentinel. */
 export function attachPxInput(options: PxInputOptions): () => void {
@@ -360,21 +349,7 @@ export function attachPxInput(options: PxInputOptions): () => void {
 
   const sendPointer = (event: PxPointerEvent, kind: PointerMessage["kind"]) => {
     const { vx, vy } = rawCanvasPoint(options.canvas, event);
-    options.send({
-      t: "ptr",
-      tab: options.tab,
-      kind,
-      nodeId: -1,
-      rx: 0,
-      ry: 0,
-      vx,
-      vy,
-      button: mouseButton(event.button),
-      buttons: event.buttons,
-      mods: eventMods(event),
-      clicks: event.detail >= 3 ? 3 : event.detail === 2 ? 2 : 1,
-      ...(kind === "wheel" ? { dx: event.deltaX ?? 0, dy: event.deltaY ?? 0 } : {}),
-    });
+    options.send(pointerMessage(options.tab, kind, { nodeId: -1, rx: 0, ry: 0, vx, vy }, event, 3));
   };
   const flushMove = () => {
     timer = null;
@@ -587,19 +562,4 @@ function scalePoint(offset: number, rendered: number, intrinsic: number): number
 
 function positiveDimension(value: number): number {
   return Math.max(1, Math.round(Number.isFinite(value) ? value : 1));
-}
-
-function eventMods(
-  event: Pick<MouseEvent | KeyboardEvent, "altKey" | "ctrlKey" | "metaKey" | "shiftKey">,
-): number {
-  return (
-    (event.altKey ? Mod.Alt : 0) |
-    (event.ctrlKey ? Mod.Ctrl : 0) |
-    (event.metaKey ? Mod.Meta : 0) |
-    (event.shiftKey ? Mod.Shift : 0)
-  );
-}
-
-function mouseButton(button: number): 0 | 1 | 2 | undefined {
-  return button === 0 || button === 1 || button === 2 ? button : undefined;
 }

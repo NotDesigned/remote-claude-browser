@@ -7,13 +7,8 @@
  * scrolls reach the server ONLY via the 10Hz `scroll` sync. One path or the other, never both.
  */
 import type { TabId } from "@mirror/protocol";
-import {
-  eventMods,
-  isElement,
-  pointerPosition,
-  resolvePointerTarget,
-  type SendInput,
-} from "./pointer";
+import { isElement, pointerPosition, resolvePointerTarget, type SendInput } from "./pointer";
+import { eventMods } from "./encode";
 
 interface ScrollCandidate {
   target: Element | Window;

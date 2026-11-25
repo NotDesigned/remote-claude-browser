@@ -8,7 +8,8 @@
  */
 import type { TabId } from "@mirror/protocol";
 import { createForwardedInputClock, type ForwardedInputClock } from "./forwarded";
-import { eventMods, isElement, type SendInput } from "./pointer";
+import { isElement, type SendInput } from "./pointer";
+import { eventMods, isPasteShortcut, keyEventMessage, sendKeyPress } from "./encode";
 import { isPasswordField } from "./password";
 
 export interface EditableFocus {
@@ -162,8 +163,7 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
   let placeholderDown: { composed: boolean } | null = null;
   const sendEnter = (target: Element, mods: number) => {
     options.flushComposing?.(target, true);
-    for (const kind of ["down", "up"] as const)
-      options.send({ t: "key", tab: options.tab, kind, key: "Enter", code: "Enter", mods });
+    sendKeyPress(options.send, options.tab, "Enter", "Enter", mods);
   };
   const editingHost = (target: EventTarget | null): HTMLElement | null => {
     if (!isElement(target) || !isContenteditableEchoField(target)) return null;
@@ -279,24 +279,13 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
     }
     if (event.key === "Enter") enterDown = kind === "down";
     // The paste event carries this client's clipboard. Never send an OS paste shortcut to B.
-    if (
-      (!event.altKey && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") ||
-      (event.shiftKey && event.key === "Insert")
-    )
-      return;
+    if (isPasteShortcut(event)) return;
     if (kind === "down") options.onKeyDown?.(event, focused);
     const target = isElement(event.target) ? event.target : focused?.element;
     if (kind === "down" && event.key === "Enter" && target !== undefined && isEchoField(target)) {
       options.flushComposing?.(target, true);
     }
-    options.send({
-      t: "key",
-      tab: options.tab,
-      kind,
-      key: event.key,
-      code: event.code,
-      mods: eventMods(event),
-    });
+    options.send(keyEventMessage(options.tab, kind, event));
     // A key that types nothing on the remote (mobile soft-keyboard "Unidentified"/keyCode-229
     // placeholders resolve to text "" -> no-op dispatch) must NOT poison the forwarded-key clock;
     // otherwise it suppresses change.ts's value-sync — the ONLY lane that carries mobile text to
@@ -337,22 +326,7 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
     if (enterDown) return;
     options.flushComposing?.(event.target, true);
     const mods = eventMods(event as InputEvent & KeyboardEvent);
-    options.send({
-      t: "key",
-      tab: options.tab,
-      kind: "down",
-      key: "Enter",
-      code: "Enter",
-      mods,
-    });
-    options.send({
-      t: "key",
-      tab: options.tab,
-      kind: "up",
-      key: "Enter",
-      code: "Enter",
-      mods,
-    });
+    sendKeyPress(options.send, options.tab, "Enter", "Enter", mods);
   };
   const onPaste = (event: ClipboardEvent) => {
     if (!event.isTrusted) return;

@@ -1,11 +1,11 @@
 import type { TabId } from "@mirror/protocol";
 import {
-  eventMods,
   pointerPosition,
   resolveClickTarget,
   type SendInput,
   type TouchMouseFilter,
 } from "./pointer";
+import { eventMods } from "./encode";
 import { scrollCandidates } from "./wheel";
 
 export interface TouchCaptureOptions {

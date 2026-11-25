@@ -8,7 +8,8 @@
  * nearest serialized ancestor. mousemove throttled 30Hz leading+trailing (hover menus need it).
  * Re-attach after every resync rebuild (the iframe is new). Selection/copy/Ctrl-F stay local.
  */
-import { Mod, type TabId, type Up } from "@mirror/protocol";
+import type { TabId, Up } from "@mirror/protocol";
+import { pointerMessage } from "./encode";
 
 export type SendInput = (message: Up) => void;
 
@@ -59,17 +60,6 @@ export interface ResolvedPointerTarget {
   nodeId: number;
   element: Element;
   rect: Pick<DOMRect, "left" | "top" | "width" | "height">;
-}
-
-export function eventMods(
-  event: Pick<MouseEvent, "altKey" | "ctrlKey" | "metaKey" | "shiftKey">,
-): number {
-  return (
-    (event.altKey ? Mod.Alt : 0) |
-    (event.ctrlKey ? Mod.Ctrl : 0) |
-    (event.metaKey ? Mod.Meta : 0) |
-    (event.shiftKey ? Mod.Shift : 0)
-  );
 }
 
 export function resolvePointerTarget(
@@ -176,16 +166,15 @@ export function attachPointerCapture(options: PointerCaptureOptions): () => void
 
   const sendPointer = (event: MouseEvent, kind: "move" | "down" | "up") => {
     const target = resolveClickTarget(event.target, options.getNodeId);
-    options.send({
-      t: "ptr",
-      tab: options.tab,
-      kind,
-      ...pointerPosition(event, target, options.doc, options.rootDoc),
-      button: mouseButton(event.button),
-      buttons: event.buttons,
-      mods: eventMods(event),
-      clicks: event.detail >= 2 ? 2 : 1,
-    });
+    options.send(
+      pointerMessage(
+        options.tab,
+        kind,
+        pointerPosition(event, target, options.doc, options.rootDoc),
+        event,
+        2,
+      ),
+    );
   };
 
   const flushMove = () => {
@@ -241,10 +230,6 @@ export function attachPointerCapture(options: PointerCaptureOptions): () => void
     options.doc.removeEventListener("contextmenu", onContextMenu, true);
     if (trailingTimer !== null) cancel(trailingTimer);
   };
-}
-
-function mouseButton(button: number): 0 | 1 | 2 | undefined {
-  return button === 0 || button === 1 || button === 2 ? button : undefined;
 }
 
 function clamp01(value: number): number {

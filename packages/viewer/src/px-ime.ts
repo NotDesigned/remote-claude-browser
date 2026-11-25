@@ -1,4 +1,5 @@
-import { Mod, type TabId, type Up } from "@mirror/protocol";
+import type { TabId, Up } from "@mirror/protocol";
+import { isPasteShortcut, keyEventMessage, sendKeyPress } from "./input/encode";
 
 interface PxKeyboardOptions {
   /** The surface the textarea serves: the pixel canvas, or the page mode's replay iframe. */
@@ -90,18 +91,7 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
   };
   const onCanvasFocus = () => focus();
   const sendKey = (event: KeyboardEvent, kind: "down" | "up") => {
-    options.send({
-      t: "key",
-      tab: options.tab,
-      kind,
-      key: event.key,
-      code: event.code,
-      mods:
-        (event.altKey ? Mod.Alt : 0) |
-        (event.ctrlKey ? Mod.Ctrl : 0) |
-        (event.metaKey ? Mod.Meta : 0) |
-        (event.shiftKey ? Mod.Shift : 0),
-    });
+    options.send(keyEventMessage(options.tab, kind, event));
   };
   const onKeyDown = (event: KeyboardEvent) => {
     if (disposed || !event.isTrusted) return;
@@ -116,11 +106,7 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
     )
       return;
     // Native paste reads the user's clipboard; forwarding Ctrl/Cmd-V would use B's clipboard.
-    if (
-      (!event.altKey && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") ||
-      (event.shiftKey && event.key === "Insert")
-    )
-      return;
+    if (isPasteShortcut(event)) return;
     const altGraph = event.getModifierState?.("AltGraph") === true;
     if (
       [...event.key].length === 1 &&
@@ -197,8 +183,7 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
             : null;
     if (key === null) return;
     event.preventDefault();
-    for (const kind of ["down", "up"] as const)
-      options.send({ t: "key", tab: options.tab, kind, key, code: key, mods: 0 });
+    sendKeyPress(options.send, options.tab, key, key, 0);
     clearInput();
   };
   const onPaste = (event: ClipboardEvent) => {
