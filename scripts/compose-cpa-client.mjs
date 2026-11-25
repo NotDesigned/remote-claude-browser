@@ -1,14 +1,13 @@
 // Runs inside the server container as the gateway's user and drives cpa-broker over its socket,
-// as the gateway does. compose-smoke.sh checks the containers and networks it leaves behind.
-//   node compose-cpa-client.mjs ensure <id>   creates or starts an instance and calls it
-//   node compose-cpa-client.mjs delete <id>   removes it with its volumes and network
-import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+// as the gateway does. compose-smoke.sh pipes it to node and checks what it leaves behind.
+//   ensure <id> <api key> <management key>   creates or starts an instance and calls it
+//   delete <id>                              removes it with its volumes and network
 import { request } from "node:http";
 
 const socketPath = process.env.CPA_BROKER_SOCKET ?? "/run/cpa/cpa.sock";
-const [action, id] = process.argv.slice(2);
-if (!/^cpa-[a-f0-9]{20}$/.test(id ?? "")) throw new Error("usage: ensure|delete <cpa-id>");
+const [action, id, apiKey, managementKey] = process.argv.slice(2);
+const usage = "usage: ensure <cpa-id> <api key> <management key> | delete <cpa-id>";
+if (!/^cpa-[a-f0-9]{20}$/.test(id ?? "")) throw new Error(usage);
 
 function call(method, path, body, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -23,20 +22,15 @@ function call(method, path, body, headers = {}) {
 }
 
 if (action === "ensure") {
-  // An instance keeps the keys it was first created with, as the gateway's store does.
-  const keyFile = `/tmp/${id}.json`;
-  const keys = existsSync(keyFile)
-    ? JSON.parse(readFileSync(keyFile, "utf8"))
-    : {
-        apiKey: randomBytes(32).toString("base64url"),
-        managementKey: randomBytes(32).toString("base64url"),
-      };
-  writeFileSync(keyFile, JSON.stringify(keys), { mode: 0o600 });
-  const { managementKey } = keys;
+  if (!apiKey || !managementKey) throw new Error(usage);
   const ensured = await call(
     "POST",
     `/instances/${id}/ensure`,
-    JSON.stringify({ ...keys, proxyUrl: "http://compose-smoke:x@runtime-egress:8781" }),
+    JSON.stringify({
+      apiKey,
+      managementKey,
+      proxyUrl: "http://compose-smoke:x@runtime-egress:8781",
+    }),
     { "content-type": "application/json" },
   );
   if (ensured.status !== 200) throw new Error(`ensure ${id}: ${ensured.status} ${ensured.text}`);
@@ -52,4 +46,4 @@ if (action === "ensure") {
 } else if (action === "delete") {
   const removed = await call("DELETE", `/instances/${id}`);
   if (removed.status !== 200) throw new Error(`delete ${id}: ${removed.status} ${removed.text}`);
-} else throw new Error("usage: ensure|delete <cpa-id>");
+} else throw new Error(usage);
