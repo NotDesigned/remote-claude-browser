@@ -210,6 +210,11 @@ body {
 }
 
 /* Status pill: opens the 「连接」 popover */
+/* Buttons do not inherit the page's font; the bar's and its popovers' must match their text. */
+#shell button,
+#shell summary {
+  font-family: inherit;
+}
 #shell-status {
   position: relative;
   display: inline-flex;
