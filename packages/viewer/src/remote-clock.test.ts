@@ -40,12 +40,18 @@ describe("the remote browser's clock", () => {
     expect(formatRemoteClock("Asia/Taipei", at, { city: "高雄", country: "台湾" })).toEqual({
       label: "高雄 · 19:05",
       title: "高雄，台湾 · 2026-11-11 周三 19:05 · Asia/Taipei（GMT+8）",
+      place: "高雄，台湾",
+      dateTime: "2026-11-11 周三 19:05",
+      zone: "Asia/Taipei（GMT+8）",
     });
     expect(
       formatRemoteClock("America/Los_Angeles", at, { city: "西雅图", country: "美国" }),
     ).toEqual({
       label: "西雅图 · 03:05",
       title: "西雅图，美国 · 2026-11-11 周三 03:05 · America/Los_Angeles（GMT-8）",
+      place: "西雅图，美国",
+      dateTime: "2026-11-11 周三 03:05",
+      zone: "America/Los_Angeles（GMT-8）",
     });
   });
 
@@ -68,6 +74,9 @@ describe("the remote browser's clock", () => {
     ).toEqual({
       label: "西雅图 · 04:05",
       title: "西雅图，美国 · 2026-07-11 周六 04:05 · America/Los_Angeles（GMT-7）",
+      place: "西雅图，美国",
+      dateTime: "2026-07-11 周六 04:05",
+      zone: "America/Los_Angeles（GMT-7）",
     });
   });
 
@@ -112,6 +121,9 @@ describe("the remote browser's clock", () => {
     expect(formatStatusClock(next)).toEqual({
       label: "大阪 · 20:06",
       title: "大阪，日本 · 2026-11-11 周三 20:06 · Asia/Tokyo（GMT+9）",
+      place: "大阪，日本",
+      dateTime: "2026-11-11 周三 20:06",
+      zone: "Asia/Tokyo（GMT+9）",
     });
   });
 

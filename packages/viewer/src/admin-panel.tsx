@@ -589,6 +589,14 @@ export function AdminPanel({
                 <dt>运行中的会话</dt>
                 <dd>{overview.sessions.filter((session) => session.running).length}</dd>
               </div>
+              <div>
+                <dt>全部会话</dt>
+                <dd>{overview.resources.clientsAllocated}</dd>
+              </div>
+              <div>
+                <dt>在线设备</dt>
+                <dd>{overview.resources.clientsOnline}</dd>
+              </div>
             </dl>
             <p class="user-panel-muted">
               资源每 5 秒更新；新建和恢复会话仍受可用内存限制。离线页面 15

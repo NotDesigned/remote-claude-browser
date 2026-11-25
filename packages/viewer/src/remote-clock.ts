@@ -8,6 +8,10 @@ export interface RemoteClockText {
   label: string;
   /** Actual exit location, full local date, IANA zone and UTC offset. */
   title: string;
+  /** The parts of the title, each on its own line in the 「连接」 popover. */
+  place: string;
+  dateTime: string;
+  zone: string;
 }
 
 /** Keep the gateway's UTC clock while advancing by time elapsed on the viewer. */
@@ -55,9 +59,14 @@ export function formatRemoteClock(
     const country = location.country?.trim();
     const place = city || country || "当地时间";
     const fullPlace = city && country && city !== country ? `${city}，${country}` : place;
+    const dateTime = `${parts.year}-${parts.month}-${parts.day} ${parts.weekday} ${time}`;
+    const zone = `${timeZone}（${parts.timeZoneName}）`;
     return {
       label: `${place} · ${time}`,
-      title: `${fullPlace} · ${parts.year}-${parts.month}-${parts.day} ${parts.weekday} ${time} · ${timeZone}（${parts.timeZoneName}）`,
+      title: `${fullPlace} · ${dateTime} · ${zone}`,
+      place: fullPlace,
+      dateTime,
+      zone,
     };
   } catch {
     return null;

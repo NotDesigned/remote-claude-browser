@@ -1,7 +1,7 @@
 // @vitest-environment node
 import type { ComponentChildren, VNode } from "preact";
 import { describe, expect, it } from "vitest";
-import { Hud, HudLayer, formatSpeed, type HudProps } from "./hud";
+import { Diagnostics, formatSpeed, resyncStormTabs, type DiagnosticsProps } from "./hud";
 
 type TestVNode = VNode<Record<string, unknown>>;
 
@@ -29,7 +29,7 @@ function textContent(value: ComponentChildren): string {
   return String(value);
 }
 
-const props: HudProps = {
+const props: DiagnosticsProps = {
   connection: "open",
   rttMs: 42.4,
   bufferMs: 93,
@@ -71,7 +71,7 @@ describe("frame rates", () => {
   };
 
   it("shows every stage in the pixel view", () => {
-    const text = textContent(Hud(pixelProps));
+    const text = textContent(Diagnostics(pixelProps));
     expect(text).toContain("13 fps");
     expect(text).toContain("采集帧率15 fps");
     expect(text).toContain("编码帧率14 fps");
@@ -79,7 +79,7 @@ describe("frame rates", () => {
   });
 
   it("stays out of the page view", () => {
-    expect(textContent(Hud({ ...props, modeByTab: {}, frames }))).not.toContain("fps");
+    expect(textContent(Diagnostics({ ...props, modeByTab: {}, frames }))).not.toContain("fps");
   });
 });
 
@@ -92,13 +92,14 @@ describe("formatSpeed", () => {
   });
 });
 
-describe("P3-HUD", () => {
+describe("diagnostics", () => {
   it("renders Chinese connection diagnostics while preserving RTT and resync attributes", () => {
-    const tree = Hud({ ...props, activeTab: "tab-a" });
+    const tree = Diagnostics({ ...props, activeTab: "tab-a" });
     const nodes = descendants(tree);
     const allText = textContent(tree);
 
     expect(tree.type).toBe("details");
+    expect(tree.props.open).toBeUndefined();
     expect(tree.props).toMatchObject({
       id: "resync-hud",
       "data-connection": "open",
@@ -107,38 +108,30 @@ describe("P3-HUD", () => {
       "data-resync-storm": "true",
       "data-resync-storm-tabs": "tab-b",
     });
-    expect(allText).toContain("RTT 42 ms");
-    expect(allText).toContain("DOM 回放缓冲");
-    expect(allText).toContain("93 ms");
     const summary = nodes.find((node) => node.type === "summary");
-    expect(summary?.props.title).toBe(
-      "网络往返延迟（RTT）和当前下载速度。延迟不包含页面处理、回放缓冲和图像绘制耗时",
-    );
-    expect(allText).toContain("已连接");
-    expect(allText).not.toContain("操作权限");
+    expect(textContent(summary?.props.children as ComponentChildren)).toBe("诊断同步较多");
+    expect(allText).toContain("连接状态已连接");
+    expect(allText).toContain("网络往返 RTT42 ms");
+    expect(allText).toContain("DOM 回放缓冲93 ms");
     expect(allText).toContain("当前速度2 KB/s");
     expect(allText).toContain("最高速度3.0 MB/s");
-    expect(allText).toContain("RTT 42 ms · 2 KB/s");
+    expect(allText).toContain("页面重新同步6 次");
     expect(allText).toContain("First文字 DOM2 次同步");
     expect(allText).toContain("Second图像4 次同步");
-    expect(allText).toContain("个页面频繁重新同步");
     expect(nodes.some((node) => node.type === "iframe")).toBe(false);
   });
 
   it("marks the DOM replay buffer unused in pixel mode", () => {
-    const tree = Hud(props);
-    const allText = textContent(tree);
-    expect(tree.props["data-rtt-ms"]).toBe("42");
-    expect(allText).toContain("RTT 42 ms");
+    const allText = textContent(Diagnostics(props));
     expect(allText).toContain("DOM 回放缓冲图像模式不使用");
     expect(allText).not.toContain("93 ms");
   });
 
-  it("mounts in a dedicated toggleable layer outside the mirror document", () => {
-    const layer = HudLayer(props);
-    expect(layer.type).toBe("aside");
-    expect(layer.props.id).toBe("viewer-hud-layer");
-    expect(descendants(Hud(props)).some((node) => node.type === "iframe")).toBe(false);
-    expect(Hud(props).type).toBe("details");
+  it("names the tabs that re-synchronised often", () => {
+    expect(resyncStormTabs(props.resyncByTab)).toEqual(["tab-b"]);
+    expect(resyncStormTabs({})).toEqual([]);
+    const calm = Diagnostics({ ...props, resyncByTab: {} });
+    expect(calm.props["data-resync-storm"]).toBe("false");
+    expect(textContent(calm)).not.toContain("同步较多");
   });
 });

@@ -165,3 +165,31 @@ it("waits for a background page to become visible before its first connection", 
   expect(socketFactory).toHaveBeenCalledOnce();
   gateway.close();
 });
+
+it("connects at once when asked, instead of waiting out a stalled attempt", () => {
+  const { gateway, sockets, states } = connect(false);
+  gateway.reconnect();
+  expect(sockets[0]!.closed).toBe(true);
+  expect(sockets).toHaveLength(2);
+  expect(states.at(-1)).toBe("connecting");
+  gateway.close();
+});
+
+it("leaves an open connection alone when asked to reconnect", () => {
+  const { gateway, sockets } = connect();
+  gateway.reconnect();
+  expect(sockets).toHaveLength(1);
+  expect(sockets[0]!.closed).toBe(false);
+  gateway.close();
+});
+
+it("skips the wait before the next attempt when asked to reconnect", () => {
+  const { gateway, sockets, current } = connect();
+  current().onclose?.();
+  expect(sockets).toHaveLength(1);
+  gateway.reconnect();
+  expect(sockets).toHaveLength(2);
+  vi.advanceTimersByTime(10);
+  expect(sockets).toHaveLength(2);
+  gateway.close();
+});
