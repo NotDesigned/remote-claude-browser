@@ -683,8 +683,10 @@ async function inside() {
     }
     assert.ok(killed, "fixture Mihomo process exists");
   };
+  // Long enough for the broker's automatic recovery (three restarts, 1 + 2 + 4 s apart, each
+  // starting Mihomo and checking it) on a busy runner.
   const waitHealth = async (id, predicate) => {
-    for (let attempt = 0; attempt < 150; attempt++) {
+    for (const deadline = Date.now() + 45_000; Date.now() < deadline;) {
       const health = await api(`/egress/${id}/status`, "GET");
       if (predicate(health)) return health;
       await delay(100);
