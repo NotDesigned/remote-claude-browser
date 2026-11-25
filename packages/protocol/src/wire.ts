@@ -96,6 +96,11 @@ export type Down =
        * payload carries only the missed deltas and the viewer keeps its geometry and input.
        */
       resumed?: TabId[];
+      /**
+       * The viewer build this gateway serves. A page running another build was loaded before a
+       * deploy and should reload; older gateways omit it.
+       */
+      build?: string;
     }
   /** Application-level RTT echo; browser JS cannot observe WebSocket control-frame pong timing. */
   /** `sent` counts every byte the gateway wrote to this connection, after compression. */
@@ -333,7 +338,8 @@ export function encodeMsg(msg: Down | Up): string {
   return JSON.stringify(msg);
 }
 
-function decode(raw: string, tags: ReadonlySet<string>, dir: string): unknown {
+/** `tags` null accepts any tag, leaving the caller to decide about ones it does not know. */
+function decode(raw: string, tags: ReadonlySet<string> | null, dir: string): unknown {
   let obj: unknown;
   try {
     obj = JSON.parse(raw);
@@ -344,7 +350,7 @@ function decode(raw: string, tags: ReadonlySet<string>, dir: string): unknown {
     throw new Error(`${dir}: missing tag`);
   }
   const t = (obj as { t: string }).t;
-  if (!tags.has(t)) throw new Error(`${dir}: unknown tag "${t}"`);
+  if (tags !== null && !tags.has(t)) throw new Error(`${dir}: unknown tag "${t}"`);
   return obj;
 }
 
@@ -356,6 +362,24 @@ export function decodeDown(raw: string): Down {
 /** Gateway side: decode a viewer message. Throws on unknown/garbled input. */
 export function decodeUp(raw: string): Up {
   return decode(raw, UP_TAGS, "Up") as Up;
+}
+
+/**
+ * Like decodeDown, but a well-formed message of a type this build does not know is null: during
+ * a deploy, a newer gateway may already send what an open page cannot use. Garbage still throws.
+ */
+export function tryDecodeDown(raw: string): Down | null {
+  return decodeKnown(raw, DOWN_TAGS, "Down") as Down | null;
+}
+
+/** Like decodeUp, but null for a well-formed message of a type this build does not know. */
+export function tryDecodeUp(raw: string): Up | null {
+  return decodeKnown(raw, UP_TAGS, "Up") as Up | null;
+}
+
+function decodeKnown(raw: string, tags: ReadonlySet<string>, dir: string): unknown {
+  const obj = decode(raw, null, dir);
+  return tags.has((obj as { t: string }).t) ? obj : null;
 }
 
 /** Where a viewer's replay stands for one tab: the next sequence number it expects. */

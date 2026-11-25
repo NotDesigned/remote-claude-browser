@@ -6,6 +6,8 @@ import {
   encodeMsg,
   encodePxBinary,
   Mod,
+  tryDecodeDown,
+  tryDecodeUp,
   type Down,
   type Up,
 } from "../src/index";
@@ -117,6 +119,19 @@ describe("wire envelope", () => {
     // "mode", "rtc-sig", "clip" legitimately exist in both directions
     expect(decodeUp(encodeMsg({ t: "mode", tab: "T1", mode: "dom" }))).toBeTruthy();
     expect(decodeDown(encodeMsg({ t: "mode", tab: "T1", mode: "dom" }))).toBeTruthy();
+  });
+
+  it("lets a peer of another build ignore message types it does not know", () => {
+    // A newer gateway or viewer during a deploy: a well-formed message of a new type.
+    expect(tryDecodeDown(JSON.stringify({ t: "from-the-future", tab: "T1" }))).toBeNull();
+    expect(tryDecodeUp(JSON.stringify({ t: "from-the-future" }))).toBeNull();
+    expect(tryDecodeDown(encodeMsg({ t: "resync", tab: "T1" }))).toEqual({
+      t: "resync",
+      tab: "T1",
+    });
+    expect(tryDecodeUp(encodeMsg({ t: "px-ack", tab: "T1" }))).toEqual({ t: "px-ack", tab: "T1" });
+    expect(() => tryDecodeDown("not json")).toThrow(/not JSON/);
+    expect(() => tryDecodeUp("42")).toThrow(/missing tag/);
   });
 
   it("uses CDP modifier encoding", () => {

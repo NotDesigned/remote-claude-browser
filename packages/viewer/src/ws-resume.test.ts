@@ -42,7 +42,8 @@ it("reports the replay position only when reconnecting", () => {
   sockets[1]!.onopen?.();
   cursor = null;
   sockets[1]!.onclose?.({ code: 1006 });
-  vi.advanceTimersByTime(10);
+  // A connection that dropped at once counts as a failure: the next try backs off.
+  vi.advanceTimersByTime(20);
   expect(new URL(urls[2]!).searchParams.has("resume")).toBe(false);
   gateway.close();
 });

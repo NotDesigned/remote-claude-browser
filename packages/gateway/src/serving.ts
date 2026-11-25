@@ -1,6 +1,7 @@
 import fastifyStatic from "@fastify/static";
 import type { FastifyInstance } from "fastify";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const VIEWER_DIST_ROOT =
@@ -24,6 +25,22 @@ export function trustedProxies(env: NodeJS.ProcessEnv = process.env): string[] {
 
 export function gatewayHost(env: NodeJS.ProcessEnv = process.env): string {
   return env.GATEWAY_HOST ?? "127.0.0.1";
+}
+
+/** Written by the viewer build next to its page; see packages/viewer/vite.config.ts. */
+export const VIEWER_BUILD_FILE = "build-id.txt";
+
+/**
+ * The build of the viewer this gateway serves, which every `hello` carries so a page loaded
+ * before a deploy knows to reload. Undefined without a built viewer (development).
+ */
+export function viewerBuildId(root = VIEWER_DIST_ROOT): string | undefined {
+  try {
+    const id = readFileSync(join(root, VIEWER_BUILD_FILE), "utf8").trim();
+    return /^[\w.+-]{1,128}$/.test(id) ? id : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function registerViewerStatic(

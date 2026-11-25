@@ -71,6 +71,13 @@ describe("SEC-2 roles", () => {
     });
   });
 
+  it("tells every connection which viewer build is served", () => {
+    const output = collector();
+    const roles = createRoleManager({ now: () => 1, build: "0.4.0+abc.1" });
+    roles.connect({ sessionId: "s1", inviteRole: "driver", viewerId: "a", ...output });
+    expect(output.messages[0]).toMatchObject({ t: "hello", build: "0.4.0+abc.1" });
+  });
+
   it("transfers input rights and reruns D7 with the new driver's viewport", async () => {
     vi.useFakeTimers();
     try {

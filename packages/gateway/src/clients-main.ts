@@ -72,7 +72,7 @@ import { ANY_SESSION_TAB } from "./assets/token";
 import { createRtcSignalRelay } from "./rtcsig";
 import { createClaudeTheme, createThemeCopies, isClaudeTheme } from "./claude/theme";
 import { registerSecurityHeaders } from "./security-headers";
-import { gatewayHost, registerViewerStatic, trustedProxies } from "./serving";
+import { gatewayHost, registerViewerStatic, trustedProxies, viewerBuildId } from "./serving";
 import { createTabLifecycle } from "./session/tabs";
 import {
   isClientSlot,
@@ -570,7 +570,9 @@ export async function startClientGateway(
     if (error instanceof Error && error.name === "TargetCloseError") return;
     if (!stopping) console.error(message, error);
   };
+  const viewerBuild = viewerBuildId();
   const roles = createRoleManager({
+    ...(viewerBuild === undefined ? {} : { build: viewerBuild }),
     onDriverChange(change) {
       const runtime = runtimes.get(change.sessionId);
       if (runtime && change.viewport) runtime.viewport.handle(change.to, change.viewport);

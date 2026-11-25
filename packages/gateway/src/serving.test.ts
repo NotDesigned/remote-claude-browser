@@ -5,7 +5,14 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createUserGate, USER_COOKIE } from "./auth/user-gate";
 import { createUserStore } from "./auth/users";
-import { gatewayHost, registerViewerStatic, staticCacheControl, trustedProxies } from "./serving";
+import {
+  gatewayHost,
+  registerViewerStatic,
+  staticCacheControl,
+  trustedProxies,
+  VIEWER_BUILD_FILE,
+  viewerBuildId,
+} from "./serving";
 
 const roots: string[] = [];
 
@@ -63,6 +70,16 @@ describe("gateway production serving", () => {
     await app.ready();
     expect((await app.inject({ url: "/" })).statusCode).toBe(404);
     await app.close();
+  });
+
+  it("reads the served viewer's build, and has none without a well-formed one", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mirror-viewer-build-test-"));
+    roots.push(root);
+    expect(viewerBuildId(root)).toBeUndefined();
+    await writeFile(join(root, VIEWER_BUILD_FILE), "0.4.0+abc1234.m3k9x2\n");
+    expect(viewerBuildId(root)).toBe("0.4.0+abc1234.m3k9x2");
+    await writeFile(join(root, VIEWER_BUILD_FILE), "<script>");
+    expect(viewerBuildId(root)).toBeUndefined();
   });
 
   it("uses GATEWAY_HOST when configured and keeps the loopback default", () => {

@@ -8,7 +8,7 @@
  */
 import {
   decodeResumeCursors,
-  decodeUp,
+  tryDecodeUp,
   encodeMsg,
   encodePxBinary,
   encodeVidBinary,
@@ -427,13 +427,16 @@ export function createWsServer(opts: WsServerOpts): WsServer {
           socket.close(1003, "text messages only");
           return;
         }
-        let msg: Up;
+        let msg: Up | null;
         try {
-          msg = decodeUp(data.toString());
+          msg = tryDecodeUp(data.toString());
         } catch {
           socket.close(1003, "invalid message");
           return;
         }
+        // A page of a newer build may send what this gateway does not know yet. Closing would
+        // only make it reconnect and send it again.
+        if (msg === null) return;
         if (msg.t === "ping") {
           const pong: Extract<Down, { t: "pong" }> = {
             t: "pong",

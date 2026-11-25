@@ -6,7 +6,7 @@
  */
 import {
   MAX_KNOWN_SHEETS,
-  decodeDown,
+  tryDecodeDown,
   decodePxBinary,
   decodeVidBinary,
   encodeMsg,
@@ -73,7 +73,10 @@ export interface GatewaySocketOptions {
   /** Called for every state transition. `reconnected` is true after the first successful open. */
   onStateChange?(state: GatewayConnectionState, reconnected: boolean): void;
   onProtocolError?(error: Error): void;
+  /** The first reconnect's delay; later ones in a row back off from it (see RECONNECT_MAX_MS). */
   reconnectDelayMs?: number;
+  /** Jitter source for reconnect delays; tests pin it. */
+  random?: () => number;
   socketFactory?(url: string): WebSocketLike;
   /** Recurring application-level WebSocket ping/pong RTT. */
   onRttSample?(rttMs: number): void;
@@ -102,6 +105,10 @@ export const STALL_MS = 20_000;
 /** Back on screen, an answer to a ping this soon says the connection survived. */
 export const PROBE_MS = 4_000;
 const STALL_MEMORY_MS = 120_000;
+/** Reconnects in a row back off to at most this. */
+export const RECONNECT_MAX_MS = 10_000;
+/** A connection open this long counts as a success, and the next reconnect is quick again. */
+export const STABLE_MS = 10_000;
 export const VIEWER_REPLACED_CODE = 4009;
 export const SESSION_ENDED_CODE = 4010;
 
@@ -140,6 +147,10 @@ export function connectGateway(
   let lastTickAt = 0;
   let stalls = 0;
   let lastStallAt = Number.NEGATIVE_INFINITY;
+  /** Reconnect attempts since the last connection that held. */
+  let failures = 0;
+  let openedAt: number | null = null;
+  const random = options.random ?? Math.random;
   const patience = (ms: number) =>
     ms * 2 ** Math.min(now() - lastStallAt < STALL_MEMORY_MS ? stalls : 0, 3);
 
@@ -227,6 +238,7 @@ export function connectGateway(
       if (disposed || current !== socket) return;
       const reconnected = hasOpened;
       hasOpened = true;
+      openedAt = now();
       stopMonitoring();
       options.onStateChange?.("open", reconnected);
       lastTickAt = now();
@@ -240,7 +252,9 @@ export function connectGateway(
         const message =
           event.data instanceof ArrayBuffer
             ? pixelFrame(event.data)
-            : decodeDown(String(event.data));
+            : tryDecodeDown(String(event.data));
+        // A newer gateway's new message type: this page has no use for it, and nothing is wrong.
+        if (message === null) return;
         if (message.t === "css") {
           rememberSheet(message.hash, message.text);
           return;
@@ -295,13 +309,22 @@ export function connectGateway(
     };
   };
 
-  /** The connection is gone; try again shortly. */
+  /**
+   * The connection is gone; try again shortly. Each failure in a row waits twice as long, up to
+   * RECONNECT_MAX_MS, with jitter so that a restarted gateway is not met by every page at once.
+   * A connection that held for STABLE_MS starts the count over.
+   */
   function lost() {
+    if (openedAt !== null && now() - openedAt >= STABLE_MS) failures = 0;
+    openedAt = null;
     dropSocket();
     if (disposed) return;
     if (reconnectTimer !== null) clearTimeout(reconnectTimer);
     notify("closed");
-    if (visible) reconnectTimer = setTimeout(open, reconnectDelayMs);
+    if (!visible) return;
+    const ceiling = Math.min(RECONNECT_MAX_MS, reconnectDelayMs * 2 ** Math.min(failures, 16));
+    failures += 1;
+    reconnectTimer = setTimeout(open, ceiling / 2 + random() * (ceiling / 2));
   }
 
   const stored = readStoredSheets();
@@ -315,7 +338,12 @@ export function connectGateway(
     },
     probe() {
       if (disposed || !visible || socket?.readyState === CONNECTING) return;
-      if (socket?.readyState !== OPEN) {
+      // Waiting out a backoff: the page coming back, or the network, is reason to try now.
+      if (socket === null) {
+        open();
+        return;
+      }
+      if (socket.readyState !== OPEN) {
         lost();
         return;
       }
