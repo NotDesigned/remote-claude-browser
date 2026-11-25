@@ -20,11 +20,13 @@
 
 ### 移除
 
-无
+- 「Apple 账户与 Claude 登录」整个功能：工作台菜单项、Apple 和 Google 注册向导、新建配置时的「检查并注册 Apple 账户」、注册记录，以及网关的 `/api/client/session/:sid/onboarding/…` 接口。收件箱不受影响。
+- 配置卡片上的 Claude 组织 KYC 状态，网关也不再向 claude.ai 查询它。
 
 ### 升级步骤
 
-无
+- 以前注册的 Apple 账户资料不会自动删除：它们仍加密保存在用户库（`MIRROR_USERS_DB`，默认 `/data/profile/users.sqlite`）的 `apple_accounts` 表里，密钥是旁边的 `users.sqlite.apple.key`，网关不再读取它们。这些资料包括姓名、生日、手机号、邮箱和密码。确认不再需要后，停止服务，删除这张表（`DROP TABLE apple_accounts;`）和密钥文件；备份里的副本也一并删除。只删密钥文件，表里的密文就无法再解密。
+- `accounts.json` 里旧的 `kyc` 字段不用处理，配置下次保存时自动去掉。
 
 ## [0.3.0] - 2026-11-25
 

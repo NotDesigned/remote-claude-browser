@@ -14,7 +14,7 @@ import {
   type BrowserIdentity,
   type BrowserPlatform,
 } from "../browser/identity";
-import type { ClaudeKyc, ClaudeLogin } from "../claude/signed-in";
+import type { ClaudeLogin } from "../claude/signed-in";
 
 export const DEFAULT_PROFILE = "default";
 export const MAX_PROFILES = 8;
@@ -29,8 +29,6 @@ export interface ProfileRecord {
   signedIn?: boolean;
   /** The site explicitly rejected this account, rather than just failing to respond. */
   unavailable?: boolean;
-  /** Last KYC response for the selected Claude organization. */
-  kyc?: ClaudeKyc;
   /** Stable proxy catalog node; null/absent prevents opening the browser. */
   proxyId?: string | null;
   /** Last detected IANA zone of this profile's exit. Cleared when its exit changes. */
@@ -102,7 +100,6 @@ export async function createProfileStore(
             : {}),
           ...(record.unavailable === true ? { unavailable: true } : {}),
           ...(typeof record.signedIn === "boolean" ? { signedIn: record.signedIn } : {}),
-          ...(record.kyc ? { kyc: record.kyc } : {}),
           ...(typeof record.proxyId === "string" ? { proxyId: record.proxyId } : {}),
           ...(typeof record.timeZone === "string" ? { timeZone: record.timeZone } : {}),
           ...(typeof record.exitCity === "string" ? { exitCity: record.exitCity } : {}),
@@ -251,7 +248,6 @@ export async function createProfileStore(
       const record = known(id);
       const previous = record.proxyId;
       const previousMetadata = {
-        kyc: record.kyc,
         timeZone: record.timeZone,
         exitCity: record.exitCity,
         exitCountry: record.exitCountry,
@@ -259,7 +255,6 @@ export async function createProfileStore(
         checkedAt: record.checkedAt,
       };
       record.proxyId = proxyId;
-      delete record.kyc;
       delete record.timeZone;
       delete record.exitCity;
       delete record.exitCountry;
@@ -283,16 +278,12 @@ export async function createProfileStore(
         !record ||
         (record.email === login.email &&
           record.signedIn === login.signedIn &&
-          !!record.unavailable === !!login.unavailable &&
-          record.kyc?.status === login.kyc?.status &&
-          record.kyc?.organizationId === login.kyc?.organizationId &&
-          record.kyc?.checkedAt === login.kyc?.checkedAt)
+          !!record.unavailable === !!login.unavailable)
       )
         return;
       record.email = login.email;
       record.signedIn = login.signedIn;
       record.unavailable = !!login.unavailable;
-      record.kyc = login.kyc;
       await persist();
     },
     async remove(id: unknown): Promise<void> {

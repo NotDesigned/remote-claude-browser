@@ -89,7 +89,8 @@
   border-radius: var(--radius-sm);
   padding: 8px 10px;
   font: inherit;
-  font-size: 15px;
+  /* 16px keeps iOS from zooming in on focus. */
+  font-size: 16px;
 }
 /* The native ring is thick and black; ours matches every other field. */
 .profile-proxy-editor select:focus-visible,
@@ -551,20 +552,6 @@ button.profile-card:focus-visible {
 .profile-login[data-signed-in="true"] .profile-dot {
   background: var(--ok);
   opacity: 1;
-}
-
-.profile-kyc {
-  display: grid;
-  gap: 2px;
-  margin: 2px 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-.profile-kyc-status[data-status="pending"],
-.profile-kyc-status[data-status="denied"] {
-  color: var(--bad);
 }
 
 .profile-meta {

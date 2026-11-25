@@ -141,18 +141,13 @@ describe("accounts", () => {
       exitCity: "Osaka",
       exitCountry: "Japan",
     });
-    const kyc = { status: "not_required", organizationId: "org-a", checkedAt: 123 };
-    await store.setLogin(privateProfile.id, { email: "work@example.com", signedIn: true, kyc });
     const reopened = await createProfileStore({ file });
     expect(reopened.get(privateProfile.id)?.proxyId).toBe("proxy-123");
     expect(reopened.get(privateProfile.id)?.timeZone).toBe("Asia/Tokyo");
     expect(reopened.get(privateProfile.id)?.exitCity).toBe("Osaka");
     expect(reopened.get(privateProfile.id)?.exitCountry).toBe("Japan");
-    expect(reopened.get(privateProfile.id)?.kyc).toEqual(kyc);
     expect(reopened.get(DEFAULT_PROFILE)?.proxyId).toBeUndefined();
     await reopened.setProxy(privateProfile.id, null);
-    expect(reopened.get(privateProfile.id)?.kyc).toBeUndefined();
-    expect((await createProfileStore({ file })).get(privateProfile.id)?.kyc).toBeUndefined();
     expect(reopened.get(privateProfile.id)?.timeZone).toBeUndefined();
     expect(reopened.get(privateProfile.id)?.exitCity).toBeUndefined();
     expect(reopened.get(privateProfile.id)?.exitCountry).toBeUndefined();
@@ -258,24 +253,15 @@ describe("accounts", () => {
     dir = await mkdtemp(join(tmpdir(), "profile-login-"));
     const file = join(dir, "accounts.json");
     const store = await createProfileStore({ file });
-    const kyc = { status: "not_required", organizationId: "org-a", checkedAt: 123 };
-    await store.setLogin(DEFAULT_PROFILE, { email: "work@example.com", signedIn: true, kyc });
+    await store.setLogin(DEFAULT_PROFILE, { email: "work@example.com", signedIn: true });
     expect((await createProfileStore({ file })).get(DEFAULT_PROFILE)?.email).toBe(
       "work@example.com",
     );
-    expect((await createProfileStore({ file })).get(DEFAULT_PROFILE)?.kyc).toEqual(kyc);
-    await store.setLogin(DEFAULT_PROFILE, {
-      email: "work@example.com",
-      signedIn: true,
-      kyc: { ...kyc, status: "pending", checkedAt: 456 },
-    });
-    expect((await createProfileStore({ file })).get(DEFAULT_PROFILE)?.kyc?.status).toBe("pending");
     await store.setLogin(DEFAULT_PROFILE, { email: null, signedIn: false, unavailable: true });
     expect((await createProfileStore({ file })).get(DEFAULT_PROFILE)).toMatchObject({
       email: null,
       unavailable: true,
     });
-    expect((await createProfileStore({ file })).get(DEFAULT_PROFILE)?.kyc).toBeUndefined();
     await store.setLogin(DEFAULT_PROFILE, { email: null, signedIn: false });
     expect((await createProfileStore({ file })).get(DEFAULT_PROFILE)).toMatchObject({
       email: null,

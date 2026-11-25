@@ -46,40 +46,6 @@ function remember(id: string) {
   }
 }
 
-const KYC_LABELS = new Map([
-  ["not_required", "当前未要求 KYC"],
-  ["created", "KYC 流程已创建"],
-  ["approved", "KYC 已通过"],
-  ["pending", "KYC 待处理"],
-  ["denied", "KYC 未通过"],
-]);
-
-function ProfileKyc({ account }: { account: AccountInfo }) {
-  const { kyc } = account;
-  const checked = kyc ? new Date(kyc.checkedAt) : null;
-  return (
-    <span class="profile-kyc">
-      <span>
-        <span class="profile-kyc-status" data-status={kyc?.status}>
-          {kyc ? (KYC_LABELS.get(kyc.status) ?? "KYC 状态未知") : "KYC 暂未获取"}
-        </span>
-        {" · 当前组织"}
-      </span>
-      <span>
-        {checked ? (
-          <>
-            检测于 <time dateTime={checked.toISOString()}>{checked.toLocaleString()}</time>
-          </>
-        ) : account.running ? (
-          "运行中自动更新"
-        ) : (
-          "打开浏览器后获取"
-        )}
-      </span>
-    </span>
-  );
-}
-
 function ProfileCard(props: {
   account: AccountInfo;
   last: boolean;
@@ -303,7 +269,7 @@ function ProfileCard(props: {
 }
 
 export function ProfilePicker(props: {
-  onPick(id: string, startApple?: boolean): Promise<void>;
+  onPick(id: string): Promise<void>;
   current?: string | null;
   onBack?(): void;
   onChanged?(): void;
@@ -559,8 +525,8 @@ export function ProfilePicker(props: {
     }
   };
 
-  const open = async (id: string, startApple?: boolean) => {
-    await props.onPick(id, startApple);
+  const open = async (id: string) => {
+    await props.onPick(id);
     remember(id);
   };
 
@@ -580,7 +546,6 @@ export function ProfilePicker(props: {
   const create = async (event: SubmitEvent) => {
     event.preventDefault();
     if (!canCreate) return;
-    const startApple = (event.submitter as HTMLButtonElement | null)?.value === "apple";
     setError(null);
     setBusy(true);
     setCreationProgress("正在检查出口…");
@@ -597,7 +562,7 @@ export function ProfilePicker(props: {
       changed();
       setCreating(false);
       setName("");
-      await open(made.id, startApple);
+      await open(made.id);
     } catch (reason) {
       setError((created ? "配置已创建，打开失败，可从列表重试：" : "") + (reason as Error).message);
     } finally {
@@ -870,7 +835,6 @@ export function ProfilePicker(props: {
                       {selected.proxyName ?? (selected.proxyId ? "节点已移除" : "未绑定出口")}
                     </span>
                     {selected.signedIn && selected.email && <span>{selected.email}</span>}
-                    {selected.signedIn && <ProfileKyc account={selected} />}
                     {selected.timeZone && <span>时区：{selected.timeZone}</span>}
                     {selected.exitIp && <span>启动时 IP：{selected.exitIp}</span>}
                     {selected.sessions > 0 && (
@@ -970,16 +934,6 @@ export function ProfilePicker(props: {
                     <button type="submit" disabled={!canCreate}>
                       {busy ? creationProgress : "检查并打开"}
                     </button>
-                    {!props.requiredProxyId && (
-                      <button
-                        type="submit"
-                        value="apple"
-                        class="profile-cancel"
-                        disabled={!canCreate}
-                      >
-                        检查并注册 Apple 账户
-                      </button>
-                    )}
                     <button
                       type="button"
                       class="profile-cancel"

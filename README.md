@@ -19,7 +19,6 @@ Remote Claude Browser（RCB）在你自己的服务器上运行真实的 Chromiu
 - **出口**：每个配置必须绑定一个节点，网页、DNS 和 WebRTC 都经这个节点出去；浏览器的当地时间跟随出口。见[使用](docs/usage.md)。
 - **CPA**：每个用户可以有自己的 CPA 实例，用调用 Key 访问 `/v1`。见[使用 · CPA](docs/usage.md#cpa)。
 - **收件箱**：通过 Resend 接收邮件，用于网站注册和验证。见[使用](docs/usage.md)。
-- **「Apple 账户与 Claude 登录」**：在当前浏览器配置里引导注册账户并登录 Claude。见[使用](docs/usage.md)。
 - **remote-cc 联动**：[remote-cc](https://github.com/NotDesigned/remote-cc) 可以用某个浏览器配置的 Claude 账号和出口运行 Claude Code。见[使用 · remote-cc](docs/usage.md#remote-cc)和[接口契约](docs/remote-cc.md)。
 - **手机、文件、音视频、断线恢复**：支持触屏和手机版网页，上传和下载文件，页面里的视频和语音经 WebRTC 在你的设备上播放，刷新或断线后回到原来的会话。
 

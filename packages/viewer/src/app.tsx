@@ -4,7 +4,6 @@ import { listAccounts, switchAccount, type AccountList } from "./accounts";
 import { currentUser, logout, myBrowserSessions, type FrontendUser } from "./users";
 import { AdminPanel } from "./admin-panel";
 import { AccountPanel } from "./account-panel";
-import { AccountOnboarding } from "./account-onboarding";
 import { MailboxPanel } from "./mailbox-panel";
 import type { WorkspaceDestination, WorkspaceMenuProps } from "./workspace-menu";
 import { NetworkPanel, type NetworkTab } from "./network-panel";
@@ -114,7 +113,6 @@ function viewStorage(): Pick<Storage, "getItem" | "setItem"> {
 }
 
 const THEME_CHECK_MS = 3_000;
-const APPLE_ONBOARDING_PROFILE = "mirror-apple-onboarding-profile";
 /** How long after a click on a mirror file input the page's file request belongs to that click. */
 const MIRROR_PICKER_WINDOW_MS = 5_000;
 
@@ -149,8 +147,6 @@ export function App() {
   const [networkTab, setNetworkTab] = useState<NetworkTab>("proxies");
   const [oauthCallbacks, setOAuthCallbacks] = useState<Record<string, "submitted" | "error">>({});
   const [accountPanelOpen, setAccountPanelOpen] = useState(false);
-  const [onboardingOpen, setOnboardingOpen] = useState(false);
-  const [startAppleOnboarding, setStartAppleOnboarding] = useState(false);
   const [mailboxOpen, setMailboxOpen] = useState(false);
   const [profilePickerOpen, setProfilePickerOpen] = useState(false);
   const [browserAuthorization, setBrowserAuthorization] = useState<CpaBrowserAuthorization | null>(
@@ -468,9 +464,6 @@ export function App() {
     setClientSession(null);
     setClientPhase("closed");
     setProfilePickerOpen(false);
-    setOnboardingOpen(false);
-    setStartAppleOnboarding(false);
-    sessionStorage.removeItem(APPLE_ONBOARDING_PROFILE);
     window.history.replaceState(window.history.state, "", "/?closed=1");
   };
   // Observe existing sessions after a disconnect; only an explicit action opens a new one.
@@ -993,18 +986,6 @@ export function App() {
   const currentProfile = accountList?.accounts.find(
     (account) => account.id === accountList.current,
   );
-  useEffect(() => {
-    if (
-      clientPhase !== "ready" ||
-      connection !== "open" ||
-      !currentProfile ||
-      sessionStorage.getItem(APPLE_ONBOARDING_PROFILE) !== currentProfile.id
-    )
-      return;
-    sessionStorage.removeItem(APPLE_ONBOARDING_PROFILE);
-    setStartAppleOnboarding(true);
-    setOnboardingOpen(true);
-  }, [clientPhase, connection, currentProfile?.id]);
   const resyncInput = useCallback(
     () => (activeTab === null ? false : (inputResyncRef.current?.resync(activeTab) ?? false)),
     [activeTab],
@@ -1037,7 +1018,6 @@ export function App() {
     }
     setUserPanelOpen(destination === "admin");
     setAccountPanelOpen(destination === "account");
-    setOnboardingOpen(destination === "onboarding");
     setMailboxOpen(destination === "mailboxes");
     // 「网络与接入」 opens on the tab last used; other callers name the tab.
     setNetworkPanelOpen(
@@ -1080,11 +1060,6 @@ export function App() {
   const workspace: WorkspaceMenuProps | undefined = user
     ? {
         user,
-        onboardingAvailable:
-          clientPhase === "ready" &&
-          clientSession !== null &&
-          !!currentProfile &&
-          !profilePickerOpen,
         onNavigate: navigateWorkspace,
         onLogout: () => void signOut(),
         logoutPending,
@@ -1164,24 +1139,6 @@ export function App() {
             refreshAccounts();
             if (sid === clientSession?.sid) finishSession();
           }}
-        />
-      )}
-      {user && currentProfile && clientSession && clientPhase === "ready" && (
-        <AccountOnboarding
-          key={`${user.id}:${clientSession.sid}:${currentProfile.id}`}
-          open={onboardingOpen}
-          startApple={startAppleOnboarding}
-          sid={clientSession.sid}
-          profileKey={`${user.id}.${currentProfile.id}`}
-          profileName={currentProfile.name}
-          storage={viewStorage()}
-          tabs={tabs}
-          browserConnected={connection === "open"}
-          onClose={() => {
-            setStartAppleOnboarding(false);
-            setOnboardingOpen(false);
-          }}
-          onOpenTab={(tab) => presentationRef.current?.activate(tab)}
         />
       )}
       {mailboxOpen && user && <MailboxPanel key={user.id} onClose={() => setMailboxOpen(false)} />}
@@ -1288,9 +1245,8 @@ export function App() {
         <ProfilePicker
           requiredProxyId={browserAuthorization?.proxyId}
           proxyManagerOpen={networkPanelOpen && networkTab === "proxies"}
-          onPick={async (id, startApple) => {
+          onPick={async (id) => {
             if (!profilePickerOpen) {
-              if (startApple) sessionStorage.setItem(APPLE_ONBOARDING_PROFILE, id);
               setPickedAccount(id);
               return;
             }
@@ -1299,7 +1255,6 @@ export function App() {
               return;
             }
             await switchAccount(clientSession!.sid, id);
-            if (startApple) sessionStorage.setItem(APPLE_ONBOARDING_PROFILE, id);
             window.location.reload();
           }}
           current={profilePickerOpen ? accountList?.current : null}

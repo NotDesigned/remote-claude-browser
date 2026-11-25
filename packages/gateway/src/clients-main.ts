@@ -83,7 +83,6 @@ import {
 import { createLifecycleLock } from "./session/lifecycle-lock";
 import { registerAccountRoutes } from "./auth/account-routes";
 import { createOidc, oidcSettingsFromEnv } from "./auth/oidc";
-import { registerAccountOnboarding } from "./browser/account-onboarding";
 import { createMailboxService, registerMailboxRoutes, RESEND_WEBHOOK_PATH } from "./mail/mailboxes";
 import { createIdleReaper, PAGE_GENERATING_EXPRESSION } from "./session/idle-reaper";
 import { ACCOUNT_IDLE_CLOSE_MS, sessionIdleGraceMs } from "./session/resource-policy";
@@ -938,7 +937,6 @@ export async function startClientGateway(
       email: accountStore.get(id)?.email,
       signedIn: accountStore.get(id)?.signedIn,
       unavailable: accountStore.get(id)?.unavailable,
-      kyc: accountStore.get(id)?.kyc,
       save: (login) => accountStore.setLogin(id, login),
     });
     const pool = createClientBrowserPool(browser, {
@@ -1754,7 +1752,6 @@ export async function startClientGateway(
           signedIn,
           unavailable,
           email: signedIn ? (live ? live.email : (record.email ?? null)) : null,
-          kyc: signedIn ? (live ? live.kyc : record.kyc) : undefined,
           sessions: sessions.length,
           onlineSessions: sessions.filter((session) => online.has(session.sid)).length,
         };
@@ -2028,23 +2025,6 @@ export async function startClientGateway(
       return clientError(reply, error, owner);
     }
   });
-  registerAccountOnboarding(
-    app,
-    requireSession(),
-    (sid) => {
-      const runtime = runtimes.get(sid);
-      if (!runtime) return;
-      return {
-        browser: runtime.browser,
-        profileId: runtime.account.id,
-        async open(url, background) {
-          if (!background) await stopPixels(runtime);
-          return runtime.tabs.open(url, background);
-        },
-      };
-    },
-    { currentUserId, mailbox, accounts: userStore.appleAccounts },
-  );
   app.get<{ Params: { sid: string } }>(
     "/s/:sid/theme",
     { preHandler: requireSession() },

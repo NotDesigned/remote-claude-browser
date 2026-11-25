@@ -31,11 +31,6 @@ const accounts = [
     onlineSessions: 1,
     signedIn: true,
     email: null,
-    kyc: {
-      status: "approved",
-      organizationId: "organization-work",
-      checkedAt: Date.UTC(2026, 10, 15, 12, 34),
-    },
     proxyId: "proxy-private",
     proxyName: "私有出口",
   },
@@ -481,76 +476,6 @@ async function checkPlatformSelection(page, touch = false) {
   }
 }
 
-async function checkMobileKyc(page) {
-  const statuses = [
-    ["not_required", "当前未要求 KYC"],
-    ["created", "KYC 流程已创建"],
-    ["approved", "KYC 已通过"],
-    ["pending", "KYC 待处理"],
-    ["denied", "KYC 未通过"],
-    ["future_status", "KYC 状态未知"],
-    [null, "KYC 暂未获取"],
-  ];
-  const fixtures = statuses.map(([status], index) => ({
-    ...accounts[1],
-    id: `kyc-${index}`,
-    name: `验证状态 ${index}`,
-    running: false,
-    kyc: status ? { ...accounts[1].kyc, status } : undefined,
-  }));
-  fixtures.push({ ...accounts[1], id: "kyc-signed-out", name: "已退出验证账号", signedIn: false });
-  const route = (request) =>
-    request.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({
-        ...platformCapabilities,
-        accounts: fixtures,
-        default: fixtures[0].id,
-        current: null,
-      }),
-    });
-  const viewport = page.viewportSize();
-  const before = admissions.length;
-  await page.route("**/api/accounts", route);
-  await page.setViewportSize({ width: 320, height: 568 });
-  await page.reload();
-  const sharedExit = page.locator(".map-exit").filter({ hasText: "私有出口" });
-  await sharedExit.click();
-  assert.equal(await sharedExit.count(), 1);
-  assert.equal(
-    await page.locator('.map-group[data-highlight="true"] .map-member').count(),
-    fixtures.length,
-  );
-  await page.getByRole("region", { name: "出口详情" }).waitFor();
-  for (const [index, [, label]] of statuses.entries()) {
-    const card = page.locator(".profile-card").filter({
-      has: page.getByText(fixtures[index].name, { exact: true }),
-    });
-    await openCardMenu(page, fixtures[index].name);
-    await page.getByRole("button", { name: "查看详情", exact: true }).click();
-    const hint = page.locator(".map-detail .profile-kyc");
-    await hint.getByText(label, { exact: true }).waitFor();
-    await hint.scrollIntoViewIfNeeded();
-    assert.match(await hint.textContent(), /当前组织/);
-    if (fixtures[index].kyc) {
-      assert.ok(await hint.locator("time").isVisible());
-      assert.equal(
-        await hint.locator("time").getAttribute("datetime"),
-        new Date(fixtures[index].kyc.checkedAt).toISOString(),
-      );
-    } else assert.ok(await hint.getByText("打开浏览器后获取", { exact: true }).isVisible());
-    assert.ok(await card.evaluate((node) => node.scrollWidth <= node.clientWidth + 1));
-  }
-  await openCardMenu(page, "已退出验证账号");
-  await page.getByRole("button", { name: "查看详情", exact: true }).click();
-  assert.equal(await page.locator(".map-detail .profile-kyc").count(), 0);
-  assert.equal(admissions.length, before, "reading KYC must not open browser sessions");
-  await page.unroute("**/api/accounts", route);
-  await page.setViewportSize(viewport);
-  await page.reload();
-  await page.getByRole("heading", { name: "选择浏览器配置" }).waitFor();
-}
-
 const watchdog = setTimeout(() => process.exit(124), 120_000);
 let browser;
 try {
@@ -813,9 +738,7 @@ try {
   assert.equal(await createdPlatform.inputValue(), "windows");
   await createdPlatform.selectOption("macos");
   const createSubmit = page.getByRole("button", { name: "检查并打开", exact: true });
-  const createWithApple = page.getByRole("button", { name: "检查并注册 Apple 账户", exact: true });
   assert.equal(await createSubmit.isDisabled(), true);
-  assert.equal(await createWithApple.isDisabled(), true);
   await page.getByRole("button", { name: "导入节点或订阅", exact: true }).click();
   const importPanel = page.getByRole("dialog", { name: "网络与接入", exact: true });
   await importPanel.waitFor();
@@ -864,16 +787,7 @@ try {
       new URL(response.url()).pathname === "/api/client/session" &&
       response.request().postDataJSON()?.account === "p-9876543210",
   );
-  await page.route(/\/onboarding\/apple\?/, (route) => {
-    assert.equal(new URL(route.request().url()).searchParams.get("guided"), "true");
-    return route.fulfill({
-      json: {
-        tab: "apple-fixture",
-        options: { countries: [["USA", "美国"]], phoneCodes: [["CN", "+86 China Mainland"]] },
-      },
-    });
-  });
-  await createWithApple.click();
+  await createSubmit.click();
   await created;
   await page.waitForURL(
     (url) => url.searchParams.get("sid") === "client-1" && !url.searchParams.has("new"),
@@ -892,9 +806,6 @@ try {
   );
   assert.deepEqual(proxyChecks.slice(-2), ["proxy-private", "proxy-private"]);
   assert.notEqual(admissions.at(-1).clientKey, key);
-  const appleWizard = page.getByRole("dialog", { name: "Apple 账户与 Claude 登录" });
-  await appleWizard.getByLabel("姓氏").waitFor();
-  await appleWizard.getByRole("button", { name: "关闭", exact: true }).click();
   await page.getByRole("button", { name: "工作台", exact: true }).click();
   await page.getByRole("button", { name: "浏览器配置", exact: true }).click();
   await page.getByRole("button", { name: "新建浏览器配置", exact: true }).click();
@@ -947,7 +858,6 @@ try {
   await checkExitWarnings(phone, true);
   await checkPlatformSelection(phone, true);
   await checkExitHealth(phone, true);
-  await checkMobileKyc(phone);
   accounts[1].email = "a-very-long-email-address-to-check-mobile-layout@example.com";
   await phone.getByText(accounts[1].email, { exact: true }).waitFor({ timeout: 10_000 });
   const layout = await phone.locator(".profile-picker").evaluate((node) => ({
@@ -1151,7 +1061,6 @@ try {
       localFixtureOnly: true,
       engine,
       dynamicEmailAndUnavailableState: true,
-      kycStatesAndCachedTimeVisibleOnMobile: true,
       noAdmissionBeforePick: true,
       chosenAccount: true,
       reloadResumes: true,

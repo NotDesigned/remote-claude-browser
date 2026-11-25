@@ -90,74 +90,6 @@ describe("Claude account identity", () => {
     },
   );
 
-  it.each([
-    ["lastActiveOrg=org-b", [{ uuid: "org-a" }, { uuid: "org-b" }], "org-b"],
-    ["", [{ uuid: "org-a" }], "org-a"],
-    ["", [{ uuid: "org-a" }, { uuid: "org-b" }], undefined],
-    ["lastActiveOrg=removed-org", [{ uuid: "org-a" }], undefined],
-  ])("checks only the selected or sole organization (%s)", async (cookie, orgs, selected) => {
-    const fetcher = vi.fn(async (path: string) =>
-      Response.json(
-        path === "/api/account"
-          ? { email_address: "work@example.com" }
-          : path === "/api/organizations"
-            ? orgs
-            : { status: "not_required", verification_url: "https://example.test/private" },
-      ),
-    );
-    const { browser, targets } = fixture(fetcher, "https://claude.ai", { cookie });
-    const login = await readClaudeLogin(browser, targets);
-    expect(login).toMatchObject({ signedIn: true, email: "work@example.com" });
-    if (selected) {
-      expect(login?.kyc).toEqual({
-        status: "not_required",
-        organizationId: selected,
-        checkedAt: expect.any(Number),
-      });
-      expect(fetcher).toHaveBeenLastCalledWith(
-        `/api/organizations/${selected}/kyc_status`,
-        expect.objectContaining({ credentials: "include", cache: "no-store" }),
-      );
-      const calls = fetcher.mock.calls as unknown as [string, RequestInit][];
-      expect(new Set(calls.map(([, init]) => init.signal)).size).toBe(1);
-    } else {
-      expect(login?.kyc).toBeUndefined();
-      expect(fetcher).toHaveBeenCalledTimes(2);
-    }
-  });
-
-  it.each([
-    [200, { status: "new_status" }, "new_status"],
-    [200, { status: false }, undefined],
-    [200, { status: " " }, undefined],
-    [503, {}, undefined],
-  ])("keeps login independent from KYC response %s %j", async (status, body, expected) => {
-    const fetcher = vi.fn(async (path: string) => {
-      if (path === "/api/account") return Response.json({ email_address: "work@example.com" });
-      if (path === "/api/organizations") return Response.json([{ uuid: "org-a" }]);
-      return Response.json(body, { status });
-    });
-    const { browser, targets } = fixture(fetcher);
-    const login = await readClaudeLogin(browser, targets);
-    expect(login).toMatchObject({ signedIn: true, email: "work@example.com" });
-    expect(login?.kyc?.status).toBe(expected);
-  });
-
-  it("discards KYC when the selected organization changes during the request", async () => {
-    const page = { cookie: "lastActiveOrg=org-a" };
-    const fetcher = vi.fn(async (path: string) => {
-      if (path === "/api/account") return Response.json({ email_address: "work@example.com" });
-      if (path === "/api/organizations") return Response.json([{ uuid: "org-a" }]);
-      page.cookie = "lastActiveOrg=org-b";
-      return Response.json({ status: "not_required" });
-    });
-    const { browser, targets } = fixture(fetcher, "https://claude.ai", page);
-    await expect(readClaudeLogin(browser, targets)).resolves.toEqual({
-      signedIn: true,
-      email: "work@example.com",
-    });
-  });
-
   it("never restores an old email when its request finishes after logout or a different login", async () => {
     let complete!: (response: Response) => void;
     const { browser, targets, fetcher } = fixture(
@@ -208,41 +140,6 @@ describe("Claude account identity", () => {
     complete(Response.json({ email_address: "late@example.com" }));
     await new Promise((resolve) => setImmediate(resolve));
     expect(save).not.toHaveBeenCalled();
-  });
-
-  it("clears cached KYC after a failed check and rejects a late KYC after logout", async () => {
-    let complete!: (response: Response) => void;
-    const fetcher = vi.fn(async (path: string) => {
-      if (path === "/api/account") return Response.json({ email_address: "work@example.com" });
-      if (path === "/api/organizations") return Response.json([{ uuid: "org-a" }]);
-      return new Promise<Response>((resolve) => {
-        complete = resolve;
-      });
-    });
-    const { browser, targets } = fixture(fetcher);
-    const save = vi.fn(async () => {});
-    const kyc = { status: "not_required", organizationId: "org-a", checkedAt: 1 };
-    const tracker = createClaudeLoginTracker(browser, targets, {
-      email: "work@example.com",
-      signedIn: true,
-      kyc,
-      save,
-    });
-    tracker.observe(true, true);
-    expect(tracker.current()?.kyc).toEqual(kyc);
-    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
-    complete(Response.json({}, { status: 503 }));
-    await vi.waitFor(() => expect(save).toHaveBeenCalled());
-    expect(tracker.current()?.kyc).toBeUndefined();
-
-    tracker.observe(true, true);
-    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(6));
-    tracker.observe(false, true);
-    complete(Response.json({ status: "approved" }));
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(tracker.current()).toEqual({ signedIn: false, email: null });
-    expect(save).not.toHaveBeenCalledWith(expect.objectContaining({ kyc: expect.anything() }));
-    tracker.dispose();
   });
 
   it("reads Chromium's 64-bit cookie expiry without starting the stopped browser", async () => {
