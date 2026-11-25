@@ -36,8 +36,10 @@ export SERVER_SUBNET=${SERVER_SUBNET:-172.31.67.0/24}
 export CPA_RUNTIME_NETWORK=$project-cpa-runtime
 export CPA_INSTANCE_SUBNETS=${CPA_INSTANCE_SUBNETS:-10.239.0.0/16}
 export SERVER_IMAGE=${SERVER_IMAGE:-remote-claude-browser-server:local}
-export CPA_BROKER_IMAGE=${CPA_BROKER_IMAGE:-remote-claude-browser-cpa-broker:local}
-export CPA_BROKER_ENGINE_IMAGE=${CPA_BROKER_ENGINE_IMAGE:-remote-claude-browser-cpa:local}
+# The CPA images get the project's name too: a deployment on this host runs instances from
+# remote-claude-browser-cpa:local, and rebuilding that tag here would swap their image.
+export CPA_BROKER_IMAGE=${CPA_BROKER_IMAGE:-$project-cpa-broker:local}
+export CPA_BROKER_ENGINE_IMAGE=${CPA_BROKER_ENGINE_IMAGE:-$project-cpa:local}
 cpa_ids=()
 export MIRROR_ACCESS_PASSWORD=compose-smoke-password
 export MIRROR_ADMIN_USERNAME=${MIRROR_ADMIN_USERNAME:-compose-admin}
@@ -66,6 +68,10 @@ cleanup() {
     docker network rm "remote-browser-$id-net" >/dev/null 2>&1 || true
     docker volume rm "remote-browser-$id-config" "remote-browser-$id-auth" "remote-browser-$id-static" \
       >/dev/null 2>&1 || true
+  done
+  # Images named after this project were built for it alone.
+  for image in "$CPA_BROKER_IMAGE" "$CPA_BROKER_ENGINE_IMAGE"; do
+    [[ $image == "$project"-* ]] && docker image rm "$image" >/dev/null 2>&1
   done
   rm -- "$overlay"
 }
