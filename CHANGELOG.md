@@ -8,6 +8,7 @@
 
 ### 新增
 
+- 「代理与 API」→「remote-cc」页签下方新增「使用说明」：从安装、加入服务器（管理员添加和邀请码）、出口主机、批准电脑到选配置、登录 Claude 和启动的全流程，以及换新电脑、切换配置和服务器、常见问题。其中的命令按 remote-cc 0.8 写。
 - `MIRROR_IDLE_GRACE_MS`：一个会话的所有设备都断开后，过多久关闭它的远程页面（毫秒，默认 15 分钟）。见 [docs/configuration.md](docs/configuration.md)。
 
 ### 变更

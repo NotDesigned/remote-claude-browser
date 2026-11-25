@@ -351,3 +351,46 @@
     font-size: 16px;
   }
 }
+
+.remote-cc-guide details {
+  border-top: 1px solid var(--line);
+  padding: 10px 0;
+}
+.remote-cc-guide summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.remote-cc-guide summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.remote-cc-guide pre {
+  margin: 6px 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+  border-radius: 8px;
+  background: var(--surface-muted, rgba(127, 127, 127, 0.1));
+  font-size: 12px;
+  white-space: pre;
+}
+.remote-cc-guide-steps,
+.remote-cc-guide-list {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 10px;
+}
+.remote-cc-guide-steps > li,
+.remote-cc-guide-list > li {
+  min-width: 0; /* long commands scroll inside their block */
+}
+.remote-cc-guide-steps p {
+  margin: 4px 0;
+}
+.remote-cc-guide-faq dt {
+  margin-top: 10px;
+  font-weight: 600;
+}
+.remote-cc-guide-faq dd {
+  margin: 4px 0 0;
+}

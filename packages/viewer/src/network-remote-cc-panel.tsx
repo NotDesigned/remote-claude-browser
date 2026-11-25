@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { RemoteCcGuide } from "./remote-cc-guide";
 import {
   remoteCcApi,
   type RemoteCcDeviceRequest,
@@ -175,7 +176,7 @@ export function RemoteCcPanel({
       <p class="network-muted">
         remote-cc 在服务器上运行 Claude Code，命令和文件留在你的电脑上。用 <code>--rcb 配置</code>{" "}
         启动时，它使用这个浏览器配置的 Claude
-        账号，全部网络流量经该配置的节点出去，和网页版同一个出口。
+        账号，全部网络流量经该配置的节点出去，和网页版同一个出口。第一次用，看下方「使用说明」。
       </p>
       {error && (
         <p class="network-message network-error" role="alert">
@@ -364,6 +365,7 @@ export function RemoteCcPanel({
           </section>
         );
       })}
+      <RemoteCcGuide origin={window.location.origin} />
     </div>
   );
 }
