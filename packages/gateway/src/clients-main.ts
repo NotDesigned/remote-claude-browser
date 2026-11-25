@@ -64,6 +64,7 @@ import {
 } from "./browser/identity";
 import { configuredBrowserEngine, profileBrowserOptions } from "./browser/engine";
 import { connectRemoteBrowser } from "./browser/remote";
+import { evaluateInPage } from "./browser/evaluate";
 import { createNavigationController } from "./browser/nav";
 import { createRendererRecovery } from "./browser/recovery";
 import { createDownloadManager, registerDownloadRoutes } from "./downloads";
@@ -501,17 +502,12 @@ export async function startClientGateway(
           for (const target of runtime.targets.values()) {
             const url = runtime.metadata.get(target.targetId)?.url;
             if (target.type !== "page" || !url || !url.startsWith(origin + "/")) continue;
-            const response = (await Promise.race([
-              runtime.browser.send(target.sessionId, "Runtime.evaluate", {
-                expression: "document.body ? document.body.innerText : ''",
-                returnByValue: true,
-              }),
-              new Promise<never>((_resolve, reject) => {
-                const timeout = setTimeout(() => reject(new Error("page text timed out")), 1500);
-                timeout.unref?.();
-              }),
-            ]).catch(() => undefined)) as { result?: { value?: unknown } } | undefined;
-            const value = response?.result?.value;
+            const value = await evaluateInPage(
+              runtime.browser.send,
+              target.sessionId,
+              "document.body ? document.body.innerText : ''",
+              "page text timed out",
+            ).catch(() => undefined);
             if (typeof value === "string") texts.push(value.slice(0, 20_000));
           }
         return texts;
@@ -782,17 +778,13 @@ export async function startClientGateway(
   }
   /** Whether a page is writing a reply, which closing or reloading it would cut short. */
   async function pageGenerating(runtime: ClientRuntime, target: TargetRef): Promise<boolean> {
-    const response = (await Promise.race([
-      runtime.browser.send(target.sessionId, "Runtime.evaluate", {
-        expression: PAGE_GENERATING_EXPRESSION,
-        returnByValue: true,
-      }),
-      new Promise<never>((_resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("Idle page inspection timed out")), 1500);
-        timeout.unref?.();
-      }),
-    ])) as { result?: { value?: unknown } };
-    return response.result?.value === true;
+    const value = await evaluateInPage(
+      runtime.browser.send,
+      target.sessionId,
+      PAGE_GENERATING_EXPRESSION,
+      "Idle page inspection timed out",
+    );
+    return value === true;
   }
   const idleReaper = createIdleReaper({
     sessions: () =>
