@@ -10,21 +10,16 @@ import {
   type ServerStatusMsg,
 } from "@mirror/protocol";
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
-import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createUserGate } from "./auth/user-gate";
 import { isOwnOrigin } from "./auth/origin";
-import {
-  createUserStore,
-  USER_SESSION_TTL_MS,
-  UserStoreError,
-  type FrontendUser,
-} from "./auth/users";
-import { createSessionGuard, SESSION_COOKIE } from "./auth/middleware";
-import { mintInvite } from "./auth/invite";
+import { createUserStore, UserStoreError, type FrontendUser } from "./auth/users";
+import { createSessionGuard } from "./auth/middleware";
+import { createSessionAccess, profileForbidden } from "./auth/session-access";
 import { createAssetCache } from "./assets/cache";
 import { createAssetFetcher } from "./assets/fetch";
 import { registerAssetRoutes } from "./assets/route";
@@ -360,59 +355,28 @@ export async function startClientGateway(
     );
   const resourceSampler = options.resourceSampler ?? createResourceSampler();
   let resources = await resourceSampler.sample();
-  const currentOwner = (request: IncomingMessage): string | undefined => {
-    if (e2e) {
-      const value =
-        request.headers["x-mirror-e2e-owner"] ??
-        new URL(request.url ?? "/", "http://local").searchParams.get("e2e-owner");
-      return typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value)
-        ? `test-${value}`
-        : undefined;
-    }
-    const user = gate.currentUser(request);
-    return user ? ownerForUser(request, user) : undefined;
-  };
-  const ownerForUser = (request: IncomingMessage, user: FrontendUser): string | undefined => {
-    const invite = sessionGuard.session(request);
-    return invite?.role === "driver" && invite.sid.startsWith("device-")
-      ? `${user.id}/${invite.sid}`
-      : undefined;
-  };
-  const currentUser = (request: IncomingMessage) =>
-    e2e ? userStore.bootstrapAdmin : gate.currentUser(request);
-  const requireLiveOwner = (request: IncomingMessage, owner: string) => {
-    const user = currentUser(request);
-    if (stopping || !user || currentOwner(request) !== owner)
-      throw new UserStoreError(401, "LOGIN_REQUIRED", "请重新登录");
-    return user;
-  };
-  const ownsSession = (request: IncomingMessage, sid: string) => {
-    const user = currentUser(request);
-    return (
-      !!user &&
-      clientSessions.owns(currentOwner(request), sid) &&
-      userStore.profileOwner(clientSessions.profileOf(sid)) === user.id
-    );
-  };
-  const deviceCookie = (request: IncomingMessage) => {
-    const previous = sessionGuard.session(request);
-    const owner =
-      previous?.role === "driver" && previous.sid.startsWith("device-")
-        ? previous.sid
-        : `device-${randomUUID()}`;
-    const maxAge = USER_SESSION_TTL_MS / 1000;
-    const exp = Math.floor(Date.now() / 1000) + maxAge;
-    return `${SESSION_COOKIE}=${mintInvite({ sid: owner, role: "driver", exp }, key)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
-  };
+  const access = createSessionAccess<ClientRuntime>({
+    e2e,
+    key,
+    bootstrapAdmin: () => userStore.bootstrapAdmin,
+    signedInUser: (request) => gate.currentUser(request),
+    deviceSession: (request) => sessionGuard.session(request),
+    sessions: clientSessions,
+    profileOwner: (id) => userStore.profileOwner(id),
+    isStopping: () => stopping,
+    isClosing: (sid): boolean => registry.isClosing(sid),
+    runtimeOf: (sid): ClientRuntime | undefined => registry.get(sid),
+  });
+  const { currentOwner, currentUser, userIdForOwner, requireLiveOwner } = access;
   const oidcSettings = oidcSettingsFromEnv(process.env, process.env.MIRROR_PUBLIC_ORIGIN);
   const oidc = oidcSettings && createOidc(oidcSettings, { store: userStore });
   const gate = createUserGate({
     store: userStore,
     publicOrigin: process.env.MIRROR_PUBLIC_ORIGIN,
     oidc,
-    cookiesOnSuccess: (request) => [deviceCookie(request)],
+    cookiesOnSuccess: (request) => [access.deviceCookie(request)],
     async onLogout(request, user) {
-      const owner = user && ownerForUser(request, user);
+      const owner = user && access.ownerForUser(request, user);
       if (owner)
         for (const record of clientSessions.all())
           if (record.owner === owner) await registry.release(owner, record.sid);
@@ -434,7 +398,7 @@ export async function startClientGateway(
     if (reply.sent) return;
     // Upgrade old single-workspace cookies to a stable authenticated device identity.
     if (gate.isSignedIn(request.raw) && !currentOwner(request.raw))
-      reply.header("set-cookie", deviceCookie(request.raw));
+      reply.header("set-cookie", access.deviceCookie(request.raw));
   });
   gate.registerRoutes(app);
   const currentUserId = (request: IncomingMessage) => currentUser(request)?.id;
@@ -519,7 +483,7 @@ export async function startClientGateway(
   await registerViewerStatic(app);
   const requireSession = (sid?: string) => async (request: FastifyRequest, reply: FastifyReply) => {
     const requested = sid ?? (request.params as { sid?: string })?.sid;
-    if (!requested || registry.isClosing(requested) || !ownsSession(request.raw, requested))
+    if (!requested || !access.sessionGrant(request.raw, requested))
       await reply.code(403).send({ error: "这个独立会话不属于当前客户端" });
   };
   const registry = createSessionRuntimeRegistry<ClientRuntime>({
@@ -527,12 +491,12 @@ export async function startClientGateway(
     sessions: clientSessions,
     isStopping: () => stopping,
     isOnline: (sid) => onlineSessions().has(sid),
-    mayRun(record) {
+    mayRun(record): boolean {
       const userId = userIdForOwner(record.owner);
       return (
         !!userId &&
         userStore.getUser(userId)?.enabled === true &&
-        userStore.profileOwner(clientSessions.profileOf(record.sid)) === userId
+        access.ownsProfile(userId, clientSessions.profileOf(record.sid))
       );
     },
     now: sessionNow,
@@ -556,7 +520,6 @@ export async function startClientGateway(
     {
       viewer: ViewerConn;
       sid: string;
-      owner: string;
       userId: string;
       authorized(): boolean;
     }
@@ -600,9 +563,7 @@ export async function startClientGateway(
     hubsForSession: (sid) => registry.get(sid)?.tabs.hubs() ?? [],
     sessionForRequest: (request) => {
       const sid = sidFromRequest(request);
-      return sid && !registry.isClosing(sid) && ownsSession(request, sid) && registry.has(sid)
-        ? sid
-        : undefined;
+      return sid && access.sessionGrant(request, sid)?.runtime ? sid : undefined;
     },
     authorizeUpgrade: async (request) => {
       if (!e2e && (!gate.authorizeUpgrade(request) || !sessionGuard.authorizeUpgrade(request)))
@@ -614,10 +575,10 @@ export async function startClientGateway(
       )
         return false;
       const sid = sidFromRequest(request);
-      if (!sid || !ownsSession(request, sid) || registry.isClosing(sid)) return false;
+      if (!sid || !access.sessionGrant(request, sid)) return false;
       try {
         await registry.ensure(sid);
-        return !registry.isClosing(sid) && ownsSession(request, sid);
+        return !!access.sessionGrant(request, sid);
       } catch (error) {
         report("client websocket unavailable", error);
         return false;
@@ -630,9 +591,8 @@ export async function startClientGateway(
       viewers.set(id, {
         viewer,
         sid,
-        owner: currentOwner(request)!,
         userId: currentUser(request)!.id,
-        authorized: () => ownsSession(request, sid),
+        authorized: () => access.ownsSession(request, sid),
       });
       idleReaper.touch(sid);
       const runtime = registry.get(sid)!;
@@ -696,15 +656,7 @@ export async function startClientGateway(
     async onUp(viewer, message, sid) {
       const id = viewerIds.get(viewer),
         connection = id ? viewers.get(id) : undefined;
-      if (
-        !id ||
-        !sid ||
-        !connection ||
-        !connection.authorized() ||
-        !clientSessions.owns(connection.owner, sid) ||
-        registry.isClosing(sid)
-      )
-        return;
+      if (!id || !sid || !connection || !connection.authorized() || registry.isClosing(sid)) return;
       const runtime = registry.get(sid);
       if (!runtime) return;
       // A valid driver is still forbidden from naming another client's CDP target.
@@ -835,7 +787,7 @@ export async function startClientGateway(
   app.get<{ Querystring: { sid?: string } }>("/api/status", async (request, reply) => {
     if (!currentOwner(request.raw)) return reply.code(401).send({ error: "请重新输入访问密码" });
     const sid = request.query.sid;
-    if (sid && !ownsSession(request.raw, sid))
+    if (sid && !access.ownsSession(request.raw, sid))
       return reply.code(403).send({ error: "这个会话不属于当前客户端" });
     return reply.header("cache-control", "no-store").send(status(sid));
   });
@@ -1512,9 +1464,9 @@ export async function startClientGateway(
             chosen !== undefined &&
             (typeof chosen !== "string" ||
               !accountStore.has(chosen) ||
-              userStore.profileOwner(chosen) !== user.id)
+              !access.ownsProfile(user.id, chosen))
           )
-            throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
+            throw profileForbidden();
           let previous = clientSessions.findExisting(
             owner,
             request.body?.clientKey,
@@ -1534,7 +1486,7 @@ export async function startClientGateway(
               `已达到会话上限（${user.maxSessions} 个），请先结束不再使用的会话`,
             );
           const profileId =
-            previous && userStore.profileOwner(previous.profile ?? DEFAULT_PROFILE) === user.id
+            previous && access.ownsProfile(user.id, previous.profile ?? DEFAULT_PROFILE)
               ? (previous.profile ?? DEFAULT_PROFILE)
               : typeof chosen === "string"
                 ? chosen
@@ -1547,10 +1499,7 @@ export async function startClientGateway(
             isPhoneRequest(request.headers["user-agent"]),
           );
           try {
-            if (
-              !existing ||
-              userStore.profileOwner(clientSessions.profileOf(record.sid)) !== user.id
-            ) {
+            if (!existing || !access.ownsProfile(user.id, clientSessions.profileOf(record.sid))) {
               if (registry.has(record.sid))
                 throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "浏览器不属于当前用户");
               await clientSessions.setProfile(owner, record.sid, profileId);
@@ -1606,24 +1555,14 @@ export async function startClientGateway(
     if (!clientSessions.owns(owner, sid))
       throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个会话已结束");
     if (!accountStore.has(id)) throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
-    if (userStore.profileOwner(id) !== userIdForOwner(owner))
-      throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
+    access.requireOwnProfile(userIdForOwner(owner), id);
     requireBrowserExit(id);
     await registry.switchProfileLocked(owner, sid, id);
-  }
-  function userIdForOwner(owner: string): string | undefined {
-    return e2e && owner.startsWith("test-")
-      ? userStore.bootstrapAdmin.id
-      : owner.includes("/")
-        ? owner.slice(0, owner.indexOf("/"))
-        : undefined;
   }
   async function defaultProfileFor(user: FrontendUser): Promise<string> {
     const preferred = userStore.defaultProfile(user.id);
     if (preferred) return preferred;
-    const owned = accountStore
-      .all()
-      .filter((record) => userStore.profileOwner(record.id) === user.id);
+    const owned = accountStore.all().filter((record) => access.ownsProfile(user.id, record.id));
     if (owned[0]) {
       userStore.setDefaultProfile(user.id, owned[0].id);
       return owned[0].id;
@@ -1641,7 +1580,7 @@ export async function startClientGateway(
     const nodes = new Map(proxyCatalog.listNodes(user).map((node) => [node.id, node]));
     return accountStore
       .all()
-      .filter((record) => userStore.profileOwner(record.id) === user.id)
+      .filter((record) => access.ownsProfile(user.id, record.id))
       .map((record) => {
         const account = accounts.get(record.id);
         const node = record.proxyId ? nodes.get(record.proxyId) : undefined;
@@ -1747,8 +1686,7 @@ export async function startClientGateway(
       try {
         return await accountLifecycle.run(async () => {
           const user = requireLiveOwner(request.raw, owner);
-          if (userStore.profileOwner(request.params.id) !== user.id)
-            throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
+          access.requireOwnProfile(user.id, request.params.id);
           return accountStore.rename(request.params.id, request.body?.name);
         });
       } catch (error) {
@@ -1776,8 +1714,7 @@ export async function startClientGateway(
       const snapshot = await accountLifecycle.run(() => {
         const user = requireLiveOwner(request.raw, owner);
         const id = request.params.id;
-        if (userStore.profileOwner(id) !== user.id)
-          throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
+        access.requireOwnProfile(user.id, id);
         const record = accountStore.get(id)!;
         if (!record.proxyId)
           throw new ClientSessionError(409, "PROXY_REQUIRED", "请先为浏览器配置选择出口");
@@ -1828,8 +1765,7 @@ export async function startClientGateway(
         return await accountLifecycle.run(async () => {
           const user = requireLiveOwner(request.raw, owner);
           const id = request.params.id;
-          if (userStore.profileOwner(id) !== user.id)
-            throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
+          access.requireOwnProfile(user.id, id);
           const proxyId = request.body.proxyId;
           if (proxyId !== null) {
             if (!process.env.MIRROR_RUNTIME_SOCKET)
@@ -1863,8 +1799,7 @@ export async function startClientGateway(
         return await accountLifecycle.run(async () => {
           const user = requireLiveOwner(request.raw, owner);
           const id = request.params.id;
-          if (userStore.profileOwner(id) !== user.id)
-            throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
+          access.requireOwnProfile(user.id, id);
           const platform = requirePlatform(request.body?.platform);
           if (profileSystem(id).platform !== platform) {
             await resetProfileRuntime(id);
@@ -1884,8 +1819,7 @@ export async function startClientGateway(
     try {
       return await accountLifecycle.run(async () => {
         const user = requireLiveOwner(request.raw, owner);
-        if (userStore.profileOwner(id) !== user.id)
-          throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器不属于当前用户");
+        access.requireOwnProfile(user.id, id);
         if (!accountStore.has(id))
           throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
         if (userStore.listOwnedProfiles(user.id).length === 1)
@@ -1975,9 +1909,8 @@ export async function startClientGateway(
     async (request, reply) => {
       try {
         return await accountLifecycle.run(async () => {
-          const owner = currentOwner(request.raw);
-          if (!owner || !ownsSession(request.raw, request.params.sid))
-            throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个会话不属于当前客户端");
+          // Again inside the lock: the session may have changed hands while this waited.
+          const { owner } = access.authorizeSession(request.raw, request.params.sid);
           const user = requireLiveOwner(request.raw, owner);
           if (!cpaRuntime) throw new CpaError(503, "CPA_DISABLED", "CPA 未启用");
           const oauth = cpaRuntime.oauthPage(user, request.body.instanceId, request.body.state);
@@ -2012,9 +1945,8 @@ export async function startClientGateway(
     async (request, reply) => {
       try {
         return await accountLifecycle.run(async () => {
-          const owner = currentOwner(request.raw);
-          if (!owner || !ownsSession(request.raw, request.params.sid))
-            throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个会话不属于当前客户端");
+          // Again inside the lock: the session may have changed hands while this waited.
+          const { owner } = access.authorizeSession(request.raw, request.params.sid);
           const user = requireLiveOwner(request.raw, owner);
           const sid = request.params.sid;
           const runtime = await registry.ensureLocked(sid);
