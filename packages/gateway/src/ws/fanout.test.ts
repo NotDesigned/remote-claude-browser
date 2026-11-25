@@ -78,7 +78,7 @@ function readyHub(): TabHub {
 
 function publishEvent(hub: TabHub, fanout: Fanout, index: number): void {
   for (const msg of hub.ingest(rrweb(event(EventType.IncrementalSnapshot, index)))) {
-    fanout.publish(msg);
+    fanout.publishToSession("s", msg);
   }
 }
 
@@ -90,7 +90,7 @@ describe("P0-FANOUT", () => {
     const hub = readyHub();
     const fanout = new Fanout(30);
     const socket = new MockSocket();
-    fanout.addViewer(new ViewerConn(socket, () => hub.joinPayload()));
+    fanout.addViewer(new ViewerConn(socket, () => hub.joinPayload()), "s");
     socket.take();
 
     publishEvent(hub, fanout, 10);
@@ -111,8 +111,8 @@ describe("P0-FANOUT", () => {
     const fanout = new Fanout(30, undefined, false);
     const a = new MockSocket();
     const b = new MockSocket();
-    fanout.addViewer(new ViewerConn(a, () => hub.joinPayload()));
-    fanout.addViewer(new ViewerConn(b, () => hub.joinPayload()));
+    fanout.addViewer(new ViewerConn(a, () => hub.joinPayload()), "s");
+    fanout.addViewer(new ViewerConn(b, () => hub.joinPayload()), "s");
     a.take();
     b.take();
 
@@ -142,8 +142,8 @@ describe("P0-FANOUT", () => {
     const fastSocket = new MockSocket();
     const slow = new ViewerConn(slowSocket, () => hub.joinPayload(), { drainPollMs: 10 });
     const fast = new ViewerConn(fastSocket, () => hub.joinPayload(), { drainPollMs: 10 });
-    fanout.addViewer(slow);
-    fanout.addViewer(fast);
+    fanout.addViewer(slow, "s");
+    fanout.addViewer(fast, "s");
     slowSocket.take();
     fastSocket.take();
 
@@ -184,12 +184,12 @@ describe("P0-FANOUT", () => {
     const hub = readyHub();
     const fanout = new Fanout(30, undefined, false);
     const existingSocket = new MockSocket();
-    fanout.addViewer(new ViewerConn(existingSocket, () => hub.joinPayload()));
+    fanout.addViewer(new ViewerConn(existingSocket, () => hub.joinPayload()), "s");
     existingSocket.take();
 
     publishEvent(hub, fanout, 30);
     const joiningSocket = new MockSocket();
-    fanout.addViewer(new ViewerConn(joiningSocket, () => hub.joinPayload()));
+    fanout.addViewer(new ViewerConn(joiningSocket, () => hub.joinPayload()), "s");
 
     expect(existingSocket.take()).toMatchObject([{ t: "delta", seq: 2 }]);
     const joined = joiningSocket.take();
@@ -228,9 +228,9 @@ describe("P0-FANOUT", () => {
     });
     const first = new MockSocket();
     const second = new MockSocket();
-    fanout.addViewer(new ViewerConn(first, () => []));
-    fanout.addViewer(new ViewerConn(second, () => []));
-    fanout.publish({
+    fanout.addViewer(new ViewerConn(first, () => []), "s");
+    fanout.addViewer(new ViewerConn(second, () => []), "s");
+    fanout.publishToSession("s", {
       t: "delta",
       tab: "chaos-tab",
       epoch: 1,
@@ -244,7 +244,7 @@ describe("P0-FANOUT", () => {
     expect(fanout.chaosStats).toEqual({
       deltaMessagesConsidered: 2,
       deltaMessagesDropped: 1,
-      droppedByTab: { "chaos-tab": 1 },
+      droppedByTab: { [JSON.stringify(["s", "chaos-tab"])]: 1 },
     });
     fanout.close();
   });

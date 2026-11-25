@@ -46,13 +46,13 @@ export interface DeltaChaosStats {
 }
 
 interface PendingDelta {
-  sessionId: string | undefined;
+  sessionId: string;
   msg: Extract<Down, { t: "delta" }>;
   timer: NodeJS.Timeout;
 }
 
 export class Fanout {
-  private readonly viewers = new Map<ViewerConn, string | undefined>();
+  private readonly viewers = new Map<ViewerConn, string>();
   private readonly pending = new Map<string, PendingDelta>();
   private readonly lastDeltaSentAt = new Map<string, number>();
 
@@ -60,11 +60,7 @@ export class Fanout {
   private readonly chaosDropRate: number;
   private chaosConsidered = 0;
   /** Sees each snapshot broadcast with its size on the wire, for the operator's log. */
-  onSnapshot?: (
-    sessionId: string | undefined,
-    msg: Extract<Down, { t: "snapshot" }>,
-    bytes: number,
-  ) => void;
+  onSnapshot?: (sessionId: string, msg: Extract<Down, { t: "snapshot" }>, bytes: number) => void;
   private chaosDropped = 0;
   private readonly chaosDroppedByTab = new Map<string, number>();
 
@@ -95,8 +91,8 @@ export class Fanout {
     };
   }
 
-  addViewer(viewer: ViewerConn, sessionId?: string): void {
-    if (sessionId !== undefined) assertSessionId(sessionId);
+  addViewer(viewer: ViewerConn, sessionId: string): void {
+    assertSessionId(sessionId);
     if (this.viewers.has(viewer) && this.viewers.get(viewer) !== sessionId) {
       throw new Error("a viewer cannot change sessions without a new connection");
     }
@@ -119,11 +115,6 @@ export class Fanout {
     return this.viewers.get(viewer);
   }
 
-  /** Legacy broadcasts remain confined to connections registered without a session. */
-  publish(msg: Down): void {
-    this.publishScoped(undefined, msg);
-  }
-
   /** Every message type, including clipboard/download/presence, stays inside this session. */
   publishToSession(sessionId: string, msg: Down): void {
     assertSessionId(sessionId);
@@ -135,7 +126,7 @@ export class Fanout {
     this.flushScope(sessionId);
   }
 
-  private publishScoped(sessionId: string | undefined, msg: Down): void {
+  private publishScoped(sessionId: string, msg: Down): void {
     if (msg.t !== "delta" || msg.data.length === 0) {
       if ("tab" in msg) this.flushTab(sessionId, msg.tab);
       this.broadcastNow(sessionId, msg);
@@ -183,13 +174,13 @@ export class Fanout {
     this.viewers.clear();
   }
 
-  private flushScope(sessionId: string | undefined): void {
+  private flushScope(sessionId: string): void {
     for (const [key, pending] of [...this.pending]) {
       if (pending.sessionId === sessionId) this.flushPending(key);
     }
   }
 
-  private flushTab(sessionId: string | undefined, tabId: string): void {
+  private flushTab(sessionId: string, tabId: string): void {
     this.flushPending(deltaKey(sessionId, tabId));
   }
 
@@ -202,7 +193,7 @@ export class Fanout {
     this.broadcastNow(pending.sessionId, pending.msg);
   }
 
-  private broadcastNow(sessionId: string | undefined, msg: Down): void {
+  private broadcastNow(sessionId: string, msg: Down): void {
     const serialized = serializeDown(msg);
     if (msg.t === "snapshot" && this.onSnapshot !== undefined) {
       try {
@@ -221,7 +212,7 @@ export class Fanout {
         this.chaosConsidered += 1;
         if (this.chaosRandom() < this.chaosDropRate) {
           this.chaosDropped += 1;
-          const key = sessionId === undefined ? msg.tab : deltaKey(sessionId, msg.tab);
+          const key = deltaKey(sessionId, msg.tab);
           this.chaosDroppedByTab.set(key, (this.chaosDroppedByTab.get(key) ?? 0) + 1);
           continue;
         }
@@ -236,11 +227,10 @@ export type UpgradeGuard = (request: IncomingMessage) => boolean | Promise<boole
 export interface WsServerOpts {
   /** Pass Fastify's `fastify.server`; integration retains ownership of the composition root. */
   server: HttpServer;
-  hubs?(): Iterable<TabHub>;
   /** Resolve the authorized request's immutable SID. Missing SID rejects the upgrade. */
-  sessionForRequest?: (request: IncomingMessage) => string | undefined;
-  /** Required with sessionForRequest; never fall back to all hubs for an isolated viewer. */
-  hubsForSession?: (sessionId: string) => Iterable<TabHub>;
+  sessionForRequest: (request: IncomingMessage) => string | undefined;
+  /** The hubs a viewer of the session joins; never any other session's. */
+  hubsForSession: (sessionId: string) => Iterable<TabHub>;
   path?: string;
   batchMs?: number;
   /** Off to make every delta wait out the batch window. */
@@ -255,7 +245,7 @@ export interface WsServerOpts {
   replaceSessionOnConnect?: boolean;
   /** Reject old keyless viewers before they can replace a newer page; opt-in migration guard. */
   requireConnectionKey?: boolean;
-  onUp?: (viewer: ViewerConn, msg: Up, sessionId: string | undefined) => void | Promise<void>;
+  onUp?: (viewer: ViewerConn, msg: Up, sessionId: string) => void | Promise<void>;
   /**
    * `resumable` lists the viewer's resume cursors that its hubs can continue from. The join
    * payload resumes exactly the cursors returned here (all of `resumable` when nothing is
@@ -264,10 +254,10 @@ export interface WsServerOpts {
   onConnection?: (
     viewer: ViewerConn,
     request: IncomingMessage,
-    sessionId: string | undefined,
+    sessionId: string,
     resumable: readonly ResumeCursor[],
   ) => readonly ResumeCursor[] | void;
-  onDisconnection?: (viewer: ViewerConn, sessionId: string | undefined) => void;
+  onDisconnection?: (viewer: ViewerConn, sessionId: string) => void;
 }
 
 export interface WsServer {
@@ -290,11 +280,9 @@ export interface WsServer {
 }
 
 export function createWsServer(opts: WsServerOpts): WsServer {
-  if (opts.sessionForRequest !== undefined && opts.hubsForSession === undefined) {
-    throw new TypeError("sessionForRequest requires hubsForSession");
-  }
-  if (opts.replaceSessionOnConnect && opts.sessionForRequest === undefined)
-    throw new TypeError("replaceSessionOnConnect requires sessionForRequest");
+  // Every viewer belongs to one session; there is no broadcast to all hubs.
+  if (typeof opts.sessionForRequest !== "function" || typeof opts.hubsForSession !== "function")
+    throw new TypeError("sessionForRequest and hubsForSession are required");
   const path = opts.path ?? "/ws";
   const simulatedRttMs = opts.simulatedRttMs ?? 0;
   if (!Number.isSafeInteger(simulatedRttMs) || simulatedRttMs < 0) {
@@ -304,7 +292,7 @@ export function createWsServer(opts: WsServerOpts): WsServer {
   const fanout = new Fanout(opts.batchMs, opts.deltaChaos, opts.sendFirstDeltaAtOnce ?? true);
   const webSocketServer = new WebSocketServer({ noServer: true, perMessageDeflate: true });
   const authorizedSessions = new WeakMap<IncomingMessage, string>();
-  const viewerSessions = new WeakMap<ViewerConn, string | undefined>();
+  const viewerSessions = new WeakMap<ViewerConn, string>();
   const viewerSockets = new Map<ViewerConn, WebSocket>();
   const viewerKeys = new WeakMap<ViewerConn, string>();
   const disconnected = new WeakSet<ViewerConn>();
@@ -329,7 +317,7 @@ export function createWsServer(opts: WsServerOpts): WsServer {
     }
     retiredKeys.set(sid, keys);
   };
-  const notifyDisconnection = (viewer: ViewerConn, sid: string | undefined) => {
+  const notifyDisconnection = (viewer: ViewerConn, sid: string) => {
     if (disconnected.has(viewer)) return;
     disconnected.add(viewer);
     opts.onDisconnection?.(viewer, sid);
@@ -351,12 +339,12 @@ export function createWsServer(opts: WsServerOpts): WsServer {
       Buffer.byteLength(reason) > 123
     )
       throw new RangeError("Invalid viewer close code or reason");
-    const sid = viewerSessions.get(viewer);
+    const sid = viewerSessions.get(viewer)!;
     viewerSockets.delete(viewer);
     viewerSessions.delete(viewer);
     fanout.removeViewer(viewer);
     viewer.dispose();
-    if (retire && sid && code === VIEWER_REPLACED_CODE) retireKey(sid, viewerKeys.get(viewer));
+    if (retire && code === VIEWER_REPLACED_CODE) retireKey(sid, viewerKeys.get(viewer));
     // Roles/input ownership must be gone before the replacement's onConnection runs.
     notifyDisconnection(viewer, sid);
     socket.close(code, reason);
@@ -382,12 +370,12 @@ export function createWsServer(opts: WsServerOpts): WsServer {
 
   webSocketServer.on("connection", (socket: WebSocket, request: IncomingMessage) => {
     const sessionId = authorizedSessions.get(request);
-    if (opts.sessionForRequest !== undefined && sessionId === undefined) {
+    if (sessionId === undefined) {
       socket.close(1008, "session required");
       return;
     }
     const connectionKey = connectionKeyFor(request);
-    if (opts.replaceSessionOnConnect && sessionId !== undefined) {
+    if (opts.replaceSessionOnConnect) {
       if (opts.requireConnectionKey && connectionKey === undefined) {
         // Old bundles retry even after 4009. They must never advance ownership or join a SID.
         socket.close(VIEWER_REPLACED_CODE, "replaced");
@@ -409,9 +397,7 @@ export function createWsServer(opts: WsServerOpts): WsServer {
       if (connectionKey) activeKeys.set(sessionId, connectionKey);
       else activeKeys.delete(sessionId);
     }
-    const sessionHubs = (): TabHub[] => [
-      ...(sessionId === undefined ? (opts.hubs?.() ?? []) : opts.hubsForSession!(sessionId)),
-    ];
+    const sessionHubs = (): TabHub[] => [...opts.hubsForSession(sessionId)];
     // A reconnecting viewer may continue from its resume cursors, but only on its first join:
     // drain recovery after a stall always rebuilds from a fresh snapshot. Whether it resumes is
     // decided once, here and in onConnection, and nothing between that and the join can change it.
@@ -501,7 +487,7 @@ export function createWsServer(opts: WsServerOpts): WsServer {
         fanout.removeViewer(viewer);
       }
     });
-    if (opts.replaceSessionOnConnect && sessionId !== undefined) replaceSession(sessionId, viewer);
+    if (opts.replaceSessionOnConnect) replaceSession(sessionId, viewer);
     const accepted = opts.onConnection?.(viewer, request, sessionId, resumeCursors);
     if (accepted !== undefined) {
       resumeCursors = resumeCursors.filter((cursor) => accepted.includes(cursor));
@@ -530,7 +516,7 @@ export function createWsServer(opts: WsServerOpts): WsServer {
     let sessionId: string | undefined;
     try {
       authorized = (await opts.authorizeUpgrade?.(request)) ?? true;
-      if (authorized && opts.sessionForRequest !== undefined) {
+      if (authorized) {
         sessionId = opts.sessionForRequest(request);
         if (sessionId === undefined) authorized = false;
         else assertSessionId(sessionId);
@@ -543,7 +529,7 @@ export function createWsServer(opts: WsServerOpts): WsServer {
       return;
     }
 
-    if (sessionId !== undefined) authorizedSessions.set(request, sessionId);
+    authorizedSessions.set(request, sessionId!);
     webSocketServer.handleUpgrade(request, socket, head, (ws) => {
       webSocketServer.emit("connection", ws, request);
     });
@@ -647,8 +633,8 @@ function assertSessionId(sessionId: string): void {
   }
 }
 
-function deltaKey(sessionId: string | undefined, tabId: string): string {
-  return JSON.stringify([sessionId ?? null, tabId]);
+function deltaKey(sessionId: string, tabId: string): string {
+  return JSON.stringify([sessionId, tabId]);
 }
 
 class DelayedViewerSocket implements ViewerSocket {

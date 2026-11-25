@@ -9,7 +9,12 @@ describe("P3-HUD application RTT", () => {
   it("echoes ping identifiers and timestamps immediately with a gateway timestamp", async () => {
     const server = createServer();
     const onUp = vi.fn();
-    const wsServer = createWsServer({ server, hubs: () => [], onUp });
+    const wsServer = createWsServer({
+      server,
+      sessionForRequest: () => "s",
+      hubsForSession: () => [],
+      onUp,
+    });
     await new Promise<void>((resolve, reject) => {
       server.listen(0, "127.0.0.1", resolve);
       server.once("error", reject);

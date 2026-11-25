@@ -14,7 +14,8 @@ describe("SEC-2 WebSocket upgrade auth", () => {
     const server = createServer();
     const wsServer = createWsServer({
       server,
-      hubs: () => [],
+      sessionForRequest: () => "s",
+      hubsForSession: () => [],
       authorizeUpgrade: guard.authorizeUpgrade,
     });
     await new Promise<void>((resolve, reject) => {
