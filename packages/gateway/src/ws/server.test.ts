@@ -407,6 +407,35 @@ describe("session-scoped WebSocket upgrades", () => {
     }
   });
 
+  it("ignores a message type from a newer viewer build instead of closing on it", async () => {
+    const server = createServer();
+    const onUp = vi.fn();
+    const wsServer = createWsServer({ server, hubs: () => [], onUp });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/ws`);
+    const closed = vi.fn();
+    socket.on("close", closed);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve);
+        socket.once("error", reject);
+      });
+      socket.send(JSON.stringify({ t: "from-the-future", tab: "t1" }));
+      socket.send(encodeMsg({ t: "text", tab: "t1", insert: "still here" }));
+      await vi.waitFor(() => expect(onUp).toHaveBeenCalledOnce());
+      expect(closed).not.toHaveBeenCalled();
+      // Garbage is still a broken client.
+      socket.send("not json");
+      await vi.waitFor(() => expect(closed).toHaveBeenCalledWith(1003, expect.anything()));
+    } finally {
+      socket.terminate();
+      await wsServer.close();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
   it("revokes a released session before transport close and lets its new owner reconnect without affecting peers", async () => {
     const server = createServer();
     const connected = new Map<string, ViewerConn>();

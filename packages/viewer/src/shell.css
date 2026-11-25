@@ -610,14 +610,16 @@ body {
   font-size: 14px;
   line-height: 1.5;
 }
-.remote-cc-login-banner {
+.remote-cc-login-banner,
+#build-stale {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 12px;
   pointer-events: auto;
 }
-.remote-cc-login-banner button {
+.remote-cc-login-banner button,
+#build-stale button {
   min-height: 32px;
   padding: 0 12px;
   color: var(--ink);

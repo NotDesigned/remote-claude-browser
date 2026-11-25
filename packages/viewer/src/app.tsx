@@ -50,6 +50,8 @@ import { connectGateway, type GatewayConnectionState, type GatewaySocket } from 
 import { createFileUploadRelay, type FileUploadRelay, type UploadState } from "./uploads";
 import { externalLink } from "./input/default-actions";
 import { createPresentation } from "./presentation";
+import { createBuildSkew } from "./build-skew";
+import { deepActiveElement, isTextEditable } from "./input/keys";
 import {
   ClientSessionError,
   PX_QUALITY_STORAGE_KEY,
@@ -119,6 +121,15 @@ function viewStorage(): Pick<Storage, "getItem" | "setItem"> {
     getItem: (key) => readItem(localArea(), key),
     setItem: (key, value) => writeItem(localArea(), key, value),
   };
+}
+
+/** This tab's own memory; sessionStorage itself throws when site data is blocked. */
+function sessionStorageOrNull(): Pick<Storage, "getItem" | "setItem"> | null {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
 }
 
 const THEME_CHECK_MS = 3_000;
@@ -222,6 +233,7 @@ export function App() {
   const [driverId, setDriverId] = useState<string | null>(null);
   const [viewers, setViewers] = useState<Extract<Down, { t: "presence" }>["viewers"]>([]);
   const [clipboardError, setClipboardError] = useState<string | null>(null);
+  const [buildStale, setBuildStale] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [downloads, setDownloads] = useState<DownloadEntry[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
@@ -562,6 +574,19 @@ export function App() {
         if (!disposed) setClipboardError("复制失败，请允许浏览器访问剪贴板");
       },
     });
+    // A page from before a deploy reloads into the new build when that interrupts nothing.
+    const buildSkew = createBuildSkew({
+      busy: () => {
+        if (uploading) return true;
+        const active = deepActiveElement(document);
+        return active !== null && active !== document.body && isTextEditable(active);
+      },
+      reload: () => window.location.reload(),
+      onStale: (stale) => {
+        if (!disposed) setBuildStale(stale);
+      },
+      storage: sessionStorageOrNull(),
+    });
     const echo = createEchoFilter({
       onContenteditableReconcile: () => {
         const tab = presentation.activeTab();
@@ -571,9 +596,11 @@ export function App() {
     });
     // A file input in the mirror opens its own picker, and the same click reaches the remote page.
     let mirrorPickerOpenedAt = Number.NEGATIVE_INFINITY;
+    let uploading = false;
     const uploads = createFileUploadRelay({
       // A finished upload needs no notice: the page shows the attachment itself.
       onState: (state) => {
+        uploading = state?.phase === "uploading" || state?.phase === "picking";
         if (!disposed) setUploadState(state?.phase === "done" ? null : state);
       },
       openPicker: (multiple) => {
@@ -785,6 +812,7 @@ export function App() {
       inputResyncRef.current = null;
       resync.dispose();
       clipboard.dispose();
+      buildSkew.dispose();
       uploads.dispose();
       uploadRef.current = null;
       uploadRequestRef.current?.abort();
@@ -848,6 +876,7 @@ export function App() {
         }
         presentation.handle(message);
         if (message.t === "hello") {
+          buildSkew.observe(message.build);
           setOAuthCallbacks({});
           // The gateway follows `hello` with the input-status of every tab still failed.
           setInputFailures({});
@@ -951,7 +980,9 @@ export function App() {
           }
         },
         onProtocolError(error) {
-          if (!disposed) mirror.recover(error.message);
+          // Not a replay failure: a garbled delta shows up as a sequence gap, which recovers
+          // on its own. Asking for a snapshot here only turned build skew into resync storms.
+          if (!disposed) console.warn("mirror: undecodable gateway message", error);
         },
       },
     );
@@ -1237,6 +1268,14 @@ export function App() {
         {clipboardError && (
           <p class="shell-banner clipboard-error" data-tone="warn" role="status">
             {clipboardError}
+          </p>
+        )}
+        {buildStale && (
+          <p id="build-stale" class="shell-banner" role="status">
+            页面已更新，空闲时会自动刷新。
+            <button type="button" onClick={() => window.location.reload()}>
+              立即刷新
+            </button>
           </p>
         )}
         {fixturePath !== null && (
