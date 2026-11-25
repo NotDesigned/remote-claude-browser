@@ -32,7 +32,7 @@ echo 'COMPOSE_FILE=compose.yml:compose.runtime.yml' >> .env
 接着编辑 `.env`：
 
 ```bash
-# 用户实际打开的地址，必须完全一致，否则 WebSocket 连接会被拒绝
+# 用户实际打开的地址，必须完全一致，否则 WebSocket 连接和表单提交会被拒绝；不设置时服务拒绝启动
 MIRROR_PUBLIC_ORIGIN=https://browser.example.com
 # 这台机器的公网 IP。容器看不到它，要手动填，网页才碰不到这台机器上的服务
 EGRESS_BLOCK=203.0.113.10
@@ -124,7 +124,7 @@ docker compose -f compose.yml -f compose.tunnel-only.yml up -d tunnel
 
 `compose.runtime.yml` 让每个绑定了节点的浏览器配置在自己的网络命名空间里经 Mihomo 和这个节点出网，网页、DNS 和 WebRTC 都走这个节点。没有部署级的默认出口：没有绑定节点的配置打不开。节点由使用者和管理员在工作台里导入和绑定，见[使用 · 出口](usage.md#出口)。
 
-- 订阅的导入和刷新用服务端自己的网络；浏览器和 CPA 授权各自用选定的节点。
+- 订阅的导入和刷新用服务端自己的网络，只能访问公网地址，内容不超过 2 MB（`egress/catalog.ts`）；要读取内网的订阅地址，设置 `MIRROR_PROXY_SUBSCRIPTION_ALLOW_PRIVATE`（见[环境变量](configuration.md#写在-compose-文件里的变量)）。浏览器和 CPA 授权各自用选定的节点。
 - 节点的服务器可以是 IPv4 或 IPv6 地址。`browser` 网络是双栈；只有 Mihomo 能用上游的 IPv6，浏览器直连 IPv6 仍被阻断。
 - 节点和代理来源保存在 `proxy-sources.json` 里，含节点密码和订阅地址，按密钥保护（见[备份](#备份)）。
 - 这个文件还启动 `cpa-broker`，见[CPA](#cpa)。
