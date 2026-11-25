@@ -405,6 +405,59 @@ async function browserHandle(browser: Browser): Promise<BrowserHandle> {
   }
 }
 
+/**
+ * The environment a locally launched Chromium sees: only what it needs to run (paths, locale,
+ * display, fonts, GPU and proxy settings) plus the caller's explicit additions. The gateway's
+ * secrets (auth secret, OIDC client secret, API keys, ...) never reach the browser process.
+ */
+export function browserEnvironment(
+  source: NodeJS.ProcessEnv,
+  extra: Record<string, string | undefined> = {},
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(source)) {
+    if (value === undefined) continue;
+    if (
+      BROWSER_ENV_NAMES.has(name) ||
+      BROWSER_ENV_PREFIXES.some((prefix) => name.startsWith(prefix))
+    )
+      env[name] = value;
+  }
+  for (const [name, value] of Object.entries(extra)) if (value !== undefined) env[name] = value;
+  return env;
+}
+
+const BROWSER_ENV_NAMES = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "TZ",
+  "LANG",
+  "LANGUAGE",
+  "DISPLAY",
+  "XAUTHORITY",
+  "WAYLAND_DISPLAY",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "FONTCONFIG_FILE",
+  "FONTCONFIG_PATH",
+  "LD_LIBRARY_PATH",
+  "CHROME_DEVEL_SANDBOX",
+  "LIBGL_ALWAYS_SOFTWARE",
+  "GALLIUM_DRIVER",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "all_proxy",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+]);
+const BROWSER_ENV_PREFIXES = ["LC_", "XDG_", "MESA_", "__GLX_", "__EGL_"];
+
 /** Launch a local browser for development and acceptance fixtures over a private debugging pipe. */
 export async function launchBrowser(opts: LaunchOpts): Promise<BrowserHandle> {
   if (opts.userDataDir.trim() === "") {
@@ -421,9 +474,7 @@ export async function launchBrowser(opts: LaunchOpts): Promise<BrowserHandle> {
   if (typeof process.getuid === "function" && process.getuid() === 0) {
     args.push("--no-sandbox");
   }
-  const env = { ...process.env, ...opts.env };
-  delete env.RESEND_API_KEY;
-  delete env.RESEND_WEBHOOK_SECRET;
+  const env = browserEnvironment(process.env, opts.env);
 
   const browser = await launch({
     ...(opts.executablePath === undefined ? {} : { executablePath: opts.executablePath }),

@@ -1661,6 +1661,7 @@ export async function startClientGateway(
     try {
       await stopRuntime(sid, true);
       await clientSessions.release(owner, sid);
+      ws.forgetSession(sid);
     } finally {
       runtimes.delete(sid);
       runtimePromises.delete(sid);
@@ -2164,6 +2165,7 @@ export async function startClientGateway(
         runtimePromises.delete(record.sid);
         try {
           await clientSessions.release(record.owner, record.sid);
+          ws.forgetSession(record.sid);
         } catch (error) {
           failures.push(error);
         }

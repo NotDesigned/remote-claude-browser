@@ -196,8 +196,7 @@ export function registerRemoteCcRoutes(app: FastifyInstance, options: RemoteCcRo
     return { ok: true };
   });
   route<unknown, { code: string }>("POST", "/api/remote-cc/devices/:code/deny", (request) => {
-    loggedIn(request.raw);
-    devices.deny(request.params.code);
+    devices.deny(request.params.code, loggedIn(request.raw));
     return { ok: true };
   });
   route("GET", "/api/remote-cc/logins", (request) => {

@@ -157,12 +157,32 @@ const HOP_HEADERS = new Set([
   "trailer",
   "upgrade",
 ]);
+/**
+ * The upstream path for an inference request: dot segments resolved the way the broker and CPA
+ * see them, and still under /v1/. Encoded separators and dots are refused outright, since a
+ * server that decodes before routing would see a different path than the one checked here.
+ */
+export function cpaInferencePath(raw: string): string | undefined {
+  if (!raw.startsWith("/") || raw.startsWith("//") || raw.includes("\\")) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw, "http://cpa.invalid");
+  } catch {
+    return undefined;
+  }
+  if (url.origin !== "http://cpa.invalid") return undefined;
+  if (/%(2f|5c|2e)/i.test(url.pathname) || !url.pathname.startsWith("/v1/")) return undefined;
+  return url.pathname + url.search;
+}
+
 export function registerCpaInferenceRoutes(app: FastifyInstance, runtime: CpaRuntime) {
   app.route({
     method: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
     url: "/v1/*",
     bodyLimit: 33_554_432,
     async handler(request, reply) {
+      const path = cpaInferencePath(request.raw.url ?? "");
+      if (path === undefined) return reply.code(400).send({ error: "请求路径无效" });
       try {
         const auth = request.headers.authorization;
         const token =
@@ -187,7 +207,7 @@ export function registerCpaInferenceRoutes(app: FastifyInstance, runtime: CpaRun
               : JSON.stringify(request.body);
         const response = await runtime.driver.request(instance, {
           method: request.method,
-          path: request.raw.url!,
+          path,
           headers,
           body,
         });

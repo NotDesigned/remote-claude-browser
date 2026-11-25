@@ -1,5 +1,5 @@
 import { Readable } from "node:stream";
-import type { IncomingMessage } from "node:http";
+import { request as httpRequest, type IncomingMessage } from "node:http";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -11,7 +11,7 @@ import { createCpaStore, type CpaInstance, type CpaStore } from "./store";
 import { createCpaRuntime } from "./runtime";
 import type { ExitHealth as CpaExitHealth } from "../egress/timezone";
 import type { CpaDriver, CpaRequest } from "./broker-client";
-import { registerCpaInferenceRoutes, registerCpaRoutes } from "./routes";
+import { cpaInferencePath, registerCpaInferenceRoutes, registerCpaRoutes } from "./routes";
 import { registerCpaManagementRoutes } from "./management";
 
 const alice: FrontendUser = {
@@ -890,7 +890,61 @@ describe("CPA v8 contract", () => {
     expect(calls.at(-1)?.input.headers?.authorization).toBe(`Bearer ${value.apiKey}`);
     expect(calls.at(-1)?.input.headers).not.toHaveProperty("cookie");
     expect(calls.at(-1)?.input.headers).not.toHaveProperty("x-api-key");
+    const before = calls.length;
+    // inject() resolves dot segments itself, so send the raw request line over real HTTP.
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const rawStatus = (path: string) =>
+      new Promise<number>((resolve, reject) => {
+        const outgoing = httpRequest(`${address}/`, {
+          path,
+          headers: { "x-api-key": key.token },
+        });
+        outgoing.on("response", (response) => {
+          response.resume();
+          resolve(response.statusCode ?? 0);
+        });
+        outgoing.on("error", reject);
+        outgoing.end();
+      });
+    for (const path of [
+      "/v1/../v0/management/config",
+      "/v1/%2e%2e/v0/management/config",
+      "/v1/..%2Fv0/management/config",
+      "/v1/%2E%2E%2Fv8/management/config",
+    ])
+      expect(await rawStatus(path), path).toBe(400);
+    expect(calls.length).toBe(before);
+    setUpstream(
+      () =>
+        Object.assign(Readable.from(["{}"]), {
+          statusCode: 200,
+          headers: { "content-type": "application/json" },
+        }) as unknown as IncomingMessage,
+    );
+    const normalized = await app.inject({
+      method: "GET",
+      url: "/v1/models/./x/../list?limit=1",
+      headers: { "x-api-key": key.token },
+    });
+    expect(normalized.statusCode).toBe(200);
+    expect(calls.at(-1)?.input.path).toBe("/v1/models/list?limit=1");
     await app.close();
+  });
+
+  it("normalizes inference paths and keeps them under /v1/", () => {
+    expect(cpaInferencePath("/v1/messages?beta=true")).toBe("/v1/messages?beta=true");
+    expect(cpaInferencePath("/v1/a/./b/../c")).toBe("/v1/a/c");
+    for (const raw of [
+      "/v1/../v0/management/x",
+      "/v1/%2e%2e/admin",
+      "/v1/..%2fadmin",
+      "/v1/a%5c..%5cb",
+      "/v1\\..\\v0/management/x",
+      "//evil.example/v1/x",
+      "/v2/x",
+      "v1/x",
+    ])
+      expect(cpaInferencePath(raw), raw).toBeUndefined();
   });
 });
 
