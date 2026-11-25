@@ -7,7 +7,7 @@ index 40e271ca6a7ec2e63fdf898fa1a007ae9bd735b2..05b8e7e53ea185f574ee19d9724ce5b8
                events.splice(insertionIndex, 0, event);
              }
 +            // Live replay never looks back, and a long session would otherwise keep every event.
-+            if (events.length > 4000) events.splice(1, events.length - 2000);
++            if (events.length > 4000) events.splice(2, events.length - 2000);
              const isSync = event.timestamp < baselineTime;
              const castFn = getCastFn(event, isSync);
              if (isSync) {
@@ -32,7 +32,7 @@ index 55c239020841f7a3340d0caeffeea1fc82a34771..ddb2207e60990b75f66492778ba286fa
                events.splice(insertionIndex, 0, event);
              }
 +            // Live replay never looks back, and a long session would otherwise keep every event.
-+            if (events.length > 4000) events.splice(1, events.length - 2000);
++            if (events.length > 4000) events.splice(2, events.length - 2000);
              const isSync = event.timestamp < baselineTime;
              const castFn = getCastFn(event, isSync);
              if (isSync) {
