@@ -14,6 +14,8 @@ services:
       - apparmor=unconfined
     environment:
       MIRROR_DIAGNOSTIC_STDERR: "1"
+      # A hidden session's pages are released after a minute, not 15 (compose-e2e waits 80 s).
+      MIRROR_IDLE_GRACE_MS: "60000"
       MIRROR_PROFILE_EGRESS: "1"
       MIRROR_RUNTIME_SOCKET: /run/remote-browser/runtime.sock
       SMOKE_GEO_URL: ${SMOKE_FIXTURE_ORIGIN}/geo

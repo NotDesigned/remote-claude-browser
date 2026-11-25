@@ -86,7 +86,7 @@ import { createOidc, oidcSettingsFromEnv } from "./auth/oidc";
 import { registerAccountOnboarding } from "./browser/account-onboarding";
 import { createMailboxService, registerMailboxRoutes, RESEND_WEBHOOK_PATH } from "./mail/mailboxes";
 import { createIdleReaper, PAGE_GENERATING_EXPRESSION } from "./session/idle-reaper";
-import { ACCOUNT_IDLE_CLOSE_MS, SESSION_IDLE_GRACE_MS } from "./session/resource-policy";
+import { ACCOUNT_IDLE_CLOSE_MS, sessionIdleGraceMs } from "./session/resource-policy";
 import { createProfileStore, DEFAULT_PROFILE, MAX_PROFILES } from "./session/profiles";
 import { createResourceSampler } from "./monitor/resources";
 import type { TargetRef, AgentLink } from "./types";
@@ -838,7 +838,7 @@ export async function startClientGateway(
           broadcastStatus();
         }
       }),
-    graceMs: e2e ? Number(process.env.MIRROR_IDLE_GRACE_MS ?? 60000) : SESSION_IDLE_GRACE_MS,
+    graceMs: sessionIdleGraceMs(process.env.MIRROR_IDLE_GRACE_MS, e2e),
     now: sessionNow,
     onError: (error) => report("idle client cleanup", error),
   });

@@ -18,6 +18,7 @@
 | `MIRROR_AUTH_SECRET`     |       是       | 无                   | 至少 16 个字符（`production-guard.ts`），用 `openssl rand -hex 32` 生成并保持不变。用于签名设备和会话归属，以及派生 remote-cc 会话授权的签名密钥。轮换它不会撤销用户的工作台登录                     |
 | `MIRROR_PUBLIC_ORIGIN`   | 从公网访问时是 | 空                   | 用户实际打开的来源，例如 `https://browser.example.com`。来自其他来源的 WebSocket 会被拒绝；单点登录的回调地址也由它推出。只在本机试用时可以留空                                                      |
 | `MIRROR_START_URL`       |       否       | `https://claude.ai/` | 新会话打开的第一个页面                                                                                                                                                                               |
+| `MIRROR_IDLE_GRACE_MS`   |       否       | 900000（15 分钟）    | 一个会话的所有设备都断开后，过多久关闭它的远程页面，单位毫秒（`session/resource-policy.ts`）；必须是不小于 0 的整数，否则网关拒绝启动                                                                |
 | `SERVER_IMAGE`           |       否       | 本地构建             | 预构建的服务端镜像，例如 `ghcr.io/notdesigned/remote-claude-browser-server:latest`                                                                                                                   |
 | `TZ`                     |       否       | `Etc/UTC`            | 服务进程和日志的时区。无效的 IANA 时区名会让容器启动失败。浏览器的时区不看它，而是跟随各自的出口（见[使用 · 当地时间](usage.md#当地时间)）。`docker compose exec server date -Is` 显示服务进程的时间 |
 

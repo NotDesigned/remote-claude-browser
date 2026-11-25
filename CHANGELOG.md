@@ -8,7 +8,7 @@
 
 ### 新增
 
-无
+- `MIRROR_IDLE_GRACE_MS`：一个会话的所有设备都断开后，过多久关闭它的远程页面（毫秒，默认 15 分钟）。见 [docs/configuration.md](docs/configuration.md)。
 
 ### 变更
 
