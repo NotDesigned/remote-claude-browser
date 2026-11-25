@@ -100,7 +100,9 @@ describe("remote-cc flows", () => {
     expect(() => flows.poll(client.deviceCode)).toThrow(/过期/);
     const host = flows.start("host", "server-la");
     expect(() => flows.approve(host.userCode, alice, issue)).toThrow(/管理员/);
-    flows.deny(host.userCode);
+    expect(() => flows.deny(host.userCode, alice)).toThrow(/管理员/);
+    expect(flows.poll(host.deviceCode)).toEqual({ status: "pending" });
+    flows.deny(host.userCode, admin);
     expect(() => flows.poll(host.deviceCode)).toThrow(/拒绝/);
     const late = flows.start("client", "x");
     time += 11 * 60_000;
@@ -124,7 +126,7 @@ describe("remote-cc flows", () => {
     expect(() => flows.start("client", "laptop", { ip: "198.51.100.1" })).toThrow(/过多/);
     flows.start("client", "laptop", { ip: "198.51.100.2" });
     // An answered request no longer holds a slot, even before its machine polls.
-    flows.deny(first.userCode);
+    flows.deny(first.userCode, alice);
     flows.start("client", "laptop", { ip: "198.51.100.1" });
     expect(() => flows.start("client", "laptop", { ip: "198.51.100.1" })).toThrow(/过多/);
     // Many addresses still meet the overall cap (7 pending so far).

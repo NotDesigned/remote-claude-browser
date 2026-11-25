@@ -30,6 +30,8 @@ export const VIEWER_REPLACED_CODE = 4009;
 /** How often each viewer connection is pinged, which also keeps a tunnel from idling it out. */
 export const KEEPALIVE_MS = 30_000;
 const KEEPALIVE_MISSES = 2;
+/** Retired connection keys remembered per session. */
+export const MAX_RETIRED_KEYS_PER_SESSION = 256;
 
 export interface DeltaChaosOptions {
   /** Probability per (delta message, viewer). Production never supplies this option. */
@@ -273,6 +275,11 @@ export interface WsServer {
   closeViewer(viewer: ViewerConn, code?: number, reason?: string): boolean;
   /** Keep this viewer and revoke the others of its session. Other SIDs are never affected. */
   replaceSession(sessionId: string, keepViewer: ViewerConn): void;
+  /**
+   * Drop the connection-ordering state of a session that has ended for good (its identifier
+   * released), once no viewer of it remains. Returns whether it was forgotten.
+   */
+  forgetSession(sessionId: string): boolean;
   close(): Promise<void>;
 }
 
@@ -300,10 +307,20 @@ export function createWsServer(opts: WsServerOpts): WsServer {
   const activeKeys = new Map<string, string>();
   const retiredKeys = new Map<string, Set<string>>();
   let nextUpgrade = 0;
+  function* liveViewerSessions(): Iterable<string | undefined> {
+    for (const viewer of viewerSockets.keys()) yield viewerSessions.get(viewer);
+  }
   const retireKey = (sid: string, key: string | undefined) => {
     if (!key) return;
     const keys = retiredKeys.get(sid) ?? new Set<string>();
+    keys.delete(key);
     keys.add(key);
+    // Every reload retires a key. Replaced pages stop on their terminal close code, so only
+    // the most recent ones can still be racing a reconnect; the oldest are dropped first.
+    for (const oldest of keys) {
+      if (keys.size <= MAX_RETIRED_KEYS_PER_SESSION) break;
+      keys.delete(oldest);
+    }
     retiredKeys.set(sid, keys);
   };
   const notifyDisconnection = (viewer: ViewerConn, sid: string | undefined) => {
@@ -545,6 +562,15 @@ export function createWsServer(opts: WsServerOpts): WsServer {
         if (code === undefined) socket.terminate();
         else socket.close(code, "session ended");
       }
+    },
+    forgetSession(sessionId) {
+      for (const viewerSessionId of liveViewerSessions()) {
+        if (viewerSessionId === sessionId) return false;
+      }
+      latestUpgrade.delete(sessionId);
+      activeKeys.delete(sessionId);
+      retiredKeys.delete(sessionId);
+      return true;
     },
     close: async () => {
       opts.server.off("upgrade", onUpgrade);

@@ -123,8 +123,16 @@ export function createDeviceFlows(options: { now?: () => number } = {}) {
       record.token = issue(user.id, record.kind, record.name).token;
       record.status = "approved";
     },
-    deny(userCode: string) {
-      pending(userCode).status = "denied";
+    /**
+     * Requests are not addressed to a user: whoever reads the code off the requesting machine
+     * answers it. Denying is held to the same rule as approving, so only an administrator can
+     * answer (and so cancel) an exit host's request.
+     */
+    deny(userCode: string, user: { role: string }) {
+      const record = pending(userCode);
+      if (record.kind === "host" && user.role !== "admin")
+        throw new RemoteCcError(403, "REMOTE_CC_HOST_ADMIN", "只有管理员可以处理出口主机的请求");
+      record.status = "denied";
     },
     /** What the requesting machine learns; an approved token is handed out exactly once. */
     poll(deviceCode: string): { status: "pending" } | { status: "approved"; token: string } {

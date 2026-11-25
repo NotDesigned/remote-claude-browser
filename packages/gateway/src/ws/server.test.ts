@@ -12,7 +12,13 @@ import type { AddressInfo } from "node:net";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TabHub } from "../hub/tabhub";
-import { createWsServer, Fanout, KEEPALIVE_MS, type WsServer } from "./server";
+import {
+  createWsServer,
+  Fanout,
+  KEEPALIVE_MS,
+  MAX_RETIRED_KEYS_PER_SESSION,
+  type WsServer,
+} from "./server";
 import { STALL_BYTES, ViewerConn, type ViewerSocket } from "./viewerconn";
 import { createRoleManager } from "./roles";
 
@@ -556,6 +562,48 @@ describe("replacing a workspace viewer", () => {
       await test.close();
     }
   });
+  it("forgets a released session's ordering state once none of its viewers remain", async () => {
+    const test = await replacementHarness();
+    try {
+      const ended = await test.connect("a", "ended-page");
+      const other = await test.connect("b", "other-page");
+      expect(test.wsServer.forgetSession("a")).toBe(false); // still connected
+      test.wsServer.closeSession("a", 4010);
+      await ended.closed;
+      expect(test.wsServer.forgetSession("a")).toBe(true);
+      expect(test.wsServer.forgetSession("b")).toBe(false);
+      // A reused identifier starts clean: the old page's key no longer counts as retired.
+      const reused = await test.connect("a", "ended-page");
+      await vi.waitFor(() =>
+        expect(reused.messages.find((message) => message.t === "hello")).toBeDefined(),
+      );
+      expect(reused.socket.readyState).toBe(WebSocket.OPEN);
+      expect(other.socket.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      await test.close();
+    }
+  });
+
+  it("bounds the retired keys it remembers per session", async () => {
+    const test = await replacementHarness();
+    try {
+      let page = await test.connect("a", "page-0");
+      for (let index = 1; index <= MAX_RETIRED_KEYS_PER_SESSION + 1; index++) {
+        const next = await test.connect("a", `page-${index}`);
+        await page.closed;
+        page = next;
+      }
+      // The newest retired keys are still refused; the oldest one has been dropped.
+      const recent = await test.connect("a", `page-${MAX_RETIRED_KEYS_PER_SESSION}`);
+      expect(await recent.closed).toEqual({ code: 4009, reason: "replaced" });
+      const oldest = await test.connect("a", "page-0");
+      await vi.waitFor(() =>
+        expect(oldest.messages.find((message) => message.t === "hello")).toBeDefined(),
+      );
+    } finally {
+      await test.close();
+    }
+  }, 30_000);
   it.each([false, true])(
     "keeps the page key after a recoverable close (already offline: %s)",
     async (offline) => {
