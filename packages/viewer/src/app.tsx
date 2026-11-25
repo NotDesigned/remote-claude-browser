@@ -1172,6 +1172,7 @@ export function App() {
       </ShellBar>
       {userPanelOpen && user?.role === "admin" && (
         <AdminPanel
+          key={user.id}
           current={user}
           onClose={() => setUserPanelOpen(false)}
           onChanged={refreshUser}
@@ -1179,6 +1180,7 @@ export function App() {
       )}
       {accountPanelOpen && user && (
         <AccountPanel
+          key={user.id}
           user={user}
           currentSid={clientSession?.sid}
           onClose={() => setAccountPanelOpen(false)}

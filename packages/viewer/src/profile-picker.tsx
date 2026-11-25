@@ -380,14 +380,14 @@ export function ProfilePicker(props: {
       input.current!.scrollIntoView({ block: "nearest" });
     }
   }, [creating, editing, accounts === null]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (platformEditor) {
       platformSelect.current!.focus();
       platformSelect.current!.scrollIntoView({ block: "nearest" });
     }
   }, [platformEditor?.account.id]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (proxyEditor) {
       proxySelect.current!.focus();
       proxySelect.current!.scrollIntoView({ block: "nearest" });
