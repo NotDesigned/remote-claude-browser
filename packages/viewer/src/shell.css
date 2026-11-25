@@ -397,6 +397,22 @@ body {
   font-size: 14px;
   line-height: 1.5;
 }
+.remote-cc-login-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  pointer-events: auto;
+}
+.remote-cc-login-banner button {
+  min-height: 32px;
+  padding: 0 12px;
+  color: var(--ink);
+  background: var(--surface, var(--bg));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
 .shell-banner[data-tone="warn"] {
   background: var(--warn-bg);
   color: var(--warn-ink);

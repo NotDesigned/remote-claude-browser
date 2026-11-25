@@ -98,6 +98,8 @@ function ProfileCard(props: {
   const exitRequired = !account.proxyId || account.proxyName === null;
   const signedIn = account.signedIn === true;
   const [menuOpen, setMenuOpen] = useState(false);
+  const [remoteCcOpen, setRemoteCcOpen] = useState(false);
+  const [remoteCcCopied, setRemoteCcCopied] = useState(false);
   const [exitCheck, setExitCheck] = useState<{
     scope: "browser" | "node";
     health: ExitHealth;
@@ -192,6 +194,34 @@ function ProfileCard(props: {
           <ExitHealthDetails health={exitCheck.health} />
         </div>
       )}
+      {remoteCcOpen && (
+        <div class="profile-exit-health profile-remote-cc">
+          <p>
+            在 remote-cc 中使用（项目目录里运行一次，之后只需 <code>remote-cc</code>）
+          </p>
+          <code class="profile-remote-cc-command">remote-cc rcb use {account.id}</code>
+          <p class="profile-remote-cc-note">
+            首次需要 <code>remote-cc login --rcb {account.id}</code>
+            ，登录页会在这个配置的浏览器里打开。
+          </p>
+          <div class="profile-remote-cc-actions">
+            <button
+              type="button"
+              onClick={() =>
+                void navigator.clipboard
+                  .writeText(`remote-cc rcb use ${account.id}`)
+                  .then(() => setRemoteCcCopied(true))
+                  .catch(() => {})
+              }
+            >
+              {remoteCcCopied ? "已复制" : "复制命令"}
+            </button>
+            <button type="button" onClick={() => setRemoteCcOpen(false)}>
+              收起
+            </button>
+          </div>
+        </div>
+      )}
       <button
         type="button"
         class="profile-menu-toggle"
@@ -224,6 +254,18 @@ function ProfileCard(props: {
           </button>
           <button type="button" disabled={props.disabled} onClick={() => action(props.onDetails)}>
             查看详情
+          </button>
+          <button
+            type="button"
+            disabled={props.disabled || exitRequired}
+            onClick={() =>
+              action(() => {
+                setRemoteCcCopied(false);
+                setRemoteCcOpen(true);
+              })
+            }
+          >
+            在 remote-cc 中使用
           </button>
           <button
             type="button"

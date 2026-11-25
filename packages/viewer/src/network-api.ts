@@ -153,3 +153,51 @@ export const cpaApi = {
   removeKey: (id: string, keyId: string) =>
     request<{ ok: true }>(`${instancePath(id)}/keys/${encodeURIComponent(keyId)}`, "DELETE"),
 };
+
+export type RemoteCcTokenKind = "client" | "host";
+export interface RemoteCcToken {
+  id: string;
+  userId: string;
+  kind: RemoteCcTokenKind;
+  name: string;
+  prefix: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+}
+export interface RemoteCcDeviceRequest {
+  userCode: string;
+  kind: RemoteCcTokenKind;
+  name: string;
+  createdAt: number;
+  expiresAt: number;
+  /** Where the machine that started the request connected from, so the user can recognise it. */
+  ip: string | null;
+  userAgent: string | null;
+}
+export interface RemoteCcLogin {
+  id: string;
+  profileId: string;
+  profileName: string | null;
+  status: "waiting" | "opened" | "done";
+  createdAt: number;
+  /** The connected computer (client token) that started this sign-in. */
+  tokenName: string | null;
+}
+const devicePath = (code: string) => `/api/remote-cc/devices/${encodeURIComponent(code)}`;
+export const remoteCcApi = {
+  tokens: () => request<{ tokens: RemoteCcToken[] }>("/api/remote-cc/tokens"),
+  removeToken: (id: string) =>
+    request<void>(`/api/remote-cc/tokens/${encodeURIComponent(id)}`, "DELETE"),
+  device: (code: string) => request<{ request: RemoteCcDeviceRequest }>(devicePath(code)),
+  approve: (code: string) => request<{ ok: true }>(`${devicePath(code)}/approve`, "POST"),
+  deny: (code: string) => request<{ ok: true }>(`${devicePath(code)}/deny`, "POST"),
+  logins: () => request<{ logins: RemoteCcLogin[] }>("/api/remote-cc/logins"),
+  cancelLogin: (id: string) =>
+    request<void>(`/api/remote-cc/logins/${encodeURIComponent(id)}`, "DELETE"),
+  /** Opens the sign-in page in this browser session (a new tab). */
+  openLogin: (sid: string, id: string) =>
+    request<{ ok: true }>(
+      `/api/client/session/${encodeURIComponent(sid)}/remote-cc/logins/${encodeURIComponent(id)}/open`,
+      "POST",
+    ),
+};

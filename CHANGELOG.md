@@ -4,6 +4,9 @@ Notable changes to Remote Browser are recorded here.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-25
+
+- Link [remote-cc](https://github.com/NotDesigned/remote-cc): `remote-cc --rcb PROFILE` runs Claude Code as a browser configuration's Claude account, with all its traffic through that configuration's proxy node and its exit time zone. Computers and egress hosts connect by approval in 代理与 API → remote-cc (egress hosts need an administrator); sessions get short-lived grants that only approved egress hosts can redeem for node configurations. Claude Code sign-ins open from a banner in the configuration's browser and the code returns to the terminal by itself. See docs/remote-cc.md.
 - Choose a browser configuration before opening a new workspace, with remembered Claude emails, login status and unavailable accounts. Reopen the picker from the workspace menu to switch or return to the current session. Existing sessions still resume on reload.
 - Rename configurations, choose a default per user, and delete non-default configurations directly in the picker.
 - Classify mirrored videos after their source nodes are built, and clear unavailable notices once playback recovers.

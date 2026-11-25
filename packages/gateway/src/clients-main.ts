@@ -4,7 +4,7 @@
  */
 import { encodeMsg, type Down, type Up, type ServerStatusMsg } from "@mirror/protocol";
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -41,6 +41,12 @@ import { createCpaRuntime } from "./cpa/runtime";
 import { registerCpaManagementRoutes } from "./cpa/management";
 import { createCpaBrokerDriver } from "./cpa/broker-client";
 import { registerCpaRoutes, registerCpaInferenceRoutes } from "./cpa/routes";
+import { createRemoteCcStore, RemoteCcError } from "./remote-cc/store";
+import {
+  accountChangeRevokesRemoteCc,
+  registerRemoteCcRoutes,
+  REMOTE_CC_TOKEN_PATH,
+} from "./remote-cc/routes";
 import { createAccountDisplay, type AccountDisplay } from "./browser/display";
 import { createClaudeLoginTracker, profileSignedIn } from "./claude/signed-in";
 import {
@@ -335,6 +341,7 @@ export async function startClientGateway(
     if (restored.failures.length)
       console.error("Some CPA exits could not be restored:", restored.failures);
   }
+  const remoteCcStore = await createRemoteCcStore({ file: join(profile, "remote-cc.sqlite") });
   const app = Fastify({ logger: false, trustProxy: trustedProxies() });
   registerSecurityHeaders(app);
   const key = process.env.MIRROR_AUTH_SECRET
@@ -412,6 +419,8 @@ export async function startClientGateway(
     if (stopping) return reply.code(503).send({ error: "服务正在重启，请稍后重试" });
     if (e2e) return;
     if (cpaRuntime && request.url.startsWith("/v1/")) return;
+    // Bearer-token API for remote-cc; the routes authenticate every request themselves.
+    if (request.url.startsWith(REMOTE_CC_TOKEN_PATH)) return;
     if (
       mailbox.enabled &&
       request.method === "POST" &&
@@ -437,6 +446,79 @@ export async function startClientGateway(
     registerCpaManagementRoutes(app, { runtime: cpaRuntime, currentUser });
     registerCpaInferenceRoutes(app, cpaRuntime);
   }
+  /** The profile's live browsers, by session. */
+  const profileRuntimes = (profileId: string) =>
+    [...runtimes].filter(([sid, runtime]) => runtime.account.id === profileId && !closing.has(sid));
+  const remoteCc = registerRemoteCcRoutes(app, {
+    store: remoteCcStore,
+    secret: createHmac("sha256", key).update("remote-cc").digest(),
+    publicOrigin: (request) =>
+      process.env.MIRROR_PUBLIC_ORIGIN?.replace(/\/+$/, "") ||
+      `${request.headers["x-forwarded-proto"] === "http" ? "http" : "https"}://${request.headers.host}`,
+    checkExit: (user, nodeId) => checkProxy(user, nodeId),
+    saveExit: (profileId, metadata) => accountStore.setExitMetadata(profileId, metadata),
+    browser: {
+      // Prefer a session someone is viewing, so the user sees the sign-in tab.
+      async open(profileId, url) {
+        const live = profileRuntimes(profileId);
+        const online = onlineSessions();
+        const [sid, runtime] = live.find(([sid]) => online.has(sid)) ?? live[0] ?? [];
+        if (!sid || !runtime) return undefined;
+        await runtime.tabs.handle({
+          t: "nav",
+          tab: runtime.tabs.activeTabId ?? "",
+          action: "newtab",
+          url,
+        });
+        return sid;
+      },
+      // The user may finish the sign-in in any of the profile's sessions.
+      pageUrls(profileId) {
+        return profileRuntimes(profileId).flatMap(([, runtime]) =>
+          [...runtime.targets.values()]
+            .filter((target) => target.type === "page")
+            .map((target) => runtime.metadata.get(target.targetId)?.url)
+            .filter((url): url is string => typeof url === "string"),
+        );
+      },
+      // Callback pages strip the code from their address but show it as text.
+      async pageTexts(profileId, origin) {
+        const texts: string[] = [];
+        for (const [, runtime] of profileRuntimes(profileId))
+          for (const target of runtime.targets.values()) {
+            const url = runtime.metadata.get(target.targetId)?.url;
+            if (target.type !== "page" || !url || !url.startsWith(origin + "/")) continue;
+            const response = (await Promise.race([
+              runtime.browser.send(target.sessionId, "Runtime.evaluate", {
+                expression: "document.body ? document.body.innerText : ''",
+                returnByValue: true,
+              }),
+              new Promise<never>((_resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error("page text timed out")), 1500);
+                timeout.unref?.();
+              }),
+            ]).catch(() => undefined)) as { result?: { value?: unknown } } | undefined;
+            const value = response?.result?.value;
+            if (typeof value === "string") texts.push(value.slice(0, 20_000));
+          }
+        return texts;
+      },
+      isLive: (sid) => runtimes.has(sid) && !closing.has(sid),
+    },
+    currentUser,
+    getUser: (id) => userStore.getUser(id),
+    profilesFor: (user) =>
+      userStore
+        .listOwnedProfiles(user.id)
+        .map((id) => accountStore.get(id))
+        .filter((record) => record !== undefined),
+    nodesFor: (user) =>
+      proxyCatalog.listNodes(user).map((node) => ({
+        id: node.id,
+        name: node.name,
+        proxy: proxyCatalog.getNodeConfig(user, node.id),
+      })),
+  });
   await registerViewerStatic(app);
   const requireSession = (sid?: string) => async (request: FastifyRequest, reply: FastifyReply) => {
     const requested = sid ?? (request.params as { sid?: string })?.sid;
@@ -2015,6 +2097,42 @@ export async function startClientGateway(
       }
     },
   );
+  app.post<{ Params: { sid: string; id: string } }>(
+    "/api/client/session/:sid/remote-cc/logins/:id/open",
+    { preHandler: requireSession(), bodyLimit: 1024 },
+    async (request, reply) => {
+      try {
+        return await accountLifecycle.run(async () => {
+          const owner = currentOwner(request.raw);
+          if (!owner || !ownsSession(request.raw, request.params.sid))
+            throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个会话不属于当前客户端");
+          const user = requireLiveOwner(request.raw, owner);
+          const sid = request.params.sid;
+          const runtime = await ensureRuntimeLocked(sid);
+          requireLiveOwner(request.raw, owner);
+          await remoteCc.openLoginIn(
+            user.id,
+            request.params.id,
+            clientSessions.profileOf(sid),
+            sid,
+            async (login) => {
+              await runtime.tabs.handle({
+                t: "nav",
+                tab: runtime.tabs.activeTabId ?? "",
+                action: "newtab",
+                url: login.url,
+              });
+            },
+          );
+          return { ok: true };
+        });
+      } catch (error) {
+        if (error instanceof RemoteCcError)
+          return reply.code(error.statusCode).send({ error: error.code, message: error.message });
+        return clientError(reply, error);
+      }
+    },
+  );
   app.post<{ Params: { sid: string }; Body: { theme?: unknown; systemDark?: unknown } }>(
     "/s/:sid/theme",
     { preHandler: requireSession(), bodyLimit: 1024 },
@@ -2101,6 +2219,8 @@ export async function startClientGateway(
     onPasswordChanged: (userId) => {
       for (const connection of viewers.values())
         if (connection.userId === userId) ws.closeSession(connection.sid);
+      // A new password also cuts off every computer and egress host connected as this user.
+      remoteCcStore.removeUser(userId);
     },
   });
   app.get("/api/users", async (request, reply) => {
@@ -2232,6 +2352,8 @@ export async function startClientGateway(
           for (const connection of viewers.values())
             if (connection.userId === user.id) ws.closeSession(connection.sid);
         }
+        if (accountChangeRevokesRemoteCc(previous, user, request.body?.password !== undefined))
+          remoteCcStore.removeUser(user.id);
         if (!user.enabled)
           await closeUserWorkspacesLocked(user.id, userStore.listOwnedProfiles(user.id));
         return user;
@@ -2252,6 +2374,7 @@ export async function startClientGateway(
       });
       // Catalog invalidation owns the same lifecycle lock; run its cleanup between sections.
       await cpaRuntime?.removeUser(id);
+      remoteCcStore.removeUser(id);
       await proxyCatalog.removePrivateSources(id);
       await accountLifecycle.run(async () => {
         for (const profileId of userStore.listOwnedProfiles(id)) {
@@ -2453,6 +2576,8 @@ export async function startClientGateway(
         for (const account of [...accounts.values()]) await closeAccount(account);
         userStore.close();
         cpaStore?.close();
+        remoteCc.close();
+        remoteCcStore.close();
         mailbox.close();
         if (managedProfile) {
           await rm(profile, { recursive: true, force: true });

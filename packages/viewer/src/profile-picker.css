@@ -40,6 +40,31 @@
 .profile-exit-health p {
   margin: 4px 0;
 }
+.profile-remote-cc-command {
+  display: block;
+  margin: 6px 0;
+  padding: 8px 10px;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+.profile-remote-cc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.profile-remote-cc-actions button {
+  min-height: 36px;
+  padding: 0 12px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
 .profile-proxy-editor {
   display: grid;
   gap: 12px;

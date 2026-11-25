@@ -2,8 +2,11 @@ import { useDialog } from "./dialog";
 import type { FrontendUser } from "./users";
 import { ProxyPanel } from "./network-proxy-panel";
 import { CpaPanel } from "./network-cpa-panel";
+import { RemoteCcPanel } from "./network-remote-cc-panel";
 import type { CpaBrowserAuthorization } from "./network-api";
 import "./network-panel.css";
+
+export type NetworkTab = "proxies" | "cpa" | "remote-cc";
 
 export function NetworkPanel({
   user,
@@ -16,17 +19,20 @@ export function NetworkPanel({
   onChooseBrowser,
   onClose,
   error,
+  remoteCcCode,
 }: {
   user: FrontendUser;
   browserProxyId?: string | null;
   browserSessionId?: string;
   open: boolean;
-  tab: "proxies" | "cpa";
-  onTabChange(tab: "proxies" | "cpa"): void;
+  tab: NetworkTab;
+  onTabChange(tab: NetworkTab): void;
   onOpenBrowser(): void;
   onChooseBrowser(authorization: CpaBrowserAuthorization): void;
   onClose(): void;
   error: string | null;
+  /** A remote-cc connection code from an approval link. */
+  remoteCcCode?: string | null;
 }) {
   const panel = useDialog(open, onClose);
   return (
@@ -47,7 +53,7 @@ export function NetworkPanel({
         <header class="network-panel-heading">
           <div>
             <h2 id="network-panel-title">代理与 API</h2>
-            <p class="network-muted">管理可用节点和独立 CPA 授权。</p>
+            <p class="network-muted">管理可用节点、独立 CPA 授权和 remote-cc 连接。</p>
           </div>
           <button
             type="button"
@@ -82,6 +88,15 @@ export function NetworkPanel({
           >
             CPA 授权与 Key
           </button>
+          <button
+            id="network-remote-cc-tab"
+            type="button"
+            role="tab"
+            aria-selected={tab === "remote-cc"}
+            onClick={() => onTabChange("remote-cc")}
+          >
+            remote-cc
+          </button>
         </div>
         <div role="tabpanel" aria-labelledby="network-proxies-tab" hidden={tab !== "proxies"}>
           <ProxyPanel user={user} />
@@ -94,6 +109,14 @@ export function NetworkPanel({
             browserSessionId={browserSessionId}
             onOpenBrowser={onOpenBrowser}
             onChooseBrowser={onChooseBrowser}
+          />
+        </div>
+        <div role="tabpanel" aria-labelledby="network-remote-cc-tab" hidden={tab !== "remote-cc"}>
+          <RemoteCcPanel
+            open={open && tab === "remote-cc"}
+            user={user}
+            initialCode={remoteCcCode}
+            browserSessionId={browserSessionId}
           />
         </div>
       </section>

@@ -25,6 +25,19 @@ export function userSessionToken(request: IncomingMessage): string | undefined {
   return undefined;
 }
 
+/** A remote-cc approval code carried across the login page. */
+const REMOTE_CC_COOKIE = "mirror-remote-cc";
+const REMOTE_CC_CODE = /^[A-Z2-9]{4}-?[A-Z2-9]{4}$/;
+function remoteCcCode(request: IncomingMessage): string | undefined {
+  for (const part of request.headers.cookie?.split(";") ?? []) {
+    const index = part.indexOf("=");
+    if (index < 0 || part.slice(0, index).trim() !== REMOTE_CC_COOKIE) continue;
+    const value = part.slice(index + 1).trim();
+    return REMOTE_CC_CODE.test(value) ? value : undefined;
+  }
+  return undefined;
+}
+
 export function createUserGate(options: {
   store: UserStore;
   publicOrigin?: string;
@@ -57,10 +70,19 @@ export function createUserGate(options: {
       )
     )
       return reply.code(403).send({ error: "请求来源不受信任" });
-    const path = new URL(request.raw.url ?? "/", "http://local").pathname;
+    const url = new URL(request.raw.url ?? "/", "http://local");
+    const path = url.pathname;
     if (["/gate", "/healthz", "/logout"].includes(path) || currentUser(request.raw)) return;
-    if ((request.method === "GET" || request.method === "HEAD") && !/^\/(api|s)\//.test(path))
+    if ((request.method === "GET" || request.method === "HEAD") && !/^\/(api|s)\//.test(path)) {
+      // A remote-cc approval link survives the login (?remote-cc=CODE).
+      const code = url.searchParams.get("remote-cc");
+      if (code && REMOTE_CC_CODE.test(code))
+        reply.header(
+          "set-cookie",
+          `${REMOTE_CC_COOKIE}=${code}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
+        );
       return reply.code(302).header("location", "/gate").send();
+    }
     return reply
       .code(401)
       .header("cache-control", "no-store")
@@ -123,10 +145,17 @@ export function createUserGate(options: {
               `${USER_COOKIE}=${session.token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(USER_SESSION_TTL_MS / 1000)}`,
               ...(options.cookiesOnSuccess?.(request.raw) ?? []),
             ]);
+            const pending = remoteCcCode(request.raw);
+            if (pending)
+              reply.header("set-cookie", [
+                `${USER_COOKIE}=${session.token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(USER_SESSION_TTL_MS / 1000)}`,
+                ...(options.cookiesOnSuccess?.(request.raw) ?? []),
+                `${REMOTE_CC_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+              ]);
             return reply
               .code(303)
               .header("cache-control", "no-store")
-              .header("location", "/?new=1")
+              .header("location", pending ? `/?new=1&remote-cc=${pending}` : "/?new=1")
               .send();
           } finally {
             attempt.pending = false;

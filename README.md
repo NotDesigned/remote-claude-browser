@@ -21,6 +21,7 @@
 - **视频和语音**：页面里的视频通过 WebRTC 播放，声音和麦克风都在你自己的设备上
 - **断线恢复**：刷新或重连后回到原来的会话，页面崩溃会自动恢复
 - **代理与可选 API**：导入共享或私有代理来源，为每个浏览器配置明确选择出口；每个用户可以管理独立的 CPA 实例、Claude Code OAuth 凭据和外部 API Key，见 [CPA 部署](docs/cpa.md)
+- **remote-cc 联动**：[remote-cc](https://github.com/NotDesigned/remote-cc) 可以按浏览器配置运行 Claude Code：在工作台里批准电脑和出口主机，Claude Code 登录在该配置的浏览器里一键完成，会话使用该配置的 Claude 账号，全部流量经该配置的节点出去，出口和时区与网页版一致，见 [remote-cc 联动](docs/remote-cc.md)
 
 ## 部署结构
 

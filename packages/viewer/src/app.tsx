@@ -7,8 +7,9 @@ import { AccountPanel } from "./account-panel";
 import { AccountOnboarding } from "./account-onboarding";
 import { MailboxPanel } from "./mailbox-panel";
 import type { WorkspaceDestination, WorkspaceMenuProps } from "./workspace-menu";
-import { NetworkPanel } from "./network-panel";
+import { NetworkPanel, type NetworkTab } from "./network-panel";
 import { cpaApi, type CpaBrowserAuthorization } from "./network-api";
+import { takeRemoteCcLink, RemoteCcLoginBanner } from "./network-remote-cc-panel";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import type { AgentMsg, Down, eventWithTime, TabId } from "@mirror/protocol";
 import { EventType, IncrementalSource } from "@mirror/protocol";
@@ -129,12 +130,15 @@ export function App() {
   const endControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(false);
   const fixturePath = useRef(new URLSearchParams(window.location.search).get("fixture")).current;
+  // remote-cc approval links: /?remote-cc=ABCD-EFGH opens the remote-cc tab with the code filled in.
+  const [remoteCcLink] = useState(() => takeRemoteCcLink(window.location.href));
+  const remoteCcLinkOpened = useRef(false);
   const [clientSession, setClientSession] = useState<ClientSession | null>(null);
   const [accountList, setAccountList] = useState<AccountList | null>(null);
   const [user, setUser] = useState<FrontendUser | null>(null);
   const [userPanelOpen, setUserPanelOpen] = useState(false);
   const [networkPanelOpen, setNetworkPanelOpen] = useState(false);
-  const [networkTab, setNetworkTab] = useState<"proxies" | "cpa">("proxies");
+  const [networkTab, setNetworkTab] = useState<NetworkTab>("proxies");
   const [oauthCallbacks, setOAuthCallbacks] = useState<Record<string, "submitted" | "error">>({});
   const [accountPanelOpen, setAccountPanelOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
@@ -292,6 +296,16 @@ export function App() {
       });
   }, [fixturePath]);
   useEffect(refreshUser, [refreshUser]);
+  useEffect(() => {
+    if (!user || !remoteCcLink || remoteCcLinkOpened.current) return;
+    remoteCcLinkOpened.current = true;
+    // Read the address again: the session may have rewritten it since the link was opened.
+    const current = takeRemoteCcLink(window.location.href);
+    if (current) window.history.replaceState(window.history.state, "", current.url);
+    if (!remoteCcLink.code) return;
+    setNetworkTab("remote-cc");
+    setNetworkPanelOpen(true);
+  }, [user, remoteCcLink]);
   const signOut = async () => {
     if (logoutPending) return;
     setLogoutPending(true);
@@ -1117,6 +1131,7 @@ export function App() {
       {user && (
         <NetworkPanel
           key={user.id}
+          remoteCcCode={remoteCcLink?.code || null}
           open={networkPanelOpen}
           error={userError}
           tab={networkTab}
@@ -1145,6 +1160,9 @@ export function App() {
         send={(message) => socketRef.current?.send(message)}
       />
       <div id="shell-banners">
+        {user && currentProfile && clientSession && clientPhase === "ready" && (
+          <RemoteCcLoginBanner sid={clientSession.sid} profileId={currentProfile.id} />
+        )}
         {activeTab !== null && pageStates[activeTab] && pageStates[activeTab] !== "ready" && (
           <p id="page-recovery-state" class="shell-banner" data-tone="warn" role="alert">
             {pageStates[activeTab] === "recovering"
