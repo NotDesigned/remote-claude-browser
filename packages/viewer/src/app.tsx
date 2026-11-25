@@ -6,7 +6,8 @@ import { AdminPanel } from "./admin-panel";
 import { AccountPanel } from "./account-panel";
 import { MailboxPanel } from "./mailbox-panel";
 import type { WorkspaceDestination, WorkspaceMenuProps } from "./workspace-menu";
-import { NetworkPanel, type NetworkTab } from "./network-panel";
+import { NetworkPanel } from "./network-panel";
+import { usePanels } from "./app/panels";
 import { cpaApi, isCpaBrowserAuthorization, type CpaBrowserAuthorization } from "./network-api";
 import { readJson, removeItem, removePrefixed, sessionArea, writeJson } from "./storage";
 import { viewStorage } from "./app/view-storage";
@@ -148,13 +149,8 @@ export function App() {
   const [clientSession, setClientSession] = useState<ClientSession | null>(null);
   const [accountList, setAccountList] = useState<AccountList | null>(null);
   const [user, setUser] = useState<FrontendUser | null>(null);
-  const [userPanelOpen, setUserPanelOpen] = useState(false);
-  const [networkPanelOpen, setNetworkPanelOpen] = useState(false);
-  const [networkTab, setNetworkTab] = useState<NetworkTab>("proxies");
+  const [panels, dispatchPanels] = usePanels();
   const [oauthCallbacks, setOAuthCallbacks] = useState<Record<string, "submitted" | "error">>({});
-  const [accountPanelOpen, setAccountPanelOpen] = useState(false);
-  const [mailboxOpen, setMailboxOpen] = useState(false);
-  const [profilePickerOpen, setProfilePickerOpen] = useState(false);
   const [browserAuthorization, setBrowserAuthorization] = useState<CpaBrowserAuthorization | null>(
     () => readJson(sessionArea(), CPA_BROWSER_KEY, isCpaBrowserAuthorization),
   );
@@ -308,7 +304,7 @@ export function App() {
         }
         loadedUserId.current = loaded.id;
         setUser(loaded);
-        if (loaded.role !== "admin") setUserPanelOpen(false);
+        if (loaded.role !== "admin") dispatchPanels({ type: "close", panel: "admin" });
       })
       .catch(() => {
         // The menu keeps the user it last showed.
@@ -322,8 +318,7 @@ export function App() {
     const current = takeRemoteCcLink(window.location.href);
     if (current) window.history.replaceState(window.history.state, "", current.url);
     if (!remoteCcLink.code) return;
-    setNetworkTab("remote-cc");
-    setNetworkPanelOpen(true);
+    dispatchPanels({ type: "open", panel: "network", networkTab: "remote-cc" });
   }, [user, remoteCcLink]);
   useEffect(() => {
     if (!user || !accountLinked || accountLinkedShown.current) return;
@@ -335,7 +330,7 @@ export function App() {
       "",
       `${url.pathname}${url.search}${url.hash}`,
     );
-    setAccountPanelOpen(true);
+    dispatchPanels({ type: "open", panel: "account" });
   }, [user, accountLinked]);
   const signOut = async () => {
     if (logoutPending) return;
@@ -424,7 +419,7 @@ export function App() {
     setClientError(null);
     setClientSession(null);
     setClientPhase("closed");
-    setProfilePickerOpen(false);
+    dispatchPanels({ type: "picker", open: false });
     window.history.replaceState(window.history.state, "", "/?closed=1");
   };
   // Observe existing sessions after a disconnect; only an explicit action opens a new one.
@@ -1022,24 +1017,15 @@ export function App() {
     setLogoutError(null);
     setAuthorizationError(null);
     if (destination === "profiles") forgetBrowserAuthorization();
-    setUserPanelOpen(destination === "admin");
-    setAccountPanelOpen(destination === "account");
-    setMailboxOpen(destination === "mailboxes");
-    // 「网络与接入」 opens on the tab last used; other callers name the tab.
-    setNetworkPanelOpen(
-      destination === "network" || destination === "proxies" || destination === "cpa",
-    );
-    if (destination === "proxies" || destination === "cpa") setNetworkTab(destination);
-    if (destination === "profiles") {
-      if (clientPhase === "ready") setProfilePickerOpen(true);
-      else if (clientPhase !== "picking") window.location.assign("/?new=1");
-    }
+    dispatchPanels({ type: "navigate", destination, pickerAvailable: clientPhase === "ready" });
+    if (destination === "profiles" && clientPhase !== "ready" && clientPhase !== "picking")
+      window.location.assign("/?new=1");
   };
   useEffect(() => {
     if (
       !browserAuthorization ||
       browserAuthorization.userId !== user?.id ||
-      profilePickerOpen ||
+      panels.pickerOpen ||
       clientPhase !== "ready" ||
       !clientSession
     )
@@ -1052,12 +1038,11 @@ export function App() {
       .catch((error: Error) => {
         if (!mountedRef.current) return;
         setAuthorizationError(error.message);
-        setNetworkTab("cpa");
-        setNetworkPanelOpen(true);
+        dispatchPanels({ type: "open", panel: "network", networkTab: "cpa" });
       });
   }, [
     browserAuthorization,
-    profilePickerOpen,
+    panels.pickerOpen,
     clientPhase,
     clientSession?.sid,
     accountList,
@@ -1078,7 +1063,7 @@ export function App() {
       id="shell"
       data-theme={theme}
       data-connection={connection}
-      data-picking={clientPhase === "picking" || profilePickerOpen}
+      data-picking={clientPhase === "picking" || panels.pickerOpen}
     >
       <ShellBar
         viewMode={(activeTab !== null && modeByTab[activeTab]) || viewMode}
@@ -1128,20 +1113,20 @@ export function App() {
           send={(message) => socketRef.current?.send(message)}
         />
       </ShellBar>
-      {userPanelOpen && user?.role === "admin" && (
+      {panels.open === "admin" && user?.role === "admin" && (
         <AdminPanel
           key={user.id}
           current={user}
-          onClose={() => setUserPanelOpen(false)}
+          onClose={() => dispatchPanels({ type: "close", panel: "admin" })}
           onChanged={refreshUser}
         />
       )}
-      {accountPanelOpen && user && (
+      {panels.open === "account" && user && (
         <AccountPanel
           key={user.id}
           user={user}
           currentSid={clientSession?.sid}
-          onClose={() => setAccountPanelOpen(false)}
+          onClose={() => dispatchPanels({ type: "close", panel: "account" })}
           initialNotice={accountLinked ? "单点登录账号已绑定。" : undefined}
           onSessionEnded={(sid) => {
             refreshAccounts();
@@ -1149,29 +1134,30 @@ export function App() {
           }}
         />
       )}
-      {mailboxOpen && user && <MailboxPanel key={user.id} onClose={() => setMailboxOpen(false)} />}
+      {panels.open === "mailboxes" && user && (
+        <MailboxPanel
+          key={user.id}
+          onClose={() => dispatchPanels({ type: "close", panel: "mailboxes" })}
+        />
+      )}
       {user && (
         <NetworkPanel
           key={user.id}
           remoteCcCode={remoteCcLink?.code || null}
-          open={networkPanelOpen}
+          open={panels.open === "network"}
           error={authorizationError}
-          tab={networkTab}
-          onTabChange={setNetworkTab}
+          tab={panels.networkTab}
+          onTabChange={(tab) => dispatchPanels({ type: "network-tab", tab })}
           user={user}
           browserSessionId={clientPhase === "ready" ? clientSession?.sid : undefined}
           browserProxyId={clientPhase === "ready" ? currentProfile?.proxyId : undefined}
-          onClose={() => setNetworkPanelOpen(false)}
-          onOpenBrowser={() => {
-            setNetworkPanelOpen(false);
-            setProfilePickerOpen(false);
-          }}
+          onClose={() => dispatchPanels({ type: "close", panel: "network" })}
+          onOpenBrowser={() => dispatchPanels({ type: "browser-opened" })}
           onChooseBrowser={(authorization) => {
             setAuthorizationError(null);
             writeJson(sessionArea(), CPA_BROWSER_KEY, authorization);
             setBrowserAuthorization(authorization);
-            setNetworkPanelOpen(false);
-            setProfilePickerOpen(clientPhase === "ready");
+            dispatchPanels({ type: "browser-chosen", pickerAvailable: clientPhase === "ready" });
           }}
         />
       )}
@@ -1253,32 +1239,31 @@ export function App() {
             )}
           </section>
         )}
-      {(clientPhase === "picking" || profilePickerOpen) && (
+      {(clientPhase === "picking" || panels.pickerOpen) && (
         <ProfilePicker
           requiredProxyId={browserAuthorization?.proxyId}
-          proxyManagerOpen={networkPanelOpen && networkTab === "proxies"}
+          proxyManagerOpen={panels.open === "network" && panels.networkTab === "proxies"}
           onPick={async (id) => {
-            if (!profilePickerOpen) {
+            if (!panels.pickerOpen) {
               setPickedAccount(id);
               return;
             }
             if (id === accountList?.current) {
-              setProfilePickerOpen(false);
+              dispatchPanels({ type: "picker", open: false });
               return;
             }
             await switchAccount(clientSession!.sid, id);
             window.location.reload();
           }}
-          current={profilePickerOpen ? accountList?.current : null}
+          current={panels.pickerOpen ? accountList?.current : null}
           onBack={
-            profilePickerOpen || browserAuthorization
+            panels.pickerOpen || browserAuthorization
               ? () => {
-                  setProfilePickerOpen(false);
+                  dispatchPanels({
+                    type: "picker-back",
+                    authorizationWaiting: browserAuthorization !== null,
+                  });
                   forgetBrowserAuthorization();
-                  if (browserAuthorization) {
-                    setNetworkTab("cpa");
-                    setNetworkPanelOpen(true);
-                  }
                 }
               : undefined
           }
