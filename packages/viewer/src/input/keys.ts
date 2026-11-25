@@ -37,6 +37,11 @@ export interface KeyCaptureOptions {
   onPasteFiles?(files: File[]): void;
   onEditableFocus?(focus: EditableFocus | null): void;
   onKeyDown?(event: KeyboardEvent, focus: EditableFocus | null): void;
+  /**
+   * A key pressed outside any mirror field, before it is forwarded raw. True when focus was moved
+   * to where the remote page types (see focus-follow.ts), so the key lands there instead.
+   */
+  routeTyping?(event: KeyboardEvent): boolean;
 }
 
 /** Explicitly local browser/mirror shortcuts. They never reach the remote page. */
@@ -193,6 +198,17 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
     const keyId = event.code || event.key;
     if (kind === "up" && composingKeyUps.delete(keyId)) return;
     const host = editingHost(event.target);
+    // Before the IME placeholder bail-out: a Process key here means an IME is starting with no
+    // field to compose in. Moving focus now lets the composition, or the letter, land in one.
+    if (
+      kind === "down" &&
+      !event.isComposing &&
+      !(isElement(event.target) && isTextEditable(event.target)) &&
+      options.routeTyping?.(event) === true
+    ) {
+      composingKeyUps.add(keyId);
+      return;
+    }
     if (
       event.isComposing ||
       event.key === "Process" ||

@@ -1,0 +1,163 @@
+/**
+ * Keeps the viewer's keyboard focus on the field the remote page is typing into.
+ *
+ * Page mode forwards a key pressed outside any mirror field as a raw key, which the remote browser
+ * delivers to whatever it has focused. The two sides drift whenever the remote page moves focus by
+ * itself (autofocus, focus returning to a composer after sending), and then the local IME never
+ * engages: with nothing editable focused here, pinyin keys go out as Latin letters.
+ *
+ * The agent reports the remote focus (REMOTE_FOCUS_EVENT). On a desktop, while the mirror has
+ * focus and the person is not busy with something local, the matching mirror field is focused;
+ * when the mirror has no such node (a field it does not show), a hidden textarea takes the keys
+ * and the IME, and sends committed text. Touch devices are only followed when a key arrives:
+ * focusing a field there would pop up the soft keyboard unasked.
+ */
+import type { RemoteFocus } from "@mirror/protocol";
+import { deepActiveElement, isTextEditable } from "./keys";
+import { isElement } from "./pointer";
+
+export interface HiddenKeyboard {
+  focus(point?: { clientX: number; clientY: number }): void;
+  hasFocus(): boolean;
+  blur(): void;
+}
+
+export interface FocusFollowOptions {
+  rootDoc: Document;
+  getNode(id: number): Node | null;
+  /** Created on first use, in the document around the replay. */
+  hiddenKeyboard(): HiddenKeyboard | null;
+  /** Desktop only: focus follows the remote page by itself. */
+  followsByItself: boolean;
+  /** Puts focus back into the mirror once the remote page has no field focused. */
+  focusMirror(): void;
+}
+
+export interface FocusFollower {
+  remoteFocus(focus: RemoteFocus): void;
+  /** Install the local-activity watchers in one replay document; returns their cleanup. */
+  watch(doc: Document): () => void;
+  /**
+   * For a key pressed outside any mirror field: when the remote page has a field focused, move
+   * focus there (or to the hidden textarea) so that this key and the IME land in it. True when
+   * the key must not also go out as a raw key.
+   */
+  routeTyping(event: KeyboardEvent): boolean;
+  current(): RemoteFocus | null;
+}
+
+/** Desktop: a fine pointer and no touch-first browser. Mirrors the phone checks in app.tsx. */
+export function followsFocusByItself(view: Window | null): boolean {
+  if (view === null) return false;
+  if (/\bMobi|Android|iPhone|iPad/.test(view.navigator?.userAgent ?? "")) return false;
+  try {
+    if (view.matchMedia?.("(pointer: coarse)").matches) return false;
+  } catch {
+    // An old browser without media queries is a desktop one.
+  }
+  return true;
+}
+
+/** A printable key a field would insert, or the IME's placeholder; never a shortcut. */
+export function typesText(event: KeyboardEvent): boolean {
+  if (event.ctrlKey || event.metaKey || event.altKey) return false;
+  if (event.key === "Process" || event.keyCode === 229) return true;
+  return [...event.key].length === 1;
+}
+
+export function createFocusFollower(options: FocusFollowOptions): FocusFollower {
+  let remote: RemoteFocus | null = null;
+  let composing = false;
+  let pointerHeld = false;
+  const docs = new Set<Document>();
+
+  const mirrorField = (focus: RemoteFocus): Element | null => {
+    if (focus.id < 0) return null;
+    const node = options.getNode(focus.id);
+    return isElement(node) && node.isConnected && isTextEditable(node) ? node : null;
+  };
+  const hiddenHasFocus = () => options.hiddenKeyboard()?.hasFocus() === true;
+  /** Someone selecting text here to copy it would lose the selection to a focus change. */
+  const selectingLocally = () => {
+    for (const doc of docs) {
+      const selection = doc.getSelection?.();
+      if (!selection || selection.isCollapsed || selection.rangeCount === 0) continue;
+      const anchor = selection.anchorNode;
+      const owner = anchor?.nodeType === 1 ? (anchor as Element) : anchor?.parentElement;
+      if (!owner || !isTextEditable(owner.closest?.("input,textarea,[contenteditable]") ?? null))
+        return true;
+    }
+    return false;
+  };
+  const busy = () => composing || pointerHeld || selectingLocally();
+
+  const moveTo = (focus: RemoteFocus): boolean => {
+    const field = mirrorField(focus);
+    if (field !== null) {
+      if (deepActiveElement(options.rootDoc) !== field) {
+        (field as HTMLElement).focus({ preventScroll: true });
+        // An editing host takes focus with its caret at the start; typing continues at the end.
+        if ((field as HTMLElement).isContentEditable) {
+          const selection = field.ownerDocument.getSelection?.();
+          selection?.selectAllChildren(field);
+          selection?.collapseToEnd();
+        }
+      }
+      return true;
+    }
+    const hidden = options.hiddenKeyboard();
+    if (hidden === null) return false;
+    if (!hidden.hasFocus()) hidden.focus();
+    return true;
+  };
+
+  return {
+    current: () => remote,
+    remoteFocus(focus) {
+      remote = focus;
+      const ours = options.rootDoc.hasFocus() || hiddenHasFocus();
+      if (!focus.editable) {
+        // Letters typed into the hidden textarea now would become text the page has nowhere to
+        // put, and its single-key shortcuts would stop working.
+        if (hiddenHasFocus()) {
+          options.hiddenKeyboard()?.blur();
+          options.focusMirror();
+        }
+        return;
+      }
+      if (!options.followsByItself || !ours || busy()) return;
+      moveTo(focus);
+    },
+    routeTyping(event) {
+      if (remote === null || !remote.editable || !typesText(event) || composing) return false;
+      if (isElement(event.target) && isTextEditable(event.target)) return false;
+      return moveTo(remote);
+    },
+    watch(doc) {
+      docs.add(doc);
+      const start = () => (composing = true);
+      const end = () => (composing = false);
+      const down = () => (pointerHeld = true);
+      const up = () => (pointerHeld = false);
+      // A release outside this document never reaches it; a move without a button tells.
+      const move = (event: PointerEvent) => {
+        if (event.buttons === 0) pointerHeld = false;
+      };
+      doc.addEventListener("compositionstart", start, true);
+      doc.addEventListener("compositionend", end, true);
+      doc.addEventListener("pointerdown", down, true);
+      doc.addEventListener("pointerup", up, true);
+      doc.addEventListener("pointercancel", up, true);
+      doc.addEventListener("pointermove", move, true);
+      return () => {
+        docs.delete(doc);
+        doc.removeEventListener("compositionstart", start, true);
+        doc.removeEventListener("compositionend", end, true);
+        doc.removeEventListener("pointerdown", down, true);
+        doc.removeEventListener("pointerup", up, true);
+        doc.removeEventListener("pointercancel", up, true);
+        doc.removeEventListener("pointermove", move, true);
+      };
+    },
+  };
+}

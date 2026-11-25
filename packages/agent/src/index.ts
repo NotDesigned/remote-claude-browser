@@ -38,6 +38,7 @@ import { record } from "@rrweb/record";
 import { addFontsToSnapshot, installFontCapture } from "./font-capture";
 import { captureDocumentContext } from "./document-context";
 import { startWorkingMarkCapture } from "./working-mark";
+import { startFocusReport } from "./focus-report";
 import {
   broadcastStitchSync,
   createReturnedDocumentCheck,
@@ -176,6 +177,18 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
           },
         )
       : undefined;
+  // A same-origin child is recorded, and its focus reported, by the document above it.
+  const focusReport =
+    isTop || isCrossOriginChild()
+      ? startFocusReport({
+          window,
+          isTop,
+          getId: (node) => record.mirror.getId(node),
+          emit: (tag, focus) => {
+            if (recordReadiness.isStarted()) record.addCustomEvent(tag, focus);
+          },
+        })
+      : null;
   const canvasRtc = legacyBridge
     ? installCanvasRtcRecord({
         constructors: rtcConstructors,
@@ -263,6 +276,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
               addFontsToSnapshot(event.data.node, fontCapture.css());
               recordReadiness.markStarted();
               resetWorkingMark?.();
+              focusReport?.snapshotTaken();
               // A new snapshot here means new frames in the replay, so what is inside them has to
               // report after it. A request passed down before a delayed snapshot came too early.
               if (!isTop) broadcastStitchSync();

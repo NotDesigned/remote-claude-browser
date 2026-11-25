@@ -5,6 +5,9 @@ import { attachDefaultActionContainment, opensLocalTextMenu } from "./default-ac
 import { attachFileCapture } from "./files";
 import { createForwardedInputClock } from "./forwarded";
 import { attachKeyCapture, deepActiveElement, isEchoField, type EditableFocus } from "./keys";
+import { createFocusFollower, followsFocusByItself } from "./focus-follow";
+import { attachPxKeyboard, type PxKeyboard } from "../px-ime";
+import { onRemoteFocus } from "../remote-focus";
 import { attachPointerCapture, createTouchMouseFilter, type SendInput } from "./pointer";
 import { attachTouchCapture } from "./touch";
 import { attachWheelCapture } from "./wheel";
@@ -38,6 +41,33 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
   const watchedFrames = new Map<HTMLIFrameElement, () => void>();
   const frameDocuments = new Map<HTMLIFrameElement, { doc: Document; root: HTMLElement | null }>();
   let active = true;
+  const replayFrame = options.replayer.iframe;
+  let hidden: PxKeyboard | null = null;
+  const follower = createFocusFollower({
+    rootDoc,
+    getNode: (id) => options.replayer.getMirror().getNode(id),
+    followsByItself: followsFocusByItself(replayFrame.ownerDocument?.defaultView ?? null),
+    hiddenKeyboard: () => {
+      if (!active) return null;
+      if (hidden === null) {
+        hidden = attachPxKeyboard({
+          canvas: replayFrame,
+          tab: options.tab,
+          send: options.send,
+          ownerKeys: false,
+        });
+        const focus = hidden.focus;
+        // The IME's candidate window opens at the textarea: keep it over the page.
+        hidden.focus = (point) => {
+          const rect = replayFrame.getBoundingClientRect();
+          focus(point ?? { clientX: rect.left + 16, clientY: rect.top + rect.height / 2 });
+        };
+      }
+      return hidden;
+    },
+    focusMirror: () => replayFrame.focus?.({ preventScroll: true }),
+  });
+  const stopFollowing = onRemoteFocus(options.replayer, follower.remoteFocus);
 
   const attachDocument = (doc: Document): void => {
     if (!active || documents.has(doc)) return;
@@ -117,6 +147,7 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
         },
       }),
       change.dispose,
+      follower.watch(doc),
       attachKeyCapture({
         doc,
         focusRoot: rootDoc,
@@ -128,6 +159,7 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
         committedContenteditable: true,
         onEditableFocus: options.onEditableFocus,
         onKeyDown: options.onKeyDown,
+        routeTyping: follower.routeTyping,
         onPasteFiles:
           options.onPasteFiles === undefined
             ? undefined
@@ -225,6 +257,9 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
   attachDocument(rootDoc);
   return () => {
     active = false;
+    stopFollowing();
+    hidden?.dispose();
+    hidden = null;
     for (const cleanup of watchedFrames.values()) cleanup();
     watchedFrames.clear();
     frameDocuments.clear();

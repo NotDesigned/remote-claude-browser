@@ -1,13 +1,25 @@
 import { Mod, type TabId, type Up } from "@mirror/protocol";
 
 interface PxKeyboardOptions {
-  canvas: HTMLCanvasElement;
+  /** The surface the textarea serves: the pixel canvas, or the page mode's replay iframe. */
+  canvas: HTMLElement;
   tab: TabId;
   send(message: Up): void;
+  /**
+   * Pixel mode: keys pressed on the canvas itself are handled here and focusing the canvas
+   * focuses the textarea. Page mode has its own key capture inside the replay and sets false.
+   */
+  ownerKeys?: boolean;
 }
 
-/** A real local editor gives the OS an IME caret while the remote page owns the actual text. */
+export type PxKeyboard = ReturnType<typeof attachPxKeyboard>;
+
+/**
+ * A real local editor gives the OS an IME caret while the remote page owns the actual text.
+ * Page mode uses it too, when the remote page has a field focused that the mirror cannot focus.
+ */
 export function attachPxKeyboard(options: PxKeyboardOptions) {
+  const ownerKeys = options.ownerKeys ?? true;
   const input = options.canvas.ownerDocument.createElement("textarea");
   input.className = "px-ime-input";
   input.tabIndex = -1;
@@ -180,8 +192,8 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
     commit(text);
   };
 
-  options.canvas.addEventListener("focus", onCanvasFocus);
-  const keyboardTargets: HTMLElement[] = [options.canvas, input];
+  if (ownerKeys) options.canvas.addEventListener("focus", onCanvasFocus);
+  const keyboardTargets: HTMLElement[] = ownerKeys ? [options.canvas, input] : [input];
   for (const target of keyboardTargets) {
     target.addEventListener("keydown", onKeyDown);
     target.addEventListener("keyup", onKeyUp);
@@ -194,6 +206,8 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
   input.addEventListener("paste", onPaste);
   return {
     focus,
+    hasFocus: () => input.ownerDocument.activeElement === input,
+    blur: () => input.blur(),
     dispose() {
       disposed = true;
       options.canvas.removeEventListener("focus", onCanvasFocus);
