@@ -46,6 +46,8 @@ printf '%s\n' "$timezone" > "$root/etc/timezone"
 # This also covers native browser navigation, history and links outside the workbench URL bar.
 mkdir -p "$root/etc/chromium/policies/managed"
 printf '%s\n' '{"URLBlocklist":["file://*","filesystem:*","javascript:*"],"URLAllowlist":["about:blank"]}' > "$root/etc/chromium/policies/managed/workspace.json"
+# Nobody can click Chromium's own bubbles in the picture, such as "Save password?": turn them off.
+cp "$(dirname "$0")/browser-policies.json" "$root/etc/chromium/policies/managed/remote-browser.json"
 # Chromium needs Secure DNS to use ECH. Both DoH and fallback DNS stay on this profile's exit.
 if [ -n "${MIRROR_BROWSER_DOH_TEMPLATE:-}" ]; then
   printf '{"DnsOverHttpsMode":"automatic","DnsOverHttpsTemplates":"%s"}\n' \

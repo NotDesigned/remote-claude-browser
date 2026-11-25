@@ -101,10 +101,15 @@ COPY --from=mihomo /opt/mihomo/mihomo /usr/local/bin/mihomo
 COPY deploy/mihomo.LICENSE /usr/share/doc/mihomo/LICENSE
 COPY deploy/server-entrypoint.sh deploy/server-egress.sh deploy/egress-tunnel.sh \
     deploy/egress-proxy.mjs deploy/timezone.mjs /opt/remote-browser/
-COPY deploy/profile-network.sh deploy/browser-filesystem.sh /opt/remote-browser/
+COPY deploy/profile-network.sh deploy/browser-filesystem.sh deploy/browser-policies.json \
+    /opt/remote-browser/
+# Chromium and AliasMode both read /etc/chromium/policies. browser-filesystem.sh gives each isolated
+# browser its own copy of the policies; this one is for browsers started without it.
 RUN chmod 0755 /opt/remote-browser/server-entrypoint.sh /opt/remote-browser/server-egress.sh \
     /opt/remote-browser/egress-tunnel.sh /opt/remote-browser/profile-network.sh \
-    /opt/remote-browser/browser-filesystem.sh
+    /opt/remote-browser/browser-filesystem.sh \
+    && install -D -m 0644 /opt/remote-browser/browser-policies.json \
+        /etc/chromium/policies/managed/remote-browser.json
 
 # Without a UTF-8 locale Chromium can't name a download in Chinese, which comes out as "download", and
 # xwininfo can't print such a window's title, which picture mode finds the window by.

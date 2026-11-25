@@ -1,0 +1,10 @@
+{
+  "PasswordManagerEnabled": false,
+  "PasswordLeakDetectionEnabled": false,
+  "AutofillAddressEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "TranslateEnabled": false,
+  "DefaultNotificationsSetting": 2,
+  "DefaultBrowserSettingEnabled": false,
+  "BrowserSignin": 0
+}

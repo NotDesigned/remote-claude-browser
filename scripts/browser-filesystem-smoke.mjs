@@ -147,6 +147,7 @@ async function inside() {
       DnsOverHttpsMode: 'automatic',
       DnsOverHttpsTemplates: 'https://dns.example.test/dns-query',
     });
+    assert.equal(JSON.parse(fs.readFileSync('/etc/chromium/policies/managed/remote-browser.json', 'utf8')).PasswordManagerEnabled, false);
     for (const path of ['/data/profile/users.sqlite', '/data/profile/other/private.txt', '/app/package.json', '/run/remote-browser', '/proc/1/root/data/profile/users.sqlite'])
       assert.equal(fs.existsSync(path), false, path);
     for (const pid of fs.readdirSync('/proc').filter(p => /^\\d+$/.test(p)))
