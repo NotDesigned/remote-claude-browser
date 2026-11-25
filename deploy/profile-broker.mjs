@@ -2,7 +2,7 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { access, mkdir, chmod, chown, writeFile, rm, readFile } from "node:fs/promises";
+import { access, mkdir, chmod, chown, writeFile, rm, readFile, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
 import { createServer as httpServer, request as httpRequest } from "node:http";
 import { createServer as socketServer, connect as connectSocket } from "node:net";
@@ -412,6 +412,9 @@ export async function startProfileBroker({
     await closingBrowsers.get(id);
     if (browsers.has(id)) throw new Error("Browser already running");
     const options = validateBrowserOptions(body.options);
+    // browser-filesystem.sh enforces this on the open directory; this only fails early and clearly.
+    const real = await realpath(options.userDataDir).catch(() => options.userDataDir);
+    if (real !== options.userDataDir) throw new Error("Profile path must not contain symlinks");
     if (options.engine === "aliasmode")
       await access(ALIASMODE_PATH, constants.X_OK).catch(() => {
         throw Object.assign(new Error("此浏览器所需的 AliasMode 内核未安装，请联系管理员"), {
@@ -707,6 +710,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     createConfig: createMihomoConfig,
     secret,
     validateNode: validateProxy,
+    // Tests point the exit's address and time zone lookup at a local fixture.
+    geoUrl: process.env.MIRROR_EXIT_LOOKUP_URL || undefined,
   });
   for (const signal of ["SIGTERM", "SIGINT"])
     process.once(signal, async () => {

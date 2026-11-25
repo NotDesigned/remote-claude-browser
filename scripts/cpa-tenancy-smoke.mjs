@@ -10,6 +10,9 @@ import {
   containerSpec,
   initializerSpec,
   createCpaBroker,
+  instanceConfig,
+  instanceNetwork,
+  singleFileTar,
 } from "../deploy/cpa-broker.mjs";
 if (process.env.CPA_TENANCY_SMOKE !== "1")
   throw new Error("Set CPA_TENANCY_SMOKE=1 to create disposable test CPA instances");
@@ -23,6 +26,7 @@ const options = {
 };
 const containers = [],
   volumes = [];
+const networks = [];
 let networkCreated = false;
 const certificates = await mkdtemp(join(tmpdir(), "cpa-timezone-"));
 execFileSync(
@@ -91,6 +95,17 @@ try {
   await docker("POST", "/networks/create", { Name: network, Internal: true });
   networkCreated = true;
   for (let i = 0; i < ids.length; i++) {
+    // Each instance gets its own internal network, labelled as the broker creates it.
+    await docker("POST", "/networks/create", {
+      Name: instanceNetwork(ids[i]),
+      Internal: true,
+      Labels: {
+        "dev.remote-browser.cpa-managed": "true",
+        "dev.remote-browser.cpa-instance": ids[i],
+        "dev.remote-browser.cpa-deployment": network,
+      },
+    });
+    networks.push(instanceNetwork(ids[i]));
     const spec = containerSpec(ids[i], options);
     if (i === 0) {
       spec.Cmd = ["node", "-e", fixtureRunner];
@@ -100,12 +115,14 @@ try {
       await docker("POST", "/volumes/create", { Name: mount.Source, Labels: spec.Labels });
       volumes.push(mount.Source);
     }
-    const init = await docker(
-      "POST",
-      "/containers/create",
-      initializerSpec(ids[i], options, values[i]),
-    );
+    const init = await docker("POST", "/containers/create", initializerSpec(ids[i], options));
     try {
+      await docker(
+        "PUT",
+        `/containers/${init.Id}/archive?path=/config`,
+        singleFileTar(".initial-config.yaml", JSON.stringify(instanceConfig(values[i])) + "\n"),
+        "application/x-tar",
+      );
       await docker("POST", `/containers/${init.Id}/start`);
       const state = await docker("POST", `/containers/${init.Id}/wait?condition=not-running`);
       assert.equal(state.StatusCode, 0, "initializer failed");
@@ -297,6 +314,9 @@ try {
       assert.equal(response.statusCode, 200, "managed CPA removal failed");
       const container = containers.shift();
       await assert.rejects(() => docker("GET", `/containers/${container}/json`), { status: 404 });
+      await assert.rejects(() => docker("GET", `/networks/${instanceNetwork(id)}`), {
+        status: 404,
+      });
       for (const volume of volumes.splice(0, 3))
         await assert.rejects(() => docker("GET", `/volumes/${volume}`), { status: 404 });
       if (containers.length) assert.ok(await docker("GET", `/containers/${containers[0]}/json`));
@@ -329,6 +349,7 @@ try {
   const removedVolumes = await Promise.allSettled(
     volumes.map((name) => docker("DELETE", `/volumes/${name}`)),
   );
+  for (const name of networks) await docker("DELETE", `/networks/${name}`).catch(() => {});
   if (networkCreated) await docker("DELETE", `/networks/${network}`);
   if ([...removedContainers, ...removedVolumes].some((result) => result.status === "rejected"))
     throw new Error("Disposable CPA cleanup failed");

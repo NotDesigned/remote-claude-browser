@@ -19,7 +19,7 @@
 | `MIRROR_PUBLIC_ORIGIN`   |  是  | 无                   | 用户实际打开的来源，例如 `https://browser.example.com`；本机试用写 `http://127.0.0.1:3010`（`scripts/bootstrap.sh` 默认写入它）。来自其他来源的 WebSocket 和表单提交会被拒绝；单点登录的回调地址也由它推出。没有设置时网关拒绝启动（`production-guard.ts`） |
 | `MIRROR_START_URL`       |  否  | `https://claude.ai/` | 新会话打开的第一个页面                                                                                                                                                                                                                                      |
 | `MIRROR_IDLE_GRACE_MS`   |  否  | 900000（15 分钟）    | 一个会话的所有设备都断开后，过多久关闭它的远程页面，单位毫秒（`session/resource-policy.ts`）；必须是不小于 0 的整数，否则网关拒绝启动                                                                                                                       |
-| `SERVER_IMAGE`           |  否  | 本地构建             | 预构建的服务端镜像，例如 `ghcr.io/notdesigned/remote-claude-browser-server:latest`                                                                                                                                                                          |
+| `SERVER_IMAGE`           |  否  | 本地构建             | 预构建的服务端镜像，例如 `ghcr.io/notdesigned/remote-claude-browser-server:v0.5.0`；和两个 CPA 镜像用同一个版本标签，见[部署 · 安装](deployment.md#安装)                                                                                                                                                                          |
 | `TZ`                     |  否  | `Etc/UTC`            | 服务进程和日志的时区。无效的 IANA 时区名会让容器启动失败。浏览器的时区不看它，而是跟随各自的出口（见[使用 · 当地时间](usage.md#当地时间)）。`docker compose exec server date -Is` 显示服务进程的时间                                                        |
 
 ### 网络和入口
@@ -48,9 +48,10 @@
 
 | 变量                      | 默认                                     | 说明                                 |
 | ------------------------- | ---------------------------------------- | ------------------------------------ |
-| `CPA_RUNTIME_NETWORK`     | `remote-browser-cpa-runtime`             | CPA 实例所在的 Docker 内部网络的名称 |
-| `CPA_BROKER_ENGINE_IMAGE` | `remote-claude-browser-cpa:local`        | CPA 实例使用的镜像                   |
-| `CPA_BROKER_IMAGE`        | `remote-claude-browser-cpa-broker:local` | `cpa-broker` 的镜像                  |
+| `CPA_RUNTIME_NETWORK`     | `remote-browser-cpa-runtime`             | 服务端和 `cpa-broker` 之间的 Docker 内部网络的名称。`cpa-broker` 只管理属于这个网络的 CPA 实例，同一台 Docker 主机上的每个部署要用不同的名称 |
+| `CPA_INSTANCE_SUBNETS`    | `10.254.0.0/16`                          | 每个 CPA 实例自己的内部网络从这里分一个 `/28`，前缀长度 8 到 26。和宿主机已有的网络冲突时修改，见[部署 · CPA](deployment.md#cpa) |
+| `CPA_BROKER_ENGINE_IMAGE` | `remote-claude-browser-cpa:local`        | CPA 实例使用的镜像，例如 `ghcr.io/notdesigned/remote-claude-browser-cpa:v0.5.0`；换了镜像，`cpa-broker` 会重建各个实例 |
+| `CPA_BROKER_IMAGE`        | `remote-claude-browser-cpa-broker:local` | `cpa-broker` 的镜像，例如 `ghcr.io/notdesigned/remote-claude-browser-cpa-broker:v0.5.0` |
 
 ### 部署级出站代理（`compose.proxy.yml`）
 
@@ -124,7 +125,7 @@
 | `SERVER_PORT`             |  否  | `3010`      | 和服务端 `.env` 里的 `SERVER_PORT` 一致                                          |
 | `HTTP_BIND`               |  否  | `0.0.0.0`   | Caddy 发布的地址                                                                 |
 | `HTTP_PORT`, `HTTPS_PORT` |  否  | `80`, `443` | Caddy 发布的端口，宿主机已经占用时修改                                           |
-| `TUNNEL_IMAGE`            |  否  | 本地构建    | 预构建的隧道镜像，例如 `ghcr.io/notdesigned/remote-claude-browser-tunnel:latest` |
+| `TUNNEL_IMAGE`            |  否  | 本地构建    | 预构建的隧道镜像，例如 `ghcr.io/notdesigned/remote-claude-browser-tunnel:v0.5.0` |
 | `TUNNEL_PORT`             |  否  | `3010`      | 只用 `compose.tunnel-only.yml` 时，隧道发布到入口机回环地址上的端口              |
 
 ## 写在 compose 文件里的变量
@@ -140,6 +141,19 @@
 | `MIRROR_USERS_DB`                         | `<数据目录>/profile/users.sqlite` | 用户数据库的路径；收件箱数据库放在它旁边。放在持久、受保护的存储上，并纳入[备份](deployment.md#备份)                                                               |
 | `MIRROR_ACCOUNTS_DIR`                     | `<数据目录>/profile-accounts`     | 默认配置以外的浏览器配置存放 Chrome 资料的目录                                                                                                                     |
 | `MIRROR_PROXY_SUBSCRIPTION_ALLOW_PRIVATE` | 不设置                            | `1` 允许订阅地址指向私有、回环、链路本地和其他保留地址。不设置时，导入和刷新订阅只连接公网地址（`net/public-target.ts`），任何登录的用户都不能借订阅让网关访问内网 |
+| `MIRROR_CANVAS_SNAPSHOTS` | `0`（`compose.yml`）             | 页面模式是否采样 canvas。`0` 不采样；不设置时按 `MIRROR_CANVAS_SITES` 采样 |
+| `MIRROR_FFMPEG`          | `ffmpeg`                          | 画面模式截取显示用的 ffmpeg 程序 |
+| `MIRROR_DIAGNOSTIC_STDERR` | 不设置                          | `1` 把 Chromium 的标准错误输出写进服务端日志，排查浏览器启动失败时用；日志会变多 |
+| `MIRROR_EXIT_LOOKUP_URL` | `https://ipwho.is/`               | 检查出口时，经节点查询出口地址和时区的服务。测试用来指向本地的替身，一般不用改 |
+
+`cpa-broker` 服务的 `environment` 里还有这些，一般不用改：
+
+| 变量                     | 默认                     | 说明 |
+| ------------------------ | ------------------------ | ---- |
+| `CPA_BROKER_EGRESS`      | `server:8781`            | CPA 实例的 `runtime-egress:8781` 转到的地址：服务端在 `CPA_RUNTIME_NETWORK` 上经认证的代理 |
+| `CPA_BROKER_SOCKET_GID`  | `10001`                  | `cpa-broker` 的 Unix socket 所属的组，也就是网关进程的组 |
+| `CPA_DOCKER_SOCKET`      | `/var/run/docker.sock`   | 容器内 Docker socket 的路径 |
+| `CPA_BROKER_CONTAINER`   | 容器的主机名             | `cpa-broker` 自己的容器，它要把这个容器接入各个实例的网络。只在给它设置了 `hostname` 时才需要 |
 
 Compose 把密码和签名密钥作为容器的环境变量传入。能查看容器或控制 Docker 守护进程的人都能读到它们，而控制 Docker 守护进程本身就等于宿主机的 root。
 
@@ -161,3 +175,4 @@ Compose 把密码和签名密钥作为容器的环境变量传入。能查看容
 | `VIEWER_PORT`          | Vite 的端口，默认 `5173`                                                         |
 | `VITE_GATEWAY_URL`     | Vite 转发到的网关地址，默认 `http://127.0.0.1:3000`                              |
 | `MIRROR_E2E`           | `1` 打开测试专用的路由，并关闭全部访问控制；`NODE_ENV=production` 时网关拒绝启动 |
+| `BROWSER_CDP_URL`      | 连接一个已经在运行的 Chrome 的调试地址，代替网关自己启动的浏览器；这时只能用默认配置，画面模式不能直接截取显示 |

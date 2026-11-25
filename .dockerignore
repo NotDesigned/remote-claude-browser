@@ -17,3 +17,12 @@ requirement.md
 .cache
 local
 .vite
+# Not part of any image: agent worktrees, examples, artwork, host-side files and other Compose files.
+.claude
+examples
+assets
+deploy/apparmor
+deploy/windows
+compose*.yml
+.prettier*
+deploy/remote

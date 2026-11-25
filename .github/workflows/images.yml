@@ -1,6 +1,7 @@
 name: Images
 
-# Publishes the prebuilt images once CI has passed on main, and for version tags.
+# Publishes the prebuilt images deployers pull: after CI passes on main (the commit CI tested), and
+# for version tags whose commit CI has passed on. Each image gets a signed build provenance.
 on:
   workflow_run:
     workflows: [CI]
@@ -11,41 +12,103 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
+  gate:
+    if: github.event_name == 'push' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+      short: ${{ steps.commit.outputs.short }}
+    steps:
+      - id: commit
+        name: Pick the commit and require a passing CI run on it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [[ $GITHUB_EVENT_NAME == workflow_run ]]; then
+            sha=$RUN_SHA
+          else
+            sha=$GITHUB_SHA
+            passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$sha&status=success&per_page=1" --jq '.total_count')
+            if [[ $passed == 0 ]]; then
+              echo "::error::CI has not passed on $sha. Run CI on this commit (or push it to main), then push the tag again."
+              exit 1
+            fi
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha::7}" >> "$GITHUB_OUTPUT"
+
   publish:
-    if: github.event_name == 'push' || github.event.workflow_run.conclusion == 'success'
+    needs: gate
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     strategy:
+      fail-fast: false
       matrix:
         include:
           - name: server
             context: .
             file: deploy/Dockerfile.server
+            target: ""
+          - name: cpa-broker
+            context: .
+            file: deploy/Dockerfile.cpa-broker
+            target: ""
+          - name: cpa
+            context: .
+            file: deploy/Dockerfile.cpa
+            target: cpa
           - name: tunnel
             context: client
             file: client/Dockerfile
+            target: ""
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+      - id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/remote-claude-browser-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
-          images: ghcr.io/${{ github.repository_owner }}/remote-claude-browser-${{ matrix.name }}
+          images: ${{ steps.image.outputs.name }}
           tags: |
             type=raw,value=latest,enable=${{ github.event_name == 'workflow_run' }}
-            type=sha,format=short,enable=${{ github.event_name == 'workflow_run' }}
+            type=raw,value=sha-${{ needs.gate.outputs.short }}
+            type=semver,pattern={{version}},enable=${{ github.event_name == 'push' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ github.event_name == 'push' }}
             type=ref,event=tag
-      - uses: docker/build-push-action@v6
+          labels: |
+            org.opencontainers.image.revision=${{ needs.gate.outputs.sha }}
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

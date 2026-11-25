@@ -49,16 +49,17 @@ flowchart LR
 
 ## 快速开始
 
-需要 Linux、Docker 和 Compose v2，服务端建议至少 2 核 4 GB 内存。完整要求见[部署](docs/deployment.md)。
+需要 Linux、Docker Engine 27.3 以上和 Compose v2，服务端建议至少 2 核 4 GB 内存。完整要求见[部署](docs/deployment.md)。
 
 ```bash
 git clone https://github.com/NotDesigned/remote-claude-browser.git
 cd remote-claude-browser
+sudo scripts/install-apparmor.sh   # Docker 不使用 AppArmor 时它什么都不做
 COMPOSE_FILE=compose.yml:compose.runtime.yml ./scripts/bootstrap.sh
 echo 'COMPOSE_FILE=compose.yml:compose.runtime.yml' >> .env
 ```
 
-`bootstrap.sh` 生成 `.env`（随机密码和密钥），构建并启动服务，等健康检查通过后打印访问地址和初始密码。第二行命令把 `compose.runtime.yml` 记进 `.env`，以后的 `docker compose` 命令都会带上它；没有它，任何浏览器配置都打不开。
+`install-apparmor.sh` 在 Ubuntu、Debian 这类 Docker 使用 AppArmor 的宿主机上加载服务端的配置文件。`bootstrap.sh` 生成 `.env`（随机密码和密钥），构建并启动服务，等健康检查通过后打印访问地址和初始密码。第二行命令把 `compose.runtime.yml` 记进 `.env`，以后的 `docker compose` 命令都会带上它；没有它，任何浏览器配置都打不开。
 
 用浏览器打开 `http://127.0.0.1:3010`，用户名 `admin`，密码是脚本打印的那个。然后：
 

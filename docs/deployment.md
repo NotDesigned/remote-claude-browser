@@ -8,24 +8,29 @@
 
 ## 需要准备
 
-| 项目 | 要求                                                                                     |
-| ---- | ---------------------------------------------------------------------------------------- |
-| 系统 | Linux，Docker 27 或更新版本（`browser` 网络需要 Docker 分配 IPv6 子网），Compose v2 插件 |
-| 配置 | 建议至少 2 核 4 GB 内存，会话越多需要越多；在服务器上构建镜像时另需约 2 GB 可用内存      |
-| 磁盘 | 镜像约 3 GB，另加浏览器配置的数据                                                        |
-| 网络 | 能访问各个节点的服务器；节点用 IPv6 上游时，宿主机要有可用的 IPv6 出站路由               |
-| 公网 | 从公网访问时，另备域名、TLS 证书和反向代理                                               |
+| 项目     | 要求                                                                                                                                                                  |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 系统     | Linux，Docker Engine 27.3 或更新版本（`cpa-broker` 使用 Docker API 1.47，`browser` 网络需要 Docker 分配 IPv6 子网），Compose v2 插件                                  |
+| 用户命名空间 | Chromium 的沙箱需要它：`user.max_user_namespaces` 大于 0；内核有 `kernel.unprivileged_userns_clone` 时它要是 1                                                        |
+| AppArmor | Docker 使用 AppArmor 的宿主机（Ubuntu、Debian 默认如此）先加载服务端的配置文件，见[安装](#安装)。它允许 Chromium 创建用户命名空间，所以 Ubuntu 的 `kernel.apparmor_restrict_unprivileged_userns` 不用改 |
+| 配置     | 建议至少 2 核 4 GB 内存，会话越多需要越多；在服务器上构建镜像时另需约 2 GB 可用内存                                                                                   |
+| 磁盘     | 镜像约 3 GB，另加浏览器配置的数据，见[日志和磁盘](#日志和磁盘)                                                                                                        |
+| 网络     | 能访问各个节点的服务器；节点用 IPv6 上游时，宿主机要有可用的 IPv6 出站路由                                                                                            |
+| 公网     | 从公网访问时，另备域名、TLS 证书和反向代理                                                                                                                            |
 
-`pnpm check:host` 只读地检查 Docker 和 Compose v2 是否可用。
+`pnpm check:host` 只读地检查以上各项：Docker 和 Compose v2、Docker API 版本、用户命名空间，以及 AppArmor 配置文件是否已加载（读取 AppArmor 的状态需要 root）。
 
 ## 安装
 
 ```bash
 git clone https://github.com/NotDesigned/remote-claude-browser.git
 cd remote-claude-browser
+sudo scripts/install-apparmor.sh   # Docker 不使用 AppArmor 时它什么都不做
 COMPOSE_FILE=compose.yml:compose.runtime.yml ./scripts/bootstrap.sh
 echo 'COMPOSE_FILE=compose.yml:compose.runtime.yml' >> .env
 ```
+
+`scripts/install-apparmor.sh` 把 `deploy/apparmor/remote-claude-browser` 装进 `/etc/apparmor.d/` 并加载，重启后仍然有效。它是 Docker 默认的配置文件加上三项：允许挂载（每个浏览器配置的网络和文件系统要用）、允许创建用户命名空间、允许本配置文件内的进程互发信号。没有加载它时，Docker 使用 AppArmor 的宿主机上服务端容器启动不了。
 
 `scripts/bootstrap.sh` 在没有 `.env` 时生成一个（随机的初始管理员密码和 `MIRROR_AUTH_SECRET`），启动服务，等健康检查通过后打印访问地址和密码；已有 `.env` 时不改动它。初始管理员的用户名是 `admin`，要改的话在第一次启动前设置 `MIRROR_ADMIN_USERNAME`。
 
@@ -45,7 +50,17 @@ docker compose up -d
 docker compose ps
 ```
 
-不想在服务器上构建镜像时，在 `.env` 里设置 `SERVER_IMAGE=ghcr.io/notdesigned/remote-claude-browser-server:latest`，再执行 `docker compose pull && docker compose up -d`。
+不想在服务器上构建镜像时，改用预构建的镜像。四个镜像都要指定，版本标签和 `git checkout` 的版本一致（下面以 `v0.5.0` 为例），不要用会随时变化的 `latest`：
+
+```bash
+SERVER_IMAGE=ghcr.io/notdesigned/remote-claude-browser-server:v0.5.0
+CPA_BROKER_IMAGE=ghcr.io/notdesigned/remote-claude-browser-cpa-broker:v0.5.0
+CPA_BROKER_ENGINE_IMAGE=ghcr.io/notdesigned/remote-claude-browser-cpa:v0.5.0
+# 只在入口机的 client/.env 里：
+TUNNEL_IMAGE=ghcr.io/notdesigned/remote-claude-browser-tunnel:v0.5.0
+```
+
+把前三行写进 `.env`，然后执行 `docker compose pull && docker compose up -d --no-build`。镜像只在 CI 对同一个提交通过后发布，每个都带构建来源证明，可以用 `gh attestation verify oci://<镜像> --owner NotDesigned` 核对。
 
 登录工作台后，先在「网络与接入」→「代理来源」导入节点，再新建浏览器配置，见[使用](usage.md)。
 
@@ -151,8 +166,12 @@ EGRESS_PROXY='vless://uuid@proxy.example.com:443?security=reality&sni=...&pbk=..
 
 ## CPA
 
-`compose.runtime.yml` 同时启用 CPA：`cpa-broker` 按固定模板为每个用户创建 CPA 实例的容器，只有它挂载 Docker socket。网关通过 Unix socket 请求实例操作，不能提交任意 Docker 参数。CPA 实例只连接一个 Docker 内部网络（`CPA_RUNTIME_NETWORK`），经各个凭据绑定的节点出网，不对外发布端口。
+`compose.runtime.yml` 同时启用 CPA：`cpa-broker` 按固定模板为每个用户创建 CPA 实例的容器，只有它挂载 Docker socket。网关通过 Unix socket 请求实例操作，不能提交任意 Docker 参数。
 
+- 每个实例有自己的 Docker 内部网络 `remote-browser-<实例 ID>-net`，网络里只有这个实例和 `cpa-broker`，实例之间互相访问不到。子网从 `CPA_INSTANCE_SUBNETS`（默认 `10.254.0.0/16`）里分 `/28`，和宿主机已有的网络冲突时修改它。
+- 实例不对外发布端口，唯一的出口是 `runtime-egress:8781`：`cpa-broker` 把它转给服务端经认证的代理，再经各个凭据绑定的节点出网。服务端和 `cpa-broker` 之间是 `CPA_RUNTIME_NETWORK` 这个内部网络。
+- 实例容器不属于 Compose 项目，`docker compose down`、`--remove-orphans` 不会删除它们，`docker compose ps` 也看不到它们，用 `docker ps --filter label=dev.remote-browser.cpa-managed=true` 列出。
+- `cpa-broker` 启动时，以及每次启动实例前，核对实例容器的镜像和模板；有变化就保留三个数据卷，重建容器，原来在运行的继续运行。所以升级后实例自动换上新的 CPA 镜像，不用手动处理。
 - CPA 镜像固定为 CLIProxyAPI 8.0.68，镜像摘要写在 `deploy/Dockerfile.cpa`；原生管理面板的 HTML 版本写在 `deploy/fetch-cpa-panel.mjs`，构建镜像时核对 SHA-256，打开页面时不下载。
 - 每个实例有三个数据卷：`remote-browser-<实例 ID>-config`、`-auth`、`-static`，可以用 `docker volume ls --filter label=dev.remote-browser.cpa-instance` 列出。停止实例保留这些卷；删除用户会删除他的私有实例和卷。
 - 入口只需转发整个站点（见[公网入口](#公网入口)），不必对外发布 CPA 的端口或 Docker socket。
@@ -204,18 +223,32 @@ scripts/fingerprint-fonts.sh check                                   # 各身份
 
 ## 升级
 
+部署固定的版本标签，不要直接跟随 `main` 或 `latest`。先看 [CHANGELOG](../CHANGELOG.md) 里这个版本的升级步骤，再执行：
+
 ```bash
-git pull
-docker compose up -d --build   # 使用预构建镜像时：docker compose pull && docker compose up -d
+git fetch --tags
+git checkout v0.5.0                # 要升级到的版本
+sudo scripts/install-apparmor.sh   # 配置文件随版本变化时重新加载
+docker compose up -d --build
 ```
 
-升级服务端会重启浏览器，打开的远程页面和未发送的草稿会中断；用户和网站登录资料保存在 `data` 卷里，不受影响。每个版本要做的额外步骤见 [CHANGELOG](../CHANGELOG.md)。
+使用预构建镜像时，先把 `.env` 里三个镜像的标签改成同一个版本，再执行 `docker compose pull && docker compose up -d --no-build`。
+
+- 升级服务端会重启浏览器，打开的远程页面和未发送的草稿会中断；用户和网站登录资料保存在 `data` 卷里，不受影响。
+- `cpa-broker` 重启后把各个 CPA 实例换成新镜像（见 [CPA](#cpa)），正在进行的 CPA 调用会中断一次。
+- 确认新版本正常后，用 `docker image prune` 删除不再有标签的旧镜像。`docker image prune -a` 会删掉所有没有容器使用的镜像，包括回退时要用的上一个版本，回退前不要执行它。
 
 在国内构建时，Debian 官方源可能很慢，可以换镜像源：
 
 ```bash
 docker compose build --build-arg DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian server
 ```
+
+## 日志和磁盘
+
+- 各服务用 Docker 的 `local` 日志驱动并自动轮转（各 compose 文件的 `logging`）：服务端最多 5 个 20 MB 的文件，`cpa-broker` 和 Caddy 更少；CPA 实例最多 2 个 2 MB 的文件。用 `docker compose logs` 和 `docker logs` 查看。
+- `data` 卷随浏览器配置增长：每个配置的 Chrome 缓存、网站数据和下载都在里面，没有上限。删除不用的浏览器配置会删除它的资料。
+- 用 `docker system df -v` 查看各个卷和镜像的大小；`data` 卷内部用 `docker compose exec server du -sh /data/profile /data/profile-accounts` 查看。
 
 ## 备份
 
@@ -232,34 +265,68 @@ docker compose build --build-arg DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu
 | 浏览器配置数据                          | `/data/profile/browser-default`、`/data/profile-accounts/` | 各配置的 Cookie、网站登录资料和下载                                        |
 | runtime 密钥                            | `/data/runtime/secret`                                     | 生成内部出口令牌的密钥。目录保持 root:root、0700，文件保持 root:root、0600 |
 | 每个用户的 CPA 卷                       | `remote-browser-<实例 ID>-config`、`-auth`、`-static`      | CPA 实例的配置、Claude 授权和面板文件                                      |
+| Caddy 的证书（`compose.https.yml`）     | `caddy-data` 卷                                            | 自动签发的证书和 ACME 账户；丢失后重新签发，可能碰到签发频率限制           |
 
 前八项都在 `data` 卷里（`/data/timezone/` 是服务进程的时区，也在其中）。这些数据包含 Cookie、令牌和节点密码，备份要存放在受保护的位置，离机副本要加密。
 
-先停服再备份，避免数据库和浏览器资料来自不同时间点。CPA 卷和工作台数据要一起备份，只有其中一部分恢复不了原来的实例：
+先停服再备份，避免数据库和浏览器资料来自不同时间点。CPA 实例不属于 Compose 项目，`docker compose stop` 不会停止它们，要单独停。CPA 卷和工作台数据要一起备份，只有其中一部分恢复不了原来的实例。在 `<安装目录>` 里执行：
 
 ```bash
+cpa=$(docker ps -q --filter label=dev.remote-browser.cpa-managed=true)
 docker compose stop
-docker run --rm -v remote-claude-browser_data:/data:ro -v "$PWD":/backup debian:bookworm-slim \
-  tar -czf /backup/browser-data.tar.gz -C /data .
+[ -z "$cpa" ] || docker stop $cpa
+mkdir -p backup
+archive() {   # 卷名 归档名
+  docker run --rm -v "$1":/volume:ro -v "$PWD/backup":/backup debian:bookworm-slim \
+    tar --numeric-owner -czf "/backup/$2.tar.gz" -C /volume .
+}
+archive remote-claude-browser_data data
+for volume in $(docker volume ls -q --filter label=dev.remote-browser.cpa-managed=true); do
+  archive "$volume" "$volume"
+done
+# 只在使用 compose.https.yml 时
+archive remote-claude-browser_caddy-data caddy-data
+[ -z "$cpa" ] || docker start $cpa
 docker compose start
 ```
 
-实际卷名用 `docker volume ls` 核对，改过项目名时相应调整。还原时也先停服，一起还原数据库和配置目录，保留原来的 UID、GID 和权限。
+实际卷名用 `docker volume ls` 核对，改过项目名时相应调整。
+
+还原时也先按上面的方法停服，一起还原 `data` 卷和 CPA 卷。`cpa-broker` 只接受带有它的标签的卷，所以 CPA 卷要先带标签创建，再解包：
+
+```bash
+restore() {   # 卷名 归档名
+  docker run --rm -v "$1":/volume -v "$PWD/backup":/backup:ro debian:bookworm-slim \
+    tar --numeric-owner -xzpf "/backup/$2.tar.gz" -C /volume
+}
+restore remote-claude-browser_data data
+for archive in backup/remote-browser-cpa-*.tar.gz; do
+  volume=$(basename "$archive" .tar.gz)
+  id=${volume#remote-browser-}
+  id=${id%-*}
+  docker volume create --label dev.remote-browser.cpa-managed=true \
+    --label "dev.remote-browser.cpa-instance=$id" "$volume"
+  restore "$volume" "$volume"
+done
+docker compose up -d
+```
+
+还原到一个已经在用的部署时，先删除同名的旧 CPA 容器（`docker rm -f remote-browser-<实例 ID>`），工作台下次启动实例时会用还原的卷重新创建。
 
 ## 资源与超时
 
-| 项目             | 值                                                                                                                                                                                   | 来源                                                   |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
-| 工作台登录有效期 | 用户名和密码登录 60 天；单点登录 `MIRROR_OIDC_SESSION_DAYS`，默认 7 天                                                                                                               | `auth/users.ts`、`auth/oidc.ts`                        |
-| 会话宽限         | 一个会话的所有设备都断开后 15 分钟关闭它的远程页面（`MIRROR_IDLE_GRACE_MS` 可改）；claude.ai 正在生成回复或进行 CPA 授权时推迟，但断开满 30 分钟（或宽限期更长时满宽限期）后照常关闭 | `session/resource-policy.ts`、`session/idle-reaper.ts` |
-| 空闲关闭         | 没有会话使用的浏览器配置 15 分钟后关闭 Chrome 和私有显示，网站登录资料保留                                                                                                           | `session/resource-policy.ts`                           |
-| 休眠             | 休眠的会话可以恢复；连续休眠 24 小时后删除会话登记，保留配置和 Cookie。计时跨重启保留                                                                                                | `clients-main.ts`                                      |
-| 每人配置数       | 每个用户最多 8 个浏览器配置                                                                                                                                                          | `session/profiles.ts`                                  |
-| 每人会话数       | 没有全局上限；管理员可以给每个用户设置上限，见[管理](admin.md#会话上限)                                                                                                              | —                                                      |
-| 内存准入         | 新建和恢复会话时，浏览器内存超过预算减去余量（300 MiB 和预算的 10% 中较大者），或整机可用内存低于 256 MiB 时暂不启动；打开新的浏览器配置再多预留 560 MiB。已运行的会话不受影响       | `clients-main.ts`                                      |
-| 内存上限         | `SERVER_MEMORY`，默认 `4g`                                                                                                                                                           | `compose.yml`                                          |
-| PID              | `SERVER_PIDS_LIMIT`，默认 4096                                                                                                                                                       | `compose.yml`                                          |
-| 上传             | 单个文件 100 MB，一批 20 个文件、共 500 MB                                                                                                                                           | `uploads.ts`                                           |
+| 项目             | 值                                                                                                                                                                             |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 工作台登录有效期 | 用户名和密码登录 60 天；单点登录 `MIRROR_OIDC_SESSION_DAYS`，默认 7 天                                                                                                         |
+| 会话宽限 | 一个会话的所有设备都断开后 15 分钟关闭它的远程页面（`MIRROR_IDLE_GRACE_MS` 可改）；claude.ai 正在生成回复或进行 CPA 授权时推迟，但断开满 30 分钟（或宽限期更长时满宽限期）后照常关闭 |
+| 空闲关闭         | 没有会话使用的浏览器配置 15 分钟后关闭 Chrome 和私有显示，网站登录资料保留                                                                                                     |
+| 休眠             | 休眠的会话可以恢复；连续休眠 24 小时后删除会话登记，保留配置和 Cookie。计时跨重启保留                                                                                          |
+| 每人配置数       | 每个用户最多 8 个浏览器配置                                                                                                                                                    |
+| 每人会话数       | 没有全局上限；管理员可以给每个用户设置上限，见[管理](admin.md#会话上限)                                                                                                        |
+| 内存准入         | 新建和恢复会话时，浏览器内存超过预算减去余量（300 MiB 和预算的 10% 中较大者），或整机可用内存低于 256 MiB 时暂不启动；打开新的浏览器配置再多预留 560 MiB。已运行的会话不受影响 |
+| 内存上限         | `SERVER_MEMORY`，默认 `4g`                                                                                                                                                     |
+| PID              | `SERVER_PIDS_LIMIT`，默认 4096                                                                                                                                                 |
+| 上传             | 单个文件 100 MB，一批 20 个文件、共 500 MB                                                                                                                                     |
 
 在线连接不会因为长时间没有操作而被回收。
 
@@ -268,4 +335,4 @@ docker compose start
 ## 撤销访问和清除数据
 
 - 撤销一个用户的访问：在「管理后台」停用或删除他，见[管理](admin.md#停用和删除用户)。修改 `.env` 不会改变已有用户的密码，轮换 `MIRROR_AUTH_SECRET` 也不会撤销用户的登录。
-- 清除全部数据：`docker compose down --volumes`，然后删除各个 CPA 卷。这个操作不可恢复。
+- 清除全部数据：`docker compose down --volumes`，再删除 `cpa-broker` 创建的 CPA 容器、卷和网络（分别用 `docker ps -a`、`docker volume ls`、`docker network ls` 加 `--filter label=dev.remote-browser.cpa-managed=true` 列出）。这个操作不可恢复。

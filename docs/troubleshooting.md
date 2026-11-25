@@ -30,6 +30,14 @@ curl --verbose http://127.0.0.1:3010/healthz
 - 时区相关的错误：`TZ` 不是有效的 IANA 时区名。
 - `Could not start the tunnel to EGRESS_PROXY`：部署级出站代理的写法不受支持或连不上，见[部署 · 部署级出站代理](deployment.md#部署级出站代理)。
 
+容器根本起不来，`docker compose up` 报 `apparmor`、`remote-claude-browser` 或 `profile`：这台宿主机的 Docker 使用 AppArmor，但还没有加载服务端的配置文件。执行 `sudo scripts/install-apparmor.sh`，再 `docker compose up -d`。
+
+`cpa-broker` 不健康或不断重启，看 `docker compose logs cpa-broker`：
+
+- `needs Docker Engine 27.3 or newer`：升级 Docker。
+- `requires an internal Docker network`：`CPA_RUNTIME_NETWORK` 指向一个已有的非内部网络，换一个名称。
+- 健康检查失败而日志正常：它连不上 Docker 守护进程，检查 `/var/run/docker.sock`。
+
 ## Chromium 不健康
 
 查看日志。常见原因：
@@ -72,7 +80,7 @@ curl --verbose http://127.0.0.1:3010/healthz
 
 - 节点本身不可用：在「代理来源」里检查这个节点，或换一个节点。
 - 宿主机用 Docker Desktop 时，它的透明代理会接管容器的 TCP 80/443 连接，干扰 Mihomo 和 VLESS、REALITY 等节点建立连接。通过 Docker Desktop 的设置接口把 `proxy.containers.transparentPorts` 设为 `""`（对应 `settings-store.json` 里的 `ContainersOverrideProxyTransparentPorts`）。这样镜像下载仍走代理，容器的连接不再被接管。镜像下载依赖代理时，不要把 **Containers proxy** 直接设为 **No proxy**，那样镜像拉取也会改为直连。
-- 节点用 IPv6 上游时，确认宿主机有 IPv6 出站路由，并且 `browser` 网络是双栈（Docker 27 或更新版本）。从只有 IPv4 的旧网络升级时，要先停止连接它的服务，再重建这个网络，数据卷保留。
+- 节点用 IPv6 上游时，确认宿主机有 IPv6 出站路由，并且 `browser` 网络是双栈（Docker Engine 27.3 或更新版本）。从只有 IPv4 的旧网络升级时，要先停止连接它的服务，再重建这个网络，数据卷保留。
 
 ## 远程浏览器的时间不对
 
