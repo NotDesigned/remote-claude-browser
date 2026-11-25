@@ -41,8 +41,8 @@ importers:
         specifier: 2.1.1
         version: 2.1.1(patch_hash=dzkuf7clekfl6uv2eq6bwmvpje)
       '@rrweb/rrweb-plugin-canvas-webrtc-record':
-        specifier: 2.1.1
-        version: 2.1.1(rrweb@2.1.1)
+        specifier: 2.2.2
+        version: 2.2.2(rrweb@2.1.1)
     devDependencies:
       esbuild:
         specifier: ^0.25.0
@@ -69,8 +69,8 @@ importers:
         specifier: ^8.13.1
         version: 8.13.1
       ws:
-        specifier: ^8.21.1
-        version: 8.21.1
+        specifier: ^8.23.0
+        version: 8.23.0
       yaml:
         specifier: ^2.8.2
         version: 2.9.1
@@ -88,8 +88,8 @@ importers:
         specifier: ^22.0.0
         version: 22.20.1
       '@types/ws':
-        specifier: ^8.5.0
-        version: 8.18.1
+        specifier: ^8.18.2
+        version: 8.18.2
       esbuild:
         specifier: ^0.28.1
         version: 0.28.1
@@ -100,8 +100,8 @@ importers:
   packages/protocol:
     dependencies:
       '@rrweb/types':
-        specifier: 2.1.1
-        version: 2.1.1
+        specifier: 2.2.2
+        version: 2.2.2
 
   packages/viewer:
     dependencies:
@@ -112,8 +112,8 @@ importers:
         specifier: 2.1.1
         version: 2.1.1(patch_hash=nrpqmsqd645cqyk6be2cudggce)
       '@rrweb/rrweb-plugin-canvas-webrtc-replay':
-        specifier: 2.1.1
-        version: 2.1.1(rrweb@2.1.1)
+        specifier: 2.2.2
+        version: 2.2.2(rrweb@2.1.1)
       preact:
         specifier: ^10.24.0
         version: 10.29.7
@@ -765,18 +765,21 @@ packages:
   '@rrweb/replay@2.1.1':
     resolution: {integrity: sha512-jq64eyJvrh/ioBS1MpDrs/Lj+7QY2TW4xGxp4g4LJKdltSkqMjMbUmhTDcpzaEDZt66S0gasGcgqCulsksSXnw==}
 
-  '@rrweb/rrweb-plugin-canvas-webrtc-record@2.1.1':
-    resolution: {integrity: sha512-pAZ+nmkMKUa7Pg+lPGWmAc4YuoiKcg3DRmh9vT8pyaiUGrMDirrJpeodBgDPOZfWTSmjNRwL4z8yYR7eNF2PiQ==}
+  '@rrweb/rrweb-plugin-canvas-webrtc-record@2.2.2':
+    resolution: {integrity: sha512-n+1D4j7TW8coOPiqueZml74Q50cIt40Pqkqtxa7Q2Esss0d0PfpESz8B7uj6PRcoTnsmbbEw9BmEprKGtCEjgA==}
     peerDependencies:
       rrweb: ^2.1.1
 
-  '@rrweb/rrweb-plugin-canvas-webrtc-replay@2.1.1':
-    resolution: {integrity: sha512-hIKznni4Ql2AOjGOx01IPoVAlgwlobTVpi6GPJ6qPecwsLbAhzTAjwk4iKYuqAxaaOK7pyuxs/Zhd1hvjQ90SQ==}
+  '@rrweb/rrweb-plugin-canvas-webrtc-replay@2.2.2':
+    resolution: {integrity: sha512-9nirs8maJabg1Yyl0r7drjC8dE+DUvgIyOLtbVG6lr8CrNWMm6GYn3R2XQfkBjKvkXDx01u8OR47RHTvbB/lPQ==}
     peerDependencies:
       rrweb: ^2.1.1
 
   '@rrweb/types@2.1.1':
     resolution: {integrity: sha512-g0I3nCNL1S7slDXwhunxOuOoswkY8WVZJQrPFiwixOc6xoD514d1JLTuyAzCKIox8g/PaLKtV5g31Uk42inQSQ==}
+
+  '@rrweb/types@2.2.2':
+    resolution: {integrity: sha512-b9BNYEBcQF9dGQ5JJOoqBEFM7HlLmOdKgCfS2qkQj3gevF1wyuJIGPDGpaAYpl0H24fFOHGw6IdbYH6qrZNk1w==}
 
   '@rrweb/utils@2.1.1':
     resolution: {integrity: sha512-x2SgJAD3YJ9eVcLZ5l6OqWMtczdA3VfS5XqPeqpZdQgV9oh6Id5GK2cDN4bimnkqryOcIJdz8cTvV0yNvqQ+nA==}
@@ -804,8 +807,8 @@ packages:
   '@types/node@22.20.1':
     resolution: {integrity: sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==}
 
-  '@types/ws@8.18.1':
-    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
+  '@types/ws@8.18.2':
+    resolution: {integrity: sha512-67MQl+fpWKVTT1NYdnmo3U4sc/xPo/zQBncVnI74qmQa0z/b+1g6iYqNmGCPbxO+zz2aklb08a0oHfegiVd0/w==}
 
   '@vitest/expect@3.2.7':
     resolution: {integrity: sha512-E8eBXaKibuvH2pSZErOjdVb5vF4PbKYcrnluBTYxEk1l/VhhwZg1kZQsdtjq+CsF5CFydf2Rdkz7jDHKSisi3w==}
@@ -1565,18 +1568,6 @@ packages:
     resolution: {integrity: sha512-42AtmgqjV+X1VpdOfyTGOYRi0/zsoLqtXQckTmqTeybT+BDIbM/Guxo7x3pE2vtpr1ok6xRqM9OpBe+Jyoqyww==}
     engines: {node: '>=18'}
 
-  ws@8.21.1:
-    resolution: {integrity: sha512-+0NTnW77fFN/DjQi6k/Sq/Yvk4Sgajw7urW8V+asjXnRgDs9gyGkdb7EzgfhA4goXsRIZKE28fzIXBHEzhuiWw==}
-    engines: {node: '>=10.0.0'}
-    peerDependencies:
-      bufferutil: ^4.0.1
-      utf-8-validate: '>=5.0.2'
-    peerDependenciesMeta:
-      bufferutil:
-        optional: true
-      utf-8-validate:
-        optional: true
-
   ws@8.23.0:
     resolution: {integrity: sha512-wCkmX8QMOrKjgO8HW2WyDbTSGeqkocxgDzS9iR79rEAexty6/2qzilx3Ag8Tqf9ykop3irLKle0MtVn5qjVnoQ==}
     engines: {node: '>=10.0.0'}
@@ -2115,18 +2106,20 @@ snapshots:
 
   '@rrweb/replay@2.1.1(patch_hash=nrpqmsqd645cqyk6be2cudggce)':
     dependencies:
-      '@rrweb/types': 2.1.1
+      '@rrweb/types': 2.2.2
       rrweb: 2.1.1
 
-  '@rrweb/rrweb-plugin-canvas-webrtc-record@2.1.1(rrweb@2.1.1)':
+  '@rrweb/rrweb-plugin-canvas-webrtc-record@2.2.2(rrweb@2.1.1)':
     dependencies:
       rrweb: 2.1.1
 
-  '@rrweb/rrweb-plugin-canvas-webrtc-replay@2.1.1(rrweb@2.1.1)':
+  '@rrweb/rrweb-plugin-canvas-webrtc-replay@2.2.2(rrweb@2.1.1)':
     dependencies:
       rrweb: 2.1.1
 
   '@rrweb/types@2.1.1': {}
+
+  '@rrweb/types@2.2.2': {}
 
   '@rrweb/utils@2.1.1': {}
 
@@ -2153,7 +2146,7 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
 
-  '@types/ws@8.18.1':
+  '@types/ws@8.18.2':
     dependencies:
       '@types/node': 22.20.1
 
@@ -2726,7 +2719,7 @@ snapshots:
 
   rrweb@2.1.1:
     dependencies:
-      '@rrweb/types': 2.1.1
+      '@rrweb/types': 2.2.2
       '@rrweb/utils': 2.1.1
       '@types/css-font-loading-module': 0.0.7
       '@xstate/fsm': 1.6.5
@@ -2939,8 +2932,6 @@ snapshots:
       ansi-styles: 6.2.3
       string-width: 7.2.0
       strip-ansi: 7.2.0
-
-  ws@8.21.1: {}
 
   ws@8.23.0: {}
 

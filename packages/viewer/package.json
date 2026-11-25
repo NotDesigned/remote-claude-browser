@@ -14,7 +14,7 @@
   "dependencies": {
     "@mirror/protocol": "workspace:*",
     "@rrweb/replay": "2.1.1",
-    "@rrweb/rrweb-plugin-canvas-webrtc-replay": "2.1.1",
+    "@rrweb/rrweb-plugin-canvas-webrtc-replay": "2.2.2",
     "preact": "^10.24.0"
   },
   "devDependencies": {
