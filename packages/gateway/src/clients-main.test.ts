@@ -1105,7 +1105,14 @@ describe("multi-user management routes", () => {
     const managed = `/api/users/${bob.id}/mailboxes`;
     const existing = { address: "Existing@INBOX.EXAMPLE.NET", label: "原有邮箱" };
     expect((await api(app, bobCookie, "POST", managed, existing)).statusCode).toBe(403);
-    expect((await api(app, bobCookie, "GET", managed)).statusCode).toBe(403);
+    const refused = await api(app, bobCookie, "GET", managed);
+    expect(refused.statusCode).toBe(403);
+    // Administration errors share one shape; mailbox errors keep the mailbox routes' own.
+    expect(refused.json()).toEqual({
+      error: "需要管理员权限",
+      code: "ADMIN_REQUIRED",
+      ownedSessions: [],
+    });
     expect(
       (await api(app, bobCookie, "POST", personal, { localPart: existing.address })).statusCode,
     ).toBe(400);
@@ -1126,9 +1133,9 @@ describe("multi-user management routes", () => {
     expect((await api(app, admin, "POST", personal, { localPart: "project-1" })).statusCode).toBe(
       409,
     );
-    expect(
-      (await api(app, admin, "POST", managed, { address: "other@example.com" })).statusCode,
-    ).toBe(400);
+    const foreign = await api(app, admin, "POST", managed, { address: "other@example.com" });
+    expect(foreign.statusCode).toBe(400);
+    expect(foreign.json()).toMatchObject({ statusCode: 400, message: expect.any(String) });
     const assigned = await api(app, admin, "POST", managed, existing);
     expect(assigned.statusCode).toBe(201);
     const mailbox = assigned.json().address;

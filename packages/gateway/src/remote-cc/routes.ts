@@ -1,5 +1,6 @@
 import type { IncomingMessage } from "node:http";
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { codeAnswer, type ErrorStyle } from "../http-errors";
 import type { FrontendUser } from "../auth/users";
 import type { MihomoProxy } from "../egress/mihomo";
 import type { ExitHealth, ExitMetadata } from "../egress/timezone";
@@ -93,11 +94,11 @@ export function accountChangeRevokesRemoteCc(
   return passwordChanged || before?.role !== after.role || !after.enabled;
 }
 
-const failed = (reply: FastifyReply, error: unknown) => {
-  if (error instanceof RemoteCcError)
-    return reply.code(error.statusCode).send({ error: error.code, message: error.message });
+/** remote-cc routes answer `{ error: code, message }`; anything else is logged as a failure. */
+export const remoteCcErrors: ErrorStyle = (error) => {
+  if (error instanceof RemoteCcError) return codeAnswer(error);
   console.error("remote-cc route failed:", error instanceof Error ? error.name : error);
-  return reply.code(500).send({ error: "REMOTE_CC_FAILED", message: "操作失败" });
+  return { status: 500, body: { error: "REMOTE_CC_FAILED", message: "操作失败" } };
 };
 const bearer = (request: IncomingMessage) => {
   const value = request.headers.authorization;
@@ -165,13 +166,10 @@ export function registerRemoteCcRoutes(app: FastifyInstance, options: RemoteCcRo
       method,
       url,
       schema: schema as never,
+      config: { errors: remoteCcErrors },
       async handler(request, reply) {
         reply.header("cache-control", "no-store");
-        try {
-          return await handler(request as never, reply);
-        } catch (error) {
-          return failed(reply, error);
-        }
+        return await handler(request as never, reply);
       },
     });
 

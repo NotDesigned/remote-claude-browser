@@ -1,5 +1,6 @@
 // @vitest-environment node
 import Fastify, { type FastifyInstance } from "fastify";
+import { registerErrorHandler } from "../http-errors";
 import { afterEach, expect, it, vi } from "vitest";
 import { createClientSessions } from "../session/clients";
 import { createLifecycleLock } from "../session/lifecycle-lock";
@@ -25,6 +26,7 @@ async function fixture() {
   const login = store.issueSession(user.id);
   const cookie = `${USER_COOKIE}=${login.token}`;
   const app = Fastify();
+  registerErrorHandler(app);
   apps.push(app);
   const gate = createUserGate({ store });
   const onPasswordChanged = vi.fn();
@@ -107,7 +109,9 @@ it("requires the current password and revokes all personal logins after a passwo
       headers: { cookie },
       payload: { currentPassword, password },
     });
-  expect((await change("wrong-password", "replacement-password")).statusCode).toBe(400);
+  const wrong = await change("wrong-password", "replacement-password");
+  expect(wrong.statusCode).toBe(400);
+  expect(wrong.json()).toEqual({ error: "当前密码不正确", code: "CURRENT_PASSWORD" });
   expect((await change("alice-password", "short")).statusCode).toBe(400);
   expect(store.session(secondLogin.token)?.id).toBe(user.id);
   expect(onPasswordChanged).not.toHaveBeenCalled();

@@ -1,6 +1,7 @@
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { FrontendUser } from "../auth/users";
+import { codeAnswer, type ErrorStyle } from "../http-errors";
 import { CpaError } from "./store";
 import type { CpaRuntime } from "./runtime";
 
@@ -16,11 +17,11 @@ const bodySchema = (properties: Record<string, unknown>, required: string[]) => 
   required,
   additionalProperties: false,
 });
-const handleError = (reply: FastifyReply, error: unknown) => {
-  if (error instanceof CpaError)
-    return reply.code(error.statusCode).send({ error: error.code, message: error.message });
-  return reply.code(502).send({ error: "CPA_OPERATION", message: "CPA 操作失败，请检查实例状态" });
-};
+/** CPA routes answer `{ error: code, message }`; anything else is the instance failing. */
+export const cpaErrors: ErrorStyle = (error) =>
+  error instanceof CpaError
+    ? codeAnswer(error)
+    : { status: 502, body: { error: "CPA_OPERATION", message: "CPA 操作失败，请检查实例状态" } };
 
 export function registerCpaRoutes(app: FastifyInstance, options: RouteOptions) {
   const root = "/api/cpa/instances";
@@ -34,16 +35,13 @@ export function registerCpaRoutes(app: FastifyInstance, options: RouteOptions) {
       method,
       url: `${root}${path}`,
       schema: body ? { body } : undefined,
+      config: { errors: cpaErrors },
       async handler(request, reply) {
         reply.header("cache-control", "no-store");
         const user = options.currentUser(request.raw);
         if (!user?.enabled)
           return reply.code(401).send({ error: "LOGIN_REQUIRED", message: "请先登录" });
-        try {
-          return await operation(user, request);
-        } catch (error) {
-          return handleError(reply, error);
-        }
+        return await operation(user, request);
       },
     });
   };
@@ -209,46 +207,43 @@ export function registerCpaInferenceRoutes(app: FastifyInstance, runtime: CpaRun
     method: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
     url: "/v1/*",
     bodyLimit: 33_554_432,
+    config: { errors: cpaErrors },
     async handler(request, reply) {
       const path = cpaInferencePath(request.raw.url ?? "");
       if (path === undefined) return reply.code(400).send({ error: "请求路径无效" });
-      try {
-        const auth = request.headers.authorization;
-        const token =
-          typeof auth === "string" && auth.startsWith("Bearer ")
-            ? auth.slice(7)
-            : request.headers["x-api-key"];
-        const instance = runtime.inference(typeof token === "string" ? token : "");
-        const headers: IncomingHttpHeaders = {
-          ...request.headers,
-          authorization: `Bearer ${instance.apiKey}`,
-        };
-        delete headers.host;
-        delete headers["x-api-key"];
-        delete headers.cookie;
-        delete headers["content-length"];
-        for (const name of HOP_HEADERS) delete headers[name];
-        stripClientAddressHeaders(headers);
-        const body =
-          request.body === undefined
-            ? undefined
-            : Buffer.isBuffer(request.body)
-              ? request.body
-              : JSON.stringify(request.body);
-        const response = await runtime.driver.request(instance, {
-          method: request.method,
-          path,
-          headers,
-          body,
-        });
-        reply.code(response.statusCode ?? 502);
-        for (const [name, value] of Object.entries(response.headers))
-          if (value !== undefined && !HOP_HEADERS.has(name) && name !== "set-cookie")
-            reply.header(name, value);
-        return reply.send(response);
-      } catch (error) {
-        return handleError(reply, error);
-      }
+      const auth = request.headers.authorization;
+      const token =
+        typeof auth === "string" && auth.startsWith("Bearer ")
+          ? auth.slice(7)
+          : request.headers["x-api-key"];
+      const instance = runtime.inference(typeof token === "string" ? token : "");
+      const headers: IncomingHttpHeaders = {
+        ...request.headers,
+        authorization: `Bearer ${instance.apiKey}`,
+      };
+      delete headers.host;
+      delete headers["x-api-key"];
+      delete headers.cookie;
+      delete headers["content-length"];
+      for (const name of HOP_HEADERS) delete headers[name];
+      stripClientAddressHeaders(headers);
+      const body =
+        request.body === undefined
+          ? undefined
+          : Buffer.isBuffer(request.body)
+            ? request.body
+            : JSON.stringify(request.body);
+      const response = await runtime.driver.request(instance, {
+        method: request.method,
+        path,
+        headers,
+        body,
+      });
+      reply.code(response.statusCode ?? 502);
+      for (const [name, value] of Object.entries(response.headers))
+        if (value !== undefined && !HOP_HEADERS.has(name) && name !== "set-cookie")
+          reply.header(name, value);
+      return reply.send(response);
     },
   });
 }

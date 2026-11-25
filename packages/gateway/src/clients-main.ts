@@ -43,7 +43,7 @@ import { createCpaRuntime } from "./cpa/runtime";
 import { registerCpaManagementRoutes } from "./cpa/management";
 import { createCpaBrokerDriver } from "./cpa/broker-client";
 import { registerCpaRoutes, registerCpaInferenceRoutes } from "./cpa/routes";
-import { createRemoteCcStore, RemoteCcError } from "./remote-cc/store";
+import { createRemoteCcStore } from "./remote-cc/store";
 import {
   accountChangeRevokesRemoteCc,
   registerRemoteCcRoutes,
@@ -74,6 +74,8 @@ import { grabEncoderForDisplay, jpegGrabForDisplay } from "./px-video";
 import { ANY_SESSION_TAB } from "./assets/token";
 import { createRtcSignalRelay } from "./rtcsig";
 import { createClaudeTheme, createThemeCopies, isClaudeTheme } from "./claude/theme";
+import { HttpError, registerErrorHandler } from "./http-errors";
+import { createWorkspaceErrors } from "./routes/workspace-errors";
 import { registerSecurityHeaders } from "./security-headers";
 import { gatewayHost, registerViewerStatic, trustedProxies, viewerBuildId } from "./serving";
 import { createTabLifecycle } from "./session/tabs";
@@ -338,6 +340,7 @@ export async function startClientGateway(
   }
   const remoteCcStore = await createRemoteCcStore({ file: join(profile, "remote-cc.sqlite") });
   const app = Fastify({ logger: false, trustProxy: trustedProxies() });
+  registerErrorHandler(app);
   registerSecurityHeaders(app);
   const key = process.env.MIRROR_AUTH_SECRET
     ? Buffer.from(process.env.MIRROR_AUTH_SECRET)
@@ -1439,90 +1442,79 @@ export async function startClientGateway(
     if (holder?.sid === runtime.sid && holder.tab !== exceptTab)
       await runtime.pixels.handle({ t: "mode", tab: holder.tab, mode: "dom" });
   }
-  const clientError = (reply: FastifyReply, error: unknown, owner?: string) => {
-    if (error instanceof ClientSessionError || error instanceof UserStoreError)
-      return reply.code(error.statusCode).send({
-        error: error.message,
-        code: error.code,
-        ownedSessions: owner ? clientSessions.owned(owner) : [],
-      });
-    report("client session failed", error);
-    return reply
-      .code(503)
-      .send({ error: "远程会话暂不可用，请稍后重试", code: "CLIENT_UNAVAILABLE" });
-  };
+  const workspace = createWorkspaceErrors({
+    currentOwner,
+    owned: (owner) => clientSessions.owned(owner),
+    report,
+  });
   app.post<{ Body: { clientKey?: unknown; sid?: unknown; account?: unknown } }>(
     "/api/client/session",
-    async (request, reply) => {
-      const owner = currentOwner(request.raw);
-      if (!owner) return reply.code(401).send({ error: "请重新输入访问密码" });
-      try {
-        return await accountLifecycle.run(async () => {
-          const user = requireLiveOwner(request.raw, owner);
-          const chosen = request.body?.account;
-          if (
-            chosen !== undefined &&
-            (typeof chosen !== "string" ||
-              !accountStore.has(chosen) ||
-              !access.ownsProfile(user.id, chosen))
-          )
-            throw profileForbidden();
-          let previous = clientSessions.findExisting(
-            owner,
-            request.body?.clientKey,
-            request.body?.sid,
+    { config: workspace.config },
+    async (request) => {
+      const owner = workspace.owner(request, 401, "请重新输入访问密码");
+      return await accountLifecycle.run(async () => {
+        const user = requireLiveOwner(request.raw, owner);
+        const chosen = request.body?.account;
+        if (
+          chosen !== undefined &&
+          (typeof chosen !== "string" ||
+            !accountStore.has(chosen) ||
+            !access.ownsProfile(user.id, chosen))
+        )
+          throw profileForbidden();
+        let previous = clientSessions.findExisting(
+          owner,
+          request.body?.clientKey,
+          request.body?.sid,
+        );
+        if (previous && (await registry.expireSleepingLocked(previous))) previous = undefined;
+        const existing = previous !== undefined;
+        if (
+          !existing &&
+          user.maxSessions != null &&
+          clientSessions.all().filter((record) => userIdForOwner(record.owner) === user.id)
+            .length >= user.maxSessions
+        )
+          throw new ClientSessionError(
+            409,
+            "USER_SESSION_LIMIT",
+            `已达到会话上限（${user.maxSessions} 个），请先结束不再使用的会话`,
           );
-          if (previous && (await registry.expireSleepingLocked(previous))) previous = undefined;
-          const existing = previous !== undefined;
-          if (
-            !existing &&
-            user.maxSessions != null &&
-            clientSessions.all().filter((record) => userIdForOwner(record.owner) === user.id)
-              .length >= user.maxSessions
-          )
-            throw new ClientSessionError(
-              409,
-              "USER_SESSION_LIMIT",
-              `已达到会话上限（${user.maxSessions} 个），请先结束不再使用的会话`,
-            );
-          const profileId =
-            previous && access.ownsProfile(user.id, previous.profile ?? DEFAULT_PROFILE)
-              ? (previous.profile ?? DEFAULT_PROFILE)
-              : typeof chosen === "string"
-                ? chosen
-                : await defaultProfileFor(user);
-          requireBrowserExit(profileId);
-          const record = await clientSessions.acquire(
-            owner,
-            request.body?.clientKey,
-            request.body?.sid,
-            isPhoneRequest(request.headers["user-agent"]),
-          );
-          try {
-            if (!existing || !access.ownsProfile(user.id, clientSessions.profileOf(record.sid))) {
-              if (registry.has(record.sid))
-                throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "浏览器不属于当前用户");
-              await clientSessions.setProfile(owner, record.sid, profileId);
-            }
-            idleReaper.touch(record.sid);
-            broadcastStatus();
-            await registry.ensureLocked(record.sid);
-            return {
-              ...clientSessions.describe(record.sid),
-              account: clientSessions.profileOf(record.sid),
-              sharedAccount: true,
-            };
-          } catch (error) {
-            if (!existing)
-              await registry
-                .releaseLocked(owner, record.sid)
-                .catch((cleanupError) => report("new workspace rollback failed", cleanupError));
-            throw error;
+        const profileId =
+          previous && access.ownsProfile(user.id, previous.profile ?? DEFAULT_PROFILE)
+            ? (previous.profile ?? DEFAULT_PROFILE)
+            : typeof chosen === "string"
+              ? chosen
+              : await defaultProfileFor(user);
+        requireBrowserExit(profileId);
+        const record = await clientSessions.acquire(
+          owner,
+          request.body?.clientKey,
+          request.body?.sid,
+          isPhoneRequest(request.headers["user-agent"]),
+        );
+        try {
+          if (!existing || !access.ownsProfile(user.id, clientSessions.profileOf(record.sid))) {
+            if (registry.has(record.sid))
+              throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "浏览器不属于当前用户");
+            await clientSessions.setProfile(owner, record.sid, profileId);
           }
-        });
-      } catch (error) {
-        return clientError(reply, error, owner);
-      }
+          idleReaper.touch(record.sid);
+          broadcastStatus();
+          await registry.ensureLocked(record.sid);
+          return {
+            ...clientSessions.describe(record.sid),
+            account: clientSessions.profileOf(record.sid),
+            sharedAccount: true,
+          };
+        } catch (error) {
+          if (!existing)
+            await registry
+              .releaseLocked(owner, record.sid)
+              .catch((cleanupError) => report("new workspace rollback failed", cleanupError));
+          throw error;
+        }
+      });
     },
   );
   /** Closes the windows of a session being torn down and waits until they are gone. */
@@ -1630,87 +1622,76 @@ export async function startClientGateway(
   });
   app.post<{ Body: { name?: unknown; proxyId?: unknown; platform?: unknown } }>(
     "/api/accounts",
-    { bodyLimit: 1024 },
-    async (request, reply) => {
-      const owner = currentOwner(request.raw);
+    { bodyLimit: 1024, config: workspace.exitConfig },
+    async (request) => {
+      const owner = workspace.owner(request, 401, "请重新登录");
       const user = currentUser(request.raw);
-      if (!owner || !user) return reply.code(401).send({ error: "请重新登录" });
-      try {
-        return await accountLifecycle.run(async () => {
-          requireLiveOwner(request.raw, owner);
-          if (userStore.listOwnedProfiles(user.id).length >= MAX_PROFILES)
+      if (!user) throw new HttpError(401, { error: "请重新登录" });
+      return await accountLifecycle.run(async () => {
+        requireLiveOwner(request.raw, owner);
+        if (userStore.listOwnedProfiles(user.id).length >= MAX_PROFILES)
+          throw new ClientSessionError(
+            409,
+            "PROFILE_LIMIT",
+            `每个用户最多 ${MAX_PROFILES} 个浏览器配置`,
+          );
+        const platform =
+          request.body?.platform === undefined
+            ? defaultPlatform
+            : requirePlatform(request.body.platform);
+        const proxyId = request.body?.proxyId;
+        if (proxyId !== undefined) {
+          if (typeof proxyId !== "string" || !proxyId)
+            throw new ClientSessionError(400, "PROXY_REQUIRED", "请选择出口节点");
+          if (!process.env.MIRROR_RUNTIME_SOCKET)
             throw new ClientSessionError(
-              409,
-              "PROFILE_LIMIT",
-              `每个用户最多 ${MAX_PROFILES} 个浏览器配置`,
+              503,
+              "PROXY_RUNTIME_DISABLED",
+              "请在部署中启用独立出口运行时",
             );
-          const platform =
-            request.body?.platform === undefined
-              ? defaultPlatform
-              : requirePlatform(request.body.platform);
-          const proxyId = request.body?.proxyId;
-          if (proxyId !== undefined) {
-            if (typeof proxyId !== "string" || !proxyId)
-              throw new ClientSessionError(400, "PROXY_REQUIRED", "请选择出口节点");
-            if (!process.env.MIRROR_RUNTIME_SOCKET)
-              throw new ClientSessionError(
-                503,
-                "PROXY_RUNTIME_DISABLED",
-                "请在部署中启用独立出口运行时",
-              );
-            proxyCatalog.getNodeConfig(user, proxyId);
-          }
-          const created = await accountStore.create(request.body?.name, platform);
-          try {
-            if (typeof proxyId === "string") await accountStore.setProxy(created.id, proxyId);
-            userStore.assignProfile(created.id, user.id);
-          } catch (error) {
-            await accountStore.remove(created.id);
-            throw error;
-          }
-          return { ...created, ...profileSystem(created.id) };
-        });
-      } catch (error) {
-        if (error instanceof ProxyCatalogError)
-          return reply.code(error.statusCode).send({ error: error.message });
-        return clientError(reply, error, owner);
-      }
+          proxyCatalog.getNodeConfig(user, proxyId);
+        }
+        const created = await accountStore.create(request.body?.name, platform);
+        try {
+          if (typeof proxyId === "string") await accountStore.setProxy(created.id, proxyId);
+          userStore.assignProfile(created.id, user.id);
+        } catch (error) {
+          await accountStore.remove(created.id);
+          throw error;
+        }
+        return { ...created, ...profileSystem(created.id) };
+      });
     },
   );
   app.patch<{ Params: { id: string }; Body: { name?: unknown } }>(
     "/api/accounts/:id",
-    { bodyLimit: 1024 },
-    async (request, reply) => {
-      const owner = currentOwner(request.raw);
-      if (!owner) return reply.code(401).send({ error: "请重新输入访问密码" });
-      try {
-        return await accountLifecycle.run(async () => {
-          const user = requireLiveOwner(request.raw, owner);
-          access.requireOwnProfile(user.id, request.params.id);
-          return accountStore.rename(request.params.id, request.body?.name);
-        });
-      } catch (error) {
-        return clientError(reply, error, owner);
-      }
+    { bodyLimit: 1024, config: workspace.config },
+    async (request) => {
+      const owner = workspace.owner(request, 401, "请重新输入访问密码");
+      return await accountLifecycle.run(async () => {
+        const user = requireLiveOwner(request.raw, owner);
+        access.requireOwnProfile(user.id, request.params.id);
+        return accountStore.rename(request.params.id, request.body?.name);
+      });
     },
   );
-  app.post<{ Params: { id: string } }>("/api/accounts/:id/default", async (request, reply) => {
-    const owner = currentOwner(request.raw);
-    if (!owner) return reply.code(401).send({ error: "请重新登录" });
-    try {
+  app.post<{ Params: { id: string } }>(
+    "/api/accounts/:id/default",
+    { config: workspace.config },
+    async (request) => {
+      const owner = workspace.owner(request, 401, "请重新登录");
       return await accountLifecycle.run(() => {
         const user = requireLiveOwner(request.raw, owner);
         userStore.setDefaultProfile(user.id, request.params.id);
         return { account: request.params.id };
       });
-    } catch (error) {
-      return clientError(reply, error, owner);
-    }
-  });
-  app.post<{ Params: { id: string } }>("/api/accounts/:id/exit/check", async (request, reply) => {
-    const owner = currentOwner(request.raw);
-    if (!owner) return reply.code(401).send({ error: "请重新登录" });
-    try {
+    },
+  );
+  app.post<{ Params: { id: string } }>(
+    "/api/accounts/:id/exit/check",
+    { config: workspace.exitConfig },
+    async (request, reply) => {
+      const owner = workspace.owner(request, 401, "请重新登录");
       const snapshot = await accountLifecycle.run(() => {
         const user = requireLiveOwner(request.raw, owner);
         const id = request.params.id;
@@ -1736,15 +1717,12 @@ export async function startClientGateway(
           health,
         });
       });
-    } catch (error) {
-      if (error instanceof ProxyCatalogError)
-        return reply.code(error.statusCode).send({ error: error.message });
-      return clientError(reply, error, owner);
-    }
-  });
+    },
+  );
   app.patch<{ Params: { id: string }; Body: { proxyId: string | null } }>(
     "/api/accounts/:id/proxy",
     {
+      config: workspace.exitConfig,
       schema: {
         body: {
           type: "object",
@@ -1758,65 +1736,54 @@ export async function startClientGateway(
         },
       },
     },
-    async (request, reply) => {
-      const owner = currentOwner(request.raw);
-      if (!owner) return reply.code(401).send({ error: "请重新登录" });
-      try {
-        return await accountLifecycle.run(async () => {
-          const user = requireLiveOwner(request.raw, owner);
-          const id = request.params.id;
-          access.requireOwnProfile(user.id, id);
-          const proxyId = request.body.proxyId;
-          if (proxyId !== null) {
-            if (!process.env.MIRROR_RUNTIME_SOCKET)
-              throw new ClientSessionError(
-                503,
-                "PROXY_RUNTIME_DISABLED",
-                "请在部署中启用独立出口运行时",
-              );
-            proxyCatalog.getNodeConfig(user, proxyId);
-          }
-          if ((accountStore.get(id)!.proxyId ?? null) !== proxyId) {
-            await resetProfileRuntime(id);
-            await accountStore.setProxy(id, proxyId);
-          }
-          return { proxyId };
-        });
-      } catch (error) {
-        if (error instanceof ProxyCatalogError)
-          return reply.code(error.statusCode).send({ error: error.message });
-        return clientError(reply, error, owner);
-      }
+    async (request) => {
+      const owner = workspace.owner(request, 401, "请重新登录");
+      return await accountLifecycle.run(async () => {
+        const user = requireLiveOwner(request.raw, owner);
+        const id = request.params.id;
+        access.requireOwnProfile(user.id, id);
+        const proxyId = request.body.proxyId;
+        if (proxyId !== null) {
+          if (!process.env.MIRROR_RUNTIME_SOCKET)
+            throw new ClientSessionError(
+              503,
+              "PROXY_RUNTIME_DISABLED",
+              "请在部署中启用独立出口运行时",
+            );
+          proxyCatalog.getNodeConfig(user, proxyId);
+        }
+        if ((accountStore.get(id)!.proxyId ?? null) !== proxyId) {
+          await resetProfileRuntime(id);
+          await accountStore.setProxy(id, proxyId);
+        }
+        return { proxyId };
+      });
     },
   );
   app.patch<{ Params: { id: string }; Body: { platform?: unknown } }>(
     "/api/accounts/:id/platform",
-    { bodyLimit: 1024 },
-    async (request, reply) => {
-      const owner = currentOwner(request.raw);
-      if (!owner) return reply.code(401).send({ error: "请重新登录" });
-      try {
-        return await accountLifecycle.run(async () => {
-          const user = requireLiveOwner(request.raw, owner);
-          const id = request.params.id;
-          access.requireOwnProfile(user.id, id);
-          const platform = requirePlatform(request.body?.platform);
-          if (profileSystem(id).platform !== platform) {
-            await resetProfileRuntime(id);
-            await accountStore.setPlatform(id, platform);
-          }
-          return { platform };
-        });
-      } catch (error) {
-        return clientError(reply, error, owner);
-      }
+    { bodyLimit: 1024, config: workspace.config },
+    async (request) => {
+      const owner = workspace.owner(request, 401, "请重新登录");
+      return await accountLifecycle.run(async () => {
+        const user = requireLiveOwner(request.raw, owner);
+        const id = request.params.id;
+        access.requireOwnProfile(user.id, id);
+        const platform = requirePlatform(request.body?.platform);
+        if (profileSystem(id).platform !== platform) {
+          await resetProfileRuntime(id);
+          await accountStore.setPlatform(id, platform);
+        }
+        return { platform };
+      });
     },
   );
-  app.delete<{ Params: { id: string } }>("/api/accounts/:id", async (request, reply) => {
-    const owner = currentOwner(request.raw);
-    if (!owner) return reply.code(401).send({ error: "请重新输入访问密码" });
-    const id = request.params.id;
-    try {
+  app.delete<{ Params: { id: string } }>(
+    "/api/accounts/:id",
+    { config: workspace.config },
+    async (request, reply) => {
+      const owner = workspace.owner(request, 401, "请重新输入访问密码");
+      const id = request.params.id;
       return await accountLifecycle.run(async () => {
         const user = requireLiveOwner(request.raw, owner);
         access.requireOwnProfile(user.id, id);
@@ -1844,40 +1811,32 @@ export async function startClientGateway(
         await rm(accountDir(id), { recursive: true, force: true });
         return reply.code(204).send();
       });
-    } catch (error) {
-      return clientError(reply, error, owner);
-    }
-  });
-  app.post<{ Params: { sid: string }; Body: { account?: unknown } }>(
-    "/api/client/session/:sid/account",
-    { bodyLimit: 1024 },
-    async (request, reply) => {
-      const owner = currentOwner(request.raw);
-      if (!owner) return reply.code(403).send({ error: "这个会话不属于当前客户端" });
-      const id = request.body?.account;
-      try {
-        if (typeof id !== "string")
-          throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
-        await switchAccount(request.raw, owner, request.params.sid, id);
-        return { account: clientSessions.profileOf(request.params.sid) };
-      } catch (error) {
-        return clientError(reply, error, owner);
-      }
     },
   );
-  app.delete<{ Params: { sid: string } }>("/api/client/session/:sid", async (request, reply) => {
-    const owner = currentOwner(request.raw);
-    if (!owner) return reply.code(403).send({ error: "这个会话不属于当前客户端" });
-    try {
+  app.post<{ Params: { sid: string }; Body: { account?: unknown } }>(
+    "/api/client/session/:sid/account",
+    { bodyLimit: 1024, config: workspace.config },
+    async (request) => {
+      const owner = workspace.owner(request, 403, "这个会话不属于当前客户端");
+      const id = request.body?.account;
+      if (typeof id !== "string")
+        throw new ClientSessionError(404, "PROFILE_UNKNOWN", "没有这个账号");
+      await switchAccount(request.raw, owner, request.params.sid, id);
+      return { account: clientSessions.profileOf(request.params.sid) };
+    },
+  );
+  app.delete<{ Params: { sid: string } }>(
+    "/api/client/session/:sid",
+    { config: workspace.config },
+    async (request, reply) => {
+      const owner = workspace.owner(request, 403, "这个会话不属于当前客户端");
       await accountLifecycle.run(() => {
         requireLiveOwner(request.raw, owner);
         return registry.releaseLocked(owner, request.params.sid);
       });
       return reply.code(204).send();
-    } catch (error) {
-      return clientError(reply, error, owner);
-    }
-  });
+    },
+  );
   app.get<{ Params: { sid: string } }>(
     "/s/:sid/theme",
     { preHandler: requireSession() },
@@ -1892,6 +1851,7 @@ export async function startClientGateway(
   app.post<{ Params: { sid: string }; Body: { instanceId: string; state: string } }>(
     "/api/client/session/:sid/cpa/oauth",
     {
+      config: workspace.config,
       preHandler: requireSession(),
       bodyLimit: 4096,
       schema: {
@@ -1906,72 +1866,60 @@ export async function startClientGateway(
         },
       },
     },
-    async (request, reply) => {
-      try {
-        return await accountLifecycle.run(async () => {
-          // Again inside the lock: the session may have changed hands while this waited.
-          const { owner } = access.authorizeSession(request.raw, request.params.sid);
-          const user = requireLiveOwner(request.raw, owner);
-          if (!cpaRuntime) throw new CpaError(503, "CPA_DISABLED", "CPA 未启用");
-          const oauth = cpaRuntime.oauthPage(user, request.body.instanceId, request.body.state);
-          const profileId = clientSessions.profileOf(request.params.sid);
-          requireBrowserExit(profileId);
-          if (accountStore.get(profileId)?.proxyId !== oauth.proxyId)
-            throw new CpaError(
-              409,
-              "CPA_BROWSER_EXIT",
-              "当前浏览器出口与授权节点不同，请选择出口一致的浏览器配置",
-            );
-          const runtime = await registry.ensureLocked(request.params.sid);
-          requireLiveOwner(request.raw, owner);
-          await runtime.tabs.handle({
-            t: "nav",
-            tab: runtime.tabs.activeTabId ?? "",
-            action: "newtab",
-            url: oauth.url,
-          });
-          return { ok: true };
+    async (request) => {
+      return await accountLifecycle.run(async () => {
+        // Again inside the lock: the session may have changed hands while this waited.
+        const { owner } = access.authorizeSession(request.raw, request.params.sid);
+        const user = requireLiveOwner(request.raw, owner);
+        if (!cpaRuntime) throw new CpaError(503, "CPA_DISABLED", "CPA 未启用");
+        const oauth = cpaRuntime.oauthPage(user, request.body.instanceId, request.body.state);
+        const profileId = clientSessions.profileOf(request.params.sid);
+        requireBrowserExit(profileId);
+        if (accountStore.get(profileId)?.proxyId !== oauth.proxyId)
+          throw new CpaError(
+            409,
+            "CPA_BROWSER_EXIT",
+            "当前浏览器出口与授权节点不同，请选择出口一致的浏览器配置",
+          );
+        const runtime = await registry.ensureLocked(request.params.sid);
+        requireLiveOwner(request.raw, owner);
+        await runtime.tabs.handle({
+          t: "nav",
+          tab: runtime.tabs.activeTabId ?? "",
+          action: "newtab",
+          url: oauth.url,
         });
-      } catch (error) {
-        if (error instanceof CpaError)
-          return reply.code(error.statusCode).send({ error: error.code, message: error.message });
-        return clientError(reply, error);
-      }
+        return { ok: true };
+      });
     },
   );
   app.post<{ Params: { sid: string; id: string } }>(
     "/api/client/session/:sid/remote-cc/logins/:id/open",
-    { preHandler: requireSession(), bodyLimit: 1024 },
-    async (request, reply) => {
-      try {
-        return await accountLifecycle.run(async () => {
-          // Again inside the lock: the session may have changed hands while this waited.
-          const { owner } = access.authorizeSession(request.raw, request.params.sid);
-          const user = requireLiveOwner(request.raw, owner);
-          const sid = request.params.sid;
-          const runtime = await registry.ensureLocked(sid);
-          requireLiveOwner(request.raw, owner);
-          await remoteCc.openLoginIn(
-            user.id,
-            request.params.id,
-            clientSessions.profileOf(sid),
-            sid,
-            async (login) => {
-              await runtime.tabs.handle({
-                t: "nav",
-                tab: runtime.tabs.activeTabId ?? "",
-                action: "newtab",
-                url: login.url,
-              });
-            },
-          );
-          return { ok: true };
-        });
-      } catch (error) {
-        if (error instanceof RemoteCcError)
-          return reply.code(error.statusCode).send({ error: error.code, message: error.message });
-        return clientError(reply, error);
-      }
+    { preHandler: requireSession(), bodyLimit: 1024, config: workspace.config },
+    async (request) => {
+      return await accountLifecycle.run(async () => {
+        // Again inside the lock: the session may have changed hands while this waited.
+        const { owner } = access.authorizeSession(request.raw, request.params.sid);
+        const user = requireLiveOwner(request.raw, owner);
+        const sid = request.params.sid;
+        const runtime = await registry.ensureLocked(sid);
+        requireLiveOwner(request.raw, owner);
+        await remoteCc.openLoginIn(
+          user.id,
+          request.params.id,
+          clientSessions.profileOf(sid),
+          sid,
+          async (login) => {
+            await runtime.tabs.handle({
+              t: "nav",
+              tab: runtime.tabs.activeTabId ?? "",
+              action: "newtab",
+              url: login.url,
+            });
+          },
+        );
+        return { ok: true };
+      });
     },
   );
   app.post<{ Params: { sid: string }; Body: { theme?: unknown; systemDark?: unknown } }>(
@@ -2056,13 +2004,9 @@ export async function startClientGateway(
       remoteCcStore.removeUser(userId);
     },
   });
-  app.get("/api/users", async (request, reply) => {
-    try {
-      requireAdmin(request.raw);
-      return reply.header("cache-control", "no-store").send({ users: userStore.listUsers() });
-    } catch (error) {
-      return clientError(reply, error);
-    }
+  app.get("/api/users", { config: workspace.config }, async (request, reply) => {
+    requireAdmin(request.raw);
+    return reply.header("cache-control", "no-store").send({ users: userStore.listUsers() });
   });
   const mailboxUser = (request: FastifyRequest<{ Params: { id: string } }>) => {
     requireAdmin(request.raw);
@@ -2070,18 +2014,22 @@ export async function startClientGateway(
     if (!user) throw new UserStoreError(404, "USER_UNKNOWN", "没有这个用户");
     return user;
   };
-  app.get<{ Params: { id: string } }>("/api/users/:id/mailboxes", async (request, reply) => {
-    const user = mailboxUser(request);
-    return reply.header("cache-control", "no-store").send({
-      enabled: mailbox.enabled,
-      domain: mailbox.domain,
-      domains: mailbox.domains,
-      addresses: mailbox.listAddresses(user.id),
-    });
-  });
+  app.get<{ Params: { id: string } }>(
+    "/api/users/:id/mailboxes",
+    { config: workspace.adminMailboxConfig },
+    async (request, reply) => {
+      const user = mailboxUser(request);
+      return reply.header("cache-control", "no-store").send({
+        enabled: mailbox.enabled,
+        domain: mailbox.domain,
+        domains: mailbox.domains,
+        addresses: mailbox.listAddresses(user.id),
+      });
+    },
+  );
   app.post<{ Params: { id: string }; Body: { address?: unknown; label?: unknown } }>(
     "/api/users/:id/mailboxes",
-    { bodyLimit: 4096 },
+    { bodyLimit: 4096, config: workspace.adminMailboxConfig },
     async (request, reply) => {
       const user = mailboxUser(request);
       if (!user.enabled) throw new UserStoreError(409, "USER_DISABLED", "请先启用这个用户");
@@ -2089,45 +2037,43 @@ export async function startClientGateway(
       return reply.code(201).header("cache-control", "no-store").send({ address });
     },
   );
-  app.get("/api/admin/overview", async (request, reply) => {
-    try {
-      requireAdmin(request.raw);
-      const online = onlineSessions();
-      const users = userStore.listUsers();
-      const sessions = clientSessions.all().map((record) => {
-        const userId = userIdForOwner(record.owner);
-        const profileId = clientSessions.profileOf(record.sid);
-        return {
-          ...clientSessions.describe(record.sid),
-          userId,
-          username: users.find((user) => user.id === userId)?.username ?? "已删除用户",
-          profileId,
-          profileName: accountStore.get(profileId)?.name ?? profileId,
-          online: online.has(record.sid),
-          running: registry.has(record.sid),
-          currentDevice: record.owner === currentOwner(request.raw),
-          createdAt: record.createdAt,
-        };
-      });
-      return reply.header("cache-control", "no-store").send({
-        users: users.map((user) => ({
-          ...user,
-          profileCount: userStore.listOwnedProfiles(user.id).length,
-          sso: userStore.identities(user.id).map((identity) => identity.email ?? "")[0] ?? null,
-          sessionCount: sessions.filter((session) => session.userId === user.id).length,
-          onlineSessions: sessions.filter((session) => session.userId === user.id && session.online)
-            .length,
-        })),
-        sessions,
-        resources: status(),
-        runningProfiles: accounts.size,
-      });
-    } catch (error) {
-      return clientError(reply, error);
-    }
+  app.get("/api/admin/overview", { config: workspace.config }, async (request, reply) => {
+    requireAdmin(request.raw);
+    const online = onlineSessions();
+    const users = userStore.listUsers();
+    const sessions = clientSessions.all().map((record) => {
+      const userId = userIdForOwner(record.owner);
+      const profileId = clientSessions.profileOf(record.sid);
+      return {
+        ...clientSessions.describe(record.sid),
+        userId,
+        username: users.find((user) => user.id === userId)?.username ?? "已删除用户",
+        profileId,
+        profileName: accountStore.get(profileId)?.name ?? profileId,
+        online: online.has(record.sid),
+        running: registry.has(record.sid),
+        currentDevice: record.owner === currentOwner(request.raw),
+        createdAt: record.createdAt,
+      };
+    });
+    return reply.header("cache-control", "no-store").send({
+      users: users.map((user) => ({
+        ...user,
+        profileCount: userStore.listOwnedProfiles(user.id).length,
+        sso: userStore.identities(user.id).map((identity) => identity.email ?? "")[0] ?? null,
+        sessionCount: sessions.filter((session) => session.userId === user.id).length,
+        onlineSessions: sessions.filter((session) => session.userId === user.id && session.online)
+          .length,
+      })),
+      sessions,
+      resources: status(),
+      runningProfiles: accounts.size,
+    });
   });
-  app.delete<{ Params: { sid: string } }>("/api/admin/sessions/:sid", async (request, reply) => {
-    try {
+  app.delete<{ Params: { sid: string } }>(
+    "/api/admin/sessions/:sid",
+    { config: workspace.config },
+    async (request, reply) => {
       await accountLifecycle.run(async () => {
         requireAdmin(request.raw);
         const record = clientSessions.get(request.params.sid);
@@ -2135,33 +2081,27 @@ export async function startClientGateway(
         await registry.releaseLocked(record.owner, record.sid);
       });
       return reply.code(204).send();
-    } catch (error) {
-      return clientError(reply, error);
-    }
-  });
+    },
+  );
   app.post<{
     Body: { username?: unknown; password?: unknown; role?: unknown; maxSessions?: unknown };
-  }>("/api/users", { bodyLimit: 4096 }, async (request, reply) => {
-    try {
-      return await accountLifecycle.run(async () => {
-        requireAdmin(request.raw);
-        const user = await userStore.createUser({
-          username: request.body?.username,
-          password: request.body?.password,
-          role: request.body?.role,
-          maxSessions: request.body?.maxSessions,
-        });
-        try {
-          await defaultProfileFor(user);
-        } catch (error) {
-          userStore.deleteUser(user.id);
-          throw error;
-        }
-        return reply.code(201).send(user);
+  }>("/api/users", { bodyLimit: 4096, config: workspace.config }, async (request, reply) => {
+    return await accountLifecycle.run(async () => {
+      requireAdmin(request.raw);
+      const user = await userStore.createUser({
+        username: request.body?.username,
+        password: request.body?.password,
+        role: request.body?.role,
+        maxSessions: request.body?.maxSessions,
       });
-    } catch (error) {
-      return clientError(reply, error);
-    }
+      try {
+        await defaultProfileFor(user);
+      } catch (error) {
+        userStore.deleteUser(user.id);
+        throw error;
+      }
+      return reply.code(201).send(user);
+    });
   });
   app.patch<{
     Params: { id: string };
@@ -2172,32 +2112,30 @@ export async function startClientGateway(
       enabled?: unknown;
       maxSessions?: unknown;
     };
-  }>("/api/users/:id", { bodyLimit: 4096 }, async (request, reply) => {
-    try {
-      return await accountLifecycle.run(async () => {
-        requireAdmin(request.raw);
-        const previous = userStore.getUser(request.params.id);
-        const user = await userStore.updateUser(request.params.id, request.body ?? {});
-        if (
-          request.body?.password !== undefined ||
-          previous?.role !== user.role ||
-          previous?.enabled !== user.enabled
-        ) {
-          for (const connection of viewers.values())
-            if (connection.userId === user.id) ws.closeSession(connection.sid);
-        }
-        if (accountChangeRevokesRemoteCc(previous, user, request.body?.password !== undefined))
-          remoteCcStore.removeUser(user.id);
-        if (!user.enabled)
-          await closeUserWorkspacesLocked(user.id, userStore.listOwnedProfiles(user.id));
-        return user;
-      });
-    } catch (error) {
-      return clientError(reply, error);
-    }
+  }>("/api/users/:id", { bodyLimit: 4096, config: workspace.config }, async (request) => {
+    return await accountLifecycle.run(async () => {
+      requireAdmin(request.raw);
+      const previous = userStore.getUser(request.params.id);
+      const user = await userStore.updateUser(request.params.id, request.body ?? {});
+      if (
+        request.body?.password !== undefined ||
+        previous?.role !== user.role ||
+        previous?.enabled !== user.enabled
+      ) {
+        for (const connection of viewers.values())
+          if (connection.userId === user.id) ws.closeSession(connection.sid);
+      }
+      if (accountChangeRevokesRemoteCc(previous, user, request.body?.password !== undefined))
+        remoteCcStore.removeUser(user.id);
+      if (!user.enabled)
+        await closeUserWorkspacesLocked(user.id, userStore.listOwnedProfiles(user.id));
+      return user;
+    });
   });
-  app.delete<{ Params: { id: string } }>("/api/users/:id", async (request, reply) => {
-    try {
+  app.delete<{ Params: { id: string } }>(
+    "/api/users/:id",
+    { config: workspace.config },
+    async (request, reply) => {
       const id = request.params.id;
       await accountLifecycle.run(async () => {
         const admin = requireAdmin(request.raw);
@@ -2220,10 +2158,8 @@ export async function startClientGateway(
         userStore.deleteUser(id);
       });
       return reply.code(204).send();
-    } catch (error) {
-      return clientError(reply, error);
-    }
-  });
+    },
+  );
   app.get("/healthz", async (_request, reply) => {
     const alive = [...accounts.values()].every((account) => account.browser.isAlive?.() !== false),
       pages = [...registry.values()].flatMap((runtime) =>

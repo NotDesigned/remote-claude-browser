@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { gzipSync, gunzipSync } from "node:zlib";
 import Fastify from "fastify";
+import { registerErrorHandler } from "../http-errors";
 import { afterEach, describe, expect, it } from "vitest";
 import type { FrontendUser } from "../auth/users";
 import { createCpaStore, type CpaInstance, type CpaStore } from "./store";
@@ -232,6 +233,7 @@ describe("CPA instance and key boundaries", () => {
     const shared = store.create(admin, "shared");
     await runtime.start(admin, shared.id);
     const app = Fastify();
+    registerErrorHandler(app);
     registerCpaRoutes(app, {
       runtime,
       currentUser: (req) => users.get(String(req.headers["x-test-user"])),
@@ -259,7 +261,10 @@ describe("CPA instance and key boundaries", () => {
           expect.objectContaining({ id: bobsKey.id, username: bob.username }),
         ]),
       );
-      expect((await request(bob, "DELETE", `${keysPath}/${key.id}`)).statusCode).toBe(403);
+      const foreign = await request(bob, "DELETE", `${keysPath}/${key.id}`);
+      expect(foreign.statusCode).toBe(403);
+      expect(foreign.json()).toEqual({ error: expect.any(String), message: expect.any(String) });
+      expect(foreign.json().error).toMatch(/^CPA_/);
       for (const [method, suffix] of [
         ["GET", "credentials"],
         ["POST", "start"],
@@ -364,6 +369,7 @@ describe("CPA authorization lifecycle", () => {
     });
     await runtime.startOAuth(alice, value.id, "node-a");
     const app = Fastify();
+    registerErrorHandler(app);
     registerCpaRoutes(app, {
       runtime,
       currentUser: (req) =>
@@ -598,6 +604,7 @@ describe("CPA v8 contract", () => {
         : response({ status: "ok" }),
     );
     const app = Fastify();
+    registerErrorHandler(app);
     registerCpaRoutes(app, {
       runtime,
       currentUser: (req) => (req.headers.cookie === "user=alice" ? alice : null),
@@ -844,6 +851,7 @@ describe("CPA v8 contract", () => {
     const key = store.issueKey(value.id, "client", alice.id);
     const other = store.create(bob);
     const app = Fastify();
+    registerErrorHandler(app);
     registerCpaRoutes(app, {
       runtime,
       currentUser: (req) => (req.headers.cookie === "user=alice" ? alice : null),
@@ -953,6 +961,7 @@ describe("CPA v8 contract", () => {
     await runtime.start(alice, value.id);
     const key = store.issueKey(value.id, "client", alice.id);
     const app = Fastify();
+    registerErrorHandler(app);
     registerCpaInferenceRoutes(app, runtime);
     const revealing = {
       "x-forwarded-for": "198.51.100.7, 10.0.0.2",
@@ -997,6 +1006,7 @@ it("opens instance-scoped native management using workbench authorization withou
   const panelFile = join(dir, "management.html");
   await writeFile(panelFile, "<!doctype html><html><head></head><body>Native panel</body></html>");
   const app = Fastify();
+  registerErrorHandler(app);
   registerCpaManagementRoutes(app, {
     runtime,
     panelFile,
