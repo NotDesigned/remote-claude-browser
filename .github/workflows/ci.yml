@@ -27,6 +27,8 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Check the documentation
+        run: pnpm run docs:check
       - run: pnpm run check:rrweb
       - run: pnpm run build
       - run: pnpm run typecheck

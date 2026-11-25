@@ -1,144 +1,105 @@
-# Security model
+# 威胁模型
 
-Remote Browser is intended for a small set of trusted viewers. It is not a hardened multi-tenant
-RBI service and does not claim that DOM reconstruction provides the same viewer isolation as a
-pixel-only stream.
+> 读者：安全审查
 
-## Trust boundaries
+Remote Claude Browser（RCB）面向一小群互相信任的使用者。它不是加固过的多租户远程浏览器隔离（RBI）服务，也不声称 DOM 重建能提供和纯像素流一样的查看端隔离。漏洞报告的方式见 [SECURITY.md](../SECURITY.md)。
 
-### Visited sites are untrusted
+## 信任边界
 
-Site JavaScript executes in authoritative Chromium. Chromium's sandbox and the container boundary
-reduce risk but do not make renderer compromise impossible. A browser exploit could attempt to
-reach host or network resources.
+### 访问的网站不可信
 
-Production deployments should:
+网站的 JavaScript 在服务器上真实的 Chromium 里执行。Chromium 沙箱和容器边界能降低风险，但不能排除渲染进程被攻破；被攻破的浏览器可能尝试访问宿主机或网络上的资源。
 
-- keep Chromium non-root with its sandbox enabled;
-- keep CDP private and unexposed;
-- block browser egress to private, carrier-NAT, link-local, and cloud metadata destinations;
-- isolate the Docker host from unrelated sensitive services;
-- patch host, Docker, Chromium base image, and Node dependencies regularly.
+- Chromium 以非 root 用户（UID 10001）运行，沙箱保持开启。Compose 给容器 `SYS_ADMIN` 能力，是因为 Docker 默认的 seccomp 规则要有它才允许 Chromium 创建沙箱所需的命名空间；不要用 `--no-sandbox`。
+- CDP 走进程内的私有管道，不监听端口。
+- 服务端容器在自己的网络命名空间里设置出站规则，禁止浏览器访问私有网段、运营商 NAT 网段、链路本地地址和云元数据地址，不改动宿主机的防火墙。宿主机的公网 IP 要写进 `EGRESS_BLOCK`，容器看不到它。
+- 每个浏览器配置在自己的网络命名空间里经 Mihomo 和绑定的节点出网；节点故障时没有网络，不会改走宿主机的地址。资源下载在解析时拒绝私有地址，IPv4 和 IPv6 都一样。
+- 部署级出站代理（`compose.proxy.yml`）的 Xray 以 UID 10002 运行，只持有 `CAP_NET_ADMIN`，代理凭据不进入浏览器和网关的环境。
 
-The default server container sets these egress rules in its own network namespace, leaving the host's
-firewall alone. With `compose.hostnet.yml`, rules instead live in the host namespace and target the
-browser UID. Add the host's public IP to `EGRESS_BLOCK`.
+把服务端放在专用的虚拟机或机器上，和不相关的敏感服务隔开，并定期更新宿主机、Docker、镜像和依赖。
 
-With `EGRESS_PROXY` and `compose.proxy.yml`, Xray carries the browser UID's traffic to that
-proxy over a TUN interface, and the firewall rejects anything the browser UID sends elsewhere, so a
-proxy outage leaves pages offline rather than on the host's address. Xray runs as UID 10002
-holding only `CAP_NET_ADMIN`; the proxy's credentials stay out of the browser's and gateway's
-environment. The private-network rules above still apply to what goes through the proxy. A root supervisor forwards shutdown signals and waits for browser processes before removing policy routes; neither it nor the tunnel exposes a control port.
+### 浏览器配置之间
 
-### Viewers are trusted with page content
+每个浏览器配置有自己的 Chrome 进程、配置目录、私有 Xvfb 显示（带认证）、网络、挂载和 PID 命名空间。启动器只把这个配置的目录、它的显示、私有临时目录、`/proc` 和只读的系统依赖放进它的文件系统；其他配置、网关的数据库、应用文件和运行时的管理 socket 都不在其中。上传和下载留在配置自己的目录里。导航只接受 HTTP、HTTPS 和 `about:blank`，Chromium 策略也阻止本地文件导航。
 
-Authenticated front-end users receive reconstructed markup, CSS, text, proxied assets and media from
-their own browser configurations and sessions. Ownership is checked on session operations,
-WebSocket upgrades and resource access. A user can navigate, type, upload and download within their
-own sessions. Devices signed into the same front-end account can access that account's browser
-configurations, and website cookies remain shared between sessions that select the same configuration.
+这些仍是同一个容器里的进程，共享内核、CPU、内存和磁盘，也共用一个系统 UID。它们不是独立的虚拟机，挡不住内核漏洞，也不保证网站无法关联不同配置的浏览器指纹。
 
-Front-end users are separate from accounts on visited sites. New users start with their own Chrome
-profiles and choose which websites to sign into. Existing profiles are assigned once to the bootstrap
-administrator during migration; they are not copied to new users. Disabling a front-end user revokes their logins and retains their data for re-enabling. Deleting
-a user removes their browser profiles, private proxy sources, private CPA container/volumes and
-calling keys. Shared resources and other users remain. Backups are managed separately by the operator.
+### 使用者被信任可以看到页面内容
 
-With `compose.runtime.yml`, each browser configuration has its own Chrome process, profile directory,
-network, mount and PID namespaces. The launcher exposes only that profile, its authenticated X display,
-private temporary storage and `/proc`, and read-only system dependencies. Other profiles, gateway
-databases, application files and runtime management sockets are absent. Browser uploads and downloads
-stay inside its profile. Workbench navigation accepts HTTP, HTTPS and `about:blank`; Chromium policy
-also blocks native file navigation. Chromium remains UID 10001 with its own sandbox enabled.
+登录的用户收到自己的浏览器配置和会话的重建标记、CSS、文字、经代理的资源和媒体。会话操作、WebSocket 升级、资源、上传和下载都检查归属。同一用户在多个设备上登录时，这些设备都能访问这个用户的配置；选择同一配置的会话共享网站 Cookie。
 
-The legacy default Chrome state is moved into `/data/profile/browser-default`; service databases stay
-in `/data/profile`. These remain processes in one container, sharing the kernel, CPU, memory and disk. This does not provide separate VMs, protection from kernel exploits or a claim
-that websites cannot correlate browser fingerprints. Administrators and host operators remain trusted.
+工作台的用户和网站上的账号无关。管理员和部署者是被信任的：管理员能重置用户密码，部署者能读取持久数据。
 
-All Chrome processes, including the legacy default configuration, start on demand and close after
-120 seconds without an assigned session. Closing a process retains its persistent profile. Each
-session runtime has a fresh random asset-token key. Asset routes resolve that active key and use the
-sealed token as the cache namespace, so reusing a session slot cannot reveal another runtime's cached
-content. Resource requests are rejected if the runtime disappears or its key changes while work is
-pending; stylesheet child-resource tokens use the same runtime key.
+### 重建的 DOM 是惰性的，没有经过净化
 
-### The reconstructed DOM is inert, not sanitized
+回放 iframe 设置了 `allow-same-origin` 和 `allow-scripts` 以便交互，但它继承的 CSP 是 `script-src 'none'`，网站的 JavaScript 和内联事件处理器都不会执行。沙箱不允许表单、弹窗、顶层导航和直接下载，会触发导航或请求的本地默认行为被取消。
 
-The replay iframe allows `allow-same-origin` and `allow-scripts` for replay interaction, while its
-inherited CSP sets `script-src 'none'` and blocks visited-site JavaScript and inline handlers.
-The sandbox omits forms, popups, top navigation and direct downloads. Local defaults that would
-navigate or fetch are cancelled.
+但网页的标记、SVG、CSS、字体和浏览器的解析行为仍会进入查看端的源，没有经过通用的净化或转码。这和查看端只收到像素和坐标的纯像素 RBI 是不同的边界：浏览器在标记、样式或字体处理上的漏洞、隔离缺陷或应用缺陷都可能影响查看端。如果首要目标是隔离恶意内容和查看端，应使用纯像素的方案。
 
-### Optional CPA has separate credentials
+### 资源令牌
 
-CPA's inference keys and OAuth credentials are separate from front-end user logins and browser
-profiles. The workbench manages private instances and an administrator-managed shared pool; inference
-keys do not grant management access. Stock CPA containers have separate auth/config volumes, join only
-an internal network and expose no host ports. Credential-bound Mihomo exits carry their traffic.
-An unbound credential is disabled while its auth material is retained; the instance-wide proxy denies
-unbound traffic. Exit process failure revokes forwarding until bounded recovery succeeds, with no
-direct-route fallback. OAuth and config volumes need the same backup protection as browser profiles.
+资源 URL 是加密的网关令牌，绑定运行实例和会话。每次会话运行都使用新的随机密钥，缓存按密封令牌区分；即使会话编号被复用，也拿不到之前运行实例的缓存。运行实例消失或密钥变化时，进行中的资源请求被拒绝。
 
-However, markup, SVG, CSS, fonts, and browser parsing behavior still cross into the viewer origin.
-They are not passed through a general sanitizer or transcoder. This is a different boundary from
-pixel-only RBI, where the viewer receives pixels and input coordinates. A browser vulnerability in
-markup/style/font processing, a containment bug, or an application bug could affect the viewer.
-Use pixel-only technology when adversarial content-to-viewer isolation is the primary goal.
+### CPA 有独立的凭据
 
-### Docker control is host control
+CPA 的调用 Key 和 Claude 授权凭据与工作台登录和浏览器配置互相独立。调用 Key 按摘要找到唯一的实例，只能调用，不能管理。CPA 容器有各自的配置和授权卷，只加入 Docker 内部网络，不发布端口；每个凭据经自己绑定的节点出网，没有绑定的凭据被停用。出口进程故障时撤销转发，直到有限次数的恢复成功，期间不会直连。只有 `cpa-broker` 挂载 Docker socket，并且只接受固定模板的操作。
 
-Anyone who can control the Docker daemon can inspect environment secrets, profile volumes,
-downloads, and process state. The gateway does not mount the Docker socket in the supported
-Compose deployment.
+### 单点登录
 
-## Implemented controls
+启用单点登录（OIDC）后，身份提供方就是被信任的一方：能在身份提供方以某人身份登录，就能进入绑定了这个外部账号的工作台用户，或在允许列表放行时得到一个新用户。
 
-- no built-in administrator password; initial credentials are supplied by the operator;
-- salted scrypt password hashes, constant-time hash comparison and bounded login concurrency/backoff;
-- 60-day opaque login tokens, with only SHA-256 token digests persisted in SQLite;
-- Secure, HttpOnly, SameSite login cookies and signed device/session ownership cookies;
-- individual users, administrator-only user management and per-user browser profile ownership;
-- login revocation on password/role changes, disabling and deletion;
-- authorization on WebSocket upgrade and asset/upload/download routes;
-- one active driver per remote session with server-side enforcement;
-- rrweb masking of password values;
-- runtime-scoped sealed asset tokens, isolated cache keys and resolution-time private-address rejection;
-- one-time download redemption;
-- viewer-scoped WebRTC signaling with size/type checks;
-- unprivileged Chromium container and private, unpublished CDP;
-- Chromium sandbox retained with the Docker capability needed to create nested namespaces;
-- scriptless replay iframe and local navigation-default containment;
-- browser-facing CSP, anti-framing, MIME-sniffing, referrer, and permissions headers;
-- bounded viewer backpressure and snapshot-based resync;
-- memory-based session admission.
+- 授权码流程使用 PKCE（`S256`）、`state` 和 `nonce`。`state` 同时写进一个只在 `/gate/oidc` 路径下发送的 Cookie，从别的浏览器带过来的回调会被拒绝。ID token 的签名按身份提供方的 JWKS 校验。
+- 一个人按 issuer 加 `sub` 识别，从不按邮箱识别；邮箱只用于显示和首次登录的允许列表，并且要求 `email_verified`。一个外部账号只能绑定一个用户。
+- 第一次登录就自动创建用户。允许列表为空时，身份提供方放行进这个应用的每个人都会得到一个账号，所以要在身份提供方限制应用的访问者。
+- 设置了管理员组时，通过单点登录创建的用户的权限跟随这个组，控制这个组的人就能让这些用户成为管理员。
+- 在身份提供方移除某人后，他已有的工作台登录要到有效期结束才失效（`MIRROR_OIDC_SESSION_DAYS`）；没有本地密码的用户的 remote-cc 令牌在 `MIRROR_OIDC_REVALIDATE_DAYS` 后暂停。要立即切断，在「管理后台」停用他。
+- 网关直接访问身份提供方的 discovery、JWKS 和令牌端点；客户端密钥和其他密钥一样以环境变量传入。
 
-## Important limitations
+### remote-cc
 
-- Front-end authentication does not provide MFA, SSO or a durable audit trail.
-- Browser filesystem/PID/network namespaces still share one container, system UID and host kernel.
-- Egress denial depends on the supported entrypoint, Docker capabilities and correct host addresses.
-- Signing secrets supplied as Compose environment variables are visible to Docker administrators.
-- The Chromium container receives the broad `SYS_ADMIN` capability for namespace sandboxing.
-- Downloads are not malware-scanned.
-- Persistent profiles store high-value cookies and credentials.
-- There is no claim of resistance to malicious authenticated viewers or cross-user browser exploits.
-- Admission checks do not provide per-user resource quotas or distributed rate limiting.
-- SQLite front-end login tokens are not revoked by rotating the legacy signing secrets.
+remote-cc 的令牌只能通过工作台里的一次批准取得，属于批准它的用户；出口主机兑换会话授权后能拿到节点的完整凭据。权限、有效期和撤销见[接口契约](remote-cc.md)。
 
-## Deployment checklist
+### 控制 Docker 就是控制宿主机
 
-- Use HTTPS and keep the upstream gateway on loopback or a private proxy network.
-- Set a unique bootstrap administrator password and two independent stable signing secrets.
-- Confirm port 9222 has no host mapping.
-- Install and test a browser egress policy.
-- Restrict and encrypt backups of profiles, SQLite, WAL files and management metadata.
-- Stop the service when taking or restoring a full-volume backup so ownership and profile data agree.
-- Manage user access in the administrator UI; changing the bootstrap environment does not reset users.
-- Place the host on a dedicated VM or machine when browsing hostile sites.
-- Review logs and resource usage; update dependencies and images.
-- Never enable `MIRROR_E2E` outside a test process.
+能控制 Docker 守护进程的人能查看环境变量里的密钥、浏览器配置的数据卷、下载和进程状态。网关不挂载 Docker socket；`cpa-broker` 挂载，它是一个只接受固定操作的独立容器。
 
-## Reporting vulnerabilities
+## 已有的控制
 
-Follow [SECURITY.md](../SECURITY.md). Do not include cookies, tokens, private URLs, captured page
-content, or browser profiles in a report.
+- 没有内置的管理员密码，初始密码由部署者提供。
+- 密码用加盐的 scrypt 散列，常数时间比较；登录按来源 IP 限速并限制并发。
+- 登录令牌是不透明的随机值，数据库里只保存 SHA-256 摘要；有效期见[部署 · 资源与超时](deployment.md#资源与超时)。
+- 登录 Cookie 带 `Secure`、`HttpOnly`、`SameSite`；设备和会话归属的 Cookie 带签名。
+- 每个用户只能访问自己的浏览器配置，管理用户只有管理员能做。
+- 改密码、改权限、停用和删除都会撤销登录。
+- WebSocket 升级和资源、上传、下载路由都检查授权。
+- 每个远程会话同时只有一个操作者，由服务端强制。
+- rrweb 遮住密码输入的值。
+- 下载链接只能兑换一次。
+- WebRTC 信令按查看者隔离，并检查大小和类型。
+- 面向浏览器的响应带 CSP、防嵌入、MIME 嗅探、Referrer 和权限策略头。
+- 查看端的背压有上限，落后时用快照重新同步。
+- 会话按可用内存准入。
+
+## 已知限制
+
+- 工作台登录没有多因素认证，也没有持久的审计日志。
+- 各浏览器配置的命名空间仍共享一个容器、一个系统 UID 和宿主机内核；容器有较宽的 `SYS_ADMIN` 能力。
+- 出站限制依赖受支持的入口脚本、Docker 能力和正确的宿主机地址。
+- 以 Compose 环境变量传入的密钥对 Docker 管理员可见。
+- 下载的文件不做恶意软件扫描。
+- 持久的浏览器配置里保存着高价值的 Cookie 和凭据。
+- 不声称能抵御恶意的已登录使用者或跨用户的浏览器漏洞利用。
+- 内存准入不提供按用户的资源配额，也没有分布式限速。
+- 轮换 `MIRROR_AUTH_SECRET` 不会撤销数据库里的登录令牌。
+
+## 部署检查
+
+- 使用 HTTPS，网关只监听回环地址或私有的代理网络。
+- 设置唯一的初始管理员密码和稳定的 `MIRROR_AUTH_SECRET`。
+- 把宿主机的公网 IP 写进 `EGRESS_BLOCK`，保持 `EGRESS_POLICY=on`。
+- 备份要限制访问并加密：其中有浏览器配置、数据库、节点密码和 CPA 授权（清单见[部署 · 备份](deployment.md#备份)）。备份和还原前先停服。
+- 在「管理后台」管理用户；修改 `.env` 不会重置已有用户的密码。
+- 访问恶意网站时，把服务端放在专用的虚拟机或机器上。
+- 查看日志和资源使用，更新依赖和镜像。
+- 不要在测试进程以外设置 `MIRROR_E2E`。
+- 报告漏洞时不要附上 Cookie、令牌、私人网址、页面内容或浏览器配置。

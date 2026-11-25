@@ -1,160 +1,93 @@
 # Remote Claude Browser
 
-在自己的服务器上运行一个真实的 Chromium，然后在任意设备的浏览器里使用它打开的网页，包括 Claude 的官方网页版。
+> 读者：第一次来的人，以及正在评估是否部署的人
 
-网页的脚本、Cookie 和网络请求都留在服务器上。你的设备收到的是重建后的无脚本页面，所以文字依然清晰，可以选择、复制和查找；重建不了的内容可以切到实时画面操作。
+Remote Claude Browser（RCB）在你自己的服务器上运行真实的 Chromium，你在任意设备的浏览器里使用它打开的网页，包括 Claude 的网页版。
 
-基于 [Remote Browser](https://github.com/mystxcal/remote-browser)（Apache-2.0）修改，上游版本记录在 [UPSTREAM_COMMIT](UPSTREAM_COMMIT)，原始介绍保留在 [UPSTREAM.md](UPSTREAM.md)。
+网页的脚本、Cookie 和网络请求都留在服务器上。你的设备默认用**页面模式**查看：收到的是重建后的无脚本页面，文字清晰，可以选择、复制和查找。页面模式显示不全的内容（登录、验证码、复杂页面）可以切到**画面模式**，直接查看和操作真实的浏览器画面。
+
+本项目从[上游项目](https://github.com/mystxcal/remote-browser)（Apache-2.0）分叉而来，分叉时的上游提交记在 [UPSTREAM_COMMIT](UPSTREAM_COMMIT)，上游原始说明保存在 [UPSTREAM.md](UPSTREAM.md)。
 
 > 这是一个独立项目，与 Anthropic 没有关联，也未获其认可。Claude 是 Anthropic 的商标。你需要自己遵守所访问网站的服务条款。本项目不保证匿名，也不保证能通过任何网站的验证。
 
 ## 功能
 
-- **页面模式**：无脚本的 DOM 镜像，低带宽，文字可选可复制，支持中文输入法
-- **画面模式**：登录、验证码或复杂页面显示不全时，查看并操作真实的浏览器画面
-- **独立用户**：用用户名和密码登录工作台；不同用户有各自的 Chrome 和浏览器配置，网站登录自由选择
-- **多会话**：同一用户可以打开多个独立窗口、标签页和视口，也可以在 ⋯ 菜单里新建并选择自己的浏览器配置
-- **浏览器身份**：每个配置保存自己的屏幕尺寸、字体和字体渲染；可选 AliasMode 内核使用固定指纹种子，在隔离运行端中新建配置可模拟 Windows 身份。出口 IP 由各配置选择的节点决定
-- **用户管理**：管理员可以创建、禁用、修改和删除前端用户，或重置其密码；身份和配置归属保存在 SQLite 中
-- **手机可用**：触屏操作，可请求手机版网页
-- **文件**：调起本机文件选择器上传；下载边传边存，不长期占用服务器磁盘
-- **视频和语音**：页面里的视频通过 WebRTC 播放，声音和麦克风都在你自己的设备上
-- **断线恢复**：刷新或重连后回到原来的会话，页面崩溃会自动恢复
-- **代理与可选 API**：导入共享或私有代理来源，为每个浏览器配置明确选择出口；每个用户可以管理独立的 CPA 实例、Claude Code OAuth 凭据和外部 API Key，见 [CPA 部署](docs/cpa.md)
-- **remote-cc 联动**：[remote-cc](https://github.com/NotDesigned/remote-cc) 可以按浏览器配置运行 Claude Code：在工作台里批准电脑和出口主机，Claude Code 登录在该配置的浏览器里一键完成，会话使用该配置的 Claude 账号，全部流量经该配置的节点出去，出口和时区与网页版一致，见 [remote-cc 联动](docs/remote-cc.md)
+- **页面模式和画面模式**：页面模式低带宽、支持中文输入法；画面模式用于登录和验证码。见[使用](docs/usage.md)。
+- **用户**：用用户名和密码登录工作台，也可以启用单点登录（OpenID Connect）；每个用户只看到自己的浏览器配置和会话，管理员在「管理后台」管理用户。见[管理](docs/admin.md)。
+- **浏览器配置**：每个配置有独立的 Chrome 进程、网站登录资料、屏幕尺寸和字体；同一用户可以开多个会话。见[使用](docs/usage.md)。
+- **系统身份**：每个配置可以「设置系统」；可选安装 AliasMode 内核。见[使用](docs/usage.md)和[部署](docs/deployment.md)。
+- **出口**：每个配置必须绑定一个节点，网页、DNS 和 WebRTC 都经这个节点出去；浏览器的当地时间跟随出口。见[使用](docs/usage.md)。
+- **CPA**：每个用户可以有自己的 CPA 实例，用调用 Key 访问 `/v1`。见[使用 · CPA](docs/usage.md#cpa)。
+- **收件箱**：通过 Resend 接收邮件，用于网站注册和验证。见[使用](docs/usage.md)。
+- **「Apple 账户与 Claude 登录」**：在当前浏览器配置里引导注册账户并登录 Claude。见[使用](docs/usage.md)。
+- **remote-cc 联动**：[remote-cc](https://github.com/NotDesigned/remote-cc) 可以用某个浏览器配置的 Claude 账号和出口运行 Claude Code。见[使用 · remote-cc](docs/usage.md#remote-cc)和[接口契约](docs/remote-cc.md)。
+- **手机、文件、音视频、断线恢复**：支持触屏和手机版网页，上传和下载文件，页面里的视频和语音经 WebRTC 在你的设备上播放，刷新或断线后回到原来的会话。
 
 ## 部署结构
 
 ```mermaid
 flowchart LR
     U["你的设备<br/>任意浏览器"] -->|HTTPS| E
-    subgraph entry ["部署者管理的公网入口"]
+    PC["电脑<br/>remote-cc"] -->|HTTPS| E
+    EH["remote-cc 出口主机"] -->|HTTPS| E
+    R["Resend"] -->|webhook| E
+    subgraph entry ["入口机（部署者管理）"]
       E["Caddy / Nginx / 已有反向代理"]
     end
-    E -->|本机或受保护的上游连接| S
-    subgraph host ["浏览器服务（compose.yml）"]
-      S["网关"] --- B["Chromium + Xvfb"]
+    E --> G
+    subgraph server ["服务端：compose.yml + compose.runtime.yml"]
+      G["网关"] --- B["每个浏览器配置<br/>Chromium + Xvfb + Mihomo"]
+      G --- CB["cpa-broker"]
+      CB --- C["每个用户的 CPA 实例"]
     end
-    B --> W["网站"]
+    B -->|所选节点| W["网站"]
+    C -->|所选节点| W
 ```
 
-| 部分       | 文件                                          | 作用                                                              |
-| ---------- | --------------------------------------------- | ----------------------------------------------------------------- |
-| 浏览器服务 | `compose.yml`                                 | 运行浏览器和网关，保存登录状态；HTTP 端口默认只发布到本机回环地址 |
-| 入口示例   | [`examples/caddy/`](examples/caddy/README.md) | 同机和独立 VPS 的 Caddy 配置，按部署环境选择                      |
-| 兼容模板   | `compose.https.yml`、`client/`                | 保留已有同机 Caddy、独立入口机和 SSH 隧道部署的文件路径           |
-
-核心服务提供 HTTP 和 WebSocket。公网域名、TLS 证书、反向代理和跨主机连接由部署者管理，不要求单独部署“客户端”服务。
+服务端只提供 HTTP 和 WebSocket，默认只发布到本机回环地址。域名、TLS 证书、反向代理和跨主机通道由部署者管理；入口机可以就是服务端本身。入口需要转发的路径见[部署 · 公网入口](docs/deployment.md#公网入口)，Caddy 配置见 [examples/caddy](examples/caddy/README.md)。
 
 你的设备不需要安装任何东西，用浏览器打开入口地址即可。
 
 ## 快速开始
 
-### 只想在本机试试
-
-需要 Docker 和 Compose v2，服务端建议至少 2 核 4 GB 内存。
+需要 Linux、Docker 和 Compose v2，服务端建议至少 2 核 4 GB 内存。完整要求见[部署](docs/deployment.md)。
 
 ```bash
-git clone https://github.com/NotDesigned/remote-claude-browser.git remote-claude-browser
+git clone https://github.com/NotDesigned/remote-claude-browser.git
 cd remote-claude-browser
-./scripts/bootstrap.sh
+COMPOSE_FILE=compose.yml:compose.runtime.yml ./scripts/bootstrap.sh
+echo 'COMPOSE_FILE=compose.yml:compose.runtime.yml' >> .env
 ```
 
-脚本会生成 `.env`（包含随机密码和密钥）、构建并启动服务，最后打印访问地址和初始密码。用浏览器打开 `http://127.0.0.1:3010`，以用户名 `admin` 和这个密码登录。打开远程浏览器前，还需启用下面的运行时模块、导入节点并给配置选择出口。
+`bootstrap.sh` 生成 `.env`（随机密码和密钥），构建并启动服务，等健康检查通过后打印访问地址和初始密码。第二行命令把 `compose.runtime.yml` 记进 `.env`，以后的 `docker compose` 命令都会带上它；没有它，任何浏览器配置都打不开。
 
-### 配置公网入口
+用浏览器打开 `http://127.0.0.1:3010`，用户名 `admin`，密码是脚本打印的那个。然后：
 
-把浏览器服务接到已有 Caddy、Nginx 或其他反向代理，并在 `.env` 中设置用户实际访问的 HTTPS 来源：
+1. 在「代理与 API」→「代理来源」导入至少一个节点。
+2. 在配置选择页点「新建浏览器配置」，填写名称、选择出口，再点「检查并打开」。已有的配置通过卡片的「⋯」→「设置出口」绑定节点。
 
-```bash
-MIRROR_PUBLIC_ORIGIN=https://browser.example.com
-```
-
-```bash
-docker compose up -d server
-```
-
-反向代理需转发 WebSocket 和流式响应。可直接参考[同机或独立 VPS 的 Caddy 示例](examples/caddy/README.md)。域名、证书和上游通道在部署层配置。
-
-已有 `compose.https.yml` 或 `client/compose.yml` 的部署可以继续使用；具体用法和升级、备份见 [docs/deployment.md](docs/deployment.md)。
-
-### 浏览器出口与可选用户 CPA
-
-全新部署在浏览器服务上增加运行时模块：
-
-```bash
-docker compose -f compose.yml -f compose.runtime.yml up -d --build
-```
-
-长期使用时将 `compose.runtime.yml` 加入 `.env` 的 `COMPOSE_FILE`。已有部署保留原文件列表、数据卷和出站设置，在其后追加这个模块。
-
-通过「工作台 → 代理」导入代理来源，「工作台 → API」管理 CPA 授权和调用 Key。两个入口在配置选择页和浏览器内均可用。浏览器卡片的 ⋯ →「设置出口」选择节点。空选项表示「未分配」，配置未选节点时不能新开、恢复或切入远程浏览器；添加 CPA 授权时默认使用当前浏览器配置的出口，可手动换节点；没有可用的当前出口时必须先选择。新的 OpenAI 兼容 Base URL 为 `/v1`，完整说明、旧独立 CPA 的兼容路由及备份见 [docs/cpa.md](docs/cpa.md)。
-
-## 第一次使用
-
-可选的本地指纹内核及实测结果见 [指纹浏览器](docs/fingerprint-browser.md)。配合隔离运行端，新建配置使用 Windows 身份；直接启动时使用 Linux 身份。已有登录配置保留原内核和身份。
-
-1. 打开入口地址，输入**前端用户名和密码**。首次启动的管理员默认名为 `admin`，密码来自 `.env` 的 `MIRROR_ACCESS_PASSWORD`；这与浏览器内网站的账号无关。
-2. 登录后先选择浏览器配置，也可以新建配置；打开前通过卡片的 ⋯ →「设置出口」绑定节点。配置卡片显示 Claude 登录邮箱或“未登录”；站点明确停用的账号显示“账号不可用”。刷新已有会话会直接恢复，新登录或另开会话会重新选择配置。
-3. 选择后打开远程窗口。需要登录网站时，建议切到顶部的“画面”模式操作，完成后切回“页面”。
-4. 管理员可在「工作台 → 用户管理」中建立其他用户，无需先打开浏览器。新用户从空白浏览器配置开始，不会得到管理员的网站 Cookie。
-5. 用户、网站登录状态和配置归属保存在服务端的 `data` 卷里，重启和升级后依然有效。会话不设固定数量上限，新开和休眠恢复按可用内存准入；每位用户最多保存 8 个浏览器配置。
-
-邮箱在配置打开 Claude 后读取并保留，下次选择时直接显示；选择页会自动刷新状态。升级前从未读取过邮箱的旧配置，首次仍可能显示“已登录”，打开一次后即可更新。
-
-已登录配置的卡片显示当前组织的 KYC 状态和检测时间。运行中的配置通过自己的登录 Cookie 和出口读取 Claude 的 `kyc_status`，随登录状态约每分钟更新；关闭的配置保留上次结果，退出登录、换号或更换出口后清除。`not_required` 显示为当前未要求验证，`created` 按字面显示为流程已创建，`pending` 显示为待处理，`approved` 显示为已通过，`denied` 显示为未通过。
-
-进入会话后，可从「工作台 → 浏览器配置」回到同一选择页；选择其他配置会切换当前会话，点「返回会话」则继续原来的页面。配置操作统一放在卡片右侧的 ⋯ 菜单，可设置出口、重命名、设为默认或删除非默认配置。默认配置按用户保存并排在最前；删除正在使用的非默认配置后，本设备对应的会话会切回默认配置。其他设备正在使用的配置需要先结束对应会话。
-
-「工作台 → 我的账号」可以修改自己的密码，查看和结束本人在各设备上的浏览器会话。结束会话会关闭其页面并释放运行资源，配置内的网站登录仍保留；需要手动重新开启。修改密码要求验证当前密码，并让所有设备重新登录工作台，不修改网站密码或 CPA Key。
-
-| 资源                 | 管理与使用范围                                                                                              |
-| -------------------- | ----------------------------------------------------------------------------------------------------------- |
-| 浏览器配置、私有 CPA | 本人管理；工作台管理员没有直接查看他人内容的入口                                                            |
-| 私有代理来源         | 本人及管理员可使用、管理；来源显示所有者                                                                    |
-| 共享代理来源         | 管理员管理，所有工作台用户可使用                                                                            |
-| 共享 CPA             | 管理员维护实例和授权；每个用户管理自己的调用 Key，管理员可撤销全部共享 Key                                  |
-| 工作台用户           | 管理员管理；停用会停止浏览器和私有 CPA、阻止该用户所有调用 Key；删除后保留浏览器数据和 CPA 凭据供部署者恢复 |
-
-代理来源的删除、节点替换、范围修改和订阅刷新会先显示绑定的配置与 CPA 授权数量。停用用户后重新启用可恢复共享 Key 使用，私有 CPA 需重新启动；删除后重新创建同名用户不会继承旧资源。这些归属规则隔离普通用户，不代表对可重置密码的管理员或可访问数据卷的部署者保密。
-
-升级旧版本时，原有浏览器配置全部归初始管理员，原设备需要重新用用户名和密码登录。已有数据库不会因为修改 `.env` 而重新设置用户密码。浏览器时区按所选出口自动确定，工作台时钟显示出口 GeoIP 的真实城市及当地时间，缺少城市时显示国家；见[时区说明](docs/timezone.md)。
-
-## 安全须知
-
-前端用户的浏览器配置和会话按身份隔离。同一用户选择同一个浏览器配置时，仍会共享其中的网站 Cookie、历史和网站账号权限。
-
-- 公网访问必须走 HTTPS，并且 `SERVER_BIND` 保持 `127.0.0.1`。
-- 浏览器以非 root 用户运行，沙箱保持开启。Chromium 的调试协议走进程内管道，不监听任何端口。
-- 容器内的防火墙阻止网页访问私有网段、宿主机和云元数据地址。容器看不到宿主机的公网 IP，请把它填进 `EGRESS_BLOCK`。
-- `data` 卷里有 Cookie 和登录令牌，要像对待密钥一样保护它和它的备份。
-- 不同用户的 Chrome 仍在同一容器、同一系统用户下运行，共享服务器资源；这不是针对恶意租户设计的独立虚拟机边界。
-
-详见 [docs/security.md](docs/security.md)。
+每一步的细节见[使用](docs/usage.md)。要从公网访问，在 `.env` 里设置 `MIRROR_PUBLIC_ORIGIN=https://browser.example.com`，执行 `docker compose up -d`，再按[部署 · 公网入口](docs/deployment.md#公网入口)配置反向代理。其他 compose 组合见[部署 · 可用的 compose 组合](docs/deployment.md#可用的-compose-组合)。
 
 ## 文档
 
-- [部署](docs/deployment.md)：浏览器服务、入口契约、兼容模板、升级与备份
-- [Caddy 入口示例](examples/caddy/README.md)：同机反向代理或独立 VPS 入口
-- [CPA 面板与 API](docs/cpa.md)：可选服务、OAuth、接口地址、Caddy 路由和出站隔离
-- [配置](docs/configuration.md)：环境变量
-- [Windows 浏览器迁移准备](docs/windows-runtime.md)：Hyper-V 测试虚拟机和原生 Chrome 验证
-- [架构](docs/architecture.md) · [安全](docs/security.md) · [排错](docs/troubleshooting.md)
-- [双机 systemd 部署与运维](docs/operations.md)：不用 Docker 的部署方式和日常使用细节
-
-## 开发
-
-```bash
-pnpm install --frozen-lockfile
-pnpm build
-pnpm typecheck
-pnpm test
-CHROME_PATH=/path/to/chrome pnpm test:browser-lifecycle # 正式浏览器组件的跨站前进、后退和快照恢复
-pnpm test:profiles-ui # 配置选择、状态刷新、新建、恢复和手机布局；使用本地测试页面
-pnpm test:profiles-webkit # 使用 WebKit 再验收同一套流程，需先安装 Playwright WebKit 及运行依赖
-pnpm smoke:compose   # 构建镜像并做端到端检查，需要 Docker，设置 CHROME_PATH 后还会真实登录一次
-pnpm check:fingerprint [镜像] [账号数]   # 用临时容器开几个新浏览器配置，查看 who.1ms.dog 和 fingerprint.com 的判定
-```
+| 读者         | 文档                                                                                               | 内容                                                      |
+| ------------ | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| 使用者       | [docs/usage.md](docs/usage.md)                                                                     | 工作台、浏览器配置、出口、CPA、收件箱、remote-cc          |
+| 工作台管理员 | [docs/admin.md](docs/admin.md)                                                                     | 「管理后台」、共享资源、停用和删除用户、批准出口主机      |
+| 部署者       | [docs/deployment.md](docs/deployment.md)                                                           | 安装、compose 组合、公网入口、CPA、升级、备份、资源与超时 |
+| 部署者       | [docs/configuration.md](docs/configuration.md)                                                     | 环境变量和构建参数                                        |
+| 部署者       | [docs/troubleshooting.md](docs/troubleshooting.md)                                                 | 按症状排查                                                |
+| 部署者       | [examples/caddy/README.md](examples/caddy/README.md)                                               | 同机和独立 VPS 的 Caddy 入口                              |
+| 升级的部署者 | [CHANGELOG.md](CHANGELOG.md)                                                                       | 版本历史和升级步骤                                        |
+| 接入方       | [docs/remote-cc.md](docs/remote-cc.md)                                                             | remote-cc 接口契约、令牌、会话授权                        |
+| 安全审查     | [docs/security.md](docs/security.md)                                                               | 威胁模型和信任边界；漏洞报告见 [SECURITY.md](SECURITY.md) |
+| 开发者       | [docs/architecture.md](docs/architecture.md)                                                       | 组件、数据流、不变量、决策                                |
+| 开发者       | [CONTRIBUTING.md](CONTRIBUTING.md)                                                                 | 开发、测试、发布                                          |
+| 写文档的人   | [docs/documentation.md](docs/documentation.md)                                                     | 文档规则、归属表、术语                                    |
+| 维护者       | [docs/records/2026-11-03-resource-plane.md](docs/records/2026-11-03-resource-plane.md)             | 资源平面事故复盘                                          |
+| 维护者       | [docs/records/2026-11-06-systemd-operations.md](docs/records/2026-11-06-systemd-operations.md)     | 双机 systemd 部署运维记录                                 |
+| 维护者       | [docs/records/2026-11-16-aliasmode-evaluation.md](docs/records/2026-11-16-aliasmode-evaluation.md) | AliasMode 评测                                            |
+| 维护者       | [docs/records/2026-11-16-windows-runtime.md](docs/records/2026-11-16-windows-runtime.md)           | Windows 浏览器运行端计划                                  |
 
 ## 许可
 

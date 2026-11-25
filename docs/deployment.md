@@ -1,33 +1,35 @@
 # 部署
 
-核心部署只有浏览器服务：根目录的 `compose.yml` 运行 Chromium、Xvfb 和网关，保存用户及网站登录状态。它提供 HTTP 和 WebSocket，默认发布到宿主机 `127.0.0.1:3010`。
+> 读者：部署者
 
-公网入口由部署者选择 Caddy、Nginx 或已有反向代理，管理域名、证书和到浏览器服务的连接。同机代理可以直接访问回环端口；独立 VPS 通过部署者准备的 SSH 隧道、VPN 或其他受保护通道访问上游。项目不要求额外运行一个“客户端”服务。
+服务端是一个 Docker Compose 项目：`compose.yml` 运行网关、Chromium 和 Xvfb，`compose.runtime.yml` 加上按浏览器配置的出口和按用户的 CPA 实例。服务端只提供 HTTP 和 WebSocket，默认只发布到宿主机的 `127.0.0.1:3010`。域名、TLS 证书、反向代理和跨主机通道由部署者管理，入口机可以就是服务端本身。
 
-可从 [Caddy 入口示例](../examples/caddy/README.md) 开始。已有 `compose.https.yml`、`client/` 和双机 systemd 部署保留兼容，具体用法在后文。
+每个变量的含义见[环境变量](configuration.md)；工作台里的操作见[使用](usage.md)和[管理](admin.md)。
 
 ## 需要准备
 
-| 项目 | 浏览器服务 |
-| --- | --- |
-| 系统 | Linux，Docker 和 Compose v2 |
-| 配置 | 建议至少 2 核 4 GB，会话越多需要越多 |
-| 磁盘 | 约 3 GB 镜像，加上浏览器配置 |
-| 网络 | 能访问目标网站；入口代理能通过本机或受保护通道访问网关 |
+| 项目 | 要求                                                                                     |
+| ---- | ---------------------------------------------------------------------------------------- |
+| 系统 | Linux，Docker 27 或更新版本（`browser` 网络需要 Docker 分配 IPv6 子网），Compose v2 插件 |
+| 配置 | 建议至少 2 核 4 GB 内存，会话越多需要越多；在服务器上构建镜像时另需约 2 GB 可用内存      |
+| 磁盘 | 镜像约 3 GB，另加浏览器配置的数据                                                        |
+| 网络 | 能访问各个节点的服务器；节点用 IPv6 上游时，宿主机要有可用的 IPv6 出站路由               |
+| 公网 | 从公网访问时，另备域名、TLS 证书和反向代理                                               |
 
-需要公网访问时，另行准备入口代理、域名及 TLS 证书。它们可以与浏览器服务放在同一台机器，也可以位于独立 VPS。
+`pnpm check:host` 只读地检查 Docker 和 Compose v2 是否可用。
 
-本地构建服务端镜像时，额外需要约 2 GB 可用内存。配置较低的机器可以使用预构建镜像。
-
-## 服务端
+## 安装
 
 ```bash
-git clone https://github.com/NotDesigned/remote-claude-browser.git remote-claude-browser
+git clone https://github.com/NotDesigned/remote-claude-browser.git
 cd remote-claude-browser
-./scripts/bootstrap.sh
+COMPOSE_FILE=compose.yml:compose.runtime.yml ./scripts/bootstrap.sh
+echo 'COMPOSE_FILE=compose.yml:compose.runtime.yml' >> .env
 ```
 
-脚本生成 `.env`、启动服务并等待健康检查通过，最后打印初始管理员密码。默认用户名是 `admin`，可在首次初始化前用 `MIRROR_ADMIN_USERNAME` 修改。然后编辑 `.env`：
+`scripts/bootstrap.sh` 在没有 `.env` 时生成一个（随机的初始管理员密码和 `MIRROR_AUTH_SECRET`），启动服务，等健康检查通过后打印访问地址和密码；已有 `.env` 时不改动它。初始管理员的用户名是 `admin`，要改的话在第一次启动前设置 `MIRROR_ADMIN_USERNAME`。
+
+接着编辑 `.env`：
 
 ```bash
 # 用户实际打开的地址，必须完全一致，否则 WebSocket 连接会被拒绝
@@ -36,182 +38,75 @@ MIRROR_PUBLIC_ORIGIN=https://browser.example.com
 EGRESS_BLOCK=203.0.113.10
 ```
 
-让配置生效：
+然后执行：
 
 ```bash
 docker compose up -d
 docker compose ps
 ```
 
-默认 Compose 只把网关端口发布到宿主机 `127.0.0.1:3010`，公网无法直接访问。容器内网关监听 `0.0.0.0:3010`，供同网络的代理使用。
+不想在服务器上构建镜像时，在 `.env` 里设置 `SERVER_IMAGE=ghcr.io/notdesigned/remote-claude-browser-server:latest`，再执行 `docker compose pull && docker compose up -d`。
 
-### 公网入口契约
+登录工作台后，先在「代理与 API」→「代理来源」导入节点，再新建浏览器配置，见[使用](usage.md)。
 
-- 代理整个浏览器工作台，包括 `/gate`、`/api/*`、`/s/*` 和 `/ws`。WebSocket 升级和流式响应应保持畅通；Nginx 应关闭上游响应缓冲。
-- 网关的 `MIRROR_PUBLIC_ORIGIN` 必须等于用户访问的来源，例如 `https://browser.example.com`。更换入口域名时同步更新它；反向代理应保留浏览器请求的 `Origin`。
-- TLS 在入口终止。登录 Cookie 带 `Secure` 属性，公网使用 HTTPS。保持 `SERVER_BIND=127.0.0.1`，或在专网部署中由部署者限制网关端口的访问范围。
-- 独立入口机到浏览器宿主机的路由、隧道或 VPN 由部署者建立和监控。只有当这条通道已经能访问网关时，入口代理才有可用上游。
-- `/healthz` 供入口检查网关是否就绪；它不代替浏览器页面、登录和 WebSocket 的实际验收。上线后应再完成一次工作台登录、选择配置和页面连接检查。
+## 可用的 compose 组合
 
-[`examples/caddy/`](../examples/caddy/README.md) 给出同机和独立 VPS 的完整入口配置。Caddy 会处理 WebSocket，示例用 `flush_interval -1` 关闭流式响应缓冲。
+把选定的组合写进 `.env` 的 `COMPOSE_FILE`（用 `:` 分隔），以后的 `docker compose` 命令都会带上它。
 
-### 前端用户与浏览器配置
+| 组合                                                      | 用途                                                                    |
+| --------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `compose.yml:compose.runtime.yml`                         | 标准部署：按浏览器配置的出口和按用户的 CPA 实例                         |
+| `compose.yml:compose.runtime.yml:compose.https.yml`       | 再加上同一台机器上的 Caddy 和自动证书，见[公网入口](#公网入口)          |
+| `compose.yml:compose.runtime.yml:compose.fingerprint.yml` | 再加上 AliasMode 内核，见[AliasMode 内核](#aliasmode-内核)              |
+| `compose.yml:compose.runtime.yml:compose.proxy.yml`       | 再加上部署级出站代理，见[部署级出站代理](#部署级出站代理)               |
+| `client/compose.yml`                                      | 在单独的入口机上运行，见[独立入口机和 SSH 隧道](#独立入口机和-ssh-隧道) |
+| `client/compose.yml:client/compose.tunnel-only.yml`       | 入口机上已经有反向代理时只运行隧道                                      |
 
-工作台使用用户名和密码登录。`MIRROR_ACCESS_PASSWORD` 只用于空数据库的初始管理员创建；已有用户以后由数据库管理，修改环境变量不会重置其密码。
+后三个可选文件可以同时加在 `compose.runtime.yml` 之后。只有 `compose.yml` 而没有 `compose.runtime.yml` 时，服务能启动，但任何浏览器配置都打不开。
 
-管理员从工作台菜单进入独立的「管理后台」，创建用户、修改名称或角色、停用用户、重置密码和删除用户。面板展示每人的浏览器配置数、在线及总会话数，可按用户筛选并结束指定会话；资源页显示 CPU、整机和服务内存、运行中的浏览器及会话数。普通用户只能访问自己的浏览器配置和会话，各自可以自由登录浏览器内的网站；前端用户不会自动获得任何网站账号。用户登录最多保留 60 天，密码或角色变更、禁用和删除会撤销已有登录。
+## 公网入口
 
-每个用户的浏览器配置使用独立的 Chrome 进程和磁盘目录。同一用户可以新建、选择自己的多个浏览器配置；多个会话选择同一配置时会共享其中的网站登录状态。所有用户仍共享容器的 CPU 和内存，新开会话按可用内存准入。
+入口需要满足：
 
-新建配置时在同一表单填写名称并明确选择出口，点击「检查并打开」。出口检查失败会保留表单，不创建配置；没有可用节点时可直接打开代理导入，返回后继续填写。创建成功但浏览器打开失败时，配置保留在列表中供重试。
+- 把**整个站点**转发给网关，包括 `/gate`（含单点登录的 `/gate/oidc/`）、`/api/`、`/s/`、`/ws`、`/v1`（CPA 调用）、`/management.html`（CPA 原生管理面板）、`/api/remote-cc/v1/`（remote-cc）和 `/api/webhooks/resend`（收件箱）。
+- 支持 WebSocket 升级，关闭响应缓冲，不设置很短的响应超时。Caddy 用 `flush_interval -1`；Nginx 要关闭 `proxy_buffering`。
+- 保留浏览器请求的 `Host` 和 `Origin`。网关的 `MIRROR_PUBLIC_ORIGIN` 必须等于用户打开的来源，换域名时一起改。
+- 在入口终止 TLS。登录 Cookie 带 `Secure` 属性，公网必须用 HTTPS。
+- 网关只信任来自 `MIRROR_TRUSTED_PROXIES` 的 `X-Forwarded-For`（默认是 `SERVER_SUBNET`，加上回环地址）。入口在别的地址时要把它加进去，否则日志、登录限速和 remote-cc 批准页看到的都是入口的地址。
+- 保持 `SERVER_BIND=127.0.0.1`，或者在专网里由部署者限制网关端口的访问范围。
 
-所有 Chrome（包括旧默认配置）都在实际使用时才启动，没有会话使用的配置空闲 15 分钟后会关闭进程，磁盘上的网站登录资料继续保留。每次会话运行都使用新的随机资源令牌密钥，缓存按密封令牌区分；即使已结束的会话编号被其他用户复用，也不会取得之前用户的资源缓存。运行实例关闭或变更后，旧令牌失效，进行中的资源请求也会重新检查实例身份。
+`/healthz` 返回 `"ok":true` 和 `"browser":true` 时网关已就绪；它不代替实际验收。上线后登录一次工作台，打开一个浏览器配置，确认页面和 WebSocket 都正常。
 
-首次升级时，旧默认配置和已有其他配置统一归初始管理员，不会把这些网站 Cookie 复制给新用户。旧设备 Cookie 不能代替用户身份，升级后需要重新登录。迁移只执行一次，删除用户后留下的浏览器资料不会在重启时被重新认领给管理员。
+[examples/caddy](../examples/caddy/README.md) 给出 Caddy 在同一台机器和在独立 VPS 上的配置。
 
-用户数据默认保存在 `/data/profile/users.sqlite`，包括用户、密码散列、登录令牌摘要和浏览器配置归属。停用保留数据，可重新启用；「删除用户与数据」永久删除其浏览器资料、私有代理来源、私有 CPA 及个人调用 Key，共享资源和其他用户保留。备份由部署者单独管理，见[备份](#备份)。
+### 同一台机器上的 Caddy
 
-文件隔离升级会将旧默认 Chrome 的 `Default`、`Local State` 等资料和下载移入 `/data/profile/browser-default`，管理数据库和配置索引留在原处。升级前停止服务并备份整个 `data` 卷及 CPA 的 config/auth 卷；回退时须同时恢复数据和镜像，不能仅换回旧镜像。
+没有现成的反向代理时，可以让本项目在服务端旁边运行 Caddy：把域名解析到这台机器，在 `.env` 里设置 `PUBLIC_HOST` 和 `MIRROR_PUBLIC_ORIGIN`，把 `compose.https.yml` 加进 `COMPOSE_FILE`，再执行 `docker compose up -d`。
 
-### 时区
+### 独立入口机和 SSH 隧道
 
-浏览器按所选出口的 IP 地域信息自动确定 IANA 时区，网页与 Worker 使用相同当地时间，工作台时钟也随当前配置切换。`.env` 的 `TZ` 配置服务进程和日志的时区，默认 UTC。详见[时区说明](timezone.md)。
+`client/` 在单独的入口机上运行 Caddy 和一条到服务端的 SSH 隧道，服务端的网关仍只监听回环地址。它不运行浏览器，也不保存网站登录资料。
 
-### 按浏览器配置选择出口
-
-浏览器配置必须绑定出口节点后才能打开。添加 [`compose.runtime.yml`](../compose.runtime.yml) 启用 Mihomo 网络运行时，也可使用按用户 CPA。全新部署可以运行：
-
-```bash
-docker compose -f compose.yml -f compose.runtime.yml up -d --build
-```
-
-已有部署应在 `COMPOSE_FILE` 中用 `compose.runtime.yml` 替换 `compose.proxy.yml`，保留入口、指纹内核和其他私有覆盖文件。订阅导入和刷新使用服务器网络，浏览器与 CPA 授权使用各自选定的节点。这个模块不启动公网入口代理，也不改动域名或证书。
-
-Chromium 使用浏览器出口配置里的 DoH 解析器，以便在受支持的网站上使用 ECH 加密 TLS 握手中的网站名。回退的 DNS 查询也经该浏览器的 Mihomo 出口发送。
-
-该模块使用 Docker bridge 网络连接内部 CPA 实例，不能与 `compose.hostnet.yml` 组合。现有主机网络部署需要先由部署者移除该覆盖文件并确认 bridge 下的端口和媒体连接，再启用运行时；同机入口和独立 VPS 入口都可以使用 bridge。
-
-从工作台或配置选择页打开「代理与 API」：
-
-1. 导入节点链接、Mihomo YAML 或 HTTP/HTTPS 订阅。普通用户可以管理自己的私有来源，管理员还可以维护共享来源；订阅可以手动刷新，也可以在「编辑」中替换订阅 URL，保存时立即更新节点，留空则保留原地址。读取失败时保留原来源。
-2. 在浏览器配置卡片的 ⋯ 菜单选择「设置出口」。列表显示可用的共享和私有节点，空选项表示「未分配」。未分配节点时，新建会话、恢复会话和切换到该配置都会返回 `409 EXIT_REQUIRED`；不会分配新会话或启动 Chrome。已绑定配置更换或清除出口前会提示频繁更换账号 IP 的风控风险，取消不提交修改；保存相同节点不触发警告。更换正在运行的配置还会关闭它在所有设备上的页面，再按新出口启动。
-3. 每个绑定节点的浏览器配置使用独立网络命名空间和 Mihomo 出口；网页、DNS 与 WebRTC 一起走所选节点。移除绑定后配置保留网站登录资料，但在重新选择节点前不能打开。添加 CPA 授权时默认选中当前浏览器的节点，允许单独更改；没有当前可用节点时必须先选择。CPA 未绑定授权停用并保留资料，实例可以空启动，但没有部署默认出口回退。
-
-代理服务器支持 IPv4 和 IPv6。Docker 的 `browser` 网络启用双栈，IPv6 子网由 Docker 分配（需要 Docker 27+）；宿主机需要可用的 IPv6 出站路由。配置命名空间只允许 Mihomo 使用上游 IPv6，浏览器的 IPv6 直连仍被阻断，网站 DNS 查询继续经过所选代理。已有 IPv4 网络升级时需要停止连接该网络的服务并重建 `browser` 网络，数据卷与 CPA 内部网络保留。
-
-使用 Docker Desktop 时，保留镜像下载代理，并清空容器透明代理的端口列表：通过 Docker Desktop 设置接口将 `proxy.containers.transparentPorts` 设为 `""`，对应 `settings-store.json` 中的 `ContainersOverrideProxyTransparentPorts`。这样镜像下载继续使用代理，容器的 TCP 80/443 连接则不再被透明代理接管，避免干扰 Mihomo 的 VLESS/REALITY 建链。容器中的浏览器和 CPA 仍通过各自选定的 Mihomo 节点出站。镜像下载依赖代理时，不要直接把 **Containers proxy** 设为 **No proxy**，因为它也会让镜像拉取改为直连。
-
-节点列表和配置卡片提供「检查出口」，显示实测 IP、地区、时区、检查时间和失败状态。运行中的浏览器从自己的网络检测；尚未打开的配置只检查绑定节点，不分配会话。CPA 出口进程异常退出后按 1、2、4 秒有限重试，恢复后保留内部代理地址；故障期间不会直连，更换或删除节点会取消旧恢复任务。重试耗尽后修复节点并手动检查即可重试。浏览器出口进程退出会关闭相应 Chrome，由现有会话恢复流程重新打开。
-
-订阅只提供节点，不接管运行时的规则、端口或管理接口。公开列表仅返回来源与节点的元数据，不返回订阅 URL、节点密码和服务端连接配置。来源与节点保存在 `data` 卷的 `/data/profile/proxy-sources.json`，同样需要按密钥保护。
-
-来源内容变化、删除节点或收回访问范围会使相应绑定重新校验；节点不可用时不会把已有绑定悄悄改成其他出口。CPA 凭据可以独立选择节点，见 [CPA 部署](cpa.md)。
-
-```text
-GET    /api/proxy-sources
-POST   /api/proxy-sources                {name, visibility, content 或 url}
-PATCH  /api/proxy-sources/:id             {name?, visibility?, content? 或 url?}
-POST   /api/proxy-sources/:id/refresh
-DELETE /api/proxy-sources/:id
-GET    /api/proxies
-POST   /api/proxies/:id/check
-PATCH  /api/accounts/:id/proxy            {proxyId: string | null}
-POST   /api/accounts/:id/exit/check
-```
-
-`PATCH /api/accounts/:id/proxy` 的 `proxyId: null` 表示清除绑定，而不是选择部署默认出口。这些接口使用工作台登录 Cookie，并检查来源和浏览器配置的归属。每个专用 CPA 实例的数据、授权和 Key 也按工作台用户管理。
-
-隔离网络验收会创建自己的临时容器和网络，不读取正式配置或账号。提供已校验版本的 Mihomo 可执行文件：
+把域名解析到入口机，然后：
 
 ```bash
-bash scripts/limited-run.sh env PROFILE_EGRESS_SMOKE=1 \
-  PROFILE_EGRESS_MIHOMO=/path/to/mihomo node scripts/profile-egress-smoke.mjs
-```
-
-默认使用当前运行的 server 镜像；`PROFILE_EGRESS_SMOKE_IMAGE` 可以指定其他候选镜像。该检查覆盖独立 HTTP/UDP/DNS 出口、Range、代理鉴权、断流阻断、启动中撤销、默认出口生命周期，以及 Chrome 重开后的本地存储和沙箱。增加 `PROFILE_EGRESS_STOCK_CPA=1` 可使用 `CPA_BROKER_ENGINE_IMAGE` 指定的 CPA 引擎镜像（默认本机 `remote-claude-browser-cpa:local`）做一次经过认证出口的模拟推理请求。
-
-### 兼容：部署级 Xray 出站代理
-
-已有部署可继续通过 Xray 提供服务级出站和 CPA 默认出口。在 `.env` 里写：
-
-```bash
-EGRESS_PROXY=vless://uuid@proxy.example.com:443?security=reality&sni=...&pbk=...&sid=...
-```
-
-再在 compose 文件列表里加上 `compose.proxy.yml`（比如 `COMPOSE_FILE=compose.yml:compose.hostnet.yml:compose.proxy.yml`）。`deploy-container.sh` 看到 `.env` 里有 `EGRESS_PROXY` 会自动加上，部署完会打印服务级出口 IP。浏览器配置仍需在工作台绑定自己的节点。
-
-- 支持 `socks5://`、`http://`、`https://`、`ss://`、`vless://`（含 REALITY）、`vmess://`、`trojan://`、`hy2://` 分享链接；其他协议可以直接写一段 Xray outbound JSON（使用 `protocol`、`settings` 和 `streamSettings`）。
-- 容器里的 Xray 建一个 TUN，只接管浏览器用户（uid 10001，Chrome 和网关都是它）的流量，宿主机和其他程序不受影响，`compose.hostnet.yml` 下也一样。网页的 DNS 经代理走 DoH，WebRTC 的 UDP 也走代理，这需要代理支持 UDP（SOCKS5 UDP、Shadowsocks、VLESS、VMess、Trojan、Hysteria2 都可以；HTTP 代理不行，此时网页里的 WebRTC 连不上）。
-- 代理断了或连不上时，网页直接没有网络，不会改用这台机器自己的 IP。Xray 意外退出会在两秒后重启。
-- 代理的服务器名用 `EGRESS_BOOTSTRAP_DNS`（默认 `1.1.1.1`）解析，这一次查询不经过代理。
-- 代理地址和密码只交给 Xray，浏览器和网关进程的环境里没有它们。
-- VLESS 分享链接完整保留 `encryption`（含 `mlkem768x25519plus`）、`flow`、REALITY 的 `pbk`/`sid`/`sni`、`pqv`（ML-DSA-65 验证公钥）和 `spx`；支持 RAW/TCP、WebSocket、gRPC、HTTPUpgrade 和 XHTTP。`support-x25519mlkem768` 是分享链接的能力提示，Xray 的 Chrome 指纹自动协商密钥交换，无需额外开关。
-- 从旧版本升级：常见分享链接继续使用；原 sing-box JSON 必须转为 Xray JSON，否则启动会明确报错。SOCKS4、Shadowsocks 插件、旧 VMess `aid != 0`、HTTP/2 transport 和 `allowInsecure=1` 不再支持（TLS 自签证书请使用 `pcs` 固定证书 SHA256 或 `vcn` 指定验证名），不会静默降级。
-- Linux 策略路由保留 priority `10010`–`10012` 和 table `20231`。规则按浏览器 UID 选择连接（包括 WebRTC 绑定网卡的 UDP），网关 HTTP 监听端口的回复使用主路由；DNS 地址 `198.18.0.2` 单独路由进 TUN，兼容 Docker 内置解析器。主机网络部署应避免与这些标识冲突。
-- 链接或 JSON 里有 `$` 时，用单引号把整个值括起来，否则 compose 会把它当成变量。
-
-### 使用预构建镜像
-
-不想在服务器上构建时，在 `.env` 里指定镜像：
-
-```bash
-SERVER_IMAGE=ghcr.io/notdesigned/remote-claude-browser-server:latest
-```
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
-### 可选 CPA 实例
-
-`compose.runtime.yml` 中的 CPA broker 为工作台用户建立独立实例，由「代理与 API」管理授权、每凭据代理和外部 Key。新调用统一使用浏览器网关的 `/v1/*`，不需要另外公开 CPA 管理端口。
-
-入口需将 `/v1/*`、`/management.html` 和 `/api/cpa/instances/*` 转发到工作台。阻止公开访问原始管理接口的规则只匹配 `/v0/management`、`/v8/management` 及其子路径。完整说明见 [CPA 部署](cpa.md)。
-
-## 收件箱
-
-在 Resend 中启用自有域名的 Receiving，并按控制台要求配置 MX。创建订阅 `email.received` 的 Webhook，目标为工作台公开地址下的 `/api/webhooks/resend`。在服务端 `.env` 设置 `RESEND_RECEIVING_DOMAIN`、有读取收件权限的 `RESEND_API_KEY` 和该 Webhook 的签名密钥 `RESEND_WEBHOOK_SECRET`，然后重建 `server` 容器。三个配置齐备时工作台会启用收件箱。
-
-同一个 Resend 账户的多个收件域名共用这套配置。用逗号在 `RESEND_RECEIVING_DOMAIN` 里分隔，例如 `adscn.dev,inbox.amadeus.chat`，第一个是默认域名。「收件箱 → 新建地址」可选用哪个域名。如果根域已经使用 Cloudflare Email Routing，可在 Resend 启用独立子域，并只在子域配置 Resend 的收件 MX。
-
-每个工作台用户可以在「收件箱」创建多个地址，并在浏览器注册或登录时选择其中一个。留空地址名称会随机生成双词地址，填写名称会创建 `inbox-名称@收件域名`。部署时将 `inbox-` 留给工作台自建地址。
-
-已有收件地址由管理员从「管理后台 → 用户」分配给指定用户。管理员可查看分配的地址，邮件列表和正文仅该地址所属用户可读。分配后开始收录新邮件，已分配或删除停用的地址不得再次分配。
-
-设置 `RESEND_VERIFICATION_FROM`（一个已在 Resend 验证的发件地址）后，用户也可以在「收件箱 → 添加已有地址」输入已启用域名下的地址，用原邮箱或 Resend 控制台收到的验证码绑定。`RESEND_API_KEY` 此时还需要发信权限。绑定后开始收录新邮件。
-
-收件箱随工作台用户删除。备份 `data` 卷时一并保留 `mailboxes.sqlite`。邮件源文保存在 Resend，工作台按需读取正文。
-
-## 兼容：独立入口机和 SSH 隧道
-
-`client/` 是可选的入口部署模板，适用于已有的 Caddy 加 SSH 隧道方案；它不是浏览器服务必须安装的客户端。下面的 Compose 命令只作用于 `client/`，不会运行浏览器或保存网站登录状态。
-
-把域名解析到这台机器，然后：
-
-```bash
-git clone https://github.com/NotDesigned/remote-claude-browser.git remote-claude-browser
+git clone https://github.com/NotDesigned/remote-claude-browser.git
 cd remote-claude-browser/client
-cp .env.example .env
-```
-
-编辑 `.env`，填写 `PUBLIC_HOST` 和 `SERVER_SSH_HOST`。然后为隧道生成一把专用的 SSH 密钥，并记录服务端的主机指纹：
-
-```bash
+cp .env.example .env   # 填写 PUBLIC_HOST 和 SERVER_SSH_HOST
 mkdir -p ssh
 ssh-keygen -t ed25519 -N '' -C remote-claude-browser-tunnel -f ssh/id_ed25519
-ssh-keyscan -t ed25519 server.example.com > ssh/known_hosts
+ssh-keyscan -t ed25519 <服务器> > ssh/known_hosts
 ssh-keygen -lf ssh/known_hosts   # 和服务端上看到的指纹核对
 cat ssh/id_ed25519.pub
 ```
 
-在**服务端**把这把公钥加入 `SERVER_SSH_USER` 用户的 `~/.ssh/authorized_keys`。前面的限制让它只能转发到网关端口，不能登录 shell：
+在**服务端**把这把公钥加入 `SERVER_SSH_USER` 的 `~/.ssh/authorized_keys`，前面的限制让它只能转发到网关端口，不能登录 shell：
 
 ```text
 restrict,port-forwarding,permitopen="127.0.0.1:3010" ssh-ed25519 AAAA... remote-claude-browser-tunnel
 ```
 
-服务端的 `sshd` 需要允许 TCP 转发（`AllowTcpForwarding` 默认开启）。回到入口机启动：
+服务端的 `sshd` 要允许 TCP 转发（`AllowTcpForwarding` 默认开启）。回到入口机：
 
 ```bash
 docker compose up -d
@@ -219,64 +114,79 @@ docker compose ps
 curl --fail https://browser.example.com/healthz
 ```
 
-### 入口机上已经有反向代理
-
-如果 80 和 443 已被占用，可以只启动隧道，发布到本机回环地址，由已有的代理转发。`PUBLIC_HOST` 这时用不到，随便填一个值即可：
+入口机的 80 和 443 已被占用时，只启动隧道，让它发布到入口机的回环地址，由已有的反向代理转发到 `127.0.0.1:3010`（`TUNNEL_PORT`）。这时 `PUBLIC_HOST` 用不到，随便填一个值：
 
 ```bash
 docker compose -f compose.yml -f compose.tunnel-only.yml up -d tunnel
 ```
 
-代理需要支持 WebSocket，并且关闭响应缓冲。以 Caddy 为例：
+## 出口运行时
 
-```text
-browser.example.com {
-    reverse_proxy 127.0.0.1:3010 {
-        flush_interval -1
-    }
-}
-```
+`compose.runtime.yml` 让每个绑定了节点的浏览器配置在自己的网络命名空间里经 Mihomo 和这个节点出网，网页、DNS 和 WebRTC 都走这个节点。没有部署级的默认出口：没有绑定节点的配置打不开。节点由使用者和管理员在工作台里导入和绑定，见[使用 · 出口](usage.md#出口)。
 
-## 兼容：同机 Caddy Compose 模板
+- 订阅的导入和刷新用服务端自己的网络；浏览器和 CPA 授权各自用选定的节点。
+- 节点的服务器可以是 IPv4 或 IPv6 地址。`browser` 网络是双栈；只有 Mihomo 能用上游的 IPv6，浏览器直连 IPv6 仍被阻断。
+- 节点和代理来源保存在 `proxy-sources.json` 里，含节点密码和订阅地址，按密钥保护（见[备份](#备份)）。
+- 这个文件还启动 `cpa-broker`，见[CPA](#cpa)。
 
-`compose.https.yml` 继续供已有部署使用，将可选 Caddy 加入浏览器服务的 Docker 网络。已有反向代理时无需叠加它。
+宿主机用 Docker Desktop 时，容器的 TCP 80/443 连接可能被它的透明代理接管，干扰 Mihomo 和节点建立连接，见[排查 · 出口检查失败](troubleshooting.md#出口检查失败)。
 
-把域名解析到这台机器，在 `.env` 里设置 `PUBLIC_HOST` 和 `MIRROR_PUBLIC_ORIGIN`，然后：
+## 部署级出站代理
 
-```bash
-docker compose -f compose.yml -f compose.https.yml up -d
-```
-
-## 从 systemd 部署迁移
-
-`deploy/remote/migrate-to-docker.sh` 把[双机 systemd 部署](operations.md)换成 Docker，在入口机上分步执行：
+`compose.proxy.yml` 用 Xray 把服务端浏览器用户（UID 10001，网关和 Chrome 都以它运行）的出站流量经一个外部代理发出，宿主机的其他程序不受影响。浏览器配置的网页流量仍走各自绑定的节点。在 `.env` 里写：
 
 ```bash
-export REPO_URL=https://github.com/NotDesigned/remote-claude-browser.git
-export SERVER_IMAGE=ghcr.io/notdesigned/remote-claude-browser-server:latest
-export TUNNEL_IMAGE=ghcr.io/notdesigned/remote-claude-browser-tunnel:latest
-
-bash deploy/remote/migrate-to-docker.sh prepare   # 在服务端安装 Docker，备好镜像，不影响运行中的服务
-bash deploy/remote/migrate-to-docker.sh cutover   # 切换服务端，打开的页面会中断，不健康时自动退回
-bash deploy/remote/migrate-to-docker.sh tunnel    # 切换入口机的隧道，反向代理不用改
-bash deploy/remote/migrate-to-docker.sh rollback  # 随时退回 systemd
+EGRESS_PROXY='vless://uuid@proxy.example.com:443?security=reality&sni=...&pbk=...&sid=...'
 ```
 
-迁移后服务端使用主机网络（见[视频播放](#视频播放)）。迁移会把 Chrome 配置复制给容器里的 Chromium，原配置不会被修改。容器里的 Chromium 版本不能低于原来的 Chrome，否则配置无法打开。网站会看到浏览器品牌变成 Chromium，部分网站可能要求重新验证。退回 systemd 后，在容器里新产生的登录状态不会带回去。
+再把 `compose.proxy.yml` 加进 `COMPOSE_FILE`。
 
-## 视频播放
+- 支持 `socks5://`、`http://`、`https://`、`ss://`、`vless://`（含 REALITY）、`vmess://`、`trojan://`、`hy2://` 分享链接；其他协议写一段 Xray outbound JSON（`protocol`、`settings`、`streamSettings`）。
+- VLESS 分享链接保留 `encryption`（含 `mlkem768x25519plus`）、`flow`、REALITY 的 `pbk`、`sid`、`sni`、`pqv`（ML-DSA-65 验证公钥）和 `spx`，传输支持 RAW/TCP、WebSocket、gRPC、HTTPUpgrade 和 XHTTP。
+- 不支持 SOCKS4、Shadowsocks 插件、`aid != 0` 的 VMess、HTTP/2 传输和 `allowInsecure=1`；自签证书用 `pcs`（固定证书 SHA-256）或 `vcn`（指定验证名）。不支持的写法会让服务端启动失败，不会悄悄降级。
+- DNS 经代理走 DoH；WebRTC 的 UDP 也走代理，HTTP 代理不支持 UDP。
+- 代理断开时没有网络，不会改用这台机器自己的地址；Xray 意外退出后自动重启。代理地址和密码只交给 Xray，网关和浏览器进程的环境里没有它们。
+- 代理服务器的域名由 `EGRESS_BOOTSTRAP_DNS` 解析，这一次查询不经过代理。
+- Linux 策略路由占用 priority `10010`–`10012` 和 table `20231`，DNS 地址 `198.18.0.2` 单独路由进 TUN。
 
-页面模式下，网站的视频通过 WebRTC 从服务端直接发到你的设备，这条连接不经过入口机，项目也没有内置 TURN 服务。默认的 Docker 桥接网络多了一层 NAT，如果你的设备也在对称 NAT 后面（很多手机网络都是），视频可能出不来。
+## CPA
 
-服务端有公网 IP 时，可以改用主机网络，行为就和直接运行在主机上一样：
+`compose.runtime.yml` 同时启用 CPA：`cpa-broker` 按固定模板为每个用户创建 CPA 实例的容器，只有它挂载 Docker socket。网关通过 Unix socket 请求实例操作，不能提交任意 Docker 参数。CPA 实例只连接一个 Docker 内部网络（`CPA_RUNTIME_NETWORK`），经各个凭据绑定的节点出网，不对外发布端口。
+
+- CPA 镜像固定为 CLIProxyAPI 8.0.68，镜像摘要写在 `deploy/Dockerfile.cpa`；原生管理面板的 HTML 版本写在 `deploy/fetch-cpa-panel.mjs`，构建镜像时核对 SHA-256，打开页面时不下载。
+- 每个实例有三个数据卷：`remote-browser-<实例 ID>-config`、`-auth`、`-static`，可以用 `docker volume ls --filter label=dev.remote-browser.cpa-instance` 列出。停止实例保留这些卷；删除用户会删除他的私有实例和卷。
+- 入口只需转发整个站点（见[公网入口](#公网入口)），不必对外发布 CPA 的端口或 Docker socket。
+
+使用者的操作见[使用 · CPA](usage.md#cpa)。从旧的独立 CPA 迁移见 [CHANGELOG](../CHANGELOG.md)。
+
+## AliasMode 内核
+
+可选。AliasMode 是一个 Chromium 内核，让新建的浏览器配置可以选择 Windows 或 Mac 系统身份（见[使用 · 系统身份](usage.md#系统身份)）。只支持 Linux x64，主机需要 `curl`、`tar` 和 `zstd`。
 
 ```bash
-docker compose -f compose.yml -f compose.hostnet.yml up -d
+bash scripts/setup-fingerprint.sh "$PWD/local/aliasmode-155.0.8059.85"
 ```
 
-要长期使用，在 `.env` 里写上 `COMPOSE_FILE=compose.yml:compose.hostnet.yml`。代价是隔离变弱：防火墙规则写进主机的规则表（只针对浏览器用户），被攻破的浏览器能访问的范围就只靠这些规则限制。
+脚本从官方发布下载完整目录并核对固定的 SHA-256，不安装系统包，也不覆盖已有版本；已经下载过压缩包时，把它的路径作为第二个参数。版本固定在脚本里。
 
-设置 `MIRROR_DISABLE_RTC=1` 可以关闭这项功能。
+把脚本输出的 `FINGERPRINT_BROWSER_DIR=...` 写进 `.env`，在 `COMPOSE_FILE` 末尾加上 `compose.fingerprint.yml`，然后执行 `docker compose up -d --no-deps server`。
+
+- 只有之后新建的配置使用 AliasMode，已有配置保留原来的内核。要让新配置恢复用原生 Chromium，设置 `MIRROR_BROWSER_ENGINE=chromium`。
+- 只要还有使用 AliasMode 的配置，就要保留这个目录和挂载。不要只复制 `chrome` 主程序，同目录的字体、语言、图形库和资源都是内核的一部分。
+- AliasMode 以独立的 GPL-3.0 程序运行，从官方发布直接下载，不随本项目的镜像分发。
+
+## 收件箱
+
+1. 在 Resend 给自有域名启用 Receiving，按控制台的要求配置 MX。根域已经在用 Cloudflare Email Routing 时，可以在 Resend 启用一个子域，只给子域配置 Resend 的 MX。
+2. 创建一个订阅 `email.received` 的 Webhook，目标是 `https://browser.example.com/api/webhooks/resend`。
+3. 在 `.env` 设置 `RESEND_RECEIVING_DOMAIN`、`RESEND_API_KEY` 和 `RESEND_WEBHOOK_SECRET`，执行 `docker compose up -d`。三个都设置后启用收件箱。
+4. 可选：设置 `RESEND_VERIFICATION_FROM`（一个已在 Resend 验证的发件地址），用户就能用验证码绑定已有地址；这时 `RESEND_API_KEY` 还要有发信权限。
+
+同一个 Resend 账户的多个收件域名共用这套配置。邮件原文保存在 Resend，工作台按需读取正文。地址的分配见[管理 · 收件地址](admin.md#收件地址)。
+
+## 视频和 WebRTC
+
+页面模式里，网页中的视频经 WebRTC 从服务端直接发到用户的设备，这条连接不经过入口，项目也没有内置 TURN 服务。用户的设备在对称 NAT 后面（很多手机网络都是）时，视频可能出不来，这时可以切到画面模式。设置 `MIRROR_DISABLE_RTC=1`（见[环境变量](configuration.md#写在-compose-文件里的变量)）关闭这项功能。
 
 ## 升级
 
@@ -285,53 +195,63 @@ git pull
 docker compose up -d --build   # 使用预构建镜像时：docker compose pull && docker compose up -d
 ```
 
-在国内构建时，Debian 官方源可能很慢或返回 502，可以给字体那一层换镜像源：
+升级服务端会重启浏览器，打开的远程页面和未发送的草稿会中断；用户和网站登录资料保存在 `data` 卷里，不受影响。每个版本要做的额外步骤见 [CHANGELOG](../CHANGELOG.md)。
+
+在国内构建时，Debian 官方源可能很慢，可以换镜像源：
 
 ```bash
 docker compose build --build-arg DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian server
 ```
 
-升级服务端会重启浏览器，打开的远程页面和未发送的草稿会中断。登录状态保存在 `data` 卷里，不受影响。
-
-### 资源紧张的双机部署
-
-`deploy/remote/deploy-container.sh` 是现有双机部署的浏览器发布工具，可从入口机发布已经构建、验收过的网关和前端产物。它显式组装浏览器服务、可选主机网络及 Xray 出站的 Compose 文件，不发布入口代理、域名、证书或 CPA 服务。在运行中的服务端镜像上只增加文件层，不在服务端安装依赖或编译源码，保留现有 Chromium 与持久化浏览器资料。这要求基础镜像已提供 Node 22.23.1、`node:sqlite`、`tzdata` 和标准的 `/data/profile` 布局；依赖或运行环境变更应改用完整镜像升级。
-
-```bash
-# 先在受限资源环境完成构建和验收，再执行发布。
-export REMOTE_HOST=server.example.com
-export REMOTE_SSH_IDENTITY=/path/to/administrative-ssh-key
-export REMOTE_SSH_KNOWN_HOSTS=/path/to/verified-known-hosts
-bash deploy/remote/deploy-container.sh
-```
-
-此处 SSH 身份必须有部署权限，不能使用只允许端口转发的隧道密钥。脚本默认服务端目录为 `/opt/claude-browser/docker`，可用 `REMOTE_SERVER_DIR` 覆盖。镜像准备与校验通过后，脚本短暂停服，备份用户数据库、会话归属等管理元数据，再切换容器；失败会恢复旧镜像、Compose 配置和这些元数据。脚本不替换浏览器数据目录，也不代替完整备份。
-
-发布只更换镜像，服务端 `.env` 里的 `TZ` 和资源设置保持不变。受保护的发布记录和回滚备份保存在服务端 `/opt/claude-browser/container-releases/`，其中含凭据，应按完整数据备份保护。
-
 ## 备份
 
-`data` 卷保存浏览器配置、`users.sqlite` 及其 WAL、配置归属和时区状态。启用独立出口运行时后，还包含 `/data/runtime/secret`：它用于生成稳定的内部出口令牌，目录必须保留 root:root、0700，文件保留 root:root、0600。里面有 Cookie 和登录令牌，备份应存放在受保护位置，离机副本应加密。先停服再备份整个卷，避免 SQLite 与浏览器资料来自不同时间点：
+需要备份的数据：
+
+| 数据                                    | 位置                                                       | 内容                                                                       |
+| --------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `users.sqlite` 及其 WAL                 | `data` 卷的 `/data/profile/`                               | 用户、密码散列、登录令牌摘要、单点登录的绑定、浏览器配置的归属             |
+| `cpa.sqlite`                            | 同上                                                       | CPA 实例的归属、内部密钥、调用 Key 的摘要和归属、凭据的节点绑定            |
+| `remote-cc.sqlite`                      | 同上                                                       | remote-cc 令牌的摘要，出口主机取得过的节点                                 |
+| `mailboxes.sqlite`                      | 和 `users.sqlite` 同一目录                                 | 收件地址和邮件记录                                                         |
+| `proxy-sources.json`                    | `/data/profile/`                                           | 代理来源和节点，含节点密码和订阅地址                                       |
+| `accounts.json`、`client-sessions.json` | `/data/profile/`                                           | 浏览器配置的记录，会话的登记                                               |
+| 浏览器配置数据                          | `/data/profile/browser-default`、`/data/profile-accounts/` | 各配置的 Cookie、网站登录资料和下载                                        |
+| runtime 密钥                            | `/data/runtime/secret`                                     | 生成内部出口令牌的密钥。目录保持 root:root、0700，文件保持 root:root、0600 |
+| 每个用户的 CPA 卷                       | `remote-browser-<实例 ID>-config`、`-auth`、`-static`      | CPA 实例的配置、Claude 授权和面板文件                                      |
+
+前八项都在 `data` 卷里（`/data/timezone/` 是服务进程的时区，也在其中）。这些数据包含 Cookie、令牌和节点密码，备份要存放在受保护的位置，离机副本要加密。
+
+先停服再备份，避免数据库和浏览器资料来自不同时间点。CPA 卷和工作台数据要一起备份，只有其中一部分恢复不了原来的实例：
 
 ```bash
-docker compose stop server
+docker compose stop
 docker run --rm -v remote-claude-browser_data:/data:ro -v "$PWD":/backup debian:bookworm-slim \
   tar -czf /backup/browser-data.tar.gz -C /data .
-docker compose start server
+docker compose start
 ```
 
-实际卷名可用 `docker volume ls` 核对；自定义了项目名时要相应调整。还原也应先停服，并一起还原数据库和配置目录，保留原 UID/GID 及权限。
+实际卷名用 `docker volume ls` 核对，改过项目名时相应调整。还原时也先停服，一起还原数据库和配置目录，保留原来的 UID、GID 和权限。
 
-## 更换密码和彻底清除
+## 资源与超时
 
-- 换用户密码：在管理后台中重置密码，该用户已记住的登录会被撤销。修改 `.env` 不会覆盖已有数据库的密码。
-- 撤销用户访问：禁用或删除用户；角色变更也会撤销其现有登录。签名密钥轮换不等于撤销 SQLite 里的用户登录。
-- 清除全部登录状态：`docker compose down --volumes`。这个操作不可恢复。
+| 项目             | 值                                                                                                                                                                             | 来源                            |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------- |
+| 工作台登录有效期 | 用户名和密码登录 60 天；单点登录 `MIRROR_OIDC_SESSION_DAYS`，默认 7 天                                                                                                         | `auth/users.ts`、`auth/oidc.ts` |
+| 会话宽限         | 一个会话的所有设备都断开后 15 分钟关闭它的远程页面；正在生成回复或进行 CPA 授权时推迟                                                                                          | `session/resource-policy.ts`    |
+| 空闲关闭         | 没有会话使用的浏览器配置 15 分钟后关闭 Chrome 和私有显示，网站登录资料保留                                                                                                     | `session/resource-policy.ts`    |
+| 休眠             | 休眠的会话可以恢复；连续休眠 24 小时后删除会话登记，保留配置和 Cookie。计时跨重启保留                                                                                          | `clients-main.ts`               |
+| 每人配置数       | 每个用户最多 8 个浏览器配置                                                                                                                                                    | `session/profiles.ts`           |
+| 每人会话数       | 没有全局上限；管理员可以给每个用户设置上限，见[管理](admin.md#会话上限)                                                                                                        | —                               |
+| 内存准入         | 新建和恢复会话时，浏览器内存超过预算减去余量（300 MiB 和预算的 10% 中较大者），或整机可用内存低于 256 MiB 时暂不启动；打开新的浏览器配置再多预留 560 MiB。已运行的会话不受影响 | `clients-main.ts`               |
+| 内存上限         | `SERVER_MEMORY`，默认 `4g`                                                                                                                                                     | `compose.yml`                   |
+| PID              | `SERVER_PIDS_LIMIT`，默认 4096                                                                                                                                                 | `compose.yml`                   |
+| 上传             | 单个文件 100 MB，一批 20 个文件、共 500 MB                                                                                                                                     | `uploads.ts`                    |
 
-## 资源
+在线连接不会因为长时间没有操作而被回收。
 
-`SERVER_MEMORY`（默认 4g）是容器的内存上限。会话没有全局固定数量上限；管理员可为每人设置已登记会话上限（包含休眠，留空不限，0 禁止新建）。降低上限不结束已有会话，重连不占新名额。新开会话和恢复休眠会话都按容器和宿主机的可用内存准入，内存不足时暂不启动，已有运行中会话继续使用和重连。启动新的浏览器配置还会预留 Chrome 和私有显示的内存。每位用户最多保存 8 个浏览器配置，配置数量与会话数量分别管理。
+多个浏览器配置同时运行时，可能在内存还够的时候先碰到 PID 上限，表现为页面进程启动失败。查看容器内的 `/sys/fs/cgroup/pids.current`、`pids.max` 和 `pids.events`，`max` 计数在增长就说明创建进程或线程被拒绝了，调大 `SERVER_PIDS_LIMIT`。
 
-连接断开 15 分钟后关闭会话页面；正在生成回复的页面延后回收。一个配置没有会话使用后，空闲 15 分钟退出 Chrome 和私有显示。休眠会话可按需恢复，连续休眠满 24 小时后删除会话登记，保留配置和 Cookie。休眠计时跨服务重启保留。在线连接不会因长时间未操作而回收。
+## 撤销访问和清除数据
 
-`SERVER_PIDS_LIMIT`（默认 `4096`）限制容器内的进程和线程总数。多个独立 Chrome 配置可能在内存仍充足时触及此上限，导致页面进程启动失败。可检查容器内 `/sys/fs/cgroup/pids.current`、`pids.max` 和 `pids.events`；其中 `max` 计数增长表示创建进程或线程被拒绝。
+- 撤销一个用户的访问：在「管理后台」停用或删除他，见[管理](admin.md#停用和删除用户)。修改 `.env` 不会改变已有用户的密码，轮换 `MIRROR_AUTH_SECRET` 也不会撤销用户的登录。
+- 清除全部数据：`docker compose down --volumes`，然后删除各个 CPA 卷。这个操作不可恢复。

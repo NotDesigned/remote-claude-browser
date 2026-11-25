@@ -41,6 +41,7 @@
     "format": "bash scripts/limited-run.sh bash -c 'prettier --write .'",
     "format:check": "bash scripts/limited-run.sh bash -c 'prettier --check .'",
     "audit:prod": "bash scripts/limited-run.sh bash -c 'pnpm audit --prod --audit-level high'",
+    "docs:check": "bash scripts/limited-run.sh node scripts/docs-check.mjs",
     "check:rrweb": "bash scripts/limited-run.sh bash -c 'node scripts/check-rrweb-versions.mjs'",
     "test:browser-lifecycle": "bash scripts/limited-run.sh tsx --test scripts/nav-bfcache.test.ts",
     "test:rtc-media": "bash scripts/limited-run.sh bash -c 'tsx scripts/rtc-media-acceptance.ts'",

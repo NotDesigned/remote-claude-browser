@@ -1,8 +1,12 @@
-# 双机 systemd 部署与运维
+# 双机 systemd 部署运维记录
 
-通过服务器 A 的网页操作服务器 B 上的 Claude 浏览器。这份文档记录这种部署方式的日常使用和运维细节；Docker 部署见 [deployment.md](deployment.md)。
+> 读者：维护者
 
-本项目基于 [Remote Browser](https://github.com/mystxcal/remote-browser) 修改，固定上游版本记录在 [UPSTREAM_COMMIT](../UPSTREAM_COMMIT)，原始介绍保留在 [UPSTREAM.md](../UPSTREAM.md)。
+> 状态：存档。记录的是 2026-11-06 至 2026-11-21 期间维护者自己的双机 systemd 部署（`deploy/remote/`），对应 0.2.0 之前的 `main` 分支，写成后不再修改。当前版本的部署见 [docs/deployment.md](../deployment.md)；没有 `compose.runtime.yml` 的部署打不开任何浏览器配置。
+
+通过服务器 A 的网页操作服务器 B 上的 Claude 浏览器。这份文档记录这种部署方式的日常使用和运维细节；Docker 部署见 [deployment.md](../deployment.md)。
+
+本项目基于 [Remote Browser](https://github.com/mystxcal/remote-browser) 修改，固定上游版本记录在 [UPSTREAM_COMMIT](../../UPSTREAM_COMMIT)，原始介绍保留在 [UPSTREAM.md](../../UPSTREAM.md)。
 
 ## 实际部署
 
@@ -68,7 +72,7 @@ CPU 百分比按一个逻辑 CPU 计算，内存额度覆盖所在 cgroup 的所
 
 B 已升级为 4 个逻辑 CPU、4 GB 内存，浏览器的内存软上限为 3072 MiB，浏览器与显示合计软上限为 3328 MiB。各会话共用这份资源预算，新增会话仍需通过内存准入检查。
 
-维护入口为 [scripts/limited-run.sh](../scripts/limited-run.sh)：通过 systemd 施加总额度，并用 `flock` 串行。构建及测试设置单 worker，维护进程降低调度优先级。不要在 A 直接启动上游完整 CI 或并行浏览器验收。
+维护入口为 [scripts/limited-run.sh](../../scripts/limited-run.sh)：通过 systemd 施加总额度，并用 `flock` 串行。构建及测试设置单 worker，维护进程降低调度优先级。不要在 A 直接启动上游完整 CI 或并行浏览器验收。
 
 维护任务的线程及进程合计上限为 256，项目合计为 320；旧的 128/192 上限会阻止测试 Chromium 创建必要线程。CPU 和内存额度仍按上表限制。
 
@@ -108,7 +112,7 @@ pnpm test:remote
 
 `bash scripts/limited-run.sh pnpm exec tsx scripts/two-client-smoke.mts` 使用一个临时 Chrome 和两个客户端，验证输入、视口、模式、弹窗、下载、剪贴板、跨会话拒绝、重连及已结束会话编号复用，不连接正式 Claude。前端会话流程另由 `scripts/client-ui-smoke.mjs` 验证。
 
-部署脚本在 A 构建并打包，将版本化运行目录放入 B 的 `/opt/claude-browser/releases/`，更新 `current` 链接并重启服务。HTTPS 站点配置参考 [deploy/remote/Caddyfile](../deploy/remote/Caddyfile)，应合并到现有 Caddy 配置。
+部署脚本在 A 构建并打包，将版本化运行目录放入 B 的 `/opt/claude-browser/releases/`，更新 `current` 链接并重启服务。HTTPS 站点配置参考 [deploy/remote/Caddyfile](../../deploy/remote/Caddyfile)，应合并到现有 Caddy 配置。
 
 ## 状态与排查
 
@@ -124,7 +128,7 @@ ssh <server> 'systemctl status claude-browser claude-display --no-pager'
 ssh <server> 'journalctl -u claude-browser -n 30 --no-pager'
 ```
 
-资源配置位于 [deploy/remote](../deploy/remote)。达到额度后任务会变慢或失败，应查看服务状态与日志，不要通过移除额度重试。
+资源配置位于 [deploy/remote](../../deploy/remote)。达到额度后任务会变慢或失败，应查看服务状态与日志，不要通过移除额度重试。
 
 ## 验证状态与授权
 
@@ -132,4 +136,36 @@ ssh <server> 'journalctl -u claude-browser -n 30 --no-pager'
 
 WebKit 26.0 的生产触屏验收通过匿名模式切换、模型菜单、编辑器聚焦、中文输入、发送按钮激活和提交内容一致性检查。用户已确认 iPhone 上的匿名切换与输入后发送按钮正常。较新的 Linux WebKit 测试进程在匿名模式切换后原生崩溃，该引擎的完整回归仍未通过。16 会话满负载压测仍待完成。
 
-保留上游 Apache-2.0 授权及第三方声明：[LICENSE](LICENSE)、[NOTICE](NOTICE)、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。上游安全边界见 [docs/security.md](docs/security.md)。
+保留上游 Apache-2.0 授权及第三方声明：[LICENSE](../../LICENSE)、[NOTICE](../../NOTICE)、[THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md)。上游安全边界见 [docs/security.md](../security.md)。
+
+## 附：迁移到 Docker 和在原服务端上发布（原 docs/deployment.md 的两节）
+
+### 从 systemd 部署迁移
+
+`deploy/remote/migrate-to-docker.sh` 把双机 systemd 部署换成 Docker，在入口机上分步执行：
+
+```bash
+export REPO_URL=https://github.com/NotDesigned/remote-claude-browser.git
+export SERVER_IMAGE=ghcr.io/notdesigned/remote-claude-browser-server:latest
+export TUNNEL_IMAGE=ghcr.io/notdesigned/remote-claude-browser-tunnel:latest
+
+bash deploy/remote/migrate-to-docker.sh prepare   # 在服务端安装 Docker，备好镜像，不影响运行中的服务
+bash deploy/remote/migrate-to-docker.sh cutover   # 切换服务端，打开的页面会中断，不健康时自动退回
+bash deploy/remote/migrate-to-docker.sh tunnel    # 切换入口机的隧道，反向代理不用改
+bash deploy/remote/migrate-to-docker.sh rollback  # 随时退回 systemd
+```
+
+迁移后服务端使用主机网络（`compose.hostnet.yml`）。迁移会把 Chrome 配置复制给容器里的 Chromium，原配置不会被修改。容器里的 Chromium 版本不能低于原来的 Chrome，否则配置无法打开。网站会看到浏览器品牌变成 Chromium，部分网站可能要求重新验证。退回 systemd 后，在容器里新产生的登录状态不会带回去。
+
+### 资源紧张的双机部署
+
+`deploy/remote/deploy-container.sh` 从入口机发布已经构建、验收过的网关和前端产物。它显式组装浏览器服务、可选主机网络及 Xray 出站的 Compose 文件，不发布入口代理、域名、证书或 CPA 服务；在运行中的服务端镜像上只增加文件层，不在服务端安装依赖或编译源码，保留现有 Chromium 与持久化浏览器资料。这要求基础镜像已提供 Node 22.23.1、`node:sqlite`、`tzdata` 和标准的 `/data/profile` 布局。
+
+```bash
+export REMOTE_HOST=server.example.com
+export REMOTE_SSH_IDENTITY=/path/to/administrative-ssh-key
+export REMOTE_SSH_KNOWN_HOSTS=/path/to/verified-known-hosts
+bash deploy/remote/deploy-container.sh
+```
+
+SSH 身份必须有部署权限，不能使用只允许端口转发的隧道密钥。脚本默认服务端目录为 `/opt/claude-browser/docker`，可用 `REMOTE_SERVER_DIR` 覆盖。镜像校验通过后，脚本短暂停服，备份用户数据库、会话归属等管理元数据，再切换容器；失败会恢复旧镜像、Compose 配置和这些元数据。发布记录和回滚备份保存在服务端 `/opt/claude-browser/container-releases/`，其中含凭据。

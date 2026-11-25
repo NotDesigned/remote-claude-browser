@@ -1,36 +1,119 @@
-# Changelog
+# 更新记录
 
-Notable changes to Remote Browser are recorded here.
+> 读者：升级 Remote Claude Browser（RCB）的部署者
 
-## [Unreleased]
+格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。每个版本分为「新增 / 变更 / 移除 / 升级步骤」四节。
 
-- The remote-cc sign-in hint on configuration cards now reads `remote-cc account login --rcb PROFILE`, following remote-cc 0.7.0's noun-verb command names. Requires remote-cc ≥ 0.7.0 (older remote-cc does not know `account login`; run `remote-cc update`).
+## [未发布]
+
+### 新增
+
+- 可选的单点登录（OpenID Connect）：设置 `MIRROR_OIDC_ISSUER`、`MIRROR_OIDC_CLIENT_ID` 和 `MIRROR_OIDC_CLIENT_SECRET` 后，登录页在用户名和密码下方多一个单点登录按钮（默认文字「使用单点登录」，由 `MIRROR_OIDC_LABEL` 修改）。第一次登录自动创建用户，可以用允许列表限制首次登录，用 `MIRROR_OIDC_ADMIN_GROUP` 按组指定管理员；已有用户可以在「我的账号」→「单点登录」绑定外部账号；「管理后台」→「用户」标出用过单点登录的用户。没有本地密码的用户超过 `MIRROR_OIDC_REVALIDATE_DAYS` 没有单点登录时，remote-cc 返回 401 `REMOTE_CC_SIGN_IN`，登录一次工作台即恢复。变量见 [docs/configuration.md](docs/configuration.md#单点登录oidc)。不设置这些变量时行为不变。
+
+### 变更
+
+- 配置卡片上的 remote-cc 首次登录提示改为 `remote-cc account login --rcb 配置`，跟随 remote-cc 0.7.0 的新命令名。
+- 文档按读者重组：新增 `docs/usage.md` 和 `docs/admin.md`；原 `docs/cpa.md`、`docs/timezone.md`、`docs/fingerprint-browser.md`、`docs/operations.md`、`docs/release-checklist.md` 并入各自的归属文件，评测、复盘和计划移到 `docs/records/`。各主题的位置见 [docs/documentation.md](docs/documentation.md)。
+
+### 移除
+
+无
+
+### 升级步骤
+
+- remote-cc 联动需要 remote-cc ≥ 0.7.0：旧版不认识卡片上提示的 `account login`。让使用者先执行 `remote-cc update`。
 
 ## [0.2.0] - 2026-11-25
 
-- Link [remote-cc](https://github.com/NotDesigned/remote-cc): `remote-cc --rcb PROFILE` runs Claude Code as a browser configuration's Claude account, with all its traffic through that configuration's proxy node and its exit time zone. Computers and egress hosts connect by approval in 代理与 API → remote-cc (egress hosts need an administrator); sessions get short-lived grants that only approved egress hosts can redeem for node configurations. Claude Code sign-ins open from a banner in the configuration's browser and the code returns to the terminal by itself. See docs/remote-cc.md.
-- Choose a browser configuration before opening a new workspace, with remembered Claude emails, login status and unavailable accounts. Reopen the picker from the workspace menu to switch or return to the current session. Existing sessions still resume on reload.
-- Rename configurations, choose a default per user, and delete non-default configurations directly in the picker.
-- Classify mirrored videos after their source nodes are built, and clear unavailable notices once playback recovers.
-- Give each browser account its own screen size, font subset and font rendering, so accounts no longer share one fingerprint. No canvas or audio noise is added.
-- Launch Chromium with an explicit argument list instead of Puppeteer's defaults, whose disabled MediaRouter made fingerprint.com classify the browser as automation.
-- Keep media SDP/ICE and PeerConnections in a private isolated world, removing the page-visible legacy frame signaling path.
-- Isolate authenticated asset fallback HTTP/TLS pools per workspace, and destroy them on release or profile switch.
-- Give managed headful browser configurations separate authenticated Xvfb displays and native clipboards, including scoped pixel capture.
-- Keep native browser identity for phone viewers, isolate per-session screen geometry from the shared X display, and preserve native device, permission and EME APIs.
+本项目分叉后的第一个版本。需要 remote-cc ≥ 0.6.0 才能使用 remote-cc 联动。
 
-- Replace sing-box egress with checksum-pinned Xray, including VLESS Encryption, REALITY ML-DSA-65 verification and XHTTP. Browser-only TUN routing and fail-closed DNS/UDP forwarding remain enabled. Existing sing-box outbound JSON must be migrated to Xray JSON.
+### 新增
 
-- The server is one container holding Xvfb, Chromium and the gateway, with its own firewall.
-- `client/` deploys an entry host with HTTPS and an SSH tunnel; `compose.https.yml` does HTTPS on one machine.
+- 多用户工作台：用户名和密码登录，每个用户只看到自己的浏览器配置和会话。管理员在「管理后台」的「用户」「会话」「资源」页签里创建、停用、删除用户，重置密码，结束会话，并可给每个用户设置会话上限。
+- 「我的账号」：修改自己的密码，查看并结束自己在各设备上的会话。
+- 浏览器配置：打开新会话前先在配置选择页选择配置，卡片显示 Claude 登录邮箱、登录状态和当前组织的 KYC 状态。可以重命名、设为默认、删除非默认配置；会话中可以从工作台菜单回到选择页切换配置或返回原会话。刷新页面仍然恢复原会话。
+- 每个配置有独立的屏幕尺寸、字体子集和字体渲染，不再共用一个指纹；不加 canvas 或音频噪声。
+- 系统身份：每个配置可以通过「设置系统」选择 Windows 或 Mac 身份。
+- 可选的 AliasMode 内核（`compose.fingerprint.yml`、`scripts/setup-fingerprint.sh`），只用于新建的配置。
+- 按配置的出口：新增 `compose.runtime.yml`，每个配置在独立的网络命名空间里经 Mihomo 和自己绑定的节点出网，网页、DNS 和 WebRTC 都走这个节点。在「代理与 API」→「代理来源」导入节点链接、Mihomo YAML 或订阅，私有来源归本人，共享来源由管理员维护。节点支持 IPv4 和 IPv6 上游。
+- 「检查出口」：显示实测 IP、地区、时区和检查时间。
+- 当地时间跟随出口：浏览器时区按出口 IP 的地域确定，工作台时钟显示出口所在城市和当地时间。
+- 按用户的 CPA 实例：由 `cpa-broker` 为每个用户创建私有 CPA 实例，管理员可以建共享实例。在「CPA 授权与 Key」里添加 Claude 授权、给每个授权选择节点、生成 `rcpa_` 开头的调用 Key；可以打开实例的原生管理面板。`/v1` 按调用 Key 路由到对应实例。
+- 收件箱：通过 Resend 接收邮件。`RESEND_RECEIVING_DOMAIN` 可以写多个域名（第一个为默认）；设置 `RESEND_VERIFICATION_FROM` 后，用户可以用邮件验证码绑定已有地址；管理员可以给用户分配地址。
+- 「Apple 账户与 Claude 登录」：在当前浏览器配置里引导注册 Apple 账户（另有 Google 注册向导），用收件箱接收验证邮件，再用 Apple 登录 Claude。
+- remote-cc 联动：remote-cc 可以用某个浏览器配置的 Claude 账号、节点和出口时区运行 Claude Code。电脑和出口主机在「代理与 API」→「remote-cc」里凭连接码批准（出口主机只能由管理员批准）；Claude Code 登录从该配置浏览器里的横幅「打开授权页」完成。接口见 [docs/remote-cc.md](docs/remote-cc.md)。
+- 会话按可用内存准入，不再按固定数量；后台标签页和无人查看的会话会休眠，休眠超过 24 小时的会话结束。
+- 页面模式：文字选择留在本地，选中的文字可以用原生右键菜单；输入法组字文字淡色显示；重建页面后继续播放 SVG 动画和 Claude 的思考动画。
+
+### 变更
+
+- 首次打包分叉版本：服务端改为一个容器，内含 Xvfb、Chromium、网关和自己的防火墙，端口默认 `127.0.0.1:3010`；`client/` 部署带 HTTPS 和 SSH 隧道的入口机，`compose.https.yml` 在同一台机器上提供 HTTPS。
+- 每个浏览器配置必须绑定节点才能打开。没有绑定时，新建、恢复和切换会话都返回 `409 EXIT_REQUIRED`；没有启用 `compose.runtime.yml` 时返回 `503 PROXY_RUNTIME_DISABLED`。没有部署级的默认出口。
+- CPA 授权同样必须绑定节点，没有绑定的授权会被停用。
+- `MIRROR_ACCESS_PASSWORD` 只用于在空数据库里创建初始管理员；`MIRROR_AUTH_SECRET` 改为必填，至少 16 个字符。
+- 浏览器配置的数据移到每个配置自己的目录，浏览器的文件和进程按配置隔离，Chromium 沙箱保持开启。
+- Chromium 改用项目自己的启动参数列表，不再用 Puppeteer 的默认参数。
+- 媒体的 SDP/ICE 和 PeerConnection 移到隔离环境里，去掉了页面可见的旧信令路径。
+- 资源回源的 HTTP/TLS 连接池按会话隔离，会话释放或切换配置时销毁。
+- 每个浏览器配置有自己的 Xvfb 显示和系统剪贴板，画面模式只截取该配置的显示。
+- 手机查看时保留浏览器原生身份，每个会话的屏幕尺寸和共享的 X 显示分开，保留原生的设备、权限和 EME 接口。
+- 页面里的视频在源节点重建后再分类，播放恢复后清除视频不可用的提示。
+- 部署级出站代理（`compose.proxy.yml`）从 sing-box 改为固定校验和的 Xray，支持 VLESS Encryption、REALITY ML-DSA-65 验证和 XHTTP。
+- `TZ` 只设置服务进程和日志的时区，不再决定浏览器时区。
+
+### 移除
+
+- 独立 CPA 服务：`compose.cpa.yml`、`compose.cpa.https.yml`、`compose.runtime.https.yml`、对应的 Caddyfile、`scripts/setup-cpa.mjs` 及其管理和验收脚本。由按用户的 CPA 实例取代。
+- 上游的 `compose.persistent.yml`、`REMOTE_BROWSER_BIND`、`REMOTE_BROWSER_PORT` 和 `MIRROR_ACCESS_SECRET`。
+- sing-box 出站 JSON 不再支持；SOCKS4、Shadowsocks 插件、`aid != 0` 的 VMess、HTTP/2 传输和 `allowInsecure=1` 也不再支持。
+
+### 升级步骤
+
+从上游 0.1.0 升级时，按全新部署处理：
+
+1. 运行 `scripts/bootstrap.sh` 生成新的 `.env`，按 [README 快速开始](README.md#快速开始)启用 `compose.runtime.yml`。端口从 `8080` 改为 `3010`，变量改为 `SERVER_BIND` 和 `SERVER_PORT`。
+2. 上游的浏览器资料卷不会被迁移，需要在新的浏览器配置里重新登录网站。
+
+从本项目 0.2.0 之前的 `main` 分支升级时：
+
+1. 停止服务，备份整个 `data` 卷，以及旧 CPA 的 config 和 auth 卷。升级会把旧默认配置的 Chrome 资料移到 `/data/profile/browser-default`；回退时必须同时恢复数据和旧镜像，只换回旧镜像不行。
+2. 在 `.env` 的 `COMPOSE_FILE` 里加入 `compose.runtime.yml`，并去掉 `compose.hostnet.yml`（两者不能组合）。能组合的文件见 [docs/deployment.md](docs/deployment.md#可用的-compose-组合)。
+3. `browser` 网络改为双栈。已有的 IPv4 网络需要先停止连接它的服务，再重建这个网络；数据卷保留。
+4. 已有的浏览器配置和数据全部归初始管理员，所有设备都要用用户名和密码重新登录工作台。修改 `.env` 不会重设已有用户的密码。
+5. 管理员或配置的所有者在「代理与 API」→「代理来源」导入节点，再给每个配置「设置出口」。没有绑定节点的配置打不开。
+6. 仍在使用 `compose.proxy.yml` 并写了 sing-box 出站 JSON 的，把 `EGRESS_PROXY` 改成 Xray outbound JSON 或分享链接，否则服务端启动时会报错。常见的分享链接可以继续使用。
+7. 用过旧的独立 CPA（`compose.cpa.yml`）的，没有自动迁移工具，按以下步骤手动迁移：
+   1. 确定旧数据属于哪个用户。目标是该用户的私有实例，还是管理员建的共享实例，两者不同。
+   2. 以该用户登录，在「代理与 API」→「CPA 授权与 Key」点「创建我的 CPA 实例」（共享实例由管理员点「创建共享 CPA 实例」），点「启动实例」后再「停止实例」，让 `cpa-broker` 建好卷。
+   3. 新实例的卷名为 `remote-browser-<实例 ID>-config`、`-auth`、`-static`，可用 `docker volume ls --filter label=dev.remote-browser.cpa-instance` 查到。旧实例停止写入后，把旧 auth 卷里的授权文件复制到新实例的 auth 卷。
+   4. 启动新实例。没有绑定节点的授权会被停用：在「CPA 授权与 Key」里给每个授权选择节点，再启用。
+   5. 旧的调用 Key 没有公开的导入入口。让使用者在「CPA 授权与 Key」里生成新的 `rcpa_` 调用 Key，客户端改用新 Key，并把入口的整个 `/v1` 路径转发给网关。
+   6. 升级时，已有的私有调用 Key 自动归对应实例的所有者，已有的共享调用 Key 归初始管理员，Key 的值不变。无法知道旧的共享 Key 曾经交给了谁；已经分发出去的，让使用者生成自己的 Key 后撤销旧 Key。
 
 ## [0.1.0] - 2026-07-26
 
-- First portable self-hosted release of the semantic DOM browser and scriptless viewer.
-- Trusted CDP input across tabs, frames, shadow DOM, mobile text, IME, uploads, and downloads.
-- Ordered snapshot/delta recovery with WebRTC media lanes and whole-tab pixel fallback.
-- Loopback-first Docker Compose deployment with generated credentials and an ephemeral profile.
-- Reproducible full-browser fidelity, OOPIF, media, security, and container acceptance gates.
+上游项目的基础版本，本项目从它分叉。说明见[上游的 0.1.0 发布](https://github.com/mystxcal/remote-browser/releases/tag/v0.1.0)和 [UPSTREAM.md](UPSTREAM.md)。
 
-[Unreleased]: https://github.com/mystxcal/remote-browser/compare/v0.1.0...HEAD
+### 新增
+
+- 首个可自托管的版本：语义 DOM 浏览器和无脚本查看器。
+- 跨标签页、iframe、shadow DOM 的可信 CDP 输入，支持手机文字输入、输入法、上传和下载。
+- 有序的快照和增量恢复，WebRTC 媒体通道，整个标签页的画面回退。
+- 默认只监听回环地址的 Docker Compose 部署，生成随机凭据，浏览器资料默认不持久化。
+- 可复现的完整浏览器兼容性、跨进程 iframe、媒体、安全和容器验收。
+
+### 变更
+
+无
+
+### 移除
+
+无
+
+### 升级步骤
+
+无
+
+[未发布]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/NotDesigned/remote-claude-browser/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mystxcal/remote-browser/releases/tag/v0.1.0

@@ -1,4 +1,8 @@
-# Windows 浏览器运行端迁移
+# Windows 浏览器运行端计划
+
+> 读者：维护者
+
+> 状态：计划，未接入工作台。2026-11-16 写成，对应 0.2.0 发布前的 `main` 分支，写成后不再修改。
 
 目前完成的是虚拟机创建脚本和独立 Chrome 验证程序。生产浏览器仍运行在 Linux；Windows 运行端尚未接入工作台。
 
@@ -40,13 +44,13 @@ node .\scripts\windows-chrome-probe.mjs
 
 ## 接入工作台需要完成的改动
 
-| 部分 | 接入内容 |
-| --- | --- |
-| 浏览器生命周期 | Windows 运行端按配置 ID 启停 Chrome，通过私有控制连接提供现有 `BrowserHandle` 接口 |
-| 出口与时区 | 按配置绑定代理，验证 DNS、UDP、WebRTC 和时区；测试配置先使用单一出口 |
-| 文件与扩展 | 上传先传到 Windows，再交给 Chrome；下载从 Windows 取回；缩放扩展在 Windows 本地安装 |
+| 部分           | 接入内容                                                                              |
+| -------------- | ------------------------------------------------------------------------------------- |
+| 浏览器生命周期 | Windows 运行端按配置 ID 启停 Chrome，通过私有控制连接提供现有 `BrowserHandle` 接口    |
+| 出口与时区     | 按配置绑定代理，验证 DNS、UDP、WebRTC 和时区；测试配置先使用单一出口                  |
+| 文件与扩展     | 上传先传到 Windows，再交给 Chrome；下载从 Windows 取回；缩放扩展在 Windows 本地安装   |
 | 页面与画面模式 | 复用现有 DOM/CDP 控制和 `Page.startScreencast` 路径；Linux X11 抓屏路径不用于 Windows |
-| 配置和资源 | Windows 运行端提供登录状态及进程资源信息；字体和渲染使用 Windows 环境 |
+| 配置和资源     | Windows 运行端提供登录状态及进程资源信息；字体和渲染使用 Windows 环境                 |
 
 现有 `BROWSER_CDP_URL` 只支持默认配置，且不能与生产的独立出口绑定组合使用，因此不能直接作为多配置 Windows 运行端。需在 `clients-main.ts` 的配置启动流程中增加 Windows 实现，同时保留 Linux 实现。
 

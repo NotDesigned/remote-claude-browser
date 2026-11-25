@@ -1,3 +1,13 @@
+> [!NOTE]
+> **Frozen archive.** This file is the upstream README of
+> [mystxcal/remote-browser](https://github.com/mystxcal/remote-browser) at
+> commit
+> [`2c9fb2a`](https://github.com/mystxcal/remote-browser/tree/2c9fb2a8ba89def4f655bccc7739bb598e95a740)
+> (the commit recorded in `UPSTREAM_COMMIT`), kept for provenance and not
+> updated. Its commands, ports (8080), single-session description and links
+> describe upstream at that commit and do not apply to this fork. For Remote
+> Claude Browser (RCB), start at [README.md](README.md).
+
 <p align="center">
   <img src="assets/remote-browser.svg" alt="Remote Browser — the page stays on the server, the text stays text" width="100%">
 </p>
@@ -12,14 +22,14 @@ cover the difficult parts.
 
 [Quick start](#quick-start) ·
 [How it works](#how-it-works) ·
-[Configuration](docs/configuration.md) ·
-[Deployment](docs/deployment.md) ·
-[Security](docs/security.md)
+[Configuration](https://github.com/mystxcal/remote-browser/blob/2c9fb2a8ba89def4f655bccc7739bb598e95a740/docs/configuration.md) ·
+[Deployment](https://github.com/mystxcal/remote-browser/blob/2c9fb2a8ba89def4f655bccc7739bb598e95a740/docs/deployment.md) ·
+[Security](https://github.com/mystxcal/remote-browser/blob/2c9fb2a8ba89def4f655bccc7739bb598e95a740/docs/security.md)
 
 > [!IMPORTANT]
 > This is an early build for a small set of trusted viewers. Its scriptless DOM
 > mirror is a different security boundary from pixel-only remote browsing.
-> Read the [security model](docs/security.md) before exposing it beyond
+> Read the [security model](https://github.com/mystxcal/remote-browser/blob/2c9fb2a8ba89def4f655bccc7739bb598e95a740/docs/security.md) before exposing it beyond
 > localhost.
 
 ## Quick start
@@ -88,8 +98,8 @@ The default Compose path runs one browsing session. Compatibility still varies
 by site, especially around DRM, unusual browser APIs, hostile CSP combinations,
 and cross-origin media.
 
-Read [Architecture](docs/architecture.md) for the full data flow and
-[Troubleshooting](docs/troubleshooting.md) when a page diverges.
+Read [Architecture](https://github.com/mystxcal/remote-browser/blob/2c9fb2a8ba89def4f655bccc7739bb598e95a740/docs/architecture.md) for the full data flow and
+[Troubleshooting](https://github.com/mystxcal/remote-browser/blob/2c9fb2a8ba89def4f655bccc7739bb598e95a740/docs/troubleshooting.md) when a page diverges.
 
 ## Deployment
 
@@ -106,9 +116,9 @@ Three things to get right:
 
 The exact settings and production boundary live in:
 
-- [Configuration](docs/configuration.md)
-- [Deployment](docs/deployment.md)
-- [Security model](docs/security.md)
+- [Configuration](https://github.com/mystxcal/remote-browser/blob/2c9fb2a8ba89def4f655bccc7739bb598e95a740/docs/configuration.md)
+- [Deployment](https://github.com/mystxcal/remote-browser/blob/2c9fb2a8ba89def4f655bccc7739bb598e95a740/docs/deployment.md)
+- [Security model](https://github.com/mystxcal/remote-browser/blob/2c9fb2a8ba89def4f655bccc7739bb598e95a740/docs/security.md)
 
 ## Development
 
@@ -123,7 +133,7 @@ CHROME_PATH=/usr/bin/google-chrome pnpm run ci
 `pnpm run ci` builds the workspace, checks types and formatting, runs the unit
 suite, and exercises the browser mirror against real Chromium.
 
-See [Contributing](CONTRIBUTING.md) for the working rules.
+See [Contributing](https://github.com/mystxcal/remote-browser/blob/2c9fb2a8ba89def4f655bccc7739bb598e95a740/CONTRIBUTING.md) for the working rules.
 
 ## Related
 
@@ -137,5 +147,5 @@ The rest are listed on [my profile](https://github.com/mystxcal).
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE), [NOTICE](NOTICE), and
-[third-party notices](THIRD_PARTY_NOTICES.md).
+Apache License 2.0. See [LICENSE](https://github.com/mystxcal/remote-browser/blob/2c9fb2a8ba89def4f655bccc7739bb598e95a740/LICENSE), [NOTICE](https://github.com/mystxcal/remote-browser/blob/2c9fb2a8ba89def4f655bccc7739bb598e95a740/NOTICE), and
+[third-party notices](https://github.com/mystxcal/remote-browser/blob/2c9fb2a8ba89def4f655bccc7739bb598e95a740/THIRD_PARTY_NOTICES.md).

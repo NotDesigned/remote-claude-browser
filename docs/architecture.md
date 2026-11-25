@@ -1,139 +1,109 @@
-# Architecture
+# 架构
 
-The gateway serves one workbench for browser configurations, proxy sources and CPA. The browser
-executes visited-site scripts and owns website cookies. The viewer reconstructs its pages or shows
-its captured display. Public ingress is configured by the deployer.
+> 读者：开发者
 
-## System flow
+网关提供一个工作台，管理浏览器配置、代理来源和 CPA。浏览器执行所访问网站的脚本并持有网站 Cookie；查看端重建它的页面，或显示它的画面。公网入口由部署者配置。
+
+## 组件和数据流
 
 ```mermaid
 flowchart TB
-  Device[Desktop or phone] --> Entry[Same-host or VPS reverse proxy]
-  Entry --> Gateway[Gateway and workbench]
-  Gateway --> Store[Users, profiles, proxy catalog and CPA metadata]
-  Gateway --> Broker[Private browser runtime broker]
-  Broker --> Browser[Per-profile browser, filesystem and display]
-  Browser --> Exit[Per-profile Mihomo network namespace]
-  Exit --> Node[Selected IPv4 or IPv6 proxy server]
-  Node --> Site[Visited websites]
-  Browser -->|DOM, assets and captured frames| Gateway
+  Device[电脑或手机] --> Entry[同机或独立 VPS 上的反向代理]
+  Entry --> Gateway[网关和工作台]
+  Gateway --> Store[用户、浏览器配置、代理来源、CPA 和 remote-cc 的元数据]
+  Gateway --> Broker[私有的浏览器运行时 broker]
+  Broker --> Browser[每个配置的浏览器、文件系统和显示]
+  Browser --> Exit[每个配置的 Mihomo 网络命名空间]
+  Exit --> Node[所选的 IPv4 或 IPv6 节点]
+  Node --> Site[访问的网站]
+  Browser -->|DOM、资源和截取的画面| Gateway
   Gateway --> Device
-  Client[External API client] -->|API key at /v1| Gateway
-  Gateway --> CPA[Key-selected private or shared CPA]
-  CPA --> Credential[Credential-bound Mihomo exit]
-  Credential --> Upstream[Upstream model service]
+  Client[外部 API 客户端] -->|调用 Key，/v1| Gateway
+  Gateway --> CPA[按 Key 选中的私有或共享 CPA 实例]
+  CPA --> Credential[按凭据绑定的 Mihomo 出口]
+  Credential --> Upstream[上游模型服务]
+  RCC[remote-cc] -->|/api/remote-cc/v1| Gateway
 ```
 
-Each profile owns a browser process, profile directory, private authenticated Xvfb display, network,
-mount and PID namespaces. Same-profile sessions share website login and fingerprint identity,
-while owning separate windows. Profiles still share the container, kernel, CPU, memory and disk.
-The optional AliasMode engine supplies Windows, macOS or Linux identities on the Linux runtime;
-it does not create a Windows or macOS VM.
+| 包或目录            | 作用                                                                     |
+| ------------------- | ------------------------------------------------------------------------ |
+| `packages/gateway`  | 网关：登录、会话、浏览器生命周期、资源代理、出口、CPA、收件箱、remote-cc |
+| `packages/viewer`   | 查看端：工作台界面、页面模式的回放、画面模式                             |
+| `packages/agent`    | 注入远程页面的采集脚本（rrweb 快照和增量）                               |
+| `packages/protocol` | 网关、查看端和采集脚本之间的消息格式                                     |
+| `deploy/`           | 镜像、入口脚本、运行时 broker、`cpa-broker`、出口和防火墙脚本            |
+| `client/`           | 独立入口机的 Caddy 和 SSH 隧道                                           |
 
-The root broker exposes fixed browser/network operations on a private Unix socket. Chrome runs
-as UID 10001 with its sandbox enabled and a private CDP pipe. Browser filesystems expose their own
-profile, display, temporary storage, `/proc` and read-only dependencies. Other profiles, service
-databases and management sockets are absent. HTTP, HTTPS and `about:blank` are accepted navigation
-schemes; native file navigation is blocked.
+## 浏览器配置和运行时
 
-Mihomo may connect to proxy servers over IPv4 or IPv6. Browser traffic, DNS, WebRTC and gateway
-asset downloads use the selected exit. Browsers cannot use the upstream IPv6 link directly.
-An unassigned or failed exit blocks startup; it never selects another node or deployment default.
-Deployment-level Xray remains available for legacy service traffic, separately from profile exits.
+每个浏览器配置有自己的浏览器进程、配置目录、带认证的私有 Xvfb 显示，以及网络、挂载和 PID 命名空间。同一配置的多个会话共享网站登录和系统身份，各自有独立的窗口。所有配置共享容器、内核、CPU、内存和磁盘。
 
-## Ownership and management
+一个以 root 运行的 broker 在私有的 Unix socket 上提供固定的浏览器和网络操作。Chrome 以 UID 10001 运行，沙箱开启，经私有的 CDP 管道控制。浏览器的文件系统里只有它自己的配置目录、显示、临时存储、`/proc` 和只读的依赖。
+
+Mihomo 可以用 IPv4 或 IPv6 连接节点。浏览器流量、DNS、WebRTC 和网关代为下载的资源都走所选出口；浏览器不能直接使用上游的 IPv6。没有绑定或出口故障时浏览器不启动，不会改选别的节点。
+
+**时区**：打开配置时，经这个配置的 Mihomo 查询一个 GeoIP 服务，从同一个响应里取出口 IP、城市、国家和 IANA 时区，并记进配置记录。Chrome 以这个时区启动；工作台的时钟用服务器的 UTC 样本校准。CPA 的每个凭据同样按所选节点记下时区，CPA 用它生成请求里的当地日期。
+
+**系统身份**：每个配置保存独立的指纹种子、屏幕尺寸、字体子集和字体渲染，不加 canvas 或音频噪声。可选的 AliasMode 内核在 Linux 上提供 Windows、macOS 和 Linux 身份，它不是 Windows 或 macOS 虚拟机。重命名、休眠重启、改出口、轮换 `MIRROR_AUTH_SECRET` 都不会重新生成种子。
+
+## 页面模式和资源
+
+采集脚本在每个文档里记录 rrweb 快照和有序的增量，经隔离环境里的 CDP 桥送到网关，再经认证的 WebSocket 送到查看端。输入使用节点 id 和相对坐标，由网关找到权威节点并发出可信的 CDP 输入。密码保持遮盖。查看端的回放 iframe 继承的 CSP 阻止网站脚本、表单、弹窗和本地导航；这是标记、CSS 和字体解析的边界，不是纯像素的隔离。
+
+资源 URL 是加密的网关令牌，绑定运行实例和会话。重写时带上每个文档自己的 URL 和 base，包括嵌入的 frame。每个标签页在构造时就装好自己的资源重写器，并对资源 URL 做有上限的记忆，重复的图片和重新快照复用同一个网关 URL。抓取优先用该 frame 的浏览器网络上下文；object URL 从它所在的浏览器上下文分段读取。CSS 是一张资源图：导入、字体和图片都相对样式表解析，并经同一个网关。Range 和回退用的 HTTP/TLS 连接池按会话隔离，会话释放时销毁。
+
+画面模式截取配置的 X11 显示，包括原生菜单，以 CDP 截屏为后备，并保持 DOM 采集继续运行。WebRTC 信令留在隔离环境里。
+
+## 会话和恢复
+
+会话没有全局数量上限；新建和恢复按可用内存准入，打开新的配置还要预留浏览器和显示的内存。查看端标签页隐藏时断开；离线的会话有宽限期，期间正在生成回复或进行 CPA 授权会推迟回收；没有会话使用的配置在空闲一段时间后关闭浏览器。具体数值见[部署 · 资源与超时](deployment.md#资源与超时)。网站登录持久保存；休眠会话恢复的是网址，不是未保存的页面和表单状态。
+
+查看端过慢、序号缺口或回放出错时请求新快照。渲染进程崩溃时有限次数地重载恢复。出口错误区分连接、DNS、超时、上游 HTTP 和无效的地理数据，不把代理凭据或内部诊断返回给客户端。
+
+## 归属和权限
 
 ```mermaid
 flowchart TB
-  Operator[Host operator] --> Infrastructure[Ingress, containers, volumes and backups]
-  Admin[Workbench administrator] --> Users[Users, roles, account status and session limits]
-  Admin --> Sessions[All users' session status and session termination]
-  Admin --> Sources[All private and shared proxy sources]
-  Admin --> Shared[Shared CPA credentials and shared-key revocation]
-  User[Each workbench user] --> Profiles[Own browser profiles and device sessions]
-  User --> Private[Own private CPA and proxy sources]
-  User --> Keys[Own private and shared calling keys]
-  User -->|Use| SharedPool[Shared proxy nodes and CPA pool]
-  Key[API key holder] -->|Inference only| Instance[One corresponding CPA instance]
+  Deployer[部署者] --> Infrastructure[入口、容器、数据卷和备份]
+  Admin[管理员] --> Users[用户、权限、状态和会话上限]
+  Admin --> Sessions[所有用户的会话]
+  Admin --> Sources[所有私有和共享的代理来源]
+  Admin --> Shared[共享 CPA 的凭据和共享调用 Key 的撤销]
+  Admin --> Hosts[批准出口主机]
+  User[每个用户] --> Profiles[自己的浏览器配置和设备会话]
+  User --> Private[自己的私有 CPA 和代理来源]
+  User --> Keys[自己的私有和共享调用 Key]
+  User --> Computers[自己批准的 remote-cc 电脑]
+  User -->|使用| SharedPool[共享节点和共享 CPA]
+  Key[调用 Key 持有者] -->|只能调用| Instance[一个对应的 CPA 实例]
 ```
 
-Profile operations require ownership. Session control additionally requires the current device;
-“My account” can list and end that user's sessions across devices. The admin panel lists session
-ownership, profile names, connected/running state and totals, and can end a chosen session. Workbench administrators have
-no direct cross-user profile or private CPA access. Private proxy sources are an explicit exception:
-their owner and administrators may use and manage them. Administrators can reset workbench
-passwords; host operators can access persistent data and remain trusted.
+浏览器配置的操作要求归属；会话控制还要求是当前设备。管理员不能直接访问其他用户的浏览器配置和私有 CPA；私有代理来源是例外，所有者和管理员都能使用和管理。停用和删除用户的效果见[管理](admin.md#停用和删除用户)。
 
-Every enabled user may own one private CPA and issue keys for the shared CPA. Administrators
-manage the shared instance and its credentials, and may revoke any shared key. External keys
-select an instance by their stored digest; they grant no management access. All instances use the
-same `/v1` path. Browser cookies, Claude OAuth credentials and external calling keys are separate.
-CPA containers have distinct configuration/auth/static volumes, no published ports, and only an
-internal network. A fixed broker manages their containers and volumes. Each credential uses its
-own explicitly bound exit; unbound credentials are disabled. Adding OAuth does not stop existing
-inference, and the selected OAuth proxy is saved with the new credential before it becomes usable.
+CPA 容器各有配置、授权和面板卷，不发布端口，只连接内部网络，由一个只接受固定模板的 `cpa-broker` 管理。每个凭据使用自己明确绑定的出口；新增的授权在可用之前就保存了所选节点。调用 Key 按存储的摘要选中实例，不带任何管理权限。
 
-Disabling a user revokes workbench logins, closes sessions and stops the private CPA, retaining
-profiles, credentials and keys for re-enabling. The private CPA then needs an explicit start.
-“Delete user and data” permanently removes that user's profiles, private proxy sources, private CPA
-container/volumes and calling keys. Shared resources and other users remain. Cleanup failure leaves
-the user disabled so deletion can be retried. The last enabled administrator cannot be disabled or
-deleted, and an administrator cannot delete their own account.
+**登录**：用户名和密码登录发放不透明的令牌，数据库只存摘要。单点登录（OIDC）按 issuer 加 `sub` 把外部身份对应到本地用户，可以自动创建用户，也可以绑定到已有用户；两种方式最后都发放同一种工作台登录。
 
-## Frontend flow
+**remote-cc**：工作台只通过 `/api/remote-cc/v1` 和 remote-cc 联系，契约见[接口契约](remote-cc.md)。
 
-```mermaid
-flowchart TD
-  Login[Workbench login] --> Picker[Browser configuration picker]
-  Picker --> New[Name, explicit exit and system identity]
-  New --> Check[Check exit and open]
-  Picker --> Browser[Browser workspace]
-  Check --> Browser
-  Picker --> Menu[Workbench menu]
-  Browser --> Menu
-  Menu --> Picker
-  Menu --> Proxy[Proxy sources and node checks]
-  Menu --> API[Private/shared CPA, authorization and calling keys]
-  Menu --> Account[Password and all own device sessions]
-  Menu --> Admin[Admin panel: users, sessions and resources]
-  API --> Choose[Choose a browser with the OAuth exit]
-  Choose --> Picker
-  Browser -->|Matching callback capture| API
-```
+## 不变量
 
-Profile card menus contain exit/system settings, exit checks, rename, default and deletion. Default
-profiles cannot be deleted. Same-name profiles remain separate IDs. Cards distinguish connected
-sessions from sleeping records and show whether the browser process is running.
+- 浏览器配置没有绑定节点就不启动，任何路径都不回退到宿主机的地址或别的节点。
+- CDP 不对外发布；Chromium 以非 root 运行并保持沙箱。
+- 所有 `@rrweb/*` 包使用同一个精确版本。
+- 资源令牌绑定运行实例；运行实例变化后旧令牌失效。
+- 查看端不执行网站脚本。
+- 网关不持有 Docker socket。
 
-Proxy and API sections retain their forms when switched. OAuth callback drafts are scoped by user,
-instance and OAuth state in tab session storage, surviving profile selection and page reloads.
-Submitting, completing or cancelling that authorization clears its draft. Full newly issued API
-keys are never persisted and disappear when leaving the API section. OAuth selection only lists
-profiles bound to its chosen node; selecting one opens the saved authorization without changing any
-existing profile's exit. Mobile uses the same navigation with single-column management panels.
+## 决策
 
-## Browser data and recovery
+- **语义 DOM 而不是纯像素**：页面模式传输重建的页面，文字清晰、可选择、带宽低，支持本机输入法。代价是标记和样式会进入查看端，所以保留画面模式给验证码和重建不了的页面。
+- **每个配置一个出口，没有默认出口**：网站把出口 IP 和账号关联，静默回退到另一个出口比打不开更糟。所以未绑定的配置和凭据直接拒绝。
+- **按出口确定时区**：网站会对比 IP 地理位置和浏览器时区。时区跟随出口，而不是部署者或使用者设备的时区。
+- **同一容器里的命名空间隔离，而不是每个配置一个容器或虚拟机**：在有限内存的单机上能运行更多配置，并保持现有的 Chromium 和数据布局。代价是共享内核和系统 UID，见[威胁模型](security.md)。
+- **原样运行 CPA，由固定模板的 broker 创建容器**：不修改上游 CPA，网关也不持有 Docker socket，只能请求固定的实例操作。
+- **直接运行 AliasMode 内核**：保留现有的托管和隔离方式，不依赖反检测浏览器厂商的账号和 API。评测见 [2026-11-16 AliasMode 评测](records/2026-11-16-aliasmode-evaluation.md)。
+- **资源重写在标签页构造时装好**：入口漏装重写器曾让原始图片 URL 直接到达查看端，所以重写不是可选的集成点。复盘见 [2026-11-03 资源平面](records/2026-11-03-resource-plane.md)。
+- **单点登录按 issuer 加 `sub` 识别**：邮箱可以在身份提供方被改动或重复使用，不能作为身份。
 
-The agent records rrweb snapshots and ordered mutations in each document. An isolated-world CDP
-bridge transports them to the tab hub; authenticated WebSockets deliver snapshots and deltas to the
-viewer. Input uses node IDs and relative coordinates, resolves the authoritative node and dispatches
-trusted CDP input. Passwords remain masked; local editing echo is reconciled with the remote page.
-The scriptless replay iframe inherits CSP blocking visited-site scripts, forms, popups and local
-navigation. This is a markup/CSS/font parsing boundary, not pixel-only isolation.
-
-Resource URLs are encrypted, runtime/session-bound gateway tokens. Rewrites carry each document's
-own URL and base, including embedded frames. Fetches use that frame's browser context or the same
-exit with browser cookies, UA and a normal Referer. Range/fallback HTTP/TLS pools are per-session;
-release destroys them. Private/link-local destinations are blocked in both address families.
-WebRTC signaling stays in isolated worlds. Pixel mode captures X11 including native menus, with
-CDP screencast as its fallback, and keeps the DOM recorder running.
-
-There is no global session count limit. Admins can set per-user limits on registered sessions, including dormant ones. Existing sessions can reconnect even after the limit is lowered. New or resumed windows require available memory, and a new
-profile reserves additional browser/display headroom. Each user may save eight profiles. Hidden
-viewer tabs disconnect; offline windows have a 60-second grace. Active generation and matching CPA authorization defer reclamation.
-A profile with no active session closes its browser after 120 seconds. Persistent website login
-survives; dormant window recovery restores URLs rather than unsaved page/form state.
-
-Slow viewers, sequence gaps or replay errors request a fresh snapshot. Renderer crashes use bounded
-reload recovery. Exit errors distinguish connection, DNS, timeout, upstream HTTP and invalid location
-data, without returning proxy credentials or internal diagnostics to the client.
+其他记录：[2026-11-16 Windows 浏览器运行端计划](records/2026-11-16-windows-runtime.md)、[2026-11-06 双机 systemd 部署运维记录](records/2026-11-06-systemd-operations.md)。
