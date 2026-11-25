@@ -40,4 +40,12 @@ describe("US keyboard layout", () => {
       location: 0,
     });
   });
+
+  it("describes keys a phone keyboard sends without a physical code", () => {
+    expect(describeKey("", "Enter", 0)).toMatchObject({ keyCode: 13, key: "Enter", text: "\r" });
+    expect(describeKey("", "Backspace", 0)).toMatchObject({ keyCode: 8, text: "" });
+    expect(describeKey("", "n", 0)).toMatchObject({ keyCode: 78, key: "n", text: "n" });
+    expect(describeKey("", "@", 0)).toMatchObject({ keyCode: 50, key: "@", text: "@" });
+    expect(describeKey("", "Unidentified", 0)).toMatchObject({ keyCode: 0, text: "" });
+  });
 });

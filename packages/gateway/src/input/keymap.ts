@@ -139,15 +139,32 @@ const US_KEYBOARD_LAYOUT: Readonly<Record<string, KeyDefinition>> = {
   VolumeUp: { keyCode: 183, key: "VolumeUp", location: 4 },
 };
 
+/**
+ * A phone's software keyboard reports the key but no physical code (iOS sends `code: ""`). Without
+ * a definition, Enter went out with no "\r" text and Backspace with virtual key code 0, so the
+ * remote page saw neither: Enter did not submit and a deleted character stayed in the remote field.
+ */
+const BY_KEY: Readonly<Record<string, { code: string; shifted: boolean }>> = (() => {
+  const byKey: Record<string, { code: string; shifted: boolean }> = {};
+  for (const [code, definition] of Object.entries(US_KEYBOARD_LAYOUT)) {
+    // The main block's keys, not the keypad's or the phone's own.
+    if ((definition.location ?? 0) !== 0) continue;
+    byKey[definition.key] ??= { code, shifted: false };
+    if (definition.shiftKey !== undefined) byKey[definition.shiftKey] ??= { code, shifted: true };
+  }
+  return byKey;
+})();
+
 export function describeKey(code: string, observedKey: string, mods: number): KeyDescription {
-  const definition = US_KEYBOARD_LAYOUT[code];
-  const shifted = (mods & Mod.Shift) !== 0;
+  const byKey = US_KEYBOARD_LAYOUT[code] === undefined ? BY_KEY[observedKey] : undefined;
+  const definition = US_KEYBOARD_LAYOUT[code] ?? (byKey && US_KEYBOARD_LAYOUT[byKey.code]);
+  const shifted = (mods & Mod.Shift) !== 0 || byKey?.shifted === true;
   const fallbackKey = shifted && definition?.shiftKey ? definition.shiftKey : definition?.key;
   const key = observedKey || fallbackKey || "Unidentified";
   const keyCode =
     (shifted ? definition?.shiftKeyCode : undefined) ??
     definition?.keyCode ??
-    inferredKeyCode(code);
+    inferredKeyCode(byKey?.code ?? code);
 
   let text = key.length === 1 ? key : "";
   if (definition?.text !== undefined) text = definition.text;
