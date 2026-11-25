@@ -8,12 +8,35 @@
 
 ### 新增
 
+无
+
+### 变更
+
+无
+
+### 移除
+
+无
+
+### 升级步骤
+
+无
+
+## [0.4.0] - 2026-11-26
+
+### 新增
+
 - AliasMode 的 Windows、Mac 身份可以显示对应系统的字体：`scripts/fingerprint-fonts.sh` 导入并检查字体，`compose.fingerprint.yml` 把 `FINGERPRINT_FONTS_DIR`（默认 `local/fingerprint-fonts`）只挂给浏览器。以前这些身份几乎没有字体，容易被识别。见 [docs/deployment.md](docs/deployment.md#aliasmode-内核)。
 - 「网络与接入」→「remote-cc」页签下方新增「使用说明」：从安装、加入服务器（管理员添加和邀请码）、出口主机、批准电脑到选配置、登录 Claude 和启动的全流程，以及换新电脑、切换配置和服务器、常见问题。其中的命令按 remote-cc 0.8 写。
 - `MIRROR_IDLE_GRACE_MS`：一个会话的所有设备都断开后，过多久关闭它的远程页面（毫秒，默认 15 分钟）。见 [docs/configuration.md](docs/configuration.md)。
 
 ### 变更
 
+- 顶栏右侧的状态点可以点开「连接」弹窗：连接状态和原因、延迟和速度（画面模式还有帧率）、内存和频繁重新同步的提醒、配置的出口，需要时有「重新同步」「重新连接」，原来浮动的连接信息收在「诊断」下。浮动的连接信息条去掉了；「⋯」菜单不再显示「服务状态」，全服务器的数字只在「管理后台」→「资源」里，那里新增「全部会话」「在线设备」。
+- 输入更可靠：
+  - 富文本编辑器（包括 Claude 的输入框）改完后先等它稳定再核对，正确的输入不再被误判成「输入未同步」；出现「输入未同步」时会自动重发，也可以在「连接」弹窗里点「重新同步」，期间只拦住回车，点击照常。
+  - 页面模式跟随远程页面的焦点：远程页面自动聚焦输入框后，打字和中文输入法直接落在那里，不会再出现本地没有焦点、字母却打进远程输入框的情况。
+  - 手机软键盘：按键没有物理键码时按按键本身识别，回车、退格在 iPhone 上恢复正常（以前在 Apple 登录页删掉的字符实际还在，导致提示账号不存在或密码错误）；画面模式在点击、切换标签页或视图前先提交输入法里未完成的文字。
 - 工作台菜单的「代理」「API」合并为一项「网络与接入」，面板也改叫「网络与接入」，打开时停在上次用的页签。
 - 界面统一：主按钮改用主题色，选中和焦点状态不再出现蓝色，字体、圆角和边框统一，深色模式的卡片边框更清楚；「网络与接入」面板去掉了卡片嵌套，手机上标题压成一行；管理后台的标题固定在顶部，资源改成两列数字方块；配置选择页内容上移、去掉点阵背景；顶栏状态点在有提醒时改为外圈光晕。
 - 网站图标改为 SphereN Claude。
@@ -141,6 +164,8 @@
 
 无
 
-[未发布]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.2.0...HEAD
+[未发布]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/NotDesigned/remote-claude-browser/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mystxcal/remote-browser/releases/tag/v0.1.0
