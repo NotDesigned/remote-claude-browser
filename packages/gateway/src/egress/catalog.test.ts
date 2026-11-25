@@ -1,5 +1,7 @@
 // @vitest-environment node
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { createServer, type Server, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -329,5 +331,71 @@ describe("proxy directory", () => {
     expect(store.listNodes(alice)).toEqual([]);
     await expect(store.resolveProxyForUser(alice, id)).rejects.toMatchObject({ statusCode: 404 });
     expect(store.listNodes(admin)[0]!.id).toBe(id);
+  });
+});
+
+describe("subscription fetch policy", () => {
+  const servers: Server[] = [];
+  afterEach(async () => {
+    await Promise.all(
+      servers.splice(0).map((server) => new Promise((resolve) => server.close(resolve))),
+    );
+  });
+  async function serve(handler: (response: ServerResponse) => void) {
+    const hits = { count: 0 };
+    const server = createServer((_request, response) => {
+      hits.count++;
+      handler(response);
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return { port: (server.address() as AddressInfo).port, hits };
+  }
+
+  it.each(["127.0.0.1", "localhost", "[::ffff:127.0.0.1]"])(
+    "refuses a subscription on a private host (%s) without contacting it",
+    async (host) => {
+      const { port, hits } = await serve((response) => response.end(content(node("A"))));
+      const { store } = await fixture();
+      await expect(
+        store.importSource(alice, {
+          name: "internal",
+          visibility: "private",
+          url: `http://${host}:${port}/sub`,
+        }),
+      ).rejects.toMatchObject({ statusCode: 400, code: "PROXY_SUBSCRIPTION_PRIVATE" });
+      expect(hits.count).toBe(0);
+    },
+  );
+
+  it("caps the subscription body at 2 MB and hides the upstream status", async () => {
+    let mode: "large" | "chunked" | "error" | "ok" = "large";
+    const { port } = await serve((response) => {
+      if (mode === "error") {
+        response.statusCode = 418;
+        return response.end("teapot");
+      }
+      if (mode === "ok") return response.end(content(node("Allowed")));
+      const chunk = Buffer.alloc(256 * 1024, 0x20);
+      if (mode === "large") response.setHeader("content-length", String(chunk.length * 12));
+      for (let index = 0; index < 12; index++) response.write(chunk);
+      response.end();
+    });
+    const { store } = await fixture({ allowPrivateSubscriptionTargets: true });
+    const url = `http://127.0.0.1:${port}/sub`;
+    const input = { name: "local", visibility: "private" as const, url };
+    for (const next of ["large", "chunked"] as const) {
+      mode = next;
+      await expect(store.importSource(alice, input)).rejects.toMatchObject({
+        code: "PROXY_SUBSCRIPTION_TOO_LARGE",
+      });
+    }
+    mode = "error";
+    const failure = await store.importSource(alice, input).catch((error: Error) => error);
+    expect(failure).toMatchObject({ code: "PROXY_SUBSCRIPTION_HTTP" });
+    expect((failure as Error).message).not.toContain("418");
+    mode = "ok";
+    await store.importSource(alice, input);
+    expect(store.listNodes(alice).map((item) => item.name)).toEqual(["Allowed"]);
   });
 });

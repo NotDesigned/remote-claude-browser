@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import { createServer } from "node:http";
 import type { Socket } from "node:net";
+import { Agent } from "undici";
 import { describe, expect, it, vi } from "vitest";
 
 import type { CdpSend } from "../types";
@@ -112,6 +113,8 @@ describe("asset fetch lanes", () => {
     const fetcher = createAssetFetcher({
       sessionFor: (ref) => ref.sessionId,
       userAgentFor: () => "local fixture",
+      // The loopback fixture is exactly what the default public-only dispatcher refuses.
+      directDispatcher: () => new Agent(),
       send: async (session, method) => {
         if (method === "Network.getCookies")
           return { cookies: [{ name: "profile", value: session }] };
@@ -140,6 +143,39 @@ describe("asset fetch lanes", () => {
     } finally {
       await fetcher.close();
       server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("refuses a private address on the proxy-less direct lane at connect time", async () => {
+    let hits = 0;
+    const server = createServer((_request, response) => {
+      hits++;
+      response.end("internal");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("No fixture address");
+    const fetcher = createAssetFetcher({
+      sessionFor: (ref) => ref.sessionId,
+      userAgentFor: () => "local fixture",
+      send: async (_session, method) => {
+        if (method === "Network.getCookies") return { cookies: [] };
+        throw new Error(method);
+      },
+    });
+    try {
+      for (const host of ["127.0.0.1", "localhost"]) {
+        await expect(
+          fetcher.fetch({
+            ref: { url: `http://${host}:${address.port}/x`, sessionId: "a", tabId: "tab" },
+            range: "bytes=0-3",
+          }),
+        ).rejects.toMatchObject({ code: "EPRIVATETARGET" });
+      }
+      expect(hits).toBe(0);
+    } finally {
+      await fetcher.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });

@@ -8,11 +8,12 @@
  * Content-Type is copied only from response headers. No URL-based inference happens here.
  */
 import { Readable } from "node:stream";
-import { Agent, ProxyAgent, request as undiciRequest, type Dispatcher } from "undici";
+import { ProxyAgent, request as undiciRequest, type Agent, type Dispatcher } from "undici";
 
 import type { CdpSend } from "../types";
 import type { AssetRef } from "./token";
 import { normalizeAssetHeaders } from "./headers";
+import { createPublicOnlyAgent } from "../net/public-target";
 
 const IO_CHUNK_BYTES = 64 * 1024;
 
@@ -54,6 +55,8 @@ export interface AssetFetcherDeps {
   proxyFor?: (ref: AssetRef) => string | undefined;
   /** Test seam around undici.request. */
   directRequest?: DirectRequest;
+  /** Test seam for the proxy-less direct dispatcher (default: public addresses only). */
+  directDispatcher?: () => Agent;
 }
 
 export interface AssetFetcher {
@@ -99,7 +102,14 @@ export function createAssetFetcher(deps: AssetFetcherDeps): ManagedAssetFetcher 
       let pool = pools.get(request.ref.sessionId);
       if (!pool) {
         const proxy = deps.proxyFor?.(request.ref);
-        pool = { dispatcher: proxy ? new ProxyAgent(proxy) : new Agent(), closed: false };
+        // Without a profile proxy (whose rules reject private ranges) the gateway connects itself;
+        // the public-only agent pins each connection to the addresses it checked.
+        pool = {
+          dispatcher: proxy
+            ? new ProxyAgent(proxy)
+            : (deps.directDispatcher ?? createPublicOnlyAgent)(),
+          closed: false,
+        };
         pools.set(request.ref.sessionId, pool);
       }
       const cdpSessionId = await deps.sessionFor(request.ref);

@@ -8,7 +8,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createAssetCache } from "./cache";
 import type { AssetFetcher } from "./fetch";
-import { registerAssetRoutes, rejectPrivateAssetTarget } from "./route";
+import {
+  ASSET_CONTENT_SECURITY_POLICY,
+  assetContentType,
+  registerAssetRoutes,
+  rejectPrivateAssetTarget,
+} from "./route";
+import { registerSecurityHeaders, SECURITY_HEADERS } from "../security-headers";
 import { openAssetToken, sealAssetToken } from "./token";
 
 const dirs: string[] = [];
@@ -175,7 +181,7 @@ describe("asset route policy boundary", () => {
         statusCode,
         headers: {
           "content-type": "image/png",
-          "x-goog-hash": "crc32c=abc\nmd5=def",
+          "cache-control": "public\nmax-age=60",
           "x-malformed": "bad\u0000value",
           "set-cookie": "remote=credential",
         },
@@ -200,7 +206,7 @@ describe("asset route policy boundary", () => {
             statusCode === 206 ? { headers: { range: "bytes=0-12" } } : undefined,
           );
           expect(response.status).toBe(statusCode);
-          expect(response.headers.get("x-goog-hash")).toBe("crc32c=abc, md5=def");
+          expect(response.headers.get("cache-control")).toBe("public, max-age=60");
           expect(response.headers.has("x-malformed")).toBe(false);
           expect(response.headers.has("set-cookie")).toBe(false);
           expect(await response.text()).toBe("fixture-image");
@@ -386,5 +392,133 @@ describe("asset route policy boundary", () => {
 
     expect(response.headers["cache-control"]).toBeUndefined();
     await app.close();
+  });
+});
+
+describe("asset response header policy", () => {
+  async function serveAsset(headers: Record<string, string>, range?: string) {
+    const app = Fastify();
+    registerSecurityHeaders(app);
+    const serverKey = randomBytes(32);
+    const dir = await mkdtemp(join(tmpdir(), "mirror-asset-headers-"));
+    dirs.push(dir);
+    registerAssetRoutes(app, {
+      serverKey,
+      cache: createAssetCache(dir),
+      fetcher: {
+        fetch: async () => ({
+          statusCode: range === undefined ? 200 : 206,
+          headers,
+          body: Readable.from(["<svg onload=alert(1)></svg>"]),
+          lane: "direct",
+        }),
+      },
+      lookup: async () => [{ address: "203.0.113.8", family: 4 }],
+    });
+    const token = sealAssetToken(
+      { url: "https://evil.example/asset", sessionId: "s", tabId: "t" },
+      serverKey,
+    );
+    try {
+      const url = `/s/s/a/${token}`;
+      const first = await app.inject({ url, ...(range ? { headers: { range } } : {}) });
+      const second = await app.inject({ url, ...(range ? { headers: { range } } : {}) });
+      return [first, second];
+    } finally {
+      await app.close();
+    }
+  }
+
+  it.each([undefined, "bytes=0-4"])(
+    "replaces upstream origin controls with the gateway's own (range %s, including cache hits)",
+    async (range) => {
+      const responses = await serveAsset(
+        {
+          "content-type": "image/png",
+          "content-security-policy": "default-src *; script-src * 'unsafe-inline'",
+          "content-security-policy-report-only": "default-src *",
+          "x-frame-options": "ALLOWALL",
+          "cross-origin-resource-policy": "cross-origin",
+          "cross-origin-opener-policy": "unsafe-none",
+          "cross-origin-embedder-policy": "require-corp",
+          "access-control-allow-origin": "*",
+          "access-control-allow-credentials": "true",
+          "strict-transport-security": "max-age=31536000; includeSubDomains",
+          refresh: "0; url=https://evil.example/",
+          link: "<https://evil.example/x.js>; rel=preload; as=script",
+          location: "https://evil.example/",
+          "content-disposition": "inline; filename=x.html",
+          "x-content-type-options": "none",
+          "referrer-policy": "unsafe-url",
+          "service-worker-allowed": "/",
+          etag: '"abc"',
+        },
+        range,
+      );
+      for (const response of responses) {
+        const headers = response!.headers;
+        expect(headers["content-security-policy"]).toBe(ASSET_CONTENT_SECURITY_POLICY);
+        expect(headers["content-security-policy"]).toMatch(/^sandbox; default-src 'none'/);
+        expect(headers["x-frame-options"]).toBe(SECURITY_HEADERS["x-frame-options"]);
+        expect(headers["cross-origin-resource-policy"]).toBe("same-origin");
+        expect(headers["cross-origin-opener-policy"]).toBe("same-origin");
+        expect(headers["x-content-type-options"]).toBe("nosniff");
+        expect(headers["referrer-policy"]).toBe("no-referrer");
+        for (const name of [
+          "content-security-policy-report-only",
+          "cross-origin-embedder-policy",
+          "access-control-allow-origin",
+          "access-control-allow-credentials",
+          "strict-transport-security",
+          "refresh",
+          "link",
+          "location",
+          "content-disposition",
+          "service-worker-allowed",
+        ]) {
+          expect(headers[name], name).toBeUndefined();
+        }
+        expect(headers.etag).toBe('"abc"');
+        expect(headers["content-type"]).toBe("image/png");
+      }
+    },
+  );
+
+  it.each([
+    ["text/html; charset=utf-8", "text/plain; charset=utf-8"],
+    ["application/xhtml+xml", "text/plain; charset=utf-8"],
+    ["text/xml", "text/plain; charset=utf-8"],
+    ["application/xml", "text/plain; charset=utf-8"],
+    ["application/rss+xml", "text/plain; charset=utf-8"],
+    ["text/xsl", "text/plain; charset=utf-8"],
+    ["text/javascript", "text/plain; charset=utf-8"],
+    ["application/javascript", "text/plain; charset=utf-8"],
+    ["application/json", "text/plain; charset=utf-8"],
+    ["application/pdf", "application/octet-stream"],
+    ["multipart/x-mixed-replace; boundary=x", "application/octet-stream"],
+    ["image/svg+xml; charset=utf-8", "image/svg+xml"],
+  ])("neutralizes document and script type %s", async (upstream, served) => {
+    const [response] = await serveAsset({ "content-type": upstream });
+    expect(response!.statusCode).toBe(200);
+    expect(response!.headers["content-type"]).toBe(served);
+    expect(response!.headers["content-security-policy"]).toBe(ASSET_CONTENT_SECURITY_POLICY);
+    expect(response!.headers["x-content-type-options"]).toBe("nosniff");
+  });
+
+  it.each([
+    "image/png",
+    "image/webp",
+    "image/x-icon",
+    "image/avif",
+    "font/woff2",
+    "application/font-woff",
+    "application/vnd.ms-fontobject",
+    "text/css; charset=utf-8",
+    "video/mp4",
+    "audio/mpeg",
+    "text/vtt",
+    "application/octet-stream",
+  ])("keeps subresource type %s", (contentType) => {
+    expect(assetContentType(contentType)).toBe(contentType);
   });
 });

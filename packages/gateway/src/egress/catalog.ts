@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { Agent, fetch as undiciFetch, type RequestInit as UndiciRequestInit } from "undici";
 import type { FrontendUser } from "../auth/users";
 import type { MihomoProxy } from "./mihomo";
 import { parseSubscription } from "./subscription";
+import { createPublicOnlyAgent } from "../net/public-target";
 
 export class ProxyCatalogError extends Error {
   constructor(
@@ -75,7 +77,37 @@ export interface ProxyCatalogOptions {
   endpointForNode(id: string, node: MihomoProxy, user: FrontendUser): Promise<string>;
   onRemovedNodes?(ids: string[]): Promise<void>;
   onChangedNodes?(ids: string[]): Promise<void>;
+  /** Test seam. When set, the public-address policy below is the fetcher's responsibility. */
   fetcher?: typeof fetch;
+  /** MIRROR_PROXY_SUBSCRIPTION_ALLOW_PRIVATE: let subscriptions reach private/reserved hosts. */
+  allowPrivateSubscriptionTargets?: boolean;
+}
+
+export const MAX_SUBSCRIPTION_BYTES = 2 * 1024 * 1024;
+
+class SubscriptionTooLargeError extends Error {}
+
+async function readBounded(response: Response, limit: number): Promise<string> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > limit) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new SubscriptionTooLargeError();
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => undefined);
+      throw new SubscriptionTooLargeError();
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
 export type ProxyCatalog = Awaited<ReturnType<typeof createProxyCatalog>>;
@@ -89,6 +121,20 @@ export async function createProxyCatalog(options: ProxyCatalogOptions) {
     sources = [];
   }
   let tail = Promise.resolve();
+  // Any signed-in user can make the gateway fetch a subscription, so by default only public
+  // addresses are reachable, pinned at connect time against DNS rebinding.
+  const subscriptionAgent = options.fetcher
+    ? undefined
+    : options.allowPrivateSubscriptionTargets
+      ? new Agent()
+      : createPublicOnlyAgent();
+  const subscriptionFetch: typeof fetch =
+    options.fetcher ??
+    ((input, init) =>
+      undiciFetch(input as string, {
+        ...(init as UndiciRequestInit),
+        dispatcher: subscriptionAgent,
+      }) as unknown as Promise<Response>);
   const enabled = (user: FrontendUser) => {
     if (!user.enabled) throw new ProxyCatalogError(403, "USER_DISABLED", "这个用户已停用");
   };
@@ -172,14 +218,18 @@ export async function createProxyCatalog(options: ProxyCatalogOptions) {
     if (!["http:", "https:"].includes(url.protocol))
       throw new ProxyCatalogError(400, "PROXY_SOURCE_URL", "订阅地址需要 HTTP 或 HTTPS");
     let response: Response;
+    const signal = AbortSignal.timeout(20_000);
     try {
-      response = await (options.fetcher ?? fetch)(url.href, {
-        signal: AbortSignal.timeout(20_000),
-        redirect: "error",
-      });
+      response = await subscriptionFetch(url.href, { signal, redirect: "error" });
     } catch (error) {
       const failure = error as { code?: string; cause?: { code?: string } };
       const code = failure.cause?.code ?? failure.code;
+      if (code === "EPRIVATETARGET")
+        throw new ProxyCatalogError(
+          400,
+          "PROXY_SUBSCRIPTION_PRIVATE",
+          "订阅地址指向内网或保留地址，已拒绝",
+        );
       if (code === "ENOTFOUND" || code === "EAI_AGAIN")
         throw new ProxyCatalogError(
           502,
@@ -188,13 +238,23 @@ export async function createProxyCatalog(options: ProxyCatalogOptions) {
         );
       throw new ProxyCatalogError(502, "PROXY_SUBSCRIPTION_NETWORK", "无法读取订阅地址");
     }
-    if (!response.ok)
-      throw new ProxyCatalogError(
-        502,
-        "PROXY_SUBSCRIPTION_HTTP",
-        `订阅读取失败（${response.status}）`,
-      );
-    return parseSubscription(await response.text());
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new ProxyCatalogError(502, "PROXY_SUBSCRIPTION_HTTP", "订阅地址没有返回可用内容");
+    }
+    let text: string;
+    try {
+      text = await readBounded(response, MAX_SUBSCRIPTION_BYTES);
+    } catch (error) {
+      if (error instanceof SubscriptionTooLargeError)
+        throw new ProxyCatalogError(
+          502,
+          "PROXY_SUBSCRIPTION_TOO_LARGE",
+          `订阅内容超过 ${MAX_SUBSCRIPTION_BYTES / 1024 / 1024} MB`,
+        );
+      throw new ProxyCatalogError(502, "PROXY_SUBSCRIPTION_NETWORK", "无法读取订阅地址");
+    }
+    return parseSubscription(text);
   };
   const nodeFor = (user: FrontendUser, id: string) => {
     enabled(user);
