@@ -74,14 +74,15 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
     ready = true;
   });
 
+  // `lane` newline `payload`, read by the isolated bridge (gateway browser/bridge.ts). A payload is
+  // already a JSON chunk of up to 256K characters: wrapping it in another JSON envelope cost a
+  // stringify and a parse of all of it, with every quote escaped, for each chunk.
   const eventBinding =
     (lane: "agent" | "rtc-blocked"): BindingFn =>
     (payload) => {
       nativeDispatchEvent.call(
         document,
-        new NativeCustomEvent(config.outboundEventName, {
-          detail: stringify({ lane, payload }),
-        }),
+        new NativeCustomEvent(config.outboundEventName, { detail: `${lane}\n${payload}` }),
       );
     };
   const emit = eventBinding("agent");

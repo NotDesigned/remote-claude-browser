@@ -547,7 +547,7 @@ describe("D10 recovery triggers", () => {
     mirror.teardown();
   });
 
-  it("rebuilds the Replayer for a trim epoch and runs interaction restore hooks", () => {
+  it("rebuilds the Replayer for a resync epoch and runs interaction restore hooks", () => {
     fakeRrweb.FakeReplayer.instances.length = 0;
     const document = new FakeDocument();
     const container = new FakeElement(document) as unknown as HTMLElement;
@@ -592,7 +592,7 @@ describe("D10 recovery triggers", () => {
       tab: "T1",
       epoch: 2,
       seq: 2,
-      reason: "trim",
+      reason: "resync",
       data: [full(1_100)],
     });
 
@@ -700,7 +700,7 @@ describe("D10 recovery triggers", () => {
     expect(paused.playCalls).toBe(0);
   });
 
-  it.each(["nav", "trim", "viewport", "resync"] as const)(
+  it.each(["nav", "viewport", "resync"] as const)(
     "resumes full-snapshot media after a %s rebuild",
     (reason) => {
       fakeRrweb.FakeReplayer.instances.length = 0;
@@ -740,7 +740,7 @@ describe("D10 recovery triggers", () => {
     },
   );
 
-  it.each(["nav", "trim", "viewport"] as const)(
+  it.each(["nav", "viewport", "resync"] as const)(
     "rebuilds on every gateway %s epoch bump",
     (reason) => {
       fakeRrweb.FakeReplayer.instances.length = 0;
@@ -963,7 +963,7 @@ describe("D10 recovery triggers", () => {
       tab: "T1",
       epoch: 2,
       seq: 2,
-      reason: "trim",
+      reason: "resync",
       data: [full(1_100)],
     });
 

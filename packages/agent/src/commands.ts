@@ -8,8 +8,6 @@
  * protocol change.
  */
 import {
-  CMD_FN_NAME,
-  MIRROR_NODE_FN_NAME,
   NODE_IN_FRAME_ERROR,
   editableText,
   type AgentCmd,
@@ -105,22 +103,43 @@ function isIframeElement(node: Node | null): node is HTMLIFrameElement {
   return node?.nodeType === 1 && node.nodeName === "IFRAME";
 }
 
+/**
+ * The ids of the frames a recorder last found. Finding them means walking every node id the
+ * recorder has, which a page with a cross-origin frame paid twice for each pointer move or scroll
+ * in it (`rect`, then `resolve`). Frames come and go rarely; a node found in none of these still
+ * walks everything, so a new frame is never missed.
+ */
+export interface FrameIdCache {
+  ids: number[] | null;
+}
+
 export function resolveMirrorNode(
   nodeMirror: NodeMirror,
   crossOriginIframeMirror: CrossOriginIframeMirror | null,
   nodeId: number,
+  frames: FrameIdCache = { ids: null },
 ): ResolveResult | null {
   if (nodeMirror.getNode(nodeId) !== null) return { kind: "local" };
   if (crossOriginIframeMirror === null) return null;
 
-  for (const iframeNodeId of nodeMirror.getIds()) {
-    const iframe = nodeMirror.getNode(iframeNodeId);
-    if (!isIframeElement(iframe)) continue;
-    const mappedRemoteId = crossOriginIframeMirror.iframeRemoteIdToIdMap?.get(iframe)?.get(nodeId);
-    const remoteId = mappedRemoteId ?? crossOriginIframeMirror.getRemoteId(iframe, nodeId);
-    if (remoteId !== -1) return { kind: "remote", iframeNodeId, remoteId };
+  const findIn = (frameIds: Iterable<number>): ResolveResult | null => {
+    for (const iframeNodeId of frameIds) {
+      const iframe = nodeMirror.getNode(iframeNodeId);
+      if (!isIframeElement(iframe)) continue;
+      const mappedRemoteId = crossOriginIframeMirror.iframeRemoteIdToIdMap
+        ?.get(iframe)
+        ?.get(nodeId);
+      const remoteId = mappedRemoteId ?? crossOriginIframeMirror.getRemoteId(iframe, nodeId);
+      if (remoteId !== -1) return { kind: "remote", iframeNodeId, remoteId };
+    }
+    return null;
+  };
+  if (frames.ids !== null) {
+    const found = findIn(frames.ids);
+    if (found !== null) return found;
   }
-  return null;
+  frames.ids = nodeMirror.getIds().filter((id) => isIframeElement(nodeMirror.getNode(id)));
+  return findIn(frames.ids);
 }
 
 function isElement(node: Node | null): node is Element {
@@ -274,13 +293,18 @@ export function createCommandHandler(
     }
   };
 
+  const frames: FrameIdCache = { ids: null };
   const handler = (cmd: AgentCmd): void => {
     try {
       const nodeMirror = getNodeMirror();
       /** A node this frame does not have may belong to a cross-origin frame inside it. */
       const missing = (nodeId: number) =>
-        resolveMirrorNode(nodeMirror, dependencies.getCrossOriginIframeMirror?.() ?? null, nodeId)
-          ?.kind === "remote"
+        resolveMirrorNode(
+          nodeMirror,
+          dependencies.getCrossOriginIframeMirror?.() ?? null,
+          nodeId,
+          frames,
+        )?.kind === "remote"
           ? NODE_IN_FRAME_ERROR
           : "node not found";
       switch (cmd.cmd) {
@@ -310,6 +334,7 @@ export function createCommandHandler(
             nodeMirror,
             dependencies.getCrossOriginIframeMirror?.() ?? null,
             cmd.nodeId,
+            frames,
           );
           if (result === null) {
             emitter.emit({ kind: "cmdres", reqId: cmd.reqId, ok: false, err: "node not found" });
@@ -529,19 +554,4 @@ export function createCommandHandler(
     }
   };
   return handler;
-}
-
-export function installCommandHandler(
-  emitter: Pick<Emitter, "emit">,
-  dependencies: CommandDependencies = {},
-): void {
-  const handler = createCommandHandler(emitter, dependencies);
-  (window as unknown as Record<string, unknown>)[CMD_FN_NAME] = handler;
-}
-
-export function installMirrorNodeHelper(
-  getNodeMirror: () => NodeMirror = () => record.mirror,
-): void {
-  const w = window as unknown as Record<string, unknown>;
-  w[MIRROR_NODE_FN_NAME] = (nodeId: number): Node | null => getNodeMirror().getNode(nodeId);
 }

@@ -100,12 +100,12 @@ export function isolatedAgentBridgeSource(channel: AgentBridgeChannel): string {
     let readyTimer;
     let media;
 
+    // The agent sends "lane\\npayload": the payload is passed on as it is, never parsed here.
     nativeAddEventListener.call(document, outboundEventName, (event) => {
       if (typeof event.detail !== "string") return;
-      let envelope;
-      try { envelope = parse(event.detail); } catch { return; }
-      if (typeof envelope !== "object" || envelope === null ||
-          typeof envelope.payload !== "string") return;
+      const split = event.detail.indexOf("\\n");
+      if (split < 0) return;
+      const envelope = { lane: event.detail.slice(0, split), payload: event.detail.slice(split + 1) };
       if (envelope.lane === "rtc-blocked") {
         let notice;
         try { notice = parse(envelope.payload); } catch { return; }

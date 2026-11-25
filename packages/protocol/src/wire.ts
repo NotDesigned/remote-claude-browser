@@ -12,8 +12,10 @@
  * reuse a Replayer instance across resyncs).
  *
  * ## epoch semantics (D4, D7)
- * `epoch` is gateway-assigned per tab. It bumps on: agent docId change (navigation), forced
- * snapshot (delta-buffer thresholds: >5000 events or >10MB), and viewport change. Every epoch
+ * `epoch` is gateway-assigned per tab. A new one opens on: agent docId change (navigation), a
+ * resync snapshot (a lost agent message, or a join the delta buffer can no longer serve), and
+ * viewport change. Epochs are unique across the gateway's tab hubs, so a different one means a
+ * different document and never "older" or "newer". Every epoch
  * opens with a fresh `snapshot` message. Input gating (D7): the gateway DROPS input from any
  * viewer whose last `view-ack` epoch != the tab's current epoch — this single rule prevents
  * every "clicked on stale layout" bug.
@@ -56,7 +58,7 @@ export interface PresenceEntry {
 /** What the pixel view favours: frame rate or sharpness. Traffic is not the constraint. */
 export type PxQuality = "smooth" | "balanced" | "sharp";
 
-export type SnapshotReason = "nav" | "viewport" | "trim" | "resync";
+export type SnapshotReason = "nav" | "viewport" | "resync";
 
 /**
  * `resync-req` reason for a divergence of this viewer's own making (local typing echo), not of

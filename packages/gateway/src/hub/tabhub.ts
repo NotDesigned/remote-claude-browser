@@ -411,7 +411,6 @@ export class TabHub {
 }
 
 const SNAPSHOT_REASON_PRIORITY: Record<SnapshotReason, number> = {
-  trim: 0,
   resync: 1,
   viewport: 2,
   nav: 3,
@@ -436,6 +435,20 @@ function assertPositiveLimit(name: string, value: number | undefined): void {
   }
 }
 
+/**
+ * The JSON text of a Down a hub produced, so that the fan-out sends what the hub already wrote to
+ * count its bytes instead of serializing it again. Keyed by the object: a copy or a mutation is
+ * a different message and serializes afresh.
+ */
+const serializedDowns = new WeakMap<Down, string>();
+
+export function serializedDown(msg: Down): string | undefined {
+  return serializedDowns.get(msg);
+}
+
 function utf8JsonBytes(value: Down): number {
-  return new TextEncoder().encode(encodeMsg(value)).byteLength;
+  const text = encodeMsg(value);
+  serializedDowns.set(value, text);
+  // Counts without copying the text into a new buffer.
+  return Buffer.byteLength(text, "utf8");
 }

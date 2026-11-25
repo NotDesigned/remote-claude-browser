@@ -7,7 +7,8 @@ import {
   type eventWithTime,
 } from "@mirror/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TabHub as BaseTabHub, type RewriteStage, type TabHubOpts } from "./tabhub";
+import { serializedDown, TabHub as BaseTabHub, type RewriteStage, type TabHubOpts } from "./tabhub";
+import { serializeDown } from "../ws/server";
 
 /** Per-hub epochs from 1, as these tests read them; production epochs are process-wide. */
 class TabHub extends BaseTabHub {
@@ -230,6 +231,10 @@ describe("TabHub", () => {
     };
     const emitted = hub.ingest(rrweb(2, unicodeDelta));
     expect(hub.deltaBytes).toBe(new TextEncoder().encode(encodeMsg(emitted[0]!)).byteLength);
+    // The text it counted is the text the fan-out sends, serialized once.
+    expect(serializedDown(emitted[0]!)).toBe(encodeMsg(emitted[0]!));
+    expect(serializeDown(emitted[0]!)).toBe(serializedDown(emitted[0]!));
+    expect(serializeDown({ ...emitted[0]! })).toBe(encodeMsg(emitted[0]!));
   });
 
   it("labels navigation, viewport, and resync snapshots with their cause", () => {
