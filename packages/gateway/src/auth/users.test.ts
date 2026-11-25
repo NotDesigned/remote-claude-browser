@@ -339,3 +339,34 @@ it("stores session limits without revoking logins and rejects invalid quotas", a
   await store.updateUser(user.id, { maxSessions: null });
   expect(store.getUser(user.id)?.maxSessions).toBeNull();
 });
+
+it("announces every revocation of a user's logins, once committed", async () => {
+  const store = await memoryStore();
+  const user = await store.createUser({ username: "revoked", password: "revoked-long-password" });
+  let token = store.issueSession(user.id).token;
+  const revoked: string[] = [];
+  const stop = store.onLoginsRevoked((userId) => {
+    // Listeners run after the change: the login is already gone.
+    expect(store.session(token)).toBeNull();
+    revoked.push(userId);
+  });
+  await store.updateUser(user.id, { username: "renamed", maxSessions: 3 });
+  expect(revoked).toEqual([]);
+  await store.updateUser(user.id, { password: "another-long-password" });
+  token = store.issueSession(user.id).token;
+  await store.updateUser(user.id, { role: "admin" });
+  token = store.issueSession(user.id).token;
+  await store.updateUser(user.id, { enabled: false });
+  await store.updateUser(user.id, { enabled: true });
+  token = store.issueSession(user.id).token;
+  store.revokeSession(token);
+  store.revokeSession("not-a-token");
+  token = store.issueSession(user.id).token;
+  store.revokeUserSessions(user.id);
+  token = store.issueSession(user.id).token;
+  store.deleteUser(user.id);
+  expect(revoked).toEqual(Array(6).fill(user.id));
+  stop();
+  store.revokeUserSessions(store.bootstrapAdmin.id);
+  expect(revoked).toHaveLength(6);
+});
