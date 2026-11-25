@@ -5,6 +5,10 @@
  * it locally; if nothing consumed it (scrollTop/scrollLeft unchanged and no scrollable ancestor
  * — the maps/canvas/wheel-hijack case), forward `ptr kind:"wheel"` with dx,dy. Consumed-locally
  * scrolls reach the server ONLY via the 10Hz `scroll` sync. One path or the other, never both.
+ *
+ * Replay can rebuild a frame's document in place while a wheel over it is still being checked: the
+ * rebuild drops the scroll the wheel started, and these listeners with it. Such a wheel, with no
+ * scroll seen in the document since, is forwarded then; otherwise it would reach neither side.
  */
 import type { TabId } from "@mirror/protocol";
 import { isElement, pointerPosition, resolvePointerTarget, type SendInput } from "./pointer";
@@ -41,17 +45,25 @@ export function attachWheelCapture(options: WheelCaptureOptions): () => void {
       else setTimeout(callback, 16);
     });
   let active = true;
+  /** Wheels still being checked, and whether the document has scrolled since each. */
+  const checking = new Set<{ forward: () => void; scrolled: boolean }>();
 
   const onWheel = (event: WheelEvent) => {
     if (!event.isTrusted) return;
     const candidates = scrollCandidates(event.target, options.doc, event.deltaX, event.deltaY);
+    // Where the wheel was, read now: the element can be gone by the time it is forwarded.
+    const position = pointerPosition(
+      event,
+      resolvePointerTarget(event.target, options.getNodeId),
+      options.doc,
+      options.rootDoc,
+    );
     const forward = () => {
-      const target = resolvePointerTarget(event.target, options.getNodeId);
       options.send({
         t: "ptr",
         tab: options.tab,
         kind: "wheel",
-        ...pointerPosition(event, target, options.doc, options.rootDoc),
+        ...position,
         buttons: event.buttons,
         mods: eventMods(event),
         dx: event.deltaX,
@@ -65,15 +77,21 @@ export function attachWheelCapture(options: WheelCaptureOptions): () => void {
       return;
     }
 
+    const wheel = { forward, scrolled: false };
+    checking.add(wheel);
     const startedAt = now();
     const verifyConsumed = () => {
-      if (!active) return;
+      if (!active || !checking.has(wheel)) return;
       const consumed = candidates.some(({ target, x, y }) => {
         const next = scrollPosition(target, options.doc);
         return Math.abs(next.x - x) > movementEpsilonPx || Math.abs(next.y - y) > movementEpsilonPx;
       });
-      if (consumed) return;
+      if (consumed) {
+        checking.delete(wheel);
+        return;
+      }
       if (now() - startedAt >= settleMs) {
+        checking.delete(wheel);
         forward();
         return;
       }
@@ -81,11 +99,19 @@ export function attachWheelCapture(options: WheelCaptureOptions): () => void {
     };
     afterEvent(verifyConsumed);
   };
+  const onScroll = () => {
+    for (const wheel of checking) wheel.scrolled = true;
+  };
 
   options.doc.addEventListener("wheel", onWheel, { capture: true, passive: false });
+  options.doc.addEventListener("scroll", onScroll, true);
   return () => {
     active = false;
     options.doc.removeEventListener("wheel", onWheel, true);
+    options.doc.removeEventListener("scroll", onScroll, true);
+    const unseen = [...checking].filter((wheel) => !wheel.scrolled);
+    checking.clear();
+    for (const wheel of unseen) wheel.forward();
   };
 }
 

@@ -1237,6 +1237,53 @@ describe("P1 input capture", () => {
     expect(checks).toHaveLength(0);
   });
 
+  it("forwards a wheel whose document is rebuilt before it scrolls", () => {
+    const doc = new FakeDocument();
+    const scroller = new FakeElement(10, { left: 0, top: 0, width: 140, height: 90 });
+    scroller.overflowY = "auto";
+    scroller.scrollHeight = 500;
+    const sent: Up[] = [];
+    const checks: Array<() => void> = [];
+    const detach = attachWheelCapture({
+      doc: doc as unknown as Document,
+      tab: "T1",
+      getNodeId: (node) => (node as unknown as FakeElement).nodeId,
+      send: (message) => sent.push(message),
+      afterEvent: (callback) => checks.push(callback),
+    });
+
+    doc.fire("wheel", mouse(scroller, { deltaX: 0, deltaY: 800 }));
+    // Replay rebuilds the document: the element and the scroll it was to start are gone.
+    Object.assign(scroller.rect, { width: 0, height: 0 });
+    detach();
+    expect(sent).toMatchObject([
+      { t: "ptr", kind: "wheel", nodeId: 10, rx: 0.25, ry: 0.5, vx: 35, vy: 45, dy: 800 },
+    ]);
+    for (const check of checks) check();
+    expect(sent).toHaveLength(1);
+  });
+
+  it("does not forward a wheel the document already scrolled for when it is rebuilt", () => {
+    const doc = new FakeDocument();
+    const scroller = new FakeElement(10);
+    scroller.overflowY = "auto";
+    scroller.scrollHeight = 500;
+    const sent: Up[] = [];
+    const detach = attachWheelCapture({
+      doc: doc as unknown as Document,
+      tab: "T1",
+      getNodeId: (node) => (node as unknown as FakeElement).nodeId,
+      send: (message) => sent.push(message),
+      afterEvent: () => {},
+    });
+
+    doc.fire("wheel", mouse(scroller, { deltaX: 0, deltaY: 80 }));
+    scroller.scrollTop = 30;
+    doc.fire("scroll", { target: scroller });
+    detach();
+    expect(sent).toEqual([]);
+  });
+
   it("treats an ordinary overflow-visible document viewport as locally scrollable", () => {
     const doc = new FakeDocument();
     const root = new FakeElement(1);
