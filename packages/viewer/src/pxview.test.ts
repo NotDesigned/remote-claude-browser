@@ -25,6 +25,11 @@ class FakeTextarea {
   readonly focus = vi.fn(() => {
     this.ownerDocument.activeElement = this;
   });
+  readonly blur = vi.fn(() => {
+    if (this.ownerDocument.activeElement === this) this.ownerDocument.activeElement = null;
+    // A keyboard ends its composition with the text it shows when the field loses focus.
+    if (this.value !== "") this.fire("compositionend", { isTrusted: true, data: this.value });
+  });
   constructor(readonly ownerDocument: FakeDocument) {}
   setAttribute() {}
   addEventListener(type: string, listener: Listener) {
@@ -352,6 +357,43 @@ describe("P2 viewer pixel fallback", () => {
     expect(sent).toEqual([{ t: "text", tab: "tab-1", insert: "分析" }]);
     expect(input.value).toBe("");
     view.destroy();
+  });
+
+  it("sends a word still in composition before a tap, once", () => {
+    const { container, view, input, sent } = pixelInputFixture();
+    const point = { target: container.canvas, clientX: 210, clientY: 120 };
+    container.canvas.fire("touchstart", { ...mouse(), touches: [point] });
+    container.canvas.fire("touchend", { ...mouse(), changedTouches: [point] });
+    sent.length = 0;
+    // An Android keyboard keeps the whole password in composition.
+    input.fire("compositionstart", { isTrusted: true, data: "" });
+    input.value = "Secret12";
+    input.fire(
+      "input",
+      edit({ inputType: "insertCompositionText", data: "Secret12", isComposing: true }),
+    );
+    expect(sent).toEqual([]);
+    // Tapping the page's sign-in button.
+    container.canvas.fire("touchstart", { ...mouse(), touches: [point] });
+    container.canvas.fire("touchend", { ...mouse(), changedTouches: [point] });
+    expect(sent.map((message) => message.t)).toEqual(["text", "ptr", "ptr", "ptr"]);
+    expect(sent[0]).toEqual({ t: "text", tab: "tab-1", insert: "Secret12" });
+    expect(input.blur).toHaveBeenCalledOnce();
+    expect(container.ownerDocument.activeElement).toBe(input);
+    view.destroy();
+  });
+
+  it("sends a pending composition when the view goes away", () => {
+    const { container, view, input, sent } = pixelInputFixture();
+    container.canvas.fire("focus", {});
+    input.fire("compositionstart", { isTrusted: true, data: "" });
+    input.value = "half";
+    input.fire(
+      "input",
+      edit({ inputType: "insertCompositionText", data: "half", isComposing: true }),
+    );
+    view.destroy();
+    expect(sent).toEqual([{ t: "text", tab: "tab-1", insert: "half" }]);
   });
 
   it("submits repeated compositions once each and continues with English and navigation keys", () => {

@@ -153,6 +153,18 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
     trustedPreedit: null,
   });
   const composingKeyUps = new Set<string>();
+  /**
+   * Some Android keyboards (Sogou, Baidu) send Enter's keydown as the IME placeholder (229) and
+   * only the keyup names Enter. A single-line field gets no line-break beforeinput, and the local
+   * submit is contained, so 「前往」 did nothing. Such a keyup sends Enter, unless a composition
+   * ended since that keydown: then Enter only confirmed the IME's text, as on a desktop IME.
+   */
+  let placeholderDown: { composed: boolean } | null = null;
+  const sendEnter = (target: Element, mods: number) => {
+    options.flushComposing?.(target, true);
+    for (const kind of ["down", "up"] as const)
+      options.send({ t: "key", tab: options.tab, kind, key: "Enter", code: "Enter", mods });
+  };
   const editingHost = (target: EventTarget | null): HTMLElement | null => {
     if (!isElement(target) || !isContenteditableEchoField(target)) return null;
     let host = target;
@@ -196,6 +208,21 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
   const onKey = (event: KeyboardEvent, kind: "down" | "up") => {
     if (!event.isTrusted) return;
     const keyId = event.code || event.key;
+    if (
+      kind === "up" &&
+      event.key === "Enter" &&
+      !event.isComposing &&
+      placeholderDown !== null &&
+      !enterDown
+    ) {
+      const pending = placeholderDown;
+      placeholderDown = null;
+      if (!pending.composed && isElement(event.target) && isSingleLineField(event.target)) {
+        composingKeyUps.delete(keyId);
+        sendEnter(event.target, eventMods(event));
+        return;
+      }
+    }
     if (kind === "up" && composingKeyUps.delete(keyId)) return;
     const host = editingHost(event.target);
     // Before the IME placeholder bail-out: a Process key here means an IME is starting with no
@@ -216,7 +243,11 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
       event.which === 229 ||
       (composition?.active && composition.target === host)
     ) {
-      if (kind === "down") composingKeyUps.add(keyId);
+      if (kind === "down") {
+        composingKeyUps.add(keyId);
+        placeholderDown =
+          event.isComposing || composition?.active ? { composed: true } : { composed: false };
+      }
       // IME placeholders do not type remotely. Do not let an earlier raw key suppress the
       // eventual native commit when a browser omits compositionstart/compositionend.
       if (isElement(event.target)) {
@@ -242,6 +273,7 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
       return;
     }
     if (kind === "down") {
+      placeholderDown = null;
       composingKeyUps.delete(keyId);
       if (composition !== null && !composition.active) composition = null;
     }
@@ -362,6 +394,7 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
     }
   };
   const onCompositionStart = (event: CompositionEvent) => {
+    if (placeholderDown !== null) placeholderDown.composed = true;
     if (!event.isTrusted) return;
     const target = editingHost(event.target);
     if (target === null) return;
@@ -376,6 +409,7 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
     composition.trustedPreedit = event.data;
   };
   const onCompositionEnd = (event: CompositionEvent) => {
+    if (placeholderDown !== null) placeholderDown.composed = true;
     const target = editingHost(event.target);
     if (target === null) return;
     let insert = event.data;
@@ -483,6 +517,29 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
     composition = null;
     composingKeyUps.clear();
   };
+}
+
+const TYPED_INPUT_TYPES = new Set(["text", "email", "password", "search", "tel", "url", "number"]);
+
+/**
+ * Turn off this device's keyboard corrections in a mirrored single-line field. The remote page
+ * runs in a desktop browser and never needed to: a site that leaves them on (or omits them) got,
+ * from a phone, an auto-capitalised first letter, an autocorrected word or a suggestion's trailing
+ * space in an email or password. A textarea or editing host is prose and keeps them.
+ */
+export function quietKeyboardCorrections(target: EventTarget | null): void {
+  if (!isElement(target) || target.tagName.toLowerCase() !== "input") return;
+  const input = target as HTMLInputElement;
+  const type = (input.getAttribute("type") ?? "text").toLowerCase();
+  if (!TYPED_INPUT_TYPES.has(type) && !isPasswordField(input)) return;
+  if (input.getAttribute("autocapitalize") !== "off") input.setAttribute("autocapitalize", "off");
+  if (input.getAttribute("autocorrect") !== "off") input.setAttribute("autocorrect", "off");
+  if (input.getAttribute("spellcheck") !== "false") input.setAttribute("spellcheck", "false");
+}
+
+/** An input that submits on Enter instead of taking a line break. */
+function isSingleLineField(element: Element): boolean {
+  return element.tagName.toLowerCase() === "input" && isTextEditable(element);
 }
 
 /** Return the real focused element, descending through same-origin active iframe elements. */

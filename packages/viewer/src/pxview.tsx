@@ -408,6 +408,7 @@ export function attachPxInput(options: PxInputOptions): () => void {
   const onDown = (event: MouseEvent) => {
     if (!event.isTrusted || mouseFilter.ignore(event)) return;
     event.preventDefault();
+    keyboard.flush();
     keyboard.focus(event);
     sendPendingMove();
     sendPointer(event, "down");
@@ -516,6 +517,7 @@ export function attachPxInput(options: PxInputOptions): () => void {
       scrollTouch(current, point, event);
       return;
     }
+    keyboard.flush();
     keyboard.focus(point);
     const pointer = {
       clientX: point.clientX,

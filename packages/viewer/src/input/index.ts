@@ -4,7 +4,13 @@ import { attachChangeCapture } from "./change";
 import { attachDefaultActionContainment, opensLocalTextMenu } from "./default-actions";
 import { attachFileCapture } from "./files";
 import { createForwardedInputClock } from "./forwarded";
-import { attachKeyCapture, deepActiveElement, isEchoField, type EditableFocus } from "./keys";
+import {
+  attachKeyCapture,
+  deepActiveElement,
+  isEchoField,
+  quietKeyboardCorrections,
+  type EditableFocus,
+} from "./keys";
 import { createFocusFollower, followsFocusByItself } from "./focus-follow";
 import { attachPxKeyboard, type PxKeyboard } from "../px-ime";
 import { onRemoteFocus } from "../remote-focus";
@@ -29,6 +35,19 @@ export interface MirrorInputOptions {
   /** Files pasted into the mirror; they are uploaded to the remote page as attachments. */
   onPasteFiles?(tab: TabId, files: File[]): void;
   scrollFilter?: ScrollFilter;
+}
+
+/**
+ * A phone's keyboard reads a field's correction settings as it opens, which a tap does just
+ * before focus, so they are set on the press as well as on focus.
+ */
+function quietCorrections(doc: Document): () => void {
+  const quiet = (event: Event) => quietKeyboardCorrections(event.target);
+  const types = ["pointerdown", "touchstart", "focusin"] as const;
+  for (const type of types) doc.addEventListener(type, quiet, { capture: true, passive: true });
+  return () => {
+    for (const type of types) doc.removeEventListener(type, quiet, { capture: true });
+  };
 }
 
 /** Install every capture listener in the rrweb document set, never above the replay iframe. */
@@ -148,6 +167,7 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
       }),
       change.dispose,
       follower.watch(doc),
+      quietCorrections(doc),
       attachKeyCapture({
         doc,
         focusRoot: rootDoc,

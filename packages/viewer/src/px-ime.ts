@@ -70,6 +70,24 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
     }
     input.focus({ preventScroll: true });
   };
+  /**
+   * Commit what is still being composed. Android keyboards keep a whole word (a password is one)
+   * in composition until a space or punctuation, and a tap on the page does not end it: the tap
+   * refocuses this same textarea, so the word was never sent and the page got an empty or partial
+   * field. Before any tap, tab switch or mode switch, the pending text goes out, and blurring ends
+   * the keyboard's composition; its compositionend repeats the same text, which `commit` drops.
+   */
+  const flush = () => {
+    if (disposed || !composing) return;
+    const text = input.value;
+    composing = false;
+    trustedComposition = false;
+    trustedPreedit = null;
+    if (text.length > 0) options.send({ t: "text", tab: options.tab, insert: text });
+    committedText = text || null;
+    if (input.ownerDocument.activeElement === input) input.blur();
+    clearInput();
+  };
   const onCanvasFocus = () => focus();
   const sendKey = (event: KeyboardEvent, kind: "down" | "up") => {
     options.send({
@@ -206,9 +224,11 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
   input.addEventListener("paste", onPaste);
   return {
     focus,
+    flush,
     hasFocus: () => input.ownerDocument.activeElement === input,
     blur: () => input.blur(),
     dispose() {
+      flush();
       disposed = true;
       options.canvas.removeEventListener("focus", onCanvasFocus);
       for (const target of keyboardTargets) {
