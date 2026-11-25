@@ -3,8 +3,12 @@
  * rrweb streams can exercise it in unit tests.
  *
  * Canonical live state = latest [Meta, FullSnapshot] + ordered delta buffer since it.
- * Reset triggers: deltas.length > 5000 || deltaBytes > 10MB || new docId || viewport change
- * -> fire needSnapshot -> on arrival: epoch++, clear buffer, broadcast fresh snapshot.
+ * Reset triggers: deltas.length > 5000 || deltaBytes > 4MB || new docId || viewport change
+ * -> fire needSnapshot -> on arrival: new epoch, clear buffer, broadcast fresh snapshot.
+ *
+ * Epochs come from one process-wide allocator that starts at a random point. A tab whose CDP
+ * session is replaced gets a new hub; its epochs must never repeat an old hub's, or a viewer's
+ * resume cursor or replay state from the old document would be taken as current.
  * Cheap recovery is the invariant; never diff-repair.
  *
  * Gotchas: Meta (EventType.Meta) precedes FullSnapshot (EventType.FullSnapshot) — keep BOTH or
@@ -44,13 +48,27 @@ export interface TabHubOpts {
   snapshotRetryMaxMs?: number; // default 5000; bounded exponential backoff
   now?: () => number; // default Date.now
   rewrite?: RewriteStage; // default identityRewrite
+  /** Allocates each new epoch; default is the process-wide allocator (tests pass their own). */
+  nextEpoch?: () => number;
+}
+
+/** Random start, so that a restarted gateway does not reissue the epochs it gave before. */
+let lastEpoch = Math.floor(Math.random() * 2 ** 40);
+
+/** Strictly increasing across every hub in this process. */
+export function allocateEpoch(): number {
+  lastEpoch += 1;
+  return lastEpoch;
 }
 
 export type NeedSnapshotListener = (reason: SnapshotReason) => unknown;
 
 export class TabHub {
   readonly tabId: TabId;
-  /** Gateway-assigned; bumps on: new docId, forced snapshot, viewport change (D4/D7). */
+  /**
+   * Gateway-assigned; a new one on: new docId, forced snapshot, viewport change (D4/D7). Unique
+   * across hubs, so it also identifies this hub; 0 until the first snapshot.
+   */
   epoch = 0;
   /** Current agent docId (per-document epoch from the page). */
   docId = 0;
@@ -74,6 +92,7 @@ export class TabHub {
   private readonly snapshotRetryMaxMs: number;
   private readonly now: () => number;
   private readonly rewrite: RewriteStage;
+  private readonly nextEpoch: () => number;
   private readonly needSnapshotListeners = new Set<NeedSnapshotListener>();
   private hasDocument = false;
   /** Browser zoom the pixel view is using; the page sees the same geometry either way. */
@@ -117,6 +136,7 @@ export class TabHub {
     this.snapshotRetryDelayMs = this.snapshotRetryMs;
     this.now = opts.now ?? Date.now;
     this.rewrite = opts.rewrite ?? identityRewrite;
+    this.nextEpoch = opts.nextEpoch ?? allocateEpoch;
   }
 
   /**
@@ -196,7 +216,8 @@ export class TabHub {
    * continue from this hub's buffer instead of receiving a fresh snapshot.
    */
   canResume(epoch: number, nextSeq: number): boolean {
-    if (epoch !== this.epoch) return false;
+    // Epochs are unique to this hub, so a matching one also proves the cursor came from it.
+    if (epoch === 0 || epoch !== this.epoch) return false;
     if ((this.meta === null || this.snapshot === null) && !this.historyDropped) return false;
     const offset = nextSeq - (this.snapshotSeq + 1);
     return Number.isSafeInteger(offset) && offset >= 0 && offset <= this.deltas.length;
@@ -323,7 +344,7 @@ export class TabHub {
     this.deltaBytes = 0;
     this.clearSnapshotRequest();
     this.clearSnapshotRetry(true);
-    this.epoch += 1;
+    this.epoch = this.nextEpoch();
     this.snapshotSeq = ++this.seq;
     // A page that opened at the agreed size needs no second snapshot to prove it.
     const settlesViewport =

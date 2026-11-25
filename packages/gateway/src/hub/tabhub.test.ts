@@ -7,7 +7,15 @@ import {
   type eventWithTime,
 } from "@mirror/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TabHub, type RewriteStage } from "./tabhub";
+import { TabHub as BaseTabHub, type RewriteStage, type TabHubOpts } from "./tabhub";
+
+/** Per-hub epochs from 1, as these tests read them; production epochs are process-wide. */
+class TabHub extends BaseTabHub {
+  constructor(opts: TabHubOpts) {
+    let epoch = 0;
+    super({ nextEpoch: () => ++epoch, ...opts });
+  }
+}
 
 function hello(docId: number, isTop = true): AgentMsg {
   return { kind: "hello", docId, url: `https://doc-${docId}.example/`, isTop, ts: docId };
