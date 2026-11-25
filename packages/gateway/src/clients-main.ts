@@ -2489,6 +2489,12 @@ export async function startClientGateway(
       });
   }, 2000);
   healthTimer.unref?.();
+  // Revoked logins (logout, password/role/enabled change, deletion) close the user's
+  // connections now; the periodic check below still catches logins that simply expire.
+  const stopRevocationWatch = userStore.onLoginsRevoked((userId) => {
+    for (const connection of [...viewers.values()])
+      if (connection.userId === userId && !connection.authorized()) ws.closeSession(connection.sid);
+  });
   const statusTimer = setInterval(() => {
     for (const connection of viewers.values())
       if (!connection.authorized()) ws.closeSession(connection.sid);
@@ -2554,6 +2560,7 @@ export async function startClientGateway(
     stopping = true;
     clearInterval(healthTimer);
     clearInterval(statusTimer);
+    stopRevocationWatch();
     clearInterval(idleTimer);
     clearInterval(oauthTimer);
     idleReaper.dispose();

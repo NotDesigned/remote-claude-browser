@@ -101,6 +101,11 @@ export interface UserStore {
   session(token: unknown): FrontendUser | null;
   revokeSession(token: unknown): void;
   revokeUserSessions(userId: string): void;
+  /**
+   * Called synchronously after logins of userId were revoked: logout, password, role or
+   * enabled change, or deletion. Returns an unsubscribe function.
+   */
+  onLoginsRevoked(listener: (userId: string) => void): () => void;
   listUsers(): FrontendUser[];
   getUser(id: string): FrontendUser | undefined;
   createUser(input: CreateUserInput): Promise<FrontendUser>;
@@ -234,6 +239,18 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
     const pruneSessions = () => {
       db.prepare("DELETE FROM auth_sessions WHERE expires_at <= ?").run(now());
     };
+    // Told after a user's logins were revoked (or the user deleted), so live connections that
+    // depended on them can be closed at once instead of on the next periodic check.
+    const revocationListeners = new Set<(userId: string) => void>();
+    const loginsRevoked = (userId: string) => {
+      for (const listener of revocationListeners) {
+        try {
+          listener(userId);
+        } catch (error) {
+          console.error("login revocation listener failed:", error);
+        }
+      }
+    };
 
     const store: UserStore = {
       get bootstrapAdmin() {
@@ -311,11 +328,21 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
         return publicUser(found);
       },
       revokeSession(token) {
-        if (typeof token === "string" && TOKEN_PATTERN.test(token))
-          db.prepare("DELETE FROM auth_sessions WHERE token_hash = ?").run(tokenHash(token));
+        if (typeof token !== "string" || !TOKEN_PATTERN.test(token)) return;
+        const digest = tokenHash(token);
+        const row = db
+          .prepare("SELECT user_id FROM auth_sessions WHERE token_hash = ?")
+          .get(digest);
+        db.prepare("DELETE FROM auth_sessions WHERE token_hash = ?").run(digest);
+        if (typeof row?.user_id === "string") loginsRevoked(row.user_id);
       },
       revokeUserSessions(userId) {
         db.prepare("DELETE FROM auth_sessions WHERE user_id = ?").run(userId);
+        loginsRevoked(userId);
+      },
+      onLoginsRevoked(listener) {
+        revocationListeners.add(listener);
+        return () => revocationListeners.delete(listener);
       },
       listUsers() {
         return (
@@ -417,8 +444,9 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
         if (input.enabled !== undefined && typeof input.enabled !== "boolean")
           throw new UserStoreError(400, "USER_ENABLED", "用户状态无效");
         const hash = input.password === undefined ? undefined : await hashPassword(input.password);
+        let revoked = false;
         try {
-          return transaction(() => {
+          const updated = transaction(() => {
             const current = requireUser(id);
             const nextRole = role ?? current.role;
             const enabled =
@@ -435,10 +463,14 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
               maxSessions === undefined ? current.max_sessions : maxSessions,
               id,
             );
-            if (hash !== undefined || nextRole !== current.role || !enabled)
+            if (hash !== undefined || nextRole !== current.role || !enabled) {
               db.prepare("DELETE FROM auth_sessions WHERE user_id = ?").run(id);
+              revoked = true;
+            }
             return publicUser(requireUser(id));
           });
+          if (revoked) loginsRevoked(id);
+          return updated;
         } catch (error) {
           if (isUsernameConflict(error)) throw duplicateUsername();
           throw error;
@@ -450,6 +482,7 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
           protectLastAdmin(user);
           db.prepare("DELETE FROM users WHERE id = ?").run(id);
         });
+        loginsRevoked(id);
       },
       profileOwner(profileId) {
         const row = db
