@@ -228,7 +228,9 @@ body {
   border-radius: 15px;
   background: var(--sunken);
   color: var(--muted);
-  font-size: 13px;
+  /* Quieter than the bar's controls: CJK text (Microsoft YaHei on Windows) reads heavy at 13px. */
+  font-size: 12px;
+  font-weight: 400;
   white-space: nowrap;
   cursor: pointer;
 }
