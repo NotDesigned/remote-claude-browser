@@ -1,5 +1,4 @@
 /** Viewer shell layout. */
-import { apiRequest } from "./api";
 import { listAccounts, switchAccount, type AccountList } from "./accounts";
 import { currentUser, logout, type FrontendUser } from "./users";
 import { AdminPanel } from "./admin-panel";
@@ -12,15 +11,16 @@ import { cpaApi, isCpaBrowserAuthorization, type CpaBrowserAuthorization } from 
 import { readJson, removeItem, removePrefixed, sessionArea, writeJson } from "./storage";
 import { viewStorage } from "./app/view-storage";
 import { useTheme } from "./app/use-theme";
-import { takeRemoteCcLink, RemoteCcLoginBanner } from "./network-remote-cc-panel";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import { takeRemoteCcLink } from "./network-remote-cc-panel";
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { TabStrip } from "./chrome/tabstrip";
 import { UrlBar } from "./chrome/urlbar";
-import { Presence } from "./chrome/presence";
-import { DownloadTray } from "./chrome/downloads";
+import { ClientSessionOverlay } from "./app/session-overlay";
+import { PageLoadFailed, ShellBanners } from "./app/shell-notices";
+import { TransferPanels } from "./app/transfer-panels";
 import { describeConnection } from "./connection-status";
 import { ShellBar, type LinkTarget } from "./shell-bar";
-import { PX_QUALITY_STORAGE_KEY, preferredPxQuality, clientReturnUrl } from "./client-session";
+import { PX_QUALITY_STORAGE_KEY, preferredPxQuality } from "./client-session";
 import { useClientSession, useSessionWatch } from "./app/use-client-session";
 import { useMirrorRuntime } from "./app/use-mirror-runtime";
 import { inputFailureReasonOf, pixelModeOf } from "./app/runtime-state";
@@ -52,7 +52,6 @@ export function App() {
     session: clientSession,
     error: clientError,
     endFailure,
-    picked: pickedAccount,
   } = clientSessionControl.state;
   const [accountList, setAccountList] = useState<AccountList | null>(null);
   const [user, setUser] = useState<FrontendUser | null>(null);
@@ -70,7 +69,6 @@ export function App() {
   /** A CPA authorization could not open in its browser: shown on the CPA tab. */
   const [authorizationError, setAuthorizationError] = useState<string | null>(null);
   const [pxQuality, setPxQuality] = useState(() => preferredPxQuality(viewStorage()));
-  const [downloadError, setDownloadError] = useState<string | null>(null);
   const [linkTarget, setLinkTarget] = useState<LinkTarget>(() =>
     viewStorage().getItem("mirror.links") === "device" ? "device" : "inside",
   );
@@ -233,25 +231,6 @@ export function App() {
   const currentProfile = accountList?.accounts.find(
     (account) => account.id === accountList.current,
   );
-  // Where the mirror starts, for the load-failure notice drawn over it; read after layout.
-  const [hostTop, setHostTop] = useState(0);
-  const pageFailureShown =
-    activeChrome !== null &&
-    (!!oauthCallbacks[activeChrome.tab] || (activeChrome.failed === true && !pixelMode));
-  useLayoutEffect(() => {
-    const host = hostRef.current;
-    if (!pageFailureShown || host === null) return;
-    const measure = () => setHostTop(host.offsetTop);
-    measure();
-    const observer = new ResizeObserver(measure);
-    // Banners above the mirror push it down, and shrink it as they do.
-    observer.observe(host);
-    window.addEventListener("resize", measure);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", measure);
-    };
-  }, [pageFailureShown]);
   const shellStatus = describeConnection({
     clientPhase,
     connection,
@@ -414,71 +393,26 @@ export function App() {
         fallbackUrl={tabs.find((tab) => tab.id === activeTab)?.url ?? ""}
         send={runtime.send}
       />
-      <div id="shell-banners">
-        {user && currentProfile && clientSession && clientPhase === "ready" && (
-          <RemoteCcLoginBanner sid={clientSession.sid} profileId={currentProfile.id} />
-        )}
-        {activeTab !== null && pageStates[activeTab] && pageStates[activeTab] !== "ready" && (
-          <p id="page-recovery-state" class="shell-banner" data-tone="warn" role="alert">
-            {pageStates[activeTab] === "recovering"
-              ? "远程网页已崩溃，正在恢复…"
-              : "远程网页恢复失败，请刷新页面"}
-          </p>
-        )}
-        {clipboardError && (
-          <p class="shell-banner clipboard-error" data-tone="warn" role="status">
-            {clipboardError}
-          </p>
-        )}
-        {buildStale && (
-          <p id="build-stale" class="shell-banner" role="status">
-            页面已更新，空闲时会自动刷新。
-            <button type="button" onClick={() => window.location.reload()}>
-              立即刷新
-            </button>
-          </p>
-        )}
-        {fixturePath !== null && (
-          <Presence viewers={viewers} viewerId={viewerId} driverId={driverId} send={runtime.send} />
-        )}
-      </div>
+      <ShellBanners
+        remoteCc={
+          user && currentProfile && clientSession && clientPhase === "ready"
+            ? { sid: clientSession.sid, profileId: currentProfile.id }
+            : null
+        }
+        pageState={activeTab === null ? undefined : pageStates[activeTab]}
+        clipboardError={clipboardError}
+        buildStale={buildStale}
+        presence={fixturePath === null ? null : { viewers, viewerId, driverId, send: runtime.send }}
+      />
       <main id="mirror-host" data-input-ready={inputReady ? "true" : "false"} ref={hostRef} />
-      {activeChrome &&
-        (oauthCallbacks[activeChrome.tab] || (activeChrome.failed === true && !pixelMode)) && (
-          // From where the mirror starts: the address bar above it is how to go somewhere else.
-          <section id="page-load-failed" role="alert" style={{ top: `${hostTop}px` }}>
-            <h2>
-              {oauthCallbacks[activeChrome.tab] === "submitted"
-                ? "授权回调已提交给 CPA"
-                : oauthCallbacks[activeChrome.tab] === "error"
-                  ? "授权回调自动提交失败"
-                  : "这个网页打不开"}
-            </h2>
-            <p>
-              {oauthCallbacks[activeChrome.tab] === "submitted"
-                ? "可以返回 CPA 面板查看授权结果。"
-                : activeChrome.url}
-            </p>
-            {oauthCallbacks[activeChrome.tab] && (
-              <>
-                {oauthCallbacks[activeChrome.tab] === "error" && (
-                  <p>自动提交失败，可返回 CPA 面板手动提交上面的回调地址。</p>
-                )}
-                <button type="button" onClick={() => navigateWorkspace("cpa")}>
-                  查看 CPA 授权
-                </button>
-              </>
-            )}
-            {oauthCallbacks[activeChrome.tab] !== "submitted" && (
-              <button
-                type="button"
-                onClick={() => runtime.send({ t: "nav", tab: activeChrome.tab, action: "reload" })}
-              >
-                重新加载
-              </button>
-            )}
-          </section>
-        )}
+      <PageLoadFailed
+        hostRef={hostRef}
+        chrome={activeChrome}
+        oauth={activeChrome === null ? undefined : oauthCallbacks[activeChrome.tab]}
+        pixelMode={pixelMode}
+        onShowCpa={() => navigateWorkspace("cpa")}
+        onReload={(tab) => runtime.send({ t: "nav", tab, action: "reload" })}
+      />
       {(clientPhase === "picking" || panels.pickerOpen) && (
         <ProfilePicker
           requiredProxyId={browserAuthorization?.proxyId}
@@ -516,177 +450,28 @@ export function App() {
         />
       )}
       {clientPhase !== "ready" && clientPhase !== "picking" && (
-        <section
-          id="client-session-overlay"
-          class="client-session-overlay"
-          data-phase={clientPhase}
-          role={clientPhase === "error" || clientPhase === "replaced" ? "alert" : "status"}
-        >
-          <div class="client-session-card">
-            <span class="session-eyebrow">独立浏览器</span>
-            <h1>
-              {clientPhase === "replaced"
-                ? "此会话已在另一页面打开"
-                : clientPhase === "closed"
-                  ? "当前会话已结束"
-                  : clientPhase === "ending"
-                    ? "正在结束会话…"
-                    : clientPhase === "error"
-                      ? endFailure
-                        ? "未能结束会话"
-                        : "暂时无法打开会话"
-                      : "正在打开独立会话…"}
-            </h1>
-            <p>
-              {clientPhase === "replaced"
-                ? "当前页面已停止连接和输入，可在另一页面继续，或另开独立会话。"
-                : clientPhase === "closed"
-                  ? "当前页面已停止连接。点击重新开启后，才会再次申请会话。"
-                  : clientPhase === "ending"
-                    ? "已停止本页面的输入和连接，正在释放会话资源。"
-                    : clientPhase === "error"
-                      ? clientError?.message
-                      : "正在连接当前用户的独立浏览器。首次打开可能需要一些时间。"}
-            </p>
-            <p class="session-policy">
-              不同用户的浏览器数据互相隔离。同一浏览器配置下的会话共享网站登录。离线约 60
-              秒后释放远程窗口；返回时重新打开启动页，未发送草稿不保留。正在生成时暂缓释放。
-            </p>
-            {clientPhase === "error" &&
-              clientError !== null &&
-              clientError.ownedSessions.length > 0 && (
-                <div class="owned-client-sessions">
-                  <p>返回本设备已有的会话：</p>
-                  {clientError.ownedSessions.map((session) => (
-                    <a key={session.sid} href={clientReturnUrl(session.sid)}>
-                      {session.label}
-                    </a>
-                  ))}
-                </div>
-              )}
-            <div class="client-session-actions">
-              {clientPhase === "replaced" && (
-                <a class="session-primary-action" href="/?new=1" target="_blank" rel="noopener">
-                  另开独立会话
-                </a>
-              )}
-              {clientPhase === "closed" && (
-                <button
-                  id="client-session-reopen"
-                  type="button"
-                  class="session-primary-action"
-                  onClick={() => window.location.assign("/?new=1")}
-                >
-                  重新开启会话
-                </button>
-              )}
-              {clientPhase === "error" && (
-                <button
-                  id="client-session-retry"
-                  type="button"
-                  class="session-primary-action"
-                  onClick={() => {
-                    if (endFailure) void closeClientSession();
-                    else clientSessionControl.retry();
-                  }}
-                >
-                  {endFailure ? "重试结束" : "重试"}
-                </button>
-              )}
-              {clientPhase === "error" && clientError?.status === 401 && (
-                <a href="/gate">重新登录</a>
-              )}
-              {clientPhase === "error" &&
-                !endFailure &&
-                (pickedAccount !== null || clientError?.code === "EXIT_REQUIRED") && (
-                  <a href="/?new=1">重新选择配置并设置出口</a>
-                )}
-              {clientPhase === "error" && endFailure && clientSession !== null && (
-                <a href={clientReturnUrl(clientSession.sid)}>返回当前会话</a>
-              )}
-            </div>
-          </div>
-        </section>
+        <ClientSessionOverlay
+          session={clientSessionControl.state}
+          onRetry={() => {
+            if (endFailure) void closeClientSession();
+            else clientSessionControl.retry();
+          }}
+        />
       )}
       {clientPhase === "ready" && (
         // Media notices (see media/video.ts) appear here, over the page's top right.
         <aside id="viewer-hud-layer" aria-label="页面提示" />
       )}
-      <aside id="transfer-panels" aria-label="文件与剪贴板">
-        <input
-          ref={fileInputRef}
-          id="local-file-picker"
-          type="file"
-          multiple={uploadState?.multiple ?? false}
-          hidden
-          onChange={(event) => {
-            if (uploadState === null) event.currentTarget.value = "";
-            else runtime.selectFiles(uploadState.tab, event.currentTarget);
-          }}
-          onCancel={() => {
-            if (uploadState !== null) runtime.cancelFilePick(uploadState.tab);
-          }}
-        />
-        {/* Uploading: a thin bar along the bottom edge, over everything, taking no room. */}
-        {uploadState?.phase === "uploading" && (
-          <div
-            id="upload-progress"
-            role="progressbar"
-            aria-label={uploadState.name || "正在上传附件"}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={
-              uploadState.total > 0
-                ? Math.round((uploadState.loaded / uploadState.total) * 100)
-                : undefined
-            }
-            data-indeterminate={uploadState.total > 0 ? undefined : "true"}
-          >
-            <span
-              style={
-                uploadState.total > 0
-                  ? { width: `${(uploadState.loaded / uploadState.total) * 100}%` }
-                  : undefined
-              }
-            />
-          </div>
-        )}
-        {/* Only what needs the person: a tap to open the picker, or a failure. */}
-        {uploadState !== null &&
-          (uploadState.phase === "picking" || uploadState.phase === "error") && (
-            <section id="upload-panel" role="status">
-              <span>{uploadState.name}</span>
-              {uploadState.phase === "picking" && (
-                <>
-                  <button type="button" onClick={() => fileInputRef.current?.click()}>
-                    选择本机文件
-                  </button>
-                  <small>单文件 ≤100 MB，单批 ≤500 MB</small>
-                </>
-              )}
-              <button type="button" onClick={runtime.cancelUpload}>
-                {uploadState.phase === "picking" ? "取消上传" : "关闭"}
-              </button>
-            </section>
-          )}
-        <DownloadTray
-          downloads={downloads.filter((download) => shownDownloadIds.has(download.id))}
-          error={downloadError}
-          onCancel={async (id) => {
-            if (!clientSession) return;
-            setDownloadError(null);
-            try {
-              await apiRequest(
-                `/s/${encodeURIComponent(clientSession.sid)}/downloads/${encodeURIComponent(id)}`,
-                "DELETE",
-              );
-            } catch {
-              setDownloadError("取消下载失败，请重试");
-            }
-          }}
-          onDismiss={runtime.dismissDownload}
-        />
-      </aside>
+      <TransferPanels
+        fileInputRef={fileInputRef}
+        uploadState={uploadState}
+        downloads={downloads.filter((download) => shownDownloadIds.has(download.id))}
+        sid={clientSession?.sid}
+        onSelectFiles={runtime.selectFiles}
+        onCancelFilePick={runtime.cancelFilePick}
+        onCancelUpload={runtime.cancelUpload}
+        onDismissDownload={runtime.dismissDownload}
+      />
     </div>
   );
 }
