@@ -11,6 +11,11 @@ updates:
         dependency-type: production
         update-types: [minor, patch]
     open-pull-requests-limit: 5
+    # Patched in patches/ for an exact version (package.json pnpm.patchedDependencies): an update
+    # needs the patch redone by hand, which Dependabot cannot do.
+    ignore:
+      - dependency-name: "@rrweb/record"
+      - dependency-name: "@rrweb/replay"
   # Base images in the Dockerfiles, pinned by tag and digest.
   - package-ecosystem: docker
     directories: [/deploy, /client]
