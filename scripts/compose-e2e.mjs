@@ -611,12 +611,15 @@ async function checkPicture(browser) {
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH,
   headless: true,
-  // Offer this machine's address instead of an mDNS name: the server cannot resolve .local
-  // names, and when the runner's DNS also fails to resolve the STUN server, WebRTC has no path.
-  args: ["--disable-features=WebRtcHideLocalIpsWithMdns"],
 });
 try {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  // Chromium offers a page its real address for WebRTC, not an mDNS name, once it may use the
+  // camera and microphone. The server cannot resolve .local names, and when the runner's DNS also
+  // fails to resolve the STUN server, WebRTC has no other path. (A --disable-features argument
+  // would replace the features Playwright disables, not add to them.)
+  if (process.env.SMOKE_VIDEO === "1")
+    await context.grantPermissions(["camera", "microphone"], { origin });
   await context.addInitScript(() => {
     // The first about:blank document has an opaque origin and no storage.
     try {
