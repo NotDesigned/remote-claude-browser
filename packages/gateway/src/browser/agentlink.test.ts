@@ -264,6 +264,53 @@ describe("createAgentLink", () => {
     await expect(link.sendCmd(target.targetId, { cmd: "ping" })).rejects.toThrow("detached");
   });
 
+  it("reports a gap in the current document's message numbers as stream loss", () => {
+    const target: TargetRef = { targetId: "page-1", sessionId: "session-1", type: "page" };
+    const browser = new MockBrowser(target);
+    const link = createAgentLink(browser);
+    const lost = vi.fn();
+    link.onStreamLoss?.(lost);
+
+    browser.emit(10, 0, hello(10), 100);
+    browser.emit(10, 1, rrweb(10, "a"), 100);
+    browser.emit(10, 2, rrweb(10, "b"), 100);
+    expect(lost).not.toHaveBeenCalled();
+    // Message 3 never arrived.
+    browser.emit(10, 4, rrweb(10, "d"), 100);
+    expect(lost).toHaveBeenCalledExactlyOnceWith("page-1");
+    browser.emit(10, 5, rrweb(10, "e"), 100);
+    expect(lost).toHaveBeenCalledOnce();
+
+    // A same-process frame's own document, which feeds no hub, changes nothing.
+    browser.emit(77, 0, hello(77, false), 101);
+    browser.emit(77, 9, rrweb(77, "frame"), 101);
+    expect(lost).toHaveBeenCalledOnce();
+  });
+
+  it("reports a chunked message that never completed as stream loss", () => {
+    vi.useFakeTimers();
+    try {
+      const target: TargetRef = { targetId: "page-1", sessionId: "session-1", type: "page" };
+      const browser = new MockBrowser(target);
+      const link = createAgentLink(browser);
+      const lost = vi.fn();
+      const unsubscribe = link.onStreamLoss!(lost);
+      browser.emit(10, 0, hello(10), 100);
+      // The last chunk of message 1 is lost on the way.
+      const chunks = encodeChunks(10, 1, JSON.stringify(rrweb(10, "x".repeat(200))), 32);
+      for (const chunk of chunks.slice(0, -1)) browser.emitPayload(chunk, 100);
+      vi.advanceTimersByTime(10_001);
+      // Nothing else is sent; the next chunk of anything sweeps the partial away.
+      browser.emitPayload(encodeChunks(99, 0, JSON.stringify(hello(99, false)), 32)[0]!, 101);
+      expect(lost).toHaveBeenCalledExactlyOnceWith("page-1");
+      unsubscribe();
+      browser.emit(10, 5, rrweb(10, "later"), 100);
+      expect(lost).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects a command after the fixed three-second timeout", async () => {
     vi.useFakeTimers();
     try {

@@ -9,7 +9,10 @@
  * `docId` is the agent's per-document epoch and `msgId` is its document-local counter. Carrying
  * both in every frame lets the gateway reassemble and deduplicate directly on `(docId, msgId)`;
  * no CDP execution-context inference is needed. Partials older than PARTIAL_TTL_MS (10s) are
- * discarded. The reassembled payload is JSON-parsed into an AgentMsg.
+ * discarded and reported. The reassembled payload is JSON-parsed into an AgentMsg.
+ *
+ * An agent numbers every message of its document 0, 1, 2… and emits each one's chunks in order,
+ * so a consumer can see a lost message as a gap in `msgId` (see AgentLink).
  *
  * NOTE: slices are measured in UTF-16 code units (JS string.length), which is what CDP binding
  * payload size is governed by after serialization; 256K code units keeps every framed payload
@@ -86,6 +89,8 @@ export function parseChunk(payload: string): ParsedChunk | null {
 }
 
 interface Partial {
+  docId: number;
+  msgId: number;
   total: number;
   slices: (string | undefined)[];
   received: number;
@@ -107,6 +112,12 @@ export class ChunkReassembler {
   private readonly completed = new Set<string>();
   private readonly completedOrder: string[] = [];
 
+  /**
+   * `onExpire` hears of every message given up as incomplete. Dropping it is not enough on its
+   * own: the stream it belonged to has lost an event, and its consumer must recover from that.
+   */
+  constructor(private readonly onExpire?: (docId: number, msgId: number) => void) {}
+
   /** Feed one binding payload. Returns the AgentMsg when a message completes, else null. */
   add(payload: string, now: number = Date.now()): AgentMsg | null {
     this.sweep(now);
@@ -124,6 +135,8 @@ export class ChunkReassembler {
     let p = this.partials.get(key);
     if (p === undefined || p.total !== c.total) {
       p = {
+        docId: c.docId,
+        msgId: c.msgId,
         total: c.total,
         slices: new Array<string | undefined>(c.total),
         received: 0,
@@ -145,7 +158,9 @@ export class ChunkReassembler {
   /** Drop partials older than PARTIAL_TTL_MS. Called automatically by add(). */
   sweep(now: number = Date.now()): void {
     for (const [key, p] of this.partials) {
-      if (now - p.firstSeen > PARTIAL_TTL_MS) this.partials.delete(key);
+      if (now - p.firstSeen <= PARTIAL_TTL_MS) continue;
+      this.partials.delete(key);
+      this.onExpire?.(p.docId, p.msgId);
     }
   }
 

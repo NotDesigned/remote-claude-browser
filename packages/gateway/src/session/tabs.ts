@@ -161,6 +161,12 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
     if (result.exceptionDetails) throw new Error("Title observer execution failed");
   };
 
+  // A page whose stream lost an event has to be replayed again from a snapshot.
+  const removeLossListener =
+    opts.agentLink.onStreamLoss?.((targetId) => {
+      if (!disposed) tabs.get(targetId)?.hub.requestSnapshot("resync");
+    }) ?? (() => undefined);
+
   const removeTitleNavigationListener = opts.browser.onSessionEvent(
     "Page.frameNavigated",
     (sessionId, event) => {
@@ -455,6 +461,7 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
       disposed = true;
       removeTitleListener();
       removeTitleNavigationListener();
+      removeLossListener();
       broadcastVersion += 1;
       if (broadcastTimer !== undefined) clearTimeout(broadcastTimer);
       broadcastTimer = undefined;

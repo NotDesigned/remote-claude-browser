@@ -152,6 +152,19 @@ describe("ChunkReassembler", () => {
     expect(result).toEqual(hello);
   });
 
+  it("reports each partial it gives up, so a consumer can recover the lost message", () => {
+    const expired: Array<[number, number]> = [];
+    const r = new ChunkReassembler((docId, msgId) => expired.push([docId, msgId]));
+    const chunks = encodeChunks(123, 6, JSON.stringify(hello), 8);
+    expect(r.add(chunks[0]!, 0)).toBeNull();
+    r.sweep(PARTIAL_TTL_MS);
+    expect(expired).toEqual([]);
+    r.sweep(PARTIAL_TTL_MS + 1);
+    expect(expired).toEqual([[123, 6]]);
+    r.sweep(PARTIAL_TTL_MS * 3);
+    expect(expired).toHaveLength(1);
+  });
+
   it("returns null for non-chunk payloads", () => {
     expect(new ChunkReassembler().add("garbage")).toBeNull();
   });
