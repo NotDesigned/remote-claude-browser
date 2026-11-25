@@ -1,9 +1,8 @@
 /**
  * Signed, expiring invite tokens for driver and viewer roles.
  *
- * HMAC-signed invite tokens {sid, role, exp} (node:crypto, no JWT library). Minted by
- * scripts/invite.ts. Token travels in the URL FRAGMENT (never query — keeps it out of access
- * logs); the /join fragment bridge validates it and sets an HttpOnly SameSite=Lax cookie.
+ * HMAC-signed invite tokens {sid, role, exp} (node:crypto, no JWT library). The gateway mints
+ * one per signed-in device as its HttpOnly device cookie (auth/middleware.ts).
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 
