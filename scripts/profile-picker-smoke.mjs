@@ -1059,6 +1059,8 @@ try {
   await phoneMoved;
   await phone.getByRole("button", { name: "菜单", exact: true }).tap();
   await phone.getByRole("button", { name: "浏览器配置", exact: true }).tap();
+  // The list arrives after the picker opens; the screenshot is of the list, not its placeholder.
+  await phone.locator("button.profile-card").first().waitFor();
   await phone.setViewportSize({ width: 844, height: 390 });
   assert.equal(
     await phone
