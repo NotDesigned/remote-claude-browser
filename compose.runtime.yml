@@ -1,4 +1,4 @@
-# Optional per-profile Mihomo exits and one stock CPA instance per workbench user.
+# Per-profile Mihomo exits and one stock CPA instance per workbench user: the standard deployment.
 # Ingress remains deployer-managed. See docs/deployment.md.
 services:
   server:
@@ -52,7 +52,15 @@ services:
       CPA_BROKER_SOCKET: /run/cpa/cpa.sock
       CPA_BROKER_NETWORK: ${CPA_RUNTIME_NETWORK:-remote-browser-cpa-runtime}
       CPA_BROKER_IMAGE: ${CPA_BROKER_ENGINE_IMAGE:-remote-claude-browser-cpa:local}
+      # Each CPA instance gets its own internal network (a /28 from this range) shared only with
+      # the broker, which relays its runtime-egress:8781 to the server's authenticated proxy.
+      CPA_INSTANCE_SUBNETS: ${CPA_INSTANCE_SUBNETS:-10.254.0.0/16}
+      CPA_BROKER_EGRESS: server:8781
     volumes:
+      # The broker is the only container with Docker access. It is root-equivalent on the host:
+      # creating containers is what it is for, and a URL-filtering socket proxy cannot tell its
+      # fixed CPA template from any other container. Its own API is a Unix socket only the
+      # gateway's group can open, and it accepts no Docker parameters. See docs/security.md.
       - /var/run/docker.sock:/var/run/docker.sock
       - cpa-control:/run/cpa
     networks: [cpa-runtime]
@@ -60,22 +68,29 @@ services:
       cpa-engine-image:
         condition: service_completed_successfully
     mem_limit: 96m
-    cpus: 0.25
+    cpus: 0.5
     pids_limit: 32
     healthcheck:
+      # Healthy only while its socket exists and the Docker daemon answers.
       test:
         [
           CMD,
           node,
           -e,
-          "if(!require('node:fs').statSync('/run/cpa/cpa.sock').isSocket())process.exit(1)",
+          "const fs=require('node:fs');if(!fs.statSync('/run/cpa/cpa.sock').isSocket())process.exit(1);require('node:http').get({socketPath:'/var/run/docker.sock',path:'/_ping',timeout:2000},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1)).on('timeout',()=>process.exit(1))",
         ]
-      interval: 5s
-      timeout: 3s
+      interval: 10s
+      timeout: 5s
       retries: 12
+      start_period: 10s
+    logging:
+      driver: local
+      options:
+        max-size: 5m
+        max-file: "3"
 
 networks:
-  # These CPA containers have no direct internet route; only authenticated Mihomo proxy access.
+  # The server and the broker. CPA instances are not on it: each has its own internal network.
   cpa-runtime:
     name: ${CPA_RUNTIME_NETWORK:-remote-browser-cpa-runtime}
     internal: true

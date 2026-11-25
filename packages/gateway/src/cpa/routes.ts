@@ -175,6 +175,35 @@ export function cpaInferencePath(raw: string): string | undefined {
   return url.pathname + url.search;
 }
 
+// CPA passes request headers through to the upstream provider. Nothing that names the caller's
+// address or the proxies in front of the gateway may leave this host.
+const CLIENT_ADDRESS_HEADERS = new Set([
+  "forwarded",
+  "via",
+  "x-real-ip",
+  "x-client-ip",
+  "x-cluster-client-ip",
+  "x-original-forwarded-for",
+  "true-client-ip",
+  "fastly-client-ip",
+  "fly-client-ip",
+  "client-ip",
+  "remote-addr",
+  "x-appengine-user-ip",
+  "x-azure-clientip",
+  "x-azure-socketip",
+  "akamai-origin-hop",
+]);
+const CLIENT_ADDRESS_PREFIXES = ["x-forwarded-", "cf-", "x-envoy-", "x-amzn-"];
+export function stripClientAddressHeaders(headers: IncomingHttpHeaders) {
+  for (const name of Object.keys(headers))
+    if (
+      CLIENT_ADDRESS_HEADERS.has(name) ||
+      CLIENT_ADDRESS_PREFIXES.some((prefix) => name.startsWith(prefix))
+    )
+      delete headers[name];
+  return headers;
+}
 export function registerCpaInferenceRoutes(app: FastifyInstance, runtime: CpaRuntime) {
   app.route({
     method: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
@@ -199,6 +228,7 @@ export function registerCpaInferenceRoutes(app: FastifyInstance, runtime: CpaRun
         delete headers.cookie;
         delete headers["content-length"];
         for (const name of HOP_HEADERS) delete headers[name];
+        stripClientAddressHeaders(headers);
         const body =
           request.body === undefined
             ? undefined

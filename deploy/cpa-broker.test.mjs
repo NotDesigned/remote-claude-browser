@@ -4,10 +4,21 @@ import { createServer, request } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { allowedUpstream, containerSpec, initializerSpec, createCpaBroker } from "./cpa-broker.mjs";
+import { execFileSync } from "node:child_process";
+import { writeFile } from "node:fs/promises";
+import {
+  allowedUpstream,
+  containerSpec,
+  initializerSpec,
+  createCpaBroker,
+  instanceNetwork,
+  instanceSubnet,
+  singleFileTar,
+} from "./cpa-broker.mjs";
 
 const one = "cpa-11111111111111111111",
-  two = "cpa-22222222222222222222";
+  two = "cpa-22222222222222222222",
+  three = "cpa-33333333333333333333";
 const options = { image: "test-cpa:pinned", network: "test-internal" };
 const input = {
   apiKey: "a".repeat(43),
@@ -20,7 +31,9 @@ test("CPA fixed templates isolate volumes, remove privileges and permit no host 
     second = containerSpec(two, options);
   assert.equal(first.Image, options.image);
   assert.equal(first.User, "10003:10003");
-  assert.equal(first.HostConfig.NetworkMode, options.network);
+  assert.equal(first.HostConfig.NetworkMode, instanceNetwork(one));
+  assert.notEqual(first.HostConfig.NetworkMode, second.HostConfig.NetworkMode);
+  assert.deepEqual(Object.keys(first.NetworkingConfig.EndpointsConfig), [instanceNetwork(one)]);
   assert.equal(first.HostConfig.ReadonlyRootfs, true);
   assert.deepEqual(first.HostConfig.CapDrop, ["ALL"]);
   assert.deepEqual(first.HostConfig.SecurityOpt, ["no-new-privileges:true"]);
@@ -32,15 +45,68 @@ test("CPA fixed templates isolate volumes, remove privileges and permit no host 
   for (const mount of second.HostConfig.Mounts) assert.ok(!names.has(mount.Source));
   assert.equal(first.HostConfig.Mounts.length, 3);
   assert.ok(first.HostConfig.Mounts.every((mount) => mount.Type === "volume"));
-  const init = initializerSpec(one, options, input);
+  const init = initializerSpec(one, options);
   assert.equal(init.Image, first.Image);
   assert.equal(init.HostConfig.NetworkMode, "none");
   assert.deepEqual(init.HostConfig.CapAdd, ["CHOWN"]);
   assert.equal(init.HostConfig.AutoRemove, undefined);
-  const config = JSON.parse(init.Env[0].slice("CPA_INITIAL_CONFIG=".length));
-  assert.equal(config.requests["proxy-url"], input.proxyUrl);
-  assert.equal(config.access["api-keys"][0], input.apiKey);
-  assert.equal(config.management["secret-key"], input.managementKey);
+  assert.deepEqual(init.Env, [], "keys never go into a container's environment");
+});
+
+test("instances never carry the Compose labels their image was built with", () => {
+  const spec = containerSpec(one, {
+    ...options,
+    imageId: "sha256:abc",
+    imageLabels: {
+      "com.docker.compose.project": "remote-claude-browser",
+      "com.docker.compose.service": "cpa-engine-image",
+      "com.docker.compose.image.builder": "classic",
+      "org.opencontainers.image.version": "1",
+    },
+  });
+  for (const key of [
+    "com.docker.compose.project",
+    "com.docker.compose.service",
+    "com.docker.compose.version",
+    "com.docker.compose.oneoff",
+    "com.docker.compose.image.builder",
+  ])
+    assert.equal(spec.Labels[key], "", key);
+  assert.equal(spec.Labels["org.opencontainers.image.version"], undefined);
+  assert.equal(spec.Labels["dev.remote-browser.cpa-image"], "sha256:abc");
+  assert.equal(initializerSpec(one, options).Labels["com.docker.compose.project"], "");
+});
+
+test("the template digest changes with the engine image and the template", () => {
+  const a = containerSpec(one, { ...options, imageId: "sha256:a" });
+  const b = containerSpec(one, { ...options, imageId: "sha256:b" });
+  assert.equal(
+    a.Labels["dev.remote-browser.cpa-spec"],
+    containerSpec(one, { ...options, imageId: "sha256:a" }).Labels["dev.remote-browser.cpa-spec"],
+  );
+  assert.notEqual(a.Labels["dev.remote-browser.cpa-spec"], b.Labels["dev.remote-browser.cpa-spec"]);
+});
+
+test("instance subnets stay inside the pool and move on after a collision", () => {
+  const first = instanceSubnet(one);
+  assert.match(first, /^10\.254\.\d+\.\d+\/28$/);
+  assert.equal(Number(first.split(".")[3].split("/")[0]) % 16, 0);
+  assert.notEqual(instanceSubnet(one, 1), first);
+  assert.equal(instanceSubnet(one, 0, "10.254.0.0/26").replace(/\.\d+\/28$/, ""), "10.254.0");
+  assert.match(instanceSubnet(two, 3, "172.20.16.0/20"), /^172\.20\.(1[6-9]|2\d|3[01])\.\d+\/28$/);
+  assert.throws(() => instanceSubnet(one, 0, "10.254.0.0/28"), /CPA_INSTANCE_SUBNETS/);
+});
+
+test("the initial configuration travels as a root-only tar entry", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "cpa-tar-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const archive = join(directory, "config.tar");
+  await writeFile(archive, singleFileTar(".initial-config.yaml", "secret: 1\n"));
+  assert.equal(
+    execFileSync("tar", ["-xOf", archive, ".initial-config.yaml"], { encoding: "utf8" }),
+    "secret: 1\n",
+  );
+  assert.match(execFileSync("tar", ["-tvf", archive], { encoding: "utf8" }), /^-rw------- /);
 });
 
 test("broker allows CPA management and inference paths and excludes unrelated routes", () => {
@@ -194,7 +260,10 @@ test("removal deletes only its labelled container and volumes, and retries parti
   });
   const resources = new Map();
   const container = `/containers/remote-browser-${one}`;
-  resources.set(container, { Config: { Labels: tagged(one) }, State: { Running: true } });
+  resources.set(container, {
+    Config: { Labels: { ...tagged(one), "dev.remote-browser.cpa-deployment": options.network } },
+    State: { Running: true },
+  });
   for (const kind of ["config", "auth", "static"]) {
     const Name = `remote-browser-${one}-${kind}`;
     resources.set(`/volumes/${Name}`, { Name, Labels: tagged(one) });
@@ -207,7 +276,7 @@ test("removal deletes only its labelled container and volumes, and retries parti
     ...options,
     socketGid: process.getgid(),
     async docker(method, path) {
-      if (path.startsWith("/networks/")) return { Internal: true };
+      if (path === `/networks/${options.network}`) return { Internal: true };
       const name = path.replace(/\/json$|\?force=1$/, "");
       if (!resources.has(name)) throw Object.assign(new Error("missing"), { status: 404 });
       if (method === "GET") return resources.get(name);
@@ -244,4 +313,132 @@ test("removal deletes only its labelled container and volumes, and retries parti
   assert.equal(resources.size, 0);
   assert.equal(await remove(), 200);
   assert.equal(removed.length, 4);
+});
+
+test("the broker refuses a Docker Engine older than API 1.47 with a clear message", async () => {
+  const broker = createCpaBroker({
+    ...options,
+    docker: async (_method, path) =>
+      path === "/version" ? { ApiVersion: "1.45" } : { Internal: true },
+  });
+  await assert.rejects(() => broker.listen("/tmp/not-created-cpa.sock"), /Docker Engine 27\.3/);
+});
+
+test("reconcile moves an outdated instance to its own network and keeps its volumes", async () => {
+  const tagged = {
+    "dev.remote-browser.cpa-managed": "true",
+    "dev.remote-browser.cpa-instance": one,
+  };
+  const network = instanceNetwork(one);
+  const state = {
+    container: {
+      Id: "old",
+      Image: "sha256:old",
+      Config: { Labels: { ...tagged, "com.docker.compose.project": "remote-claude-browser" } },
+      State: { Running: true },
+      NetworkSettings: { Networks: { [options.network]: { IPAddress: "172.30.0.5" } } },
+    },
+    networks: new Map(),
+    self: { Id: "broker-id", NetworkSettings: { Networks: { [options.network]: {} } } },
+  };
+  const calls = [];
+  let collisions = 1;
+  const missing = () => Object.assign(new Error("missing"), { status: 404 });
+  const broker = createCpaBroker({
+    ...options,
+    self: "broker-host",
+    log: () => {},
+    async docker(method, path, body) {
+      calls.push(`${method} ${path.split("?")[0]}`);
+      if (path.startsWith("/containers/json?"))
+        return [
+          {
+            Labels: state.container.Config.Labels,
+            NetworkSettings: state.container.NetworkSettings,
+          },
+          // Another deployment's instance, and one from before deployment labels on another
+          // network: neither is this broker's to touch.
+          {
+            Labels: {
+              ...tagged,
+              "dev.remote-browser.cpa-instance": two,
+              "dev.remote-browser.cpa-deployment": "production-network",
+            },
+            NetworkSettings: { Networks: { [instanceNetwork(two)]: {} } },
+          },
+          {
+            Labels: { ...tagged, "dev.remote-browser.cpa-instance": three },
+            NetworkSettings: { Networks: { "production-network": {} } },
+          },
+        ];
+      if (path.includes(two) || path.includes(three))
+        throw new Error(`touched another deployment: ${method} ${path}`);
+      if (path === `/images/${options.image}/json`)
+        return { Id: "sha256:new", Config: { Labels: { "com.docker.compose.service": "cpa" } } };
+      if (path.startsWith("/volumes/")) return { Name: path.slice(9), Labels: tagged };
+      if (path === `/containers/remote-browser-${one}/json`) {
+        if (!state.container) throw missing();
+        return state.container;
+      }
+      if (path === "/containers/broker-host/json") return state.self;
+      if (path === `/networks/${network}`) {
+        if (!state.networks.has(network)) throw missing();
+        return state.networks.get(network);
+      }
+      if (path === "/networks/create") {
+        if (collisions-- > 0) throw Object.assign(new Error("overlap"), { status: 403 });
+        state.networks.set(body.Name, {
+          Name: body.Name,
+          Internal: body.Internal,
+          Labels: body.Labels,
+        });
+        return { Id: "net" };
+      }
+      if (path === `/networks/${network}/connect`) {
+        assert.equal(body.Container, "broker-id");
+        assert.deepEqual(body.EndpointConfig.Aliases, ["runtime-egress"]);
+        state.self.NetworkSettings.Networks[network] = {};
+        return null;
+      }
+      if (path.startsWith(`/containers/remote-browser-${one}/stop`)) {
+        state.container.State.Running = false;
+        return null;
+      }
+      if (path === `/containers/remote-browser-${one}?force=1`) {
+        state.container = null;
+        return null;
+      }
+      if (path.startsWith("/containers/create?name=")) {
+        assert.equal(body.HostConfig.NetworkMode, network);
+        assert.equal(body.Labels["com.docker.compose.service"], "");
+        assert.equal(body.Labels["com.docker.compose.project"], "");
+        assert.equal(body.Labels["dev.remote-browser.cpa-deployment"], options.network);
+        assert.deepEqual(
+          body.HostConfig.Mounts.map((mount) => mount.Source),
+          ["config", "auth", "static"].map((kind) => `remote-browser-${one}-${kind}`),
+        );
+        state.container = {
+          Id: "new",
+          Image: "sha256:new",
+          Config: { Labels: { ...body.Labels } },
+          State: { Running: false },
+          NetworkSettings: { Networks: {} },
+        };
+        return { Id: "new" };
+      }
+      if (path === `/containers/remote-browser-${one}/start`) {
+        state.container.State.Running = true;
+        return null;
+      }
+      throw new Error(`unexpected ${method} ${path}`);
+    },
+  });
+  assert.deepEqual(await broker.reconcile(), { current: 0, replaced: 1, failed: 0 });
+  assert.equal(state.container.Id, "new");
+  assert.equal(state.container.State.Running, true, "a running instance comes back running");
+  assert.ok(state.networks.get(network).Internal);
+  assert.ok(!calls.some((call) => call.startsWith("DELETE /volumes/")));
+  calls.length = 0;
+  assert.deepEqual(await broker.reconcile(), { current: 1, replaced: 0, failed: 0 });
+  assert.ok(!calls.some((call) => call.startsWith("POST /containers/create")));
 });

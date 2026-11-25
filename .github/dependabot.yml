@@ -7,9 +7,18 @@ updates:
     groups:
       development-dependencies:
         dependency-type: development
+      production-dependencies:
+        dependency-type: production
+        update-types: [minor, patch]
     open-pull-requests-limit: 5
+  # Base images in the Dockerfiles, pinned by tag and digest.
   - package-ecosystem: docker
-    directory: /deploy
+    directories: [/deploy, /client]
+    schedule:
+      interval: weekly
+  # Images named in the Compose files (Caddy).
+  - package-ecosystem: docker-compose
+    directories: [/, /client]
     schedule:
       interval: weekly
   - package-ecosystem: github-actions

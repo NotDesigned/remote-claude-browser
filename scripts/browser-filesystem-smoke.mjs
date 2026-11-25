@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
-import { chmod, chown, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { chmod, chown, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -164,6 +164,28 @@ async function inside() {
       MIRROR_BROWSER_DOH_TEMPLATE: "https://dns.example.test/dns-query",
     },
   });
+
+  // The browser user owns /data. Links it plants, or directories it does not own, are never mounted.
+  await mkdir("/data/root-only", { mode: 0o700 });
+  await writeFile("/data/root-only/secret", "root-marker");
+  await mkdir("/data/attack/extension-link", { recursive: true });
+  await symlink("/data/root-only", "/data/attack/profile-link");
+  await symlink("/data/root-only", "/data/attack/extension-link/zoom-extension");
+  await exec("chown", ["-hR", "10001:10001", "/data/attack"]);
+  for (const target of [
+    "/data/attack/profile-link",
+    "/data/attack/extension-link",
+    "/data/root-only",
+  ]) {
+    const attempt = exec(launcher, [
+      "/tmp/attack-root",
+      target,
+      "/usr/local/bin/node",
+      "-e",
+      "process.exit(0)",
+    ]);
+    await assert.rejects(attempt, /Refusing to mount/, target);
+  }
 
   const authority = "/tmp/display/authority";
   await mkdir("/tmp/.X11-unix", { mode: 0o1777 });
@@ -361,6 +383,9 @@ if (process.argv.includes("--inside")) {
     "ALL",
     "--security-opt",
     "no-new-privileges:true",
+    // The server's own profile (scripts/install-apparmor.sh); ignored where Docker has no AppArmor.
+    "--security-opt",
+    "apparmor=remote-claude-browser",
   ];
   for (const cap of [
     "SYS_ADMIN",

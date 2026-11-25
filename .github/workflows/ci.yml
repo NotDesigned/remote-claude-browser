@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Nightly: also runs the host-network variants, which pull requests skip.
+  schedule:
+    - cron: "17 19 * * *"
 
 permissions:
   contents: read
@@ -18,64 +21,110 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
           version: 9.15.9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Check the documentation
         run: pnpm run docs:check
+      - run: pnpm run format:check
       - run: pnpm run check:rrweb
       - run: pnpm run build
       - run: pnpm run typecheck
       - name: Test packages and deployment helpers
         run: pnpm run test
 
-  containers:
+  # Known advisories in production dependencies. Not blocking yet: main has open high-severity
+  # advisories that dependency updates are fixing. Remove continue-on-error once it passes.
+  audit:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    needs: quality
+    timeout-minutes: 10
+    continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
           version: 9.15.9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Check the Compose files
+      - run: pnpm run audit:prod
+
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: quality
+    env:
+      CHROME_PATH: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - name: Test navigation and the back-forward cache
+        run: pnpm run test:browser-lifecycle
+      - name: Test cross-site frame assumptions
+        run: pnpm run probe:oopif
+      - name: Test picture mode and touch input
         run: |
-          export MIRROR_ACCESS_PASSWORD=x MIRROR_AUTH_SECRET=x PUBLIC_HOST=example.com
-          docker compose -f compose.yml -f compose.https.yml config --quiet
-          EGRESS_PROXY=socks5://127.0.0.1:1080 docker compose -f compose.yml -f compose.hostnet.yml \
-            -f compose.proxy.yml config --quiet
-          SERVER_SSH_HOST=example.com docker compose -f client/compose.yml config --quiet
-          docker compose -f compose.yml -f compose.runtime.yml config --quiet
+          pnpm run test:pixel-ui
+          pnpm run test:mobile-input
+      - name: Test video and sound over WebRTC
+        run: xvfb-run --auto-servernum pnpm run test:rtc-media
+
+  containers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    needs: quality
+    env:
+      CHROME_PATH: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Check every Compose combination the documentation lists
+        run: pnpm run check:compose
       - name: Validate deployer-managed Caddy ingress examples
         run: node --test examples/caddy/ingress.test.mjs
-      - name: Build the CPA engine image
-        run: docker build -f deploy/Dockerfile.cpa --target cpa -t remote-claude-browser-cpa:local .
+      - name: Load the server's AppArmor profile, as deployers do
+        run: |
+          sudo bash scripts/install-apparmor.sh
+          sudo grep -x 'remote-claude-browser (enforce)' /sys/kernel/security/apparmor/profiles
+          # The host keeps Ubuntu's restriction on unprivileged user namespaces.
+          test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
+          sudo bash scripts/check-host.sh
       - name: Build the tunnel image
         run: docker build client
-      - name: Enable Chromium's user namespace sandbox on the test runner
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - name: Build and test the server image
+      - name: Build the deployment's images and test them with the real Compose files
         run: pnpm smoke:compose
-        env:
-          CHROME_PATH: /usr/bin/google-chrome
       - name: Test proxy, CPA and user management on desktop and phone
         run: |
           pnpm --filter @mirror/viewer... run build
           pnpm test:network-ui
           pnpm test:users-ui
+      - name: Test the browser filesystem boundary
+        run: pnpm smoke:browser-filesystem
         env:
-          CHROME_PATH: /usr/bin/google-chrome
+          SERVER_IMAGE: remote-claude-browser-server:local
       - name: Test per-profile Mihomo networking, private CDP and stock CPA
         run: |
           fixture=$(docker create remote-claude-browser-server:local)
@@ -86,15 +135,6 @@ jobs:
         env:
           PROFILE_EGRESS_SMOKE_IMAGE: remote-claude-browser-server:local
           PROFILE_EGRESS_STOCK_CPA: "1"
-      - name: Test it on the host's network, with video and sound
-        run: pnpm smoke:compose
-        env:
-          CHROME_PATH: /usr/bin/google-chrome
-          SMOKE_HOSTNET: "1"
-          SMOKE_VIDEO: "1"
-          SMOKE_CANVAS: "1"
-          MIRROR_CANVAS_SITES: "*"
-
       - name: Validate proxy settings with the packaged Xray binary
         run: |
           docker run --rm --read-only --tmpfs /tmp --entrypoint node \
@@ -102,7 +142,17 @@ jobs:
             remote-claude-browser-server:local --test /checks/egress-proxy.test.mjs
       - name: Test Xray TUN, interface-bound UDP, outage blocking and restart
         run: bash scripts/proxy-smoke.sh
+      # The host-network variants take the longest; pull requests skip them.
+      - name: Test it on the host's network, with video and sound
+        if: github.event_name != 'pull_request'
+        run: pnpm smoke:compose
+        env:
+          SMOKE_HOSTNET: "1"
+          SMOKE_VIDEO: "1"
+          SMOKE_CANVAS: "1"
+          MIRROR_CANVAS_SITES: "*"
       - name: Test Xray routing and cleanup on the host network
+        if: github.event_name != 'pull_request'
         run: bash scripts/proxy-smoke.sh
         env:
           PROXY_SMOKE_HOSTNET: "1"

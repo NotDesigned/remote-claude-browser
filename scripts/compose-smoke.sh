@@ -4,33 +4,19 @@
 # Set CHROME_PATH to also run the login with a local browser.
 set -euo pipefail
 
-runtime=$(mktemp)
-export SMOKE_BROKER_BUNDLE=$(mktemp --suffix=.mjs)
-cat > "$runtime" <<'YAML'
+# The deployment's own files. The overlay below only adds what a test needs: diagnostics, a short
+# idle grace, and the exit lookup pointed at the local fixture.
+overlay=$(mktemp)
+cat > "$overlay" <<'YAML'
 services:
   server:
-    # Ubuntu's default AppArmor profile denies the mounts used by ip netns and Chromium's wrapper.
-    security_opt:
-      - apparmor=unconfined
     environment:
       MIRROR_DIAGNOSTIC_STDERR: "1"
       # A hidden session's pages are released after a minute, not 15 (compose-e2e waits 80 s).
       MIRROR_IDLE_GRACE_MS: "60000"
-      MIRROR_PROFILE_EGRESS: "1"
-      MIRROR_RUNTIME_SOCKET: /run/remote-browser/runtime.sock
-      SMOKE_GEO_URL: ${SMOKE_FIXTURE_ORIGIN}/geo
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    volumes:
-      - ${SMOKE_BROKER_BUNDLE}:/app/dist/profile-broker.mjs:ro
-    tmpfs:
-      - /run/netns:rw,nosuid,nodev,size=1m,mode=0755
-      - /run/remote-browser:rw,nosuid,nodev,size=16m,mode=0755
-    sysctls:
-      net.ipv4.ip_forward: "1"
-      net.ipv6.conf.all.forwarding: "1"
+      MIRROR_EXIT_LOOKUP_URL: ${SMOKE_FIXTURE_ORIGIN}/geo
 YAML
-compose=(docker compose --env-file /dev/null --file compose.yml --file "$runtime")
+compose=(docker compose --env-file /dev/null --file compose.yml --file compose.runtime.yml --file "$overlay")
 # SMOKE_HOSTNET=1 tests compose.hostnet.yml.
 if [[ ${SMOKE_HOSTNET:-} == 1 ]]; then
   compose+=(--file compose.hostnet.yml)
@@ -46,6 +32,13 @@ fi
 export SERVER_BIND=127.0.0.1
 export SERVER_PORT=$smoke_port
 export SERVER_SUBNET=${SERVER_SUBNET:-172.31.67.0/24}
+# Names that are not project-scoped get the project's name, so the smoke can run beside a deployment.
+export CPA_RUNTIME_NETWORK=$project-cpa-runtime
+export CPA_INSTANCE_SUBNETS=${CPA_INSTANCE_SUBNETS:-10.239.0.0/16}
+export SERVER_IMAGE=${SERVER_IMAGE:-remote-claude-browser-server:local}
+export CPA_BROKER_IMAGE=${CPA_BROKER_IMAGE:-remote-claude-browser-cpa-broker:local}
+export CPA_BROKER_ENGINE_IMAGE=${CPA_BROKER_ENGINE_IMAGE:-remote-claude-browser-cpa:local}
+cpa_ids=()
 export MIRROR_ACCESS_PASSWORD=compose-smoke-password
 export MIRROR_ADMIN_USERNAME=${MIRROR_ADMIN_USERNAME:-compose-admin}
 export MIRROR_AUTH_SECRET=compose-smoke-auth-key
@@ -64,8 +57,17 @@ cleanup() {
   if [[ ${SMOKE_HOSTNET:-} == 1 && $proxy_started == true ]]; then
     in_server ip addr del "$SMOKE_PROXY_IP/32" dev lo >/dev/null 2>&1 || true
   fi
+  # The broker's instances are not part of the Compose project; remove exactly the ones made here.
+  for id in "${cpa_ids[@]}"; do
+    docker rm --force "remote-browser-$id" >/dev/null 2>&1 || true
+  done
   "${compose[@]}" --project-name "$project" down --volumes --remove-orphans >/dev/null 2>&1 || true
-  rm -- "$runtime" "$SMOKE_BROKER_BUNDLE"
+  for id in "${cpa_ids[@]}"; do
+    docker network rm "remote-browser-$id-net" >/dev/null 2>&1 || true
+    docker volume rm "remote-browser-$id-config" "remote-browser-$id-auth" "remote-browser-$id-static" \
+      >/dev/null 2>&1 || true
+  done
+  rm -- "$overlay"
 }
 
 diagnose() {
@@ -80,18 +82,6 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap diagnose ERR
-
-node --input-type=module <<'NODE'
-import { createRequire } from 'node:module';
-const { build } = createRequire(new URL('./packages/gateway/package.json', import.meta.url))('esbuild');
-await build({
-  entryPoints: ['scripts/compose-broker.mts'], outfile: process.env.SMOKE_BROKER_BUNDLE,
-  bundle: true, platform: 'node', format: 'esm', external: ['undici'],
-  banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
-  define: { 'import.meta.url': '"file:///compose-broker-fixture.mjs"' },
-});
-NODE
-chmod 644 "$SMOKE_BROKER_BUNDLE"
 
 "${compose[@]}" --project-name "$project" up --detach --build
 
@@ -190,6 +180,68 @@ for blocked in http://169.254.169.254/ http://10.0.0.1/ "http://${SERVER_SUBNET%
 done
 fetch_from_browser https://example.com/
 echo "The firewall blocks private addresses, and names still resolve for public ones."
+
+# CPA instances from the real cpa-broker: each on its own internal network, out of Compose's view.
+if [[ ${SMOKE_HOSTNET:-} != 1 ]]; then
+  in_server node -e 'const fs = require("node:fs"); fs.writeFileSync("/tmp/compose-cpa-client.mjs", fs.readFileSync(0));' < scripts/compose-cpa-client.mjs
+  as_cpa_client() {
+    in_server setpriv --reuid=browser --regid=browser --clear-groups node /tmp/compose-cpa-client.mjs "$@"
+  }
+  for _ in 1 2; do
+    cpa_ids+=("cpa-$(openssl rand -hex 10)")
+  done
+  for id in "${cpa_ids[@]}"; do
+    as_cpa_client ensure "$id"
+  done
+  first=remote-browser-${cpa_ids[0]}
+  second=remote-browser-${cpa_ids[1]}
+  labels=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}' "$first")
+  [[ $labels == '|' ]] || { echo "The CPA instance carries Compose labels: $labels" >&2; false; }
+  [[ $(docker inspect --format '{{.HostConfig.NetworkMode}}' "$first") == "$first-net" ]]
+  [[ $(docker network inspect --format '{{.Internal}}' "$first-net") == true ]]
+  members=$(docker network inspect --format '{{range .Containers}}{{.Name}} {{end}}' "$first-net")
+  [[ $(wc -w <<<"$members") == 2 && $members == *"$first"* && $members == *cpa-broker* ]] || {
+    echo "Unexpected members of $first-net: $members" >&2
+    false
+  }
+  # The broker relays runtime-egress:8781 to the server's proxy, which asks for credentials.
+  relay=$(docker exec "$first" node -e '
+    const s = require("node:net").connect(8781, "runtime-egress", () =>
+      s.write("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"));
+    s.setTimeout(5000, () => { console.log("timeout"); process.exit(); });
+    s.once("data", (d) => { console.log(String(d).split("\r\n")[0]); process.exit(); });
+    s.once("error", (e) => { console.log(e.code); process.exit(); });')
+  [[ $relay == *' 407'* ]] || { echo "runtime-egress from a CPA instance gave: $relay" >&2; false; }
+  # One instance cannot reach another.
+  first_ip=$(docker inspect --format "{{(index .NetworkSettings.Networks \"$first-net\").IPAddress}}" "$first")
+  reach=$(docker exec "$second" node -e '
+    const s = require("node:net").connect(8317, process.argv[1], () => { console.log("open"); process.exit(); });
+    s.setTimeout(3000, () => { console.log("timeout"); process.exit(); });
+    s.once("error", (e) => { console.log(e.code); process.exit(); });' "$first_ip")
+  [[ $reach != open ]] || { echo "One CPA instance reached another at $first_ip" >&2; false; }
+  # Compose leaves them alone. A re-created broker joins their networks again and keeps
+  # up-to-date instances as they are.
+  before=$(docker inspect --format '{{.Id}}' "$first")
+  "${compose[@]}" --project-name "$project" up --detach --remove-orphans --no-build
+  "${compose[@]}" --project-name "$project" up --detach --no-build --no-deps --force-recreate cpa-broker
+  deadline=$((SECONDS + 60))
+  until [[ $(docker inspect --format '{{.State.Health.Status}}' "$project-cpa-broker-1") == healthy ]]; do
+    ((SECONDS < deadline)) || { echo "cpa-broker did not become healthy again" >&2; false; }
+    sleep 1
+  done
+  [[ $(docker inspect --format '{{.Id}}' "$first") == "$before" ]]
+  as_cpa_client ensure "${cpa_ids[0]}"
+  for id in "${cpa_ids[@]}"; do
+    as_cpa_client delete "$id"
+    if docker inspect "remote-browser-$id" >/dev/null 2>&1 ||
+      docker network inspect "remote-browser-$id-net" >/dev/null 2>&1 ||
+      docker volume inspect "remote-browser-$id-config" >/dev/null 2>&1; then
+      echo "Removing $id left something behind" >&2
+      false
+    fi
+  done
+  echo "CPA instances are isolated, reach only the authenticated egress, and survive Compose."
+fi
 
 # A login and a mirrored page, from a browser outside the container.
 if [[ -n ${CHROME_PATH:-} ]]; then

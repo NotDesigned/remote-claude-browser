@@ -14,6 +14,11 @@ services:
     read_only: true
     security_opt:
       - no-new-privileges:true
+      # Docker's default AppArmor profile denies the mounts that build each browser profile's
+      # network and filesystem, and on newer Ubuntu hosts Chromium's user namespaces too. This
+      # profile allows those and keeps the rest of docker-default. Load it first on hosts where
+      # Docker uses AppArmor: sudo scripts/install-apparmor.sh. Elsewhere Docker ignores it.
+      - apparmor=remote-claude-browser
     cap_drop:
       - ALL
     cap_add:
@@ -95,6 +100,11 @@ services:
       retries: 12
       start_period: 30s
     stop_grace_period: 25s
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: "5"
 
 networks:
   browser:

@@ -33,6 +33,19 @@ bind_readonly() {
   mount --bind "$source" "$root$source"
   mount -o remount,bind,ro "$root$source"
 }
+# Binds what a path names only if the path has no symlink in it and the browser user owns its
+# target. That user controls /data and its own /tmp files, so a path checked and then mounted by name
+# could meanwhile become a link to root's files; the open descriptor cannot change.
+# Descriptor 9: 3 and 4 are Chromium's debugging pipe.
+bind_browser_owned() {
+  exec 9<"$1"
+  if [ "$(readlink /proc/self/fd/9)" != "$1" ] || [ "$(stat -L -c %u /proc/self/fd/9)" != 10001 ]; then
+    echo "Refusing to mount $1: not a plain path owned by the browser user" >&2
+    exit 1
+  fi
+  mount --no-canonicalize --bind /proc/self/fd/9 "$2"
+  exec 9<&-
+}
 # Docker mounts the optional engine below /usr. A plain bind of /usr omits submounts.
 if [ -d /usr/local/lib/aliasmode ]; then bind_readonly /usr/local/lib/aliasmode; fi
 if [ -d /usr/local/share/fonts/fingerprint ]; then bind_readonly /usr/local/share/fonts/fingerprint; fi
@@ -67,20 +80,29 @@ ln -s /proc/self/fd/1 "$root/dev/stdout"
 ln -s /proc/self/fd/2 "$root/dev/stderr"
 mount -t proc -o nosuid,nodev,noexec proc "$root/proc"
 mkdir -p "$root$profile" "$root/tmp/home"
-mount --bind "$profile" "$root$profile"
+bind_browser_owned "$profile" "$root$profile"
 # Windows personas parse file:////data/... as a UNC host. A drive-qualified
 # mount keeps extension file URLs local; a symlink would be undone by realpath.
 /usr/bin/setpriv --reuid=10001 --regid=10001 --clear-groups --inh-caps=-all \
   /bin/mkdir -p "$profile/zoom-extension"
 mkdir -p "$root/C:/zoom-extension"
-mount --bind "$profile/zoom-extension" "$root/C:/zoom-extension"
+bind_browser_owned "$profile/zoom-extension" "$root/C:/zoom-extension"
 mount -o remount,bind,ro "$root/C:/zoom-extension"
 chown 10001:10001 "$root/tmp/home"
 if [ -n "${DISPLAY:-}" ]; then
   display_number=${DISPLAY#:}
   case "$display_number" in ''|*[!0-9]*) exit 1;; esac
-  bind_readonly "/tmp/.X11-unix/X$display_number"
-  bind_readonly "$XAUTHORITY"
+  # A socket cannot be opened to pin it, so this one is checked by name just before the mount.
+  socket=/tmp/.X11-unix/X$display_number
+  if [ ! -S "$socket" ] || [ "$(realpath "$socket")" != "$socket" ] || [ "$(stat -c %u "$socket")" != 10001 ]; then
+    echo "Refusing to mount $socket: not the browser user's display socket" >&2
+    exit 1
+  fi
+  bind_readonly "$socket"
+  mkdir -p "$root$(dirname "$XAUTHORITY")"
+  touch "$root$XAUTHORITY"
+  bind_browser_owned "$XAUTHORITY" "$root$XAUTHORITY"
+  mount -o remount,bind,ro "$root$XAUTHORITY"
 fi
 cd "$root"
 # Keep the mount namespace's root: chroot blocks Chromium's nested user namespace,

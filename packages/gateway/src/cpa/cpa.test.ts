@@ -946,6 +946,45 @@ describe("CPA v8 contract", () => {
     ])
       expect(cpaInferencePath(raw), raw).toBeUndefined();
   });
+
+  it("does not pass the caller's address or proxy chain on to CPA", async () => {
+    const { store, runtime, calls } = await fixture();
+    const value = store.create(alice);
+    await runtime.start(alice, value.id);
+    const key = store.issueKey(value.id, "client", alice.id);
+    const app = Fastify();
+    registerCpaInferenceRoutes(app, runtime);
+    const revealing = {
+      "x-forwarded-for": "198.51.100.7, 10.0.0.2",
+      "x-forwarded-host": "browser.example.com",
+      "x-forwarded-proto": "https",
+      "x-real-ip": "198.51.100.7",
+      forwarded: "for=198.51.100.7;proto=https",
+      via: "1.1 caddy",
+      "cf-connecting-ip": "198.51.100.7",
+      "cf-ipcountry": "NL",
+      "true-client-ip": "198.51.100.7",
+      "x-client-ip": "198.51.100.7",
+    };
+    await app.inject({
+      method: "POST",
+      url: "/v1/messages",
+      headers: {
+        authorization: `Bearer ${key.token}`,
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": "test-beta",
+        ...revealing,
+      },
+      payload: { model: "claude" },
+    });
+    const sent = calls.at(-1)?.input.headers ?? {};
+    for (const name of Object.keys(revealing)) expect(sent).not.toHaveProperty(name);
+    expect(sent["anthropic-version"]).toBe("2023-06-01");
+    expect(sent["anthropic-beta"]).toBe("test-beta");
+    expect(sent.authorization).toBe(`Bearer ${value.apiKey}`);
+    await app.close();
+  });
 });
 
 it("opens instance-scoped native management using workbench authorization without exposing management keys", async () => {

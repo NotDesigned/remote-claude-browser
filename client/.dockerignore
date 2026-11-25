@@ -1,0 +1,4 @@
+# Only tunnel.sh goes into the image. Keep the SSH key and settings out of the build context.
+*
+!Dockerfile
+!tunnel.sh

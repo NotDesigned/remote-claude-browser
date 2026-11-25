@@ -9,6 +9,11 @@
 ### 新增
 
 - `MIRROR_PROXY_SUBSCRIPTION_ALLOW_PRIVATE`：设为 `1` 时，代理订阅地址可以指向内网和其他保留地址（默认拒绝）。见 [docs/configuration.md](docs/configuration.md#写在-compose-文件里的变量)。
+- 服务端容器自带 AppArmor 配置文件 `deploy/apparmor/remote-claude-browser`，用 `scripts/install-apparmor.sh` 加载。以前在 Docker 使用 AppArmor 的宿主机（Ubuntu、Debian）上，Docker 默认的配置文件挡住了每个浏览器配置的网络和文件系统要用的挂载，配置打不开；Ubuntu 23.10 起还要改宿主机的 `kernel.apparmor_restrict_unprivileged_userns`。新的配置文件只在 Docker 默认配置文件上多允许挂载、用户命名空间和本配置文件内的信号，这个系统参数不用改。
+- `pnpm check:host` 还检查 Docker API 版本（需要 Docker Engine 27.3）、用户命名空间和 AppArmor 配置文件是否已加载。
+- CPA 实例自动升级：`cpa-broker` 启动时和每次启动实例前，核对实例的镜像和模板，有变化就保留数据卷、重建容器。
+- 预构建镜像增加 `remote-claude-browser-cpa-broker` 和 `remote-claude-browser-cpa`，四个镜像都按版本标签发布（例如 `v0.5.0`），只发布 CI 通过的那个提交，并附带构建来源证明。见 [docs/deployment.md](docs/deployment.md#安装)。
+- 部署文档新增「日志和磁盘」，备份一节给出包括 CPA 卷和 Caddy 证书在内的完整命令和还原方法。
 
 ### 变更
 
@@ -23,6 +28,14 @@
   - CPA 调用接口规范化请求路径，只转发 `/v1/` 下的路径。
   - 本机直接启动的 Chromium 只继承运行所需的环境变量，不再拿到网关的密钥。
   - 升级 fastify、undici、`@fastify/static`、puppeteer-core 和有漏洞的间接依赖，`pnpm audit --prod` 没有已知漏洞。
+- 每个 CPA 实例有自己的 Docker 内部网络，网络里只有它和 `cpa-broker`，实例之间互相访问不到；实例经 `cpa-broker` 转给服务端的认证代理出网。子网从新的 `CPA_INSTANCE_SUBNETS`（默认 `10.254.0.0/16`）里分配。
+- CPA 实例容器不再带有 Compose 的项目和服务标签（以前从 Compose 构建的镜像继承而来），`docker compose down --remove-orphans` 等操作不会把它们当成项目的容器。`cpa-broker` 只管理属于自己部署（`CPA_RUNTIME_NETWORK`）的实例。
+- 网关把调用转给 CPA 前，去掉 `X-Forwarded-For`、`Forwarded`、`X-Real-IP`、`Via`、`CF-Connecting-IP` 等暴露调用方地址和代理链的请求头；以前 CPA 会把它们传给上游。
+- CPA 实例的初始密钥不再出现在初始化容器的环境变量里，改为写进配置卷。
+- 浏览器配置的目录、它的扩展目录和显示授权文件，只有是浏览器用户自己的、路径里没有符号链接时才挂进浏览器；以前浏览器用户可以用符号链接让 root 把别的目录挂进去。
+- `cpa-broker` 的健康检查同时确认 Docker 守护进程可达；Docker Engine 早于 27.3 时它启动失败，并说明原因。
+- 各服务的日志改用 Docker 的 `local` 驱动并自动轮转。
+- 基础镜像和 Caddy 镜像按摘要固定。
 - 上传附件不再弹出左下角的提示框：上传中只在屏幕最底部显示一条细进度条，叠在界面上，不挤动布局；完成后什么都不留，网页里直接显示附件。需要点按「选择本机文件」或上传失败时，仍然显示提示框。
 - 远程浏览器不再弹出自己的「保存密码」「更新密码」提示：画面模式里它挡着页面又点不掉。地址和银行卡的自动填充保存、翻译、通知授权、默认浏览器检查和浏览器登录也一并关掉（Chromium 策略 `deploy/browser-policies.json`，对已有配置同样生效）。网站的登录状态不受影响；浏览器里以前保存的密码仍然保留。
 - 切换到画面模式、以及画面模式里打开新页面时，不再闪出 Chromium 的缩放提示框（「150% − + 重置」）和 100% 缩放的页面：高清屏上画面等这些消失后才显示，切换约慢 1.5 秒。
@@ -40,13 +53,20 @@
 
 ### 移除
 
-无
+- `scripts/multi-user-smoke.mts` 和 `scripts/gate-browser-smoke.mjs`：前者在当前必须绑定节点的架构下已经跑不通，后者要连一个正式部署，它们检查的内容由 `pnpm smoke:compose` 和 `pnpm test:users-ui` 覆盖。
 
 ### 升级步骤
 
 - **必须设置 `MIRROR_PUBLIC_ORIGIN`**：生产环境（镜像里 `NODE_ENV=production`）没有设置它，或者它不是一个合法的来源（如带了路径）时，服务拒绝启动。在 `.env` 里写用户实际打开的来源，例如 `MIRROR_PUBLIC_ORIGIN=https://browser.example.com`；只在本机试用时写 `http://127.0.0.1:3010`（端口按 `SERVER_PORT`）。新的 `scripts/bootstrap.sh` 会默认写入后者。
 - 代理订阅地址如果在内网（例如同一台机器上的订阅转换服务），升级后导入和刷新会被拒绝；确实需要时在覆盖文件里给 `server` 设置 `MIRROR_PROXY_SUBSCRIPTION_ALLOW_PRIVATE: "1"`。
 - 设置了 `MIRROR_OIDC_ALLOWED_*` 的部署：已经通过单点登录创建、但现在不满足允许列表的用户，升级后不能再用单点登录进入。
+- Docker 使用 AppArmor 的宿主机（`docker info` 的 Security Options 里有 `apparmor`），在 `docker compose up` 之前执行 `sudo scripts/install-apparmor.sh`，否则服务端容器启动不了。以前为此改过 `kernel.apparmor_restrict_unprivileged_userns=0` 或给服务端加过 `apparmor=unconfined` 的，可以改回。其他宿主机上 Docker 忽略这项设置。
+- 确认 Docker Engine 是 27.3 或更新版本（`pnpm check:host`）。
+- 正常升级：`docker compose up -d --build`（或拉取预构建镜像）。`cpa-broker` 重启后会逐个重建现有的 CPA 实例：换上不带 Compose 标签的新容器、接入各自的新网络，数据卷保留，原来在运行的继续运行。重建时正在进行的 CPA 调用会中断一次。用 `docker compose logs cpa-broker` 确认 `... replaced, 0 failed`。
+- `10.254.0.0/16` 和宿主机已有的网络冲突时，先在 `.env` 设置 `CPA_INSTANCE_SUBNETS`。
+- 同一台 Docker 主机上运行多个部署时，每个部署的 `CPA_RUNTIME_NETWORK` 必须不同。
+- 使用预构建镜像的，在 `.env` 里同时设置 `SERVER_IMAGE`、`CPA_BROKER_IMAGE`、`CPA_BROKER_ENGINE_IMAGE`，用同一个版本标签，不要用 `latest`。
+- 第一次升级时 Caddy 会因为镜像改为按摘要引用而重建一次，入口中断几秒。
 
 ## [0.4.0] - 2026-11-26
 
