@@ -5,16 +5,18 @@
  * Replayer (including its iframe) when a fresh snapshot is ready (D10). The last known-good
  * iframe remains visible during recovery and is atomically replaced, so recovery never exposes
  * a white/status-only interval.
+ *
+ * mirror-sync.ts decides what each message does to the stream state (and documents it),
+ * mirror-replayer.ts builds and destroys Replayer generations, and mirror-parking.ts keeps the
+ * pages of tabs left behind. This file holds the state and carries out the decisions.
  */
-import { Replayer } from "@rrweb/replay";
+import type { Replayer } from "@rrweb/replay";
 import {
   EventType,
-  IncrementalSource,
   type Down,
   type eventWithTime,
   type ResumeCursor,
   type TabId,
-  MIRROR_RECORD_CLASSES,
 } from "@mirror/protocol";
 import { createServerClock, type ServerClock } from "./clock";
 import type { EventPipeline } from "./pipeline";
@@ -23,19 +25,25 @@ import {
   type RebuildRestoreHooks,
   type RebuildRestorePoint,
 } from "./rebuild-restore";
-import { enforceReplayCursorPassthrough, REPLAY_CURSOR_PASSTHROUGH_RULE } from "./replay-cursor";
+import { createParkedPages } from "./mirror-parking";
 import {
-  createCanvasRtc,
-  type CanvasRtc,
-  type CanvasRtcMessage,
-  type CanvasRtcOptions,
-} from "./media/canvas-rtc";
-import { REPLAY_ANCHOR_RULES } from "./replay-anchors";
-import { closeReplayDocument } from "./replay-document";
-import { REPLAY_THUMBNAIL_RULES } from "./replay-thumbnails";
-import { createCanvasCompositor, type CanvasCompositor } from "./media/canvas";
-import { workingMarkReplay } from "./working-mark";
-import { remoteFocusReplay } from "./remote-focus";
+  buildLive,
+  destroyLive as destroyGeneration,
+  disposeRtc as disposeLane,
+  isCanvasMutation,
+  type LiveRtc,
+  type LiveState,
+  type MirrorRtcOptions,
+} from "./mirror-replayer";
+import {
+  catchUpAnswered,
+  planDelta,
+  resyncDecision,
+  snapshotDecision,
+  type CatchUp,
+} from "./mirror-sync";
+
+export type { MirrorRtcOptions } from "./mirror-replayer";
 
 /** How long the page in view waits for the snapshot of the tab that is replacing it. */
 const TAB_SWITCH_WAIT_MS = 1_500;
@@ -44,16 +52,6 @@ const TAB_SWITCH_WAIT_MS = 1_500;
  * with none cached asks the page itself, which normally answers well within this.
  */
 export const RECONNECT_SNAPSHOT_WAIT_MS = 5_000;
-
-const REPLAY_TEXT_FOCUS_RULE = `
-  @media (forced-colors: none) {
-    :is(textarea, [contenteditable]:not([contenteditable="false"]),
-        input:not([type]), input:is([type="text"], [type="search"], [type="email"],
-        [type="tel"], [type="url"], [type="password"], [type="number"])):focus {
-      outline: none !important;
-    }
-  }
-`;
 
 type Snapshot = Extract<Down, { t: "snapshot" }>;
 type Delta = Extract<Down, { t: "delta" }>;
@@ -99,134 +97,6 @@ export interface MirrorOpts {
   parkedTabs?: number;
 }
 
-export interface MirrorRtcOptions {
-  send(tab: TabId, lane: string, payload: CanvasRtcMessage | { type: "close" }): void;
-  requestCanvases?: boolean;
-  create?: (options: CanvasRtcOptions) => CanvasRtc;
-  createLane?: () => string;
-  onError?: (error: unknown) => void;
-}
-
-interface LiveRtc {
-  lane: string;
-  controller: CanvasRtc;
-  hasMediaRequests(): boolean;
-}
-
-interface LiveState {
-  tab: TabId;
-  epoch: number;
-  nextSeq: number;
-  /** Replay validity survives a socket reconnect. */
-  needsSnapshot: boolean;
-  viewport: ReturnType<typeof extractSnapshotViewport>;
-  replayer: Replayer;
-  stage: HTMLDivElement;
-  mount: HTMLDivElement;
-  detachInteraction: () => void;
-  detachMediaRestore: () => void;
-  rtc: LiveRtc | null;
-  /** Paints sampled canvas pictures; the replayer itself is never handed canvas commands. */
-  canvas: CanvasCompositor;
-}
-
-interface MediaRestoreState {
-  target: HTMLMediaElement;
-  shouldPlay: boolean;
-  currentTime: number;
-  playbackRate: number;
-  volume: number;
-  muted: boolean;
-  loop: boolean;
-}
-
-function captureMediaState(iframe: HTMLIFrameElement): MediaRestoreState[] {
-  const document = iframe.contentDocument;
-  if (document === null) return [];
-  return Array.from(document.querySelectorAll<HTMLMediaElement>("audio, video"), (target) => ({
-    target,
-    shouldPlay: !target.paused,
-    currentTime: target.currentTime,
-    playbackRate: target.playbackRate,
-    volume: target.volume,
-    muted: target.muted,
-    loop: target.loop,
-  }));
-}
-
-function restoreMediaState(states: readonly MediaRestoreState[]): void {
-  for (const state of states) {
-    const { target } = state;
-    // A malformed or not-yet-ready media resource must not turn a best-effort live resume into
-    // snapshot recovery. Apply properties independently so muted autoplay still gets its chance.
-    try {
-      target.muted = state.muted;
-    } catch {}
-    try {
-      target.loop = state.loop;
-    } catch {}
-    try {
-      target.volume = state.volume;
-    } catch {}
-    try {
-      target.playbackRate = state.playbackRate;
-    } catch {}
-    try {
-      target.currentTime = state.currentTime;
-    } catch {}
-    if (!state.shouldPlay) continue;
-    try {
-      void target.play().catch(() => {
-        // Audible autoplay can be rejected without a user gesture; retain the recorded mute state.
-      });
-    } catch {
-      // Some media implementations can reject play() synchronously.
-    }
-  }
-}
-
-function armLiveMediaRestore(replayer: Replayer): {
-  captureAfterSynchronousCast(): void;
-  restoreAfterStartLive(): void;
-  detach(): void;
-} {
-  let live = false;
-  let fullSnapshotBuilt = false;
-  let states: MediaRestoreState[] = [];
-  const capture = () => {
-    fullSnapshotBuilt = true;
-    if (!live) states = captureMediaState(replayer.iframe);
-  };
-  // Keep this independent of armRestore(): media repair is unconditional, while interaction
-  // restore is a conditional one-shot. Full snapshots cast after TO_LIVE need no repair because
-  // rrweb's MediaManager already sees a non-paused player and applies their media state directly.
-  replayer.on("fullsnapshot-rebuilded", capture);
-  return {
-    captureAfterSynchronousCast() {
-      // A join buffer may contain media-interaction deltas after the FullSnapshot. Capture once
-      // more after every synchronous event is cast so a later legitimate pause/play wins.
-      if (fullSnapshotBuilt && !live) states = captureMediaState(replayer.iframe);
-    },
-    restoreAfterStartLive() {
-      live = true;
-      restoreMediaState(states);
-      states = [];
-    },
-    detach() {
-      live = true;
-      states = [];
-      replayer.off("fullsnapshot-rebuilded", capture);
-    },
-  };
-}
-
-function isCanvasMutation(event: eventWithTime): boolean {
-  return (
-    event.type === EventType.IncrementalSnapshot &&
-    event.data.source === IncrementalSource.CanvasMutation
-  );
-}
-
 export function createMirror(opts: MirrorOpts): Mirror {
   const now = opts.now ?? Date.now;
   const clock =
@@ -236,31 +106,24 @@ export function createMirror(opts: MirrorOpts): Mirror {
       bufferMs: opts.bufferMs,
     });
   const restoreHooks = opts.restoreHooks ?? createRebuildRestoreHooks();
-  let activeTab: TabId | null = null;
+  /** The stream state (see mirror-sync.ts) and the page in view. */
+  const sync: { activeTab: TabId | null; snapshotPending: boolean; catchUp: CatchUp } = {
+    activeTab: null,
+    snapshotPending: false,
+    catchUp: null,
+  };
   let state: LiveState | null = null;
-  let snapshotPending = false; // A snapshot is expected on this connection.
   let switchTimer: ReturnType<typeof setTimeout> | null = null;
   /** Asks for a snapshot if a reconnect's join payload brought none. */
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  const parkedLimit = opts.parkedTabs ?? 0;
-  /** Oldest first. Never moved in the DOM, which would reload their iframes. */
-  const parked = new Map<TabId, LiveState>();
-  /** A page back in view until the gateway's catch-up for its tab, which it mostly already has. */
-  let catchUp: "waiting" | "answered" | "snapshot" | null = null;
   let pendingRestore: RebuildRestorePoint | null = null;
   let viewerId: string | null = null;
   let isDriver = true;
   let viewportLimit: Extract<Down, { t: "hello" }>["viewportLimit"];
 
-  const disposeRtc = (tab: TabId, rtc: LiveRtc | null) => {
-    if (rtc === null) return;
-    try {
-      opts.rtc?.send(tab, rtc.lane, { type: "close" });
-    } catch (error) {
-      opts.rtc?.onError?.(error);
-    }
-    rtc.controller.dispose();
-  };
+  const disposeRtc = (tab: TabId, rtc: LiveRtc | null) => disposeLane(opts.rtc, tab, rtc);
+  const destroyLive = (live: LiveState) => destroyGeneration(opts.rtc, live);
+  const parked = createParkedPages(opts.parkedTabs ?? 0, destroyLive);
 
   const applyViewportLayout = () => {
     const live = state;
@@ -292,7 +155,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
 
   /** Clears the visible surface, and only that: hidden pages have to stay where they are. */
   const clearForeground = (keep?: Element) => {
-    const hidden = new Set<Element>([...parked.values()].map((live) => live.stage));
+    const hidden = parked.stages();
     for (const child of [...opts.container.children]) {
       if (child !== keep && !hidden.has(child)) child.remove();
     }
@@ -317,58 +180,20 @@ export function createMirror(opts: MirrorOpts): Mirror {
     renderStatus(message);
   };
 
-  const destroyLive = (live: LiveState) => {
-    const rtc = live.rtc;
-    live.rtc = null;
-    disposeRtc(live.tab, rtc);
-    live.detachInteraction();
-    live.detachMediaRestore();
-    try {
-      live.replayer.destroy();
-    } catch {
-      // The stage is removed below even if rrweb's irreversible destroy encounters bad state.
-    }
-    live.stage.remove();
-  };
-
-  const dropParked = (tab: TabId) => {
-    const live = parked.get(tab);
-    if (live === undefined) return;
-    parked.delete(tab);
-    destroyLive(live);
-  };
-
-  /** Canvases and video arrive over WebRTC, which ends with the view, so they cannot come back. */
-  const canPark = (live: LiveState): boolean => {
-    if (parkedLimit < 1 || live.needsSnapshot) return false;
-    try {
-      const page = live.replayer.iframe.contentDocument;
-      return page !== null && page !== undefined && page.querySelector("canvas,video") === null;
-    } catch {
-      return false;
-    }
-  };
-
+  /** Parks a page that can be kept: its WebRTC lane and listeners end with the view. */
   const park = (live: LiveState) => {
     const rtc = live.rtc;
     live.rtc = null;
     disposeRtc(live.tab, rtc);
     live.detachInteraction();
     live.detachInteraction = () => {};
-    live.stage.inert = true;
-    live.stage.dataset.parked = "true";
-    dropParked(live.tab);
-    parked.set(live.tab, live);
-    for (const tab of parked.keys()) {
-      if (parked.size <= parkedLimit) break;
-      dropParked(tab);
-    }
+    parked.park(live);
   };
 
   /** Takes the page in view off the screen, keeping it if it can be kept. */
   const setAside = (message: string) => {
     const live = state;
-    if (live === null || !canPark(live)) {
+    if (live === null || !parked.canPark(live)) {
       discard(message);
       return;
     }
@@ -390,25 +215,25 @@ export function createMirror(opts: MirrorOpts): Mirror {
 
   const endTabSwitch = () => {
     clearSwitchTimer();
-    catchUp = null;
+    sync.catchUp = null;
     delete opts.container.dataset.switching;
     if (state !== null) state.stage.inert = state.needsSnapshot;
   };
 
   /** The page is shown at once, but input waits for the gateway to say what it has missed. */
   const awaitCatchUp = (tab: TabId) => {
-    catchUp = "waiting";
+    sync.catchUp = "waiting";
     if (state !== null) state.stage.inert = true;
     switchTimer = setTimeout(() => {
       switchTimer = null;
-      if (catchUp !== "waiting") return;
-      catchUp = null;
+      if (sync.catchUp !== "waiting") return;
+      sync.catchUp = null;
       requestFreshSnapshot(tab, "tab selected");
     }, TAB_SWITCH_WAIT_MS);
   };
 
   const setSnapshotPending = (pending: boolean) => {
-    snapshotPending = pending;
+    sync.snapshotPending = pending;
     if (pending) opts.container.dataset.resyncPending = "true";
     else delete opts.container.dataset.resyncPending;
   };
@@ -422,7 +247,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
   };
 
   const requestFreshSnapshot = (tab: TabId, reason: string) => {
-    if (snapshotPending) return;
+    if (sync.snapshotPending) return;
     awaitSnapshot(tab);
     opts.requestResync(tab, reason);
   };
@@ -452,27 +277,6 @@ export function createMirror(opts: MirrorOpts): Mirror {
     }
   };
 
-  const armRestore = (
-    replayer: Replayer,
-    restorePoint: RebuildRestorePoint | null,
-    hasFullSnapshot: boolean,
-  ): (() => void) => {
-    if (restorePoint === null) return () => {};
-    let restored = false;
-    const restore = () => {
-      if (restored) return;
-      restored = true;
-      replayer.off("fullsnapshot-rebuilded", restore);
-      restoreHooks.restore(replayer.iframe, restorePoint);
-    };
-    if (hasFullSnapshot) replayer.on("fullsnapshot-rebuilded", restore);
-    else restore();
-    return () => {
-      replayer.off("fullsnapshot-rebuilded", restore);
-      if (!restored) pendingRestore = restorePoint;
-    };
-  };
-
   const rebuild = (message: Snapshot) => {
     endTabSwitch();
     if (message.reason === "nav" || (state !== null && state.tab !== message.tab)) {
@@ -486,8 +290,8 @@ export function createMirror(opts: MirrorOpts): Mirror {
     // screen until this task commits the new iframe without overlapping two rrweb instances.
     if (state !== null && state.tab !== message.tab) setAside("Building the mirror…");
     else discard("Building the mirror…");
-    dropParked(message.tab);
-    activeTab = message.tab;
+    parked.drop(message.tab);
+    sync.activeTab = message.tab;
     const stage = opts.container.ownerDocument.createElement("div");
     stage.className = "mirror-stage";
     const mount = opts.container.ownerDocument.createElement("div");
@@ -497,190 +301,55 @@ export function createMirror(opts: MirrorOpts): Mirror {
     opts.container.appendChild(stage);
     opts.container.dataset.mirrorState = "building";
 
-    const initialEvents: eventWithTime[] = [];
-    const initialCanvas: eventWithTime[] = [];
-    let replayer: Replayer | null = null;
-    let rtc: LiveRtc | null = null;
-    let cancelRestore = () => {};
-    let mediaRestore: ReturnType<typeof armLiveMediaRestore> | null = null;
-    try {
-      // Sampled canvases have their own compositor. Never send canvas commands to rrweb.
-      for (const event of message.data) {
-        if (isCanvasMutation(event)) initialCanvas.push(event);
-        else {
-          const processed = opts.pipeline.run(event, { tab: message.tab, nowMs: now() });
-          if (processed !== null) initialEvents.push(processed);
-        }
-      }
-      if (opts.rtc !== undefined) {
-        const lane = opts.rtc.createLane?.() ?? createRtcLane();
-        let mediaRequested = false;
-        const controller = (opts.rtc.create ?? createCanvasRtc)({
-          document: opts.container.ownerDocument,
-          send: (payload) => {
-            if (payload.type === "video" || payload.type === "canvas") mediaRequested = true;
-            opts.rtc?.send(message.tab, lane, payload);
-          },
-          ...(opts.rtc.requestCanvases === undefined
-            ? {}
-            : { requestCanvases: opts.rtc.requestCanvases }),
-          onError: opts.rtc.onError,
-        });
-        rtc = { lane, controller, hasMediaRequests: () => mediaRequested };
-      }
-      replayer = new Replayer(initialEvents, {
-        root: mount,
-        liveMode: true,
-        blockClass: MIRROR_RECORD_CLASSES.blockClass,
-        // main.tsx installs script-src 'none' before any replay frame is created. This
-        // rrweb option enables WebKit input callbacks in that CSP-protected document.
-        UNSAFE_replayCanvas: true,
-        mouseTail: false,
-        // rrweb inserts these rules into the replay document again after every FullSnapshot.
-        // Keep replay cursor chrome visible, but permanently remove it from hit testing.
-        insertStyleRules: [
-          REPLAY_CURSOR_PASSTHROUGH_RULE,
-          REPLAY_TEXT_FOCUS_RULE,
-          ...REPLAY_THUMBNAIL_RULES,
-          ...REPLAY_ANCHOR_RULES,
-        ],
-        // Old join-buffer deltas are applied synchronously. rrweb's virtual-DOM optimization
-        // otherwise waits for a replay Flush event that live addEvent() does not emit.
-        useVirtualDom: false,
-        // The play()->pause()->startLive() bridge below is only a synchronous-cast-to-live
-        // state hop (pause() is the sole state rrweb accepts TO_LIVE from). rrweb's default
-        // pauseAnimation freezes CSS animations via `html.rrweb-paused *{animation-play-state:
-        // paused}`, re-injected on every FullSnapshot while not in its internal "playing"
-        // state — which includes our permanent live state. That blanks any site whose content
-        // is revealed by a CSS entrance animation (opacity 0->1). This mirror never exposes a
-        // paused/scrub UI, so keep author animations live.
-        pauseAnimation: false,
-        plugins: [
-          workingMarkReplay(),
-          remoteFocusReplay(),
-          ...(rtc === null ? [] : [rtc.controller.replayPlugin]),
-        ],
-      });
-
-      // rrweb opens the replay document during rebuild. Closing it starts SVG animation timelines;
-      // the page's doctype goes to the parser first so it keeps the page's standards mode.
-      const iframe = replayer.iframe;
-      replayer.on("fullsnapshot-rebuilded", () => closeReplayDocument(iframe.contentDocument));
-      cancelRestore = armRestore(
-        replayer,
-        restorePoint,
-        initialEvents.some((event) => event.type === EventType.FullSnapshot),
-      );
-      mediaRestore = armLiveMediaRestore(replayer);
-
-      const sandboxTokens = Array.from(replayer.iframe.sandbox);
-      if (
-        sandboxTokens.length !== 2 ||
-        !sandboxTokens.includes("allow-same-origin") ||
-        !sandboxTokens.includes("allow-scripts")
-      ) {
-        throw new Error(`unexpected replay sandbox: ${sandboxTokens.join(" ")}`);
-      }
-      // rrweb's replay-only default disables iframe scrolling and hit testing. Phase-1 installs
-      // input listeners inside that document, so the live mirror must accept native interaction.
-      replayer.enableInteract();
-      enforceReplayCursorPassthrough(replayer.iframe);
-
-      // Cast the snapshot synchronously before entering live mode. Buffered deltas then land
-      // immediately if old, while live-tail events retain the configured jitter window.
-      if (initialEvents.length > 0) {
-        const firstTs = initialEvents[0]!.timestamp;
-        const lastTs = initialEvents[initialEvents.length - 1]!.timestamp;
-        replayer.play(Math.max(0, lastTs - firstTs + 1));
-        mediaRestore.captureAfterSynchronousCast();
-        replayer.pause();
-      }
-      replayer.startLive(clock.liveBaseline());
-      opts.onBufferApplied?.(clock.liveBufferMs());
-      mediaRestore.restoreAfterStartLive();
-    } catch (cause) {
-      cancelRestore();
-      mediaRestore?.detach();
-      disposeRtc(message.tab, rtc);
-      rtc = null;
-      try {
-        replayer?.destroy();
-      } catch {
-        // mount.remove() below is the final cleanup path.
-      }
-      mount.remove();
-      renderStatus("Mirror recovery requested…");
-      setSnapshotPending(false);
-      const detail = cause instanceof Error ? cause.message : String(cause);
-      requestFreshSnapshot(message.tab, `snapshot replay: ${detail}`);
-      return;
-    }
-
-    state = {
-      tab: message.tab,
-      epoch: message.epoch,
-      nextSeq: message.seq + 1,
-      needsSnapshot: false,
-      viewport,
-      replayer,
+    const built = buildLive({
+      message,
       stage,
       mount,
-      detachInteraction: () => {},
-      detachMediaRestore: mediaRestore.detach,
-      rtc,
-      canvas: createCanvasCompositor(
-        { getReplayer: () => replayer },
-        {
-          isLive: (id) => rtc?.controller.isLive(id) === true,
-          onError: (error) => console.warn("mirror canvas picture failed", error),
-        },
-      ),
-    };
-    for (const event of initialCanvas) void state.canvas.apply(event);
-    state.detachInteraction = opts.attachInteraction?.(message.tab, replayer) ?? (() => {});
+      viewport,
+      document: opts.container.ownerDocument,
+      pipeline: opts.pipeline,
+      clock,
+      now,
+      rtc: opts.rtc,
+      restoreHooks,
+      restorePoint,
+      onRestoreUnused: (point) => {
+        pendingRestore = point;
+      },
+      onBufferApplied: opts.onBufferApplied,
+    });
+    if (!built.ok) {
+      renderStatus("Mirror recovery requested…");
+      setSnapshotPending(false);
+      requestFreshSnapshot(message.tab, `snapshot replay: ${built.detail}`);
+      return;
+    }
+    state = built.live;
+    state.detachInteraction = opts.attachInteraction?.(message.tab, state.replayer) ?? (() => {});
     commitSnapshot(state, message);
   };
 
   const applyDelta = (message: Delta) => {
-    if (snapshotPending) return;
-    const live = state;
-    if (live === null) {
-      if (activeTab === null) activeTab = message.tab;
-      requestFreshSnapshot(message.tab, "delta before snapshot");
-      return;
-    }
-    if (message.tab !== live.tab || live.needsSnapshot) return;
-    if (message.epoch !== live.epoch) {
-      requestFreshSnapshot(message.tab, `epoch gap: expected ${live.epoch}, got ${message.epoch}`);
-      return;
-    }
-
-    // Frozen protocol assumption: delta.seq is the first event's per-tab sequence.
-    const expectedSeq = live.nextSeq;
-    let seq = message.seq;
-    let data = message.data;
-    if (catchUp !== null) {
-      // A catch-up repeats the tab's whole buffer, and this page has already applied the start.
-      const applied = expectedSeq - seq;
-      if (applied > 0) {
-        if (applied >= data.length && data.length > 0) return;
-        data = data.slice(applied);
-        seq = expectedSeq;
+    const { plan, catchUp } = planDelta(sync, state, message);
+    sync.catchUp = catchUp;
+    switch (plan.kind) {
+      case "ignore":
+        return;
+      case "resync-unshown":
+        if (sync.activeTab === null) sync.activeTab = message.tab;
+        requestFreshSnapshot(message.tab, plan.reason);
+        return;
+      case "resync":
+        requestFreshSnapshot(message.tab, plan.reason);
+        return;
+      case "apply": {
+        const live = state!;
+        for (const event of plan.data) {
+          if (!addEvent(live, event)) return;
+        }
+        live.nextSeq = plan.seq + plan.data.length;
       }
-      if (catchUp === "snapshot") catchUp = null;
     }
-    if (seq !== expectedSeq || data.length === 0) {
-      requestFreshSnapshot(
-        message.tab,
-        data.length === 0 ? "empty delta" : `seq gap: expected ${expectedSeq}, got ${seq}`,
-      );
-      return;
-    }
-
-    for (const event of data) {
-      if (!addEvent(live, event)) return;
-    }
-    live.nextSeq = seq + data.length;
   };
 
   renderStatus("Waiting for a snapshot…");
@@ -701,38 +370,29 @@ export function createMirror(opts: MirrorOpts): Mirror {
           applyViewportLayout();
           break;
         case "snapshot":
-          if (activeTab === null || msg.tab === activeTab) {
-            if (
-              catchUp !== null &&
-              state?.tab === msg.tab &&
-              !state.needsSnapshot &&
-              msg.epoch === state.epoch
-            ) {
+          switch (snapshotDecision(sync, state, msg)) {
+            case "confirm":
               clearSwitchTimer();
-              catchUp = "snapshot";
-              commitSnapshot(state, msg);
-            } else if (
-              state === null ||
-              state.tab !== msg.tab ||
-              // Any other epoch is another document: a tab attached again gets a new hub,
-              // whose epochs are not ordered after the old one's in any way the viewer knows.
-              msg.epoch !== state.epoch ||
-              state.needsSnapshot ||
-              snapshotPending
-            ) {
+              sync.catchUp = "snapshot";
+              commitSnapshot(state!, msg);
+              break;
+            case "rebuild":
               rebuild(msg);
-            }
+              break;
           }
           break;
         case "delta":
-          if (activeTab === null || msg.tab === activeTab) applyDelta(msg);
+          applyDelta(msg);
           break;
         case "resync":
-          if (catchUp !== null && state?.tab === msg.tab) {
-            if (catchUp === "waiting") catchUp = "answered";
-          } else if (activeTab === null || msg.tab === activeTab) {
-            activeTab = msg.tab;
-            awaitSnapshot(msg.tab);
+          switch (resyncDecision(sync, state, msg.tab)) {
+            case "catch-up-answered":
+              sync.catchUp = catchUpAnswered(sync.catchUp);
+              break;
+            case "await-snapshot":
+              sync.activeTab = msg.tab;
+              awaitSnapshot(msg.tab);
+              break;
           }
           break;
         case "rtc-sig": {
@@ -750,11 +410,11 @@ export function createMirror(opts: MirrorOpts): Mirror {
       }
     },
     recover(reason) {
-      if (activeTab !== null) requestFreshSnapshot(activeTab, reason);
+      if (sync.activeTab !== null) requestFreshSnapshot(sync.activeTab, reason);
     },
     connectionLost() {
       clearReconnectTimer();
-      for (const tab of [...parked.keys()]) dropParked(tab);
+      parked.dropAll();
       endTabSwitch();
       // Plain pages keep their unused media discovery plugin when DOM replay resumes. A lane
       // that asked for media must rebuild: its disposed plugin cannot negotiate again.
@@ -772,45 +432,41 @@ export function createMirror(opts: MirrorOpts): Mirror {
     connectionRestored(resumed = false) {
       delete opts.container.dataset.connectionStale;
       clearReconnectTimer();
-      if (activeTab === null) return;
+      const tab = sync.activeTab;
+      if (tab === null) return;
       if (resumed) {
-        if (state?.tab === activeTab && !state.needsSnapshot) return;
+        if (state?.tab === tab && !state.needsSnapshot) return;
         // Resumed by a gateway that sends no snapshot, but this page cannot continue.
-        requestFreshSnapshot(activeTab, "ws reconnect");
+        requestFreshSnapshot(tab, "ws reconnect");
         return;
       }
       // A connection that did not resume opens with the tab's resync and cached snapshot, so
       // asking for another would only rebuild the page twice. Ask only if none comes.
-      const tab = activeTab;
       awaitSnapshot(tab);
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
-        if (snapshotPending && activeTab === tab) opts.requestResync(tab, "ws reconnect");
+        if (sync.snapshotPending && sync.activeTab === tab) opts.requestResync(tab, "ws reconnect");
       }, RECONNECT_SNAPSHOT_WAIT_MS);
     },
     resumeCursor() {
-      if (state === null || state.needsSnapshot || state.tab !== activeTab) return null;
+      if (state === null || state.needsSnapshot || state.tab !== sync.activeTab) return null;
       return { tab: state.tab, epoch: state.epoch, nextSeq: state.nextSeq };
     },
     selectTab(tab) {
-      if (tab === activeTab) return;
-      activeTab = tab;
+      if (tab === sync.activeTab) return;
+      sync.activeTab = tab;
       pendingRestore = null;
       setSnapshotPending(false);
       endTabSwitch();
-      let saved = parked.get(tab);
       // Picture mode clears the shared surface, and an iframe does not survive leaving the page.
-      if (saved?.stage.isConnected === false) {
-        dropParked(tab);
-        saved = undefined;
-      }
+      if (parked.peek(tab)?.stage.isConnected === false) parked.drop(tab);
+      const saved = parked.take(tab);
       if (saved !== undefined) {
-        parked.delete(tab);
         const leaving = state;
         state = saved;
         opts.pipeline.reset();
         if (leaving !== null) {
-          if (canPark(leaving)) park(leaving);
+          if (parked.canPark(leaving)) park(leaving);
           else destroyLive(leaving);
         }
         clearForeground(saved.stage);
@@ -822,7 +478,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
         return;
       }
       if (state?.tab === tab) {
-        if (canPark(state)) awaitCatchUp(tab);
+        if (parked.canPark(state)) awaitCatchUp(tab);
         return;
       }
       // The gateway answers an activated tab with its snapshot, and the page in view stays until
@@ -838,37 +494,29 @@ export function createMirror(opts: MirrorOpts): Mirror {
       switchTimer = setTimeout(() => {
         switchTimer = null;
         delete opts.container.dataset.switching;
-        if (activeTab !== tab || state?.tab === tab) return;
+        if (sync.activeTab !== tab || state?.tab === tab) return;
         setAside("Switching tabs…");
         // Already set when the gateway has answered and its snapshot is on the way.
         requestFreshSnapshot(tab, "tab selected");
       }, TAB_SWITCH_WAIT_MS);
     },
-    getActiveTab: () => activeTab,
+    getActiveTab: () => sync.activeTab,
     getIframe: () => state?.replayer.iframe ?? null,
     getReplayer: () => state?.replayer ?? null,
     observeRtt: (rttMs) => clock.observeRtt(rttMs),
     refreshViewportLayout: applyViewportLayout,
-    keepTabs(tabs) {
-      for (const tab of [...parked.keys()]) if (!tabs.includes(tab)) dropParked(tab);
-    },
+    keepTabs: (tabs) => parked.keep(tabs),
     teardown() {
       clearReconnectTimer();
       endTabSwitch();
-      for (const tab of [...parked.keys()]) dropParked(tab);
+      parked.dropAll();
       pendingRestore = null;
       discard("Mirror stopped.");
       setSnapshotPending(false);
       delete opts.container.dataset.connectionStale;
-      activeTab = null;
+      sync.activeTab = null;
     },
   };
-}
-
-function createRtcLane(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
-  const random = Math.random().toString(36).slice(2);
-  return `${Date.now().toString(36)}-${random}`;
 }
 
 export function fitViewportScale(
