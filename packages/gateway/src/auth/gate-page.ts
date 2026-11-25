@@ -1,9 +1,12 @@
 /** Self-contained access page. */
-export function renderGatePage(error?: string): string {
-  const escaped = error?.replace(
+const escapeHtml = (value: string) =>
+  value.replace(
     /[&<>"']/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
   );
+
+export function renderGatePage(error?: string, oidcLabel?: string): string {
+  const escaped = error === undefined ? undefined : escapeHtml(error);
   return `<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
@@ -117,6 +120,18 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   animation: spin 650ms linear infinite;
 }
 @keyframes spin { to { transform: rotate(1turn); } }
+.divider {
+  display: flex; align-items: center; gap: 10px; margin: 18px 0 12px;
+  color: #8a7a6c; font-size: 13px;
+}
+.divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid #e3d9cc; }
+.sso {
+  display: flex; align-items: center; justify-content: center; min-height: 44px;
+  border: 1px solid #cbbfb1; border-radius: 10px; color: #33271f; background: #fffaf3;
+  text-decoration: none; font-weight: 600;
+}
+.sso:hover { background: #f4eee5; }
+.sso:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .screen-reader-only {
   position: absolute;
   width: 1px;
@@ -157,6 +172,12 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
       <span class="spinner" aria-hidden="true"></span>
     </button>
   </form>
+  ${
+    oidcLabel
+      ? `<p class="divider" aria-hidden="true"><span>或</span></p>
+  <a class="sso" href="/gate/oidc/start">${escapeHtml(oidcLabel)}</a>`
+      : ""
+  }
   <span class="screen-reader-only" role="status"></span>
 </main>
 <script>

@@ -40,6 +40,26 @@ export interface UpdateUserInput {
   maxSessions?: unknown;
 }
 
+/** An external sign-in (OIDC) attached to a user: issuer + subject identify the person. */
+export interface UserIdentity {
+  issuer: string;
+  subject: string;
+  userId: string;
+  email: string | null;
+  /** The user was created by this sign-in; its role follows the IdP's admin group. */
+  roleManaged: boolean;
+  createdAt: number;
+  lastLoginAt: number;
+}
+export interface OidcUserInput {
+  issuer: string;
+  subject: string;
+  email: string | null;
+  /** Preferred names for the new user, best first (preferred_username, email…). */
+  names: string[];
+  role: UserRole;
+}
+
 export interface UserStoreOptions {
   file: string;
   bootstrapUsername?: string;
@@ -96,6 +116,16 @@ export interface UserStore {
   unassignProfile(profileId: string): void;
   /** Imports the complete legacy profile list once; subsequent calls cannot reclaim deleted users' data. */
   claimLegacyProfiles(profileIds: readonly string[], adminId: string): void;
+  /** The user of an external identity, recording this sign-in; undefined if none. */
+  identityLogin(issuer: string, subject: string, email: string | null): FrontendUser | undefined;
+  /** Creates a user for a first external sign-in (no local password) with its identity. */
+  createIdentityUser(input: OidcUserInput): FrontendUser;
+  /** Attaches an external identity to an existing user. */
+  linkIdentity(userId: string, issuer: string, subject: string, email: string | null): void;
+  identities(userId: string): UserIdentity[];
+  identity(issuer: string, subject: string): UserIdentity | undefined;
+  /** Whether the user can sign in with a local password. */
+  hasPassword(userId: string): boolean;
   close(): void;
 }
 
@@ -144,6 +174,17 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
       );
       INSERT OR IGNORE INTO user_default_profiles (user_id, profile_id)
         SELECT user_id, MIN(profile_id) FROM profile_owners GROUP BY user_id;
+      CREATE TABLE IF NOT EXISTS user_identities (
+        issuer TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        email TEXT,
+        role_managed INTEGER NOT NULL DEFAULT 0 CHECK (role_managed IN (0, 1)),
+        created_at INTEGER NOT NULL,
+        last_login_at INTEGER NOT NULL,
+        PRIMARY KEY (issuer, subject)
+      );
+      CREATE INDEX IF NOT EXISTS user_identities_user ON user_identities(user_id);
       CREATE TABLE IF NOT EXISTS user_store_meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -228,7 +269,8 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
         const user = db
           .prepare("SELECT * FROM users WHERE username_key = ?")
           .get(normalized.key) as UserRow | undefined;
-        const hash = user?.password_hash ?? dummyHash;
+        // External-only users have no password: verify against the dummy for equal timing.
+        const hash = user && HASH_PATTERN.test(user.password_hash) ? user.password_hash : dummyHash;
         const matched = await verifyPassword(password, hash);
         if (!matched || !user || user.enabled !== 1) return null;
         // Password verification yields to account updates. A reset, disable or deletion that
@@ -289,6 +331,72 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
       getUser(id) {
         const user = rowById(id);
         return user === undefined ? undefined : publicUser(user);
+      },
+      identityLogin(issuer, subject, email) {
+        const row = db
+          .prepare("SELECT user_id FROM user_identities WHERE issuer = ? AND subject = ?")
+          .get(issuer, subject) as { user_id: string } | undefined;
+        if (!row) return undefined;
+        db.prepare(
+          "UPDATE user_identities SET last_login_at = ?, email = ? WHERE issuer = ? AND subject = ?",
+        ).run(now(), email, issuer, subject);
+        const user = rowById(row.user_id);
+        return user && publicUser(user);
+      },
+      createIdentityUser(input) {
+        const role = cleanRole(input.role);
+        const id = `user-${randomUUID()}`;
+        // A first sign-in may race a second tab: the identity key decides who wins.
+        return transaction(() => {
+          const existing = db
+            .prepare("SELECT user_id FROM user_identities WHERE issuer = ? AND subject = ?")
+            .get(input.issuer, input.subject) as { user_id: string } | undefined;
+          if (existing) return publicUser(requireUser(existing.user_id));
+          const username = availableUsername(
+            input.names,
+            (key) =>
+              db.prepare("SELECT 1 FROM users WHERE username_key = ?").get(key) !== undefined,
+          );
+          const at = now();
+          db.prepare(
+            "INSERT INTO users (id, username, username_key, password_hash, role, enabled, created_at, max_sessions) VALUES (?, ?, ?, ?, ?, 1, ?, NULL)",
+          ).run(id, username.name, username.key, NO_PASSWORD, role, at);
+          db.prepare(
+            "INSERT INTO user_identities (issuer, subject, user_id, email, role_managed, created_at, last_login_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
+          ).run(input.issuer, input.subject, id, input.email, at, at);
+          return publicUser(requireUser(id));
+        });
+      },
+      linkIdentity(userId, issuer, subject, email) {
+        transaction(() => {
+          requireUser(userId);
+          const existing = db
+            .prepare("SELECT user_id FROM user_identities WHERE issuer = ? AND subject = ?")
+            .get(issuer, subject) as { user_id: string } | undefined;
+          if (existing && existing.user_id !== userId)
+            throw new UserStoreError(409, "IDENTITY_TAKEN", "这个外部账号已绑定到另一个用户");
+          if (existing) return;
+          const at = now();
+          db.prepare(
+            "INSERT INTO user_identities (issuer, subject, user_id, email, role_managed, created_at, last_login_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
+          ).run(issuer, subject, userId, email, at, at);
+        });
+      },
+      identities(userId) {
+        return (
+          db
+            .prepare("SELECT * FROM user_identities WHERE user_id = ? ORDER BY created_at")
+            .all(userId) as unknown as IdentityRow[]
+        ).map(publicIdentity);
+      },
+      identity(issuer, subject) {
+        const row = db
+          .prepare("SELECT * FROM user_identities WHERE issuer = ? AND subject = ?")
+          .get(issuer, subject) as IdentityRow | undefined;
+        return row && publicIdentity(row);
+      },
+      hasPassword(userId) {
+        return HASH_PATTERN.test(requireUser(userId).password_hash);
       },
       async createUser(input) {
         const username = cleanUsername(input.username);
@@ -447,6 +555,60 @@ export async function createUserStore(options: UserStoreOptions): Promise<UserSt
   } catch (error) {
     db.close();
     throw error;
+  }
+}
+
+/** password_hash of users who only sign in externally; it never matches a password. */
+const NO_PASSWORD = "external-only";
+
+interface IdentityRow {
+  issuer: string;
+  subject: string;
+  user_id: string;
+  email: string | null;
+  role_managed: number;
+  created_at: number;
+  last_login_at: number;
+}
+function publicIdentity(row: IdentityRow): UserIdentity {
+  return {
+    issuer: row.issuer,
+    subject: row.subject,
+    userId: row.user_id,
+    email: row.email,
+    roleManaged: row.role_managed === 1,
+    createdAt: row.created_at,
+    lastLoginAt: row.last_login_at,
+  };
+}
+
+/** The first valid, free username from the candidates, else one with a numeric suffix. */
+function availableUsername(
+  names: string[],
+  taken: (key: string) => boolean,
+): { name: string; key: string } {
+  const valid: { name: string; key: string }[] = [];
+  for (const raw of names) {
+    const cleaned = raw
+      .trim()
+      .normalize("NFKC")
+      .replace(/[^\p{L}\p{N}._@-]+/gu, "-")
+      .replace(/^[^\p{L}\p{N}]+/u, "");
+    const name = [...cleaned].slice(0, 56).join("");
+    if (!name) continue;
+    try {
+      valid.push(cleanUsername(name));
+    } catch {
+      continue;
+    }
+  }
+  for (const candidate of valid) if (!taken(candidate.key)) return candidate;
+  // All taken: number the preferred name (bob-2); "user" only when there is no usable name.
+  const base = valid[0] ?? cleanUsername("user");
+  if (!valid.length && !taken(base.key)) return base;
+  for (let n = 2; ; n++) {
+    const candidate = cleanUsername(`${base.name}-${n}`);
+    if (!taken(candidate.key)) return candidate;
   }
 }
 

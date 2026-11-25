@@ -17,6 +17,8 @@ export function registerAccountRoutes(
     onlineSessions(): ReadonlySet<string>;
     stopSession(owner: string, sid: string): Promise<void>;
     onPasswordChanged(userId: string): void;
+    /** Single sign-on, when configured: shown on the account page for linking. */
+    oidc?: { label: string; issuer: string };
   },
 ) {
   const userFor = (request: IncomingMessage) => {
@@ -31,7 +33,20 @@ export function registerAccountRoutes(
   };
   app.get("/api/me", async (request, reply) => {
     try {
-      return reply.header("cache-control", "no-store").send({ user: userFor(request.raw) });
+      const user = userFor(request.raw);
+      return reply.header("cache-control", "no-store").send({
+        user,
+        hasPassword: options.store.hasPassword(user.id),
+        sso: options.oidc
+          ? {
+              label: options.oidc.label,
+              linked: options.store
+                .identities(user.id)
+                .filter((identity) => identity.issuer === options.oidc!.issuer)
+                .map((identity) => ({ email: identity.email, lastLoginAt: identity.lastLoginAt })),
+            }
+          : null,
+      });
     } catch (error) {
       return failed(reply, error);
     }

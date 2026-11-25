@@ -133,6 +133,11 @@ export function App() {
   // remote-cc approval links: /?remote-cc=ABCD-EFGH opens the remote-cc tab with the code filled in.
   const [remoteCcLink] = useState(() => takeRemoteCcLink(window.location.href));
   const remoteCcLinkOpened = useRef(false);
+  // After linking single sign-on the gate returns to /?account=linked: open the account panel.
+  const [accountLinked] = useState(
+    () => new URL(window.location.href).searchParams.get("account") === "linked",
+  );
+  const accountLinkedShown = useRef(false);
   const [clientSession, setClientSession] = useState<ClientSession | null>(null);
   const [accountList, setAccountList] = useState<AccountList | null>(null);
   const [user, setUser] = useState<FrontendUser | null>(null);
@@ -306,6 +311,18 @@ export function App() {
     setNetworkTab("remote-cc");
     setNetworkPanelOpen(true);
   }, [user, remoteCcLink]);
+  useEffect(() => {
+    if (!user || !accountLinked || accountLinkedShown.current) return;
+    accountLinkedShown.current = true;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("account");
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+    setAccountPanelOpen(true);
+  }, [user, accountLinked]);
   const signOut = async () => {
     if (logoutPending) return;
     setLogoutPending(true);
@@ -1103,6 +1120,7 @@ export function App() {
           user={user}
           currentSid={clientSession?.sid}
           onClose={() => setAccountPanelOpen(false)}
+          initialNotice={accountLinked ? "单点登录账号已绑定。" : undefined}
           onSessionEnded={(sid) => {
             refreshAccounts();
             if (sid === clientSession?.sid) finishSession();

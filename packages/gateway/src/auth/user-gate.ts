@@ -3,7 +3,8 @@ import type { FastifyInstance, FastifyReply, preHandlerAsyncHookHandler } from "
 import type { IncomingMessage } from "node:http";
 import { renderGatePage } from "./gate-page";
 import { SESSION_COOKIE } from "./middleware";
-import { USER_SESSION_TTL_MS, type FrontendUser, type UserStore } from "./users";
+import { OidcError, type Oidc } from "./oidc";
+import { USER_SESSION_TTL_MS, UserStoreError, type FrontendUser, type UserStore } from "./users";
 
 export const USER_COOKIE = "__Host-mirror-user";
 const FORM_TYPE = "application/x-www-form-urlencoded";
@@ -25,6 +26,20 @@ export function userSessionToken(request: IncomingMessage): string | undefined {
   return undefined;
 }
 
+const OIDC_STATE_COOKIE = "mirror-oidc-state";
+function cookieValue(request: IncomingMessage, name: string): string | undefined {
+  for (const part of request.headers.cookie?.split(";") ?? []) {
+    const index = part.indexOf("=");
+    if (index >= 0 && part.slice(0, index).trim() === name) return part.slice(index + 1).trim();
+  }
+  return undefined;
+}
+function oidcMessage(error: unknown): string {
+  if (error instanceof OidcError) return error.message;
+  console.error("OIDC sign-in failed:", error instanceof Error ? error.message : error);
+  return "单点登录失败，请重试";
+}
+
 /** A remote-cc approval code carried across the login page. */
 const REMOTE_CC_COOKIE = "mirror-remote-cc";
 const REMOTE_CC_CODE = /^[A-Z2-9]{4}-?[A-Z2-9]{4}$/;
@@ -43,6 +58,8 @@ export function createUserGate(options: {
   publicOrigin?: string;
   cookiesOnSuccess?(request: IncomingMessage): readonly string[];
   onLogout?(request: IncomingMessage, user: FrontendUser | null): Promise<void> | void;
+  /** Sign-in through an OpenID Connect provider, next to username and password. */
+  oidc?: Oidc;
   now?: () => number;
 }) {
   const now = options.now ?? Date.now;
@@ -60,7 +77,31 @@ export function createUserGate(options: {
       // Keep same-origin form submissions verifiable without sending referrers to other sites.
       .header("referrer-policy", "same-origin")
       .type("text/html; charset=utf-8")
-      .send(renderGatePage(error));
+      .send(renderGatePage(error, options.oidc?.settings.label));
+  /** Starts a workbench session for user and leaves the gate (keeping a remote-cc code). */
+  const signedIn = (
+    request: IncomingMessage,
+    reply: FastifyReply,
+    user: FrontendUser,
+    ttlMs = USER_SESSION_TTL_MS,
+    extraCookies: string[] = [],
+  ) => {
+    const session = options.store.issueSession(user.id, ttlMs);
+    const pending = remoteCcCode(request);
+    reply.header("set-cookie", [
+      `${USER_COOKIE}=${session.token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(ttlMs / 1000)}`,
+      ...(options.cookiesOnSuccess?.(request) ?? []),
+      ...extraCookies,
+      ...(pending
+        ? [`${REMOTE_CC_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`]
+        : []),
+    ]);
+    return reply
+      .code(303)
+      .header("cache-control", "no-store")
+      .header("location", pending ? `/?new=1&remote-cc=${pending}` : "/?new=1")
+      .send();
+  };
   const preHandler: preHandlerAsyncHookHandler = async (request, reply) => {
     if (
       !["GET", "HEAD", "OPTIONS"].includes(request.method) &&
@@ -72,7 +113,12 @@ export function createUserGate(options: {
       return reply.code(403).send({ error: "请求来源不受信任" });
     const url = new URL(request.raw.url ?? "/", "http://local");
     const path = url.pathname;
-    if (["/gate", "/healthz", "/logout"].includes(path) || currentUser(request.raw)) return;
+    if (
+      ["/gate", "/healthz", "/logout"].includes(path) ||
+      (options.oidc && path.startsWith("/gate/oidc/")) ||
+      currentUser(request.raw)
+    )
+      return;
     if ((request.method === "GET" || request.method === "HEAD") && !/^\/(api|s)\//.test(path)) {
       // A remote-cc approval link survives the login (?remote-cc=CODE).
       const code = url.searchParams.get("remote-cc");
@@ -140,29 +186,78 @@ export function createUserGate(options: {
               return page(reply, 401, "用户名或密码不正确。");
             }
             attempts.delete(request.ip);
-            const session = options.store.issueSession(user.id);
-            reply.header("set-cookie", [
-              `${USER_COOKIE}=${session.token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(USER_SESSION_TTL_MS / 1000)}`,
-              ...(options.cookiesOnSuccess?.(request.raw) ?? []),
-            ]);
-            const pending = remoteCcCode(request.raw);
-            if (pending)
-              reply.header("set-cookie", [
-                `${USER_COOKIE}=${session.token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(USER_SESSION_TTL_MS / 1000)}`,
-                ...(options.cookiesOnSuccess?.(request.raw) ?? []),
-                `${REMOTE_CC_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
-              ]);
-            return reply
-              .code(303)
-              .header("cache-control", "no-store")
-              .header("location", pending ? `/?new=1&remote-cc=${pending}` : "/?new=1")
-              .send();
+            return signedIn(request.raw, reply, user);
           } finally {
             attempt.pending = false;
             pendingLogins--;
           }
         },
       );
+      const oidc = options.oidc;
+      if (oidc) {
+        // The state cookie binds a callback to the browser that started the sign-in.
+        const stateCookie = (state: string, maxAge: number) =>
+          `${OIDC_STATE_COOKIE}=${state}; Path=/gate/oidc; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
+        const begin = async (reply: FastifyReply, purpose: "login" | "link", userId?: string) => {
+          try {
+            const started = await oidc.start(purpose, userId);
+            return reply
+              .code(302)
+              .header("cache-control", "no-store")
+              .header("set-cookie", stateCookie(started.state, 600))
+              .header("location", started.url)
+              .send();
+          } catch (error) {
+            return page(
+              reply,
+              error instanceof OidcError ? error.statusCode : 502,
+              oidcMessage(error),
+            );
+          }
+        };
+        app.get("/gate/oidc/start", async (_request, reply) => begin(reply, "login"));
+        // A signed-in user attaches their external account (then may sign in either way).
+        app.get("/gate/oidc/link", async (request, reply) => {
+          const user = currentUser(request.raw);
+          if (!user) return reply.code(302).header("location", "/gate").send();
+          return begin(reply, "link", user.id);
+        });
+        app.get("/gate/oidc/callback", async (request, reply) => {
+          const clear = stateCookie("", 0);
+          try {
+            const url = new URL(request.raw.url ?? "/", oidc.settings.redirectUri);
+            const done = await oidc.finish(url, cookieValue(request.raw, OIDC_STATE_COOKIE));
+            if (done.purpose === "link") {
+              const user = currentUser(request.raw);
+              if (!user || user.id !== done.userId)
+                throw new OidcError(400, "绑定已过期，请登录后重新绑定");
+              options.store.linkIdentity(
+                user.id,
+                done.profile.issuer,
+                done.profile.subject,
+                done.profile.email,
+              );
+              return reply
+                .code(303)
+                .header("cache-control", "no-store")
+                .header("set-cookie", clear)
+                .header("location", "/?account=linked")
+                .send();
+            }
+            const user = await oidc.signIn(done.profile);
+            return signedIn(request.raw, reply, user, oidc.settings.sessionTtlMs, [clear]);
+          } catch (error) {
+            reply.header("set-cookie", clear);
+            if (error instanceof UserStoreError)
+              return page(reply, error.statusCode, error.message);
+            return page(
+              reply,
+              error instanceof OidcError ? error.statusCode : 500,
+              oidcMessage(error),
+            );
+          }
+        });
+      }
       app.post("/logout", async (request, reply) => {
         const user = currentUser(request.raw);
         options.store.revokeSession(userSessionToken(request.raw));

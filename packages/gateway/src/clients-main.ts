@@ -82,6 +82,7 @@ import {
 } from "./session/clients";
 import { createLifecycleLock } from "./session/lifecycle-lock";
 import { registerAccountRoutes } from "./auth/account-routes";
+import { createOidc, oidcSettingsFromEnv } from "./auth/oidc";
 import { registerAccountOnboarding } from "./browser/account-onboarding";
 import { createMailboxService, registerMailboxRoutes, RESEND_WEBHOOK_PATH } from "./mail/mailboxes";
 import { createIdleReaper, PAGE_GENERATING_EXPRESSION } from "./session/idle-reaper";
@@ -404,9 +405,12 @@ export async function startClientGateway(
     const exp = Math.floor(Date.now() / 1000) + maxAge;
     return `${SESSION_COOKIE}=${mintInvite({ sid: owner, role: "driver", exp }, key)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
   };
+  const oidcSettings = oidcSettingsFromEnv(process.env, process.env.MIRROR_PUBLIC_ORIGIN);
+  const oidc = oidcSettings && createOidc(oidcSettings, { store: userStore });
   const gate = createUserGate({
     store: userStore,
     publicOrigin: process.env.MIRROR_PUBLIC_ORIGIN,
+    oidc,
     cookiesOnSuccess: (request) => [deviceCookie(request)],
     async onLogout(request, user) {
       const owner = user && ownerForUser(request, user);
@@ -452,6 +456,8 @@ export async function startClientGateway(
   const remoteCc = registerRemoteCcRoutes(app, {
     store: remoteCcStore,
     secret: createHmac("sha256", key).update("remote-cc").digest(),
+    // Users who only sign in through OIDC keep remote-cc only while they keep signing in there.
+    userActive: (user) => !oidc || oidc.recentlySignedIn(user.id),
     publicOrigin: (request) =>
       process.env.MIRROR_PUBLIC_ORIGIN?.replace(/\/+$/, "") ||
       `${request.headers["x-forwarded-proto"] === "http" ? "http" : "https"}://${request.headers.host}`,
@@ -2216,6 +2222,7 @@ export async function startClientGateway(
     profileName: (id) => accountStore.all().find((record) => record.id === id)?.name ?? id,
     onlineSessions,
     stopSession: releaseClientLocked,
+    oidc: oidc ? { label: oidc.settings.label, issuer: oidc.settings.issuer } : undefined,
     onPasswordChanged: (userId) => {
       for (const connection of viewers.values())
         if (connection.userId === userId) ws.closeSession(connection.sid);
@@ -2280,6 +2287,7 @@ export async function startClientGateway(
         users: users.map((user) => ({
           ...user,
           profileCount: userStore.listOwnedProfiles(user.id).length,
+          sso: userStore.identities(user.id).map((identity) => identity.email ?? "")[0] ?? null,
           sessionCount: sessions.filter((session) => session.userId === user.id).length,
           onlineSessions: sessions.filter((session) => session.userId === user.id && session.online)
             .length,

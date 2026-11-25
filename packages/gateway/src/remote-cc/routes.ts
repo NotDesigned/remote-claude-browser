@@ -55,6 +55,8 @@ export interface RemoteCcRouteOptions {
    * the user opens it from the one in front of them (openLoginIn).
    */
   autoOpen?: boolean;
+  /** Whether the user may still use remote-cc (e.g. signed in through OIDC recently enough). */
+  userActive?(user: FrontendUser): boolean;
 }
 
 /** What remote-cc learns about a profile: identity and exit, never browser data or secrets. */
@@ -129,6 +131,12 @@ export function registerRemoteCcRoutes(app: FastifyInstance, options: RemoteCcRo
     const user = token && options.getUser(token.userId);
     if (!token || !user?.enabled || (kind === "host" && user.role !== "admin"))
       throw new RemoteCcError(401, "REMOTE_CC_TOKEN", "连接已失效，请重新连接");
+    if (options.userActive && !options.userActive(user))
+      throw new RemoteCcError(
+        401,
+        "REMOTE_CC_SIGN_IN",
+        "太久没有通过单点登录进入工作台，请先登录一次工作台再继续",
+      );
     return { token, user };
   };
   const ownProfile = (user: FrontendUser, id: string) => {

@@ -51,7 +51,20 @@
 .account-password {
   border-top: 1px solid var(--line);
 }
+.account-sso,
+.account-no-password {
+  padding: 22px;
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+}
+.account-sso h3,
+.account-no-password h3 {
+  margin: 0;
+}
 @media (max-width: 600px) {
+  .account-sso,
+  .account-no-password,
   .account-sessions {
     padding: 16px;
   }

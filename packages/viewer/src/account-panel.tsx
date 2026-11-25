@@ -6,6 +6,8 @@ import {
   myBrowserSessions,
   type FrontendUser,
   type MyBrowserSession,
+  myAccount,
+  type MyAccount,
 } from "./users";
 import "./user-panel.css";
 import "./account-panel.css";
@@ -15,11 +17,14 @@ export function AccountPanel({
   currentSid,
   onClose,
   onSessionEnded,
+  initialNotice,
 }: {
   user: FrontendUser;
   currentSid?: string;
   onClose(): void;
   onSessionEnded(sid: string): void;
+  /** Shown when the panel opens, e.g. after linking single sign-on. */
+  initialNotice?: string;
 }) {
   const panel = useDialog(true, onClose);
   const [sessions, setSessions] = useState<MyBrowserSession[] | null>(null);
@@ -27,9 +32,16 @@ export function AccountPanel({
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(initialNotice ?? null);
+  const [account, setAccount] = useState<MyAccount | null>(null);
   useEffect(() => {
     let active = true;
+    void myAccount().then(
+      (result) => {
+        if (active) setAccount(result);
+      },
+      () => {},
+    );
     void myBrowserSessions()
       .then((result) => {
         if (active) setSessions(result);
@@ -153,54 +165,88 @@ export function AccountPanel({
             </ul>
           )}
         </section>
-        <form
-          class="user-panel-form account-password"
-          onSubmit={async (event) => {
-            event.preventDefault();
-            setPending(true);
-            setError(null);
-            setNotice(null);
-            try {
-              await changeMyPassword(currentPassword, password);
-              window.location.assign("/gate");
-            } catch (failure) {
-              setError((failure as Error).message);
-            } finally {
-              setPending(false);
-            }
-          }}
-        >
-          <h3>修改密码</h3>
-          <p class="user-panel-muted">修改后所有设备需要重新登录工作台，浏览器内的网站登录不变。</p>
-          <label>
-            当前密码
-            <input
-              type="password"
-              autoComplete="current-password"
-              required
-              value={currentPassword}
-              disabled={pending}
-              onInput={(event) => setCurrentPassword(event.currentTarget.value)}
-            />
-          </label>
-          <label>
-            新密码
-            <input
-              type="password"
-              autoComplete="new-password"
-              minLength={8}
-              required
-              value={password}
-              disabled={pending}
-              onInput={(event) => setPassword(event.currentTarget.value)}
-            />
-          </label>
-          <div class="user-panel-actions">
-            <button type="submit" class="user-panel-save" disabled={pending}>
-              修改密码并重新登录
-            </button>
-          </div>
-        </form>
+        {account?.sso && (
+          <section class="account-sso" aria-labelledby="account-sso-title">
+            <h3 id="account-sso-title">单点登录</h3>
+            {account.sso.linked.length > 0 ? (
+              <p class="user-panel-muted">
+                已绑定{account.sso.linked[0]!.email ? `：${account.sso.linked[0]!.email}` : ""}
+                。可以在登录页点「
+                {account.sso.label}」登录。
+              </p>
+            ) : (
+              <>
+                <p class="user-panel-muted">
+                  绑定后可以在登录页点「{account.sso.label}」登录，原来的用户名和密码继续可用。
+                </p>
+                <div class="user-panel-actions">
+                  <a class="user-panel-save" href="/gate/oidc/link">
+                    绑定单点登录账号
+                  </a>
+                </div>
+              </>
+            )}
+          </section>
+        )}
+        {account && !account.hasPassword ? (
+          <section class="account-no-password" aria-labelledby="account-password-title">
+            <h3 id="account-password-title">密码</h3>
+            <p class="user-panel-muted">
+              这个账户通过单点登录创建，没有本地密码。需要用户名和密码登录时，请管理员为你设置密码。
+            </p>
+          </section>
+        ) : (
+          <form
+            class="user-panel-form account-password"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              setPending(true);
+              setError(null);
+              setNotice(null);
+              try {
+                await changeMyPassword(currentPassword, password);
+                window.location.assign("/gate");
+              } catch (failure) {
+                setError((failure as Error).message);
+              } finally {
+                setPending(false);
+              }
+            }}
+          >
+            <h3>修改密码</h3>
+            <p class="user-panel-muted">
+              修改后所有设备需要重新登录工作台，浏览器内的网站登录不变。
+            </p>
+            <label>
+              当前密码
+              <input
+                type="password"
+                autoComplete="current-password"
+                required
+                value={currentPassword}
+                disabled={pending}
+                onInput={(event) => setCurrentPassword(event.currentTarget.value)}
+              />
+            </label>
+            <label>
+              新密码
+              <input
+                type="password"
+                autoComplete="new-password"
+                minLength={8}
+                required
+                value={password}
+                disabled={pending}
+                onInput={(event) => setPassword(event.currentTarget.value)}
+              />
+            </label>
+            <div class="user-panel-actions">
+              <button type="submit" class="user-panel-save" disabled={pending}>
+                修改密码并重新登录
+              </button>
+            </div>
+          </form>
+        )}
       </section>
     </div>
   );

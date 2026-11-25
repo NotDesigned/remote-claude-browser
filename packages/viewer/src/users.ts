@@ -23,6 +23,17 @@ export interface UserChanges {
   maxSessions?: number | null;
 }
 
+export interface MyAccount {
+  hasPassword: boolean;
+  /** Single sign-on when configured: its button label and the linked external accounts. */
+  sso: { label: string; linked: { email: string | null; lastLoginAt: number }[] } | null;
+}
+
+export async function myAccount(fetcher?: typeof fetch): Promise<MyAccount> {
+  const { hasPassword, sso } = await apiRequest<MyAccount>("/api/me", "GET", undefined, fetcher);
+  return { hasPassword: hasPassword !== false, sso: sso ?? null };
+}
+
 export async function currentUser(fetcher?: typeof fetch): Promise<FrontendUser> {
   return (await apiRequest<{ user: FrontendUser }>("/api/me", "GET", undefined, fetcher)).user;
 }
@@ -69,7 +80,13 @@ export interface AdminSession {
 }
 
 export interface AdminOverview {
-  users: (ManagedUser & { profileCount: number; sessionCount: number; onlineSessions: number })[];
+  users: (ManagedUser & {
+    profileCount: number;
+    sessionCount: number;
+    onlineSessions: number;
+    /** The linked single sign-on account's email ("" if unknown); null if none. */
+    sso?: string | null;
+  })[];
   sessions: AdminSession[];
   resources: ServerStatusMsg;
   runningProfiles: number;

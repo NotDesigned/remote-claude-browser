@@ -361,6 +361,8 @@ export function AdminPanel({
                   <span class="user-panel-muted">
                     {user.role === "admin" ? "管理员" : "普通用户"}
                     {!user.enabled ? " · 已停用" : user.onlineSessions > 0 ? " · 在线" : " · 离线"}
+                    {typeof user.sso === "string" &&
+                      ` · 单点登录${user.sso ? `（${user.sso}）` : ""}`}
                   </span>
                   <span class="user-panel-muted">
                     {user.profileCount} 个配置 · {user.onlineSessions} 在线 / {user.sessionCount}{" "}
