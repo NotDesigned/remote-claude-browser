@@ -4,6 +4,12 @@
 set -eu
 
 if [ "$(id -u)" = 0 ]; then
+  # AliasMode personas' fonts are mounted at run time (compose.fingerprint.yml); cache them once
+  # here, since the browsers see the font cache read-only.
+  if [ -n "$(ls -A /usr/local/share/fonts/fingerprint 2>/dev/null)" ]; then
+    fc-cache -s /usr/local/share/fonts/fingerprint ||
+      echo "Could not cache the fingerprint fonts; browsers will scan them at each start." >&2
+  fi
   if [ -n "${EGRESS_PROXY:-}" ]; then
     if [ "${EGRESS_POLICY:-on}" != on ]; then
       echo "EGRESS_PROXY needs EGRESS_POLICY=on: its firewall keeps pages from going around the proxy." >&2

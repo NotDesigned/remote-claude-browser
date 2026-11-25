@@ -14,6 +14,8 @@ describe("browser account identity", () => {
     const identity = browserIdentity("secret", "p-a");
     const conf = fontconfigFor(identity);
     expect(conf).toContain("/etc/fonts/fonts.conf");
+    // AliasMode personas' Windows/macOS fonts stay invisible to native accounts.
+    expect(conf).toContain("<glob>/usr/local/share/fonts/fingerprint/*</glob>");
     for (const family of identity.missingFonts)
       expect(conf).toContain(`<string>${family}</string>`);
   });
