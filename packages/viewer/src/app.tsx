@@ -8,16 +8,9 @@ import { MailboxPanel } from "./mailbox-panel";
 import type { WorkspaceDestination, WorkspaceMenuProps } from "./workspace-menu";
 import { NetworkPanel, type NetworkTab } from "./network-panel";
 import { cpaApi, isCpaBrowserAuthorization, type CpaBrowserAuthorization } from "./network-api";
-import {
-  localArea,
-  readItem,
-  readJson,
-  removeItem,
-  removePrefixed,
-  sessionArea,
-  writeItem,
-  writeJson,
-} from "./storage";
+import { readJson, removeItem, removePrefixed, sessionArea, writeJson } from "./storage";
+import { viewStorage } from "./app/view-storage";
+import { useTheme } from "./app/use-theme";
 import { takeRemoteCcLink, RemoteCcLoginBanner } from "./network-remote-cc-panel";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { AgentMsg, Down, eventWithTime, TabId } from "@mirror/protocol";
@@ -42,7 +35,7 @@ import {
 import type { FrameRates } from "./hud";
 import { describeConnection } from "./connection-status";
 import { pollServerStatus, receiveServerStatus, type ReceivedServerStatus } from "./server-status";
-import { ShellBar, type LinkTarget, type ThemePreference } from "./shell-bar";
+import { ShellBar, type LinkTarget } from "./shell-bar";
 import { createVoiceLink, type VoiceLink } from "./media/voice";
 import { createServerClock, DEFAULT_LIVE_BUFFER_MS } from "./clock";
 import { createResyncController, type ResyncTabState, RESYNC_WINDOW_MS } from "./resync";
@@ -115,14 +108,6 @@ async function replayFixture(path: string, mirror: Mirror, signal?: AbortSignal)
   }
 }
 
-/** Preferences in localStorage; blocked or full storage just means no memory. */
-function viewStorage(): Pick<Storage, "getItem" | "setItem"> {
-  return {
-    getItem: (key) => readItem(localArea(), key),
-    setItem: (key, value) => writeItem(localArea(), key, value),
-  };
-}
-
 /** This tab's own memory; sessionStorage itself throws when site data is blocked. */
 function sessionStorageOrNull(): Pick<Storage, "getItem" | "setItem"> | null {
   try {
@@ -132,7 +117,6 @@ function sessionStorageOrNull(): Pick<Storage, "getItem" | "setItem"> | null {
   }
 }
 
-const THEME_CHECK_MS = 3_000;
 /** A CPA authorization waiting for the person to choose its browser. */
 const CPA_BROWSER_KEY = "mirror-cpa-browser";
 /** How long after a click on a mirror file input the page's file request belongs to that click. */
@@ -244,15 +228,6 @@ export function App() {
   // The view the entry URL or memory asks for applies once tabs exist.
   const pendingModeRef = useRef<"dom" | "px" | null>(viewMode);
   const pageKey = useRef(globalThis.crypto.randomUUID()).current;
-  const [themePreference, setThemePreference] = useState<ThemePreference>(() => {
-    const stored = viewStorage().getItem("mirror.theme");
-    return stored === "light" || stored === "dark" ? stored : "auto";
-  });
-  const [systemDark, setSystemDark] = useState(
-    () => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false,
-  );
-  const theme: "light" | "dark" =
-    themePreference === "auto" ? (systemDark ? "dark" : "light") : themePreference;
   const [pxQuality, setPxQuality] = useState(() => preferredPxQuality(viewStorage()));
   const [linkTarget, setLinkTarget] = useState<LinkTarget>(() =>
     viewStorage().getItem("mirror.links") === "device" ? "device" : "inside",
@@ -270,14 +245,6 @@ export function App() {
   useEffect(() => {
     document.title = activeTitle || "远程 Claude";
   }, [activeTitle]);
-
-  useEffect(() => {
-    const query = window.matchMedia?.("(prefers-color-scheme: dark)");
-    if (!query) return;
-    const update = () => setSystemDark(query.matches);
-    query.addEventListener("change", update);
-    return () => query.removeEventListener("change", update);
-  }, []);
 
   // Keep the current view in the address so a reload reopens it.
   useEffect(() => {
@@ -301,13 +268,13 @@ export function App() {
     };
   }, []);
 
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    viewStorage().setItem("mirror.theme", themePreference);
-  }, [theme, themePreference]);
-  // The same choice as Claude's Appearance setting. This page's choice goes first, and is repeated
-  // until a Claude page has taken it. Only then can a change made under Settings come back.
+  // The same choice as Claude's Appearance setting.
   const themeSid = clientPhase === "ready" ? (clientSession?.sid ?? null) : null;
+  const {
+    preference: themePreference,
+    setPreference: setThemePreference,
+    theme,
+  } = useTheme(themeSid);
   // Only the newest request may answer: an older one (another session's) can finish after it.
   const accountRequests = useRef(0);
   const refreshAccounts = useCallback(() => {
@@ -385,49 +352,6 @@ export function App() {
       setLogoutPending(false);
     }
   };
-  const themeKey = `${themePreference}:${systemDark}`;
-  const syncedThemeRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (themeSid === null) return;
-    let active = true;
-    const url = `/s/${encodeURIComponent(themeSid)}/theme`;
-    const send = async () => {
-      const result = await apiRequest<{ applied?: boolean } | undefined>(url, "POST", {
-        theme: themePreference,
-        systemDark,
-      });
-      if (active && result?.applied) syncedThemeRef.current = themeKey;
-    };
-    const sync = async () => {
-      if (document.hidden) return;
-      if (syncedThemeRef.current !== themeKey) {
-        await send();
-        return;
-      }
-      const result = await apiRequest<{ theme?: ThemePreference | null } | undefined>(url);
-      if (!active || result === undefined) return;
-      const remote = result.theme ?? null;
-      // The gateway has restarted and does not know this client's choice.
-      if (remote === null) {
-        syncedThemeRef.current = null;
-        await send();
-        return;
-      }
-      if (remote === themePreference) return;
-      syncedThemeRef.current = `${remote}:${systemDark}`;
-      setThemePreference(remote);
-    };
-    void sync().catch(() => {});
-    const timer = setInterval(() => void sync().catch(() => {}), THEME_CHECK_MS);
-    // A phone coming back should not show the old mode for up to a whole check.
-    const onVisible = () => void sync().catch(() => {});
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      active = false;
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [themeSid, themeKey]);
 
   useEffect(() => {
     const url = new URL(window.location.href);
