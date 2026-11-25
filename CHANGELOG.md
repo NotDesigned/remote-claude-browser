@@ -8,6 +8,24 @@
 
 ### 新增
 
+无
+
+### 变更
+
+无
+
+### 移除
+
+无
+
+### 升级步骤
+
+无
+
+## [0.3.0] - 2026-11-25
+
+### 新增
+
 - 可选的单点登录（OpenID Connect）：设置 `MIRROR_OIDC_ISSUER`、`MIRROR_OIDC_CLIENT_ID` 和 `MIRROR_OIDC_CLIENT_SECRET` 后，登录页在用户名和密码下方多一个单点登录按钮（默认文字「使用单点登录」，由 `MIRROR_OIDC_LABEL` 修改）。第一次登录自动创建用户，可以用允许列表限制首次登录，用 `MIRROR_OIDC_ADMIN_GROUP` 按组指定管理员；已有用户可以在「我的账号」→「单点登录」绑定外部账号；「管理后台」→「用户」标出用过单点登录的用户。没有本地密码的用户超过 `MIRROR_OIDC_REVALIDATE_DAYS` 没有单点登录时，remote-cc 返回 401 `REMOTE_CC_SIGN_IN`，登录一次工作台即恢复。变量见 [docs/configuration.md](docs/configuration.md#单点登录oidc)。不设置这些变量时行为不变。
 
 ### 变更
