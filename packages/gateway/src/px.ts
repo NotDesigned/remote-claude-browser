@@ -67,6 +67,11 @@ const SHARP_FRAME = { format: "png" } as const;
 /** How often the grab checks its window is still on top and its geometry is still wanted. */
 const GRAB_CHECK_MS = 250;
 const RESHAPE_WAIT_MS = 1_000;
+/**
+ * After a zoom change Chromium shows its own zoom bubble ("150%  -  +  Reset") over the top of the
+ * page, in the window, for about 1.2 s. The display grab would show it, so the picture waits.
+ */
+export const ZOOM_BUBBLE_MS = 1_500;
 type ScreencastBrowser = Pick<
   BrowserHandle,
   "send" | "onAttached" | "onDetached" | "onSessionEvent"
@@ -100,6 +105,8 @@ export interface ScreencastOpts {
   /** The account's screen, for the page's screen metrics. */
   screen?: Screen;
   grab?: ScreenGrab;
+  /** How long Chromium's zoom bubble stays up. Tests shorten it. */
+  zoomBubbleMs?: number;
   /** Supply both hooks to track pixel ownership. Acquisition must be synchronous. */
   acquirePixel?(tabId: string): boolean;
   /** Called after stop completes or its bounded deadline, including reset/dispose paths. */
@@ -158,6 +165,11 @@ interface TabState {
   grabbing?: GrabState;
   grabChecking?: boolean;
   zoomChanging?: boolean;
+  /**
+   * Pictures wait until then: Chromium's zoom bubble is over the page. Infinity while a navigation
+   * has put the page back at 100% and the zoom is not back yet, so it shows at the wrong scale.
+   */
+  pictureHeldUntil?: number;
   stats: { captured: number; encoded: number; dropped: number };
   videoSeq: number;
   lastJpeg?: Buffer;
@@ -240,6 +252,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       if (!zoomingOut) await opts.browserZoom.set(state.target, zoom);
       if (zoom > 1 && !(await zoomTookEffect(state, zoom)))
         throw new Error(`Browser zoom ${zoom} did not take effect`);
+      zoomBubbleShown(state);
     } catch (error) {
       if (zoom > 1) {
         // Without the zoom the larger window would show a tiny page, so undo all of it.
@@ -251,12 +264,18 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       report(error);
     }
   };
-  /** Zoom belongs to a site, so a page on another site starts over at 100%. */
+  /** A per-tab zoom ends with its document, so every new page starts over at 100%. */
   const reassertZoom = async (state: TabState): Promise<void> => {
-    const zoom = state.hub.pixelZoom;
-    if (!opts.browserZoom || zoom <= 1 || !current(state)) return;
-    if (Math.abs((await pageDensity(state)) - zoom) < 0.01) return;
-    await opts.browserZoom.set(state.target, zoom);
+    try {
+      const zoom = state.hub.pixelZoom;
+      if (!opts.browserZoom || zoom <= 1 || !current(state)) return;
+      if (Math.abs((await pageDensity(state)) - zoom) < 0.01) return;
+      await opts.browserZoom.set(state.target, zoom);
+      await zoomTookEffect(state, zoom);
+      zoomBubbleShown(state);
+    } finally {
+      if (state.pictureHeldUntil === Number.POSITIVE_INFINITY) delete state.pictureHeldUntil;
+    }
   };
   const screenshotClip = (w: number, h: number, dpr: number) => {
     return {
@@ -274,6 +293,22 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   let disposed = false;
 
   const report = (error: unknown): void => opts.onError?.(error);
+  const zoomBubbleMs = opts.zoomBubbleMs ?? ZOOM_BUBBLE_MS;
+  /** The bubble is browser UI, so only the display grab sees it. A page at 100% shows in either. */
+  const pictureHeld = (state: TabState): boolean => {
+    const until = state.pictureHeldUntil;
+    if (until === undefined || Date.now() >= until) return false;
+    return state.grabbing !== undefined || until === Number.POSITIVE_INFINITY;
+  };
+  /** The zoom just changed: Chromium's bubble is up now, and the picture waits for it to go. */
+  const zoomBubbleShown = (state: TabState): void => {
+    state.pictureHeldUntil = Date.now() + zoomBubbleMs;
+  };
+  const waitForZoomBubble = async (state: TabState): Promise<void> => {
+    const wait = (state.pictureHeldUntil ?? 0) - Date.now();
+    if (wait > 0 && Number.isFinite(wait))
+      await new Promise((resolve) => setTimeout(resolve, wait));
+  };
   const current = (state: TabState, generation = state.generation): boolean =>
     !disposed && sessions.get(state.target.sessionId) === state && state.generation === generation;
   const sendBounded = async (
@@ -317,7 +352,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       })) as { data?: unknown };
       // On a still page a newer frame means this picture is out of date and schedules its own.
       // On a moving page the viewer patches whatever keeps changing back over it.
-      if (!current(state, generation) || state.hub.mode !== "px") return;
+      if (!current(state, generation) || state.hub.mode !== "px" || pictureHeld(state)) return;
       if (!duringMotion && state.frameCount !== seen) return;
       if (typeof shot.data !== "string" || shot.data.length === 0) return;
       state.lastFrame = {
@@ -363,7 +398,8 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
         if (state.video !== video) return;
         if (grabbing) {
           state.stats.captured++;
-          if (video.lost || opts.backlogged?.()) {
+          // A held picture starts again with a new stream, as a viewer cannot skip a frame.
+          if (video.lost || opts.backlogged?.() || pictureHeld(state)) {
             video.lost = true;
             state.stats.dropped++;
             return;
@@ -486,6 +522,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     state.fallback = undefined;
     state.screencasting = false;
     delete state.lastFrame;
+    delete state.pictureHeldUntil;
     return wasScreencasting;
   };
   const acquirePixel = (state: TabState): boolean => {
@@ -561,6 +598,8 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
     const zoom = state.hub.pixelZoom;
     if (zoom !== wanted) await place(zoom);
     await applyMetrics(state, zoom);
+    // The viewer keeps what it shows until the first picture, which must not have the bubble on it.
+    await waitForZoomBubble(state);
     // The tab left the pixel view during that, and already gave its slot back.
     if (state.grabLeft === undefined) {
       await opts.grab!.window.restore(state.target.targetId);
@@ -585,7 +624,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
               h: viewport.h,
             };
             state.stats.captured++;
-            if (opts.backlogged?.()) state.stats.dropped++;
+            if (opts.backlogged?.() || pictureHeld(state)) state.stats.dropped++;
             else {
               state.stats.encoded++;
               opts.publish(state.lastFrame);
@@ -698,6 +737,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
           clip: screenshotClip(w, h, dpr),
         })) as { data?: unknown };
         if (!current(state, generation) || state.hub.mode !== "px" || state.lastFrame) return;
+        if (pictureHeld(state)) return;
         if (typeof screenshot.data !== "string" || screenshot.data.length === 0)
           throw new Error("Pixel first-frame capture returned no image");
         state.lastFrame = { t: "px", tab: state.target.targetId, data: screenshot.data, w, h };
@@ -753,6 +793,10 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       const viewport = state.hub.viewport;
       const w = frameDimension(viewport?.w, event.metadata.deviceWidth);
       const h = frameDimension(viewport?.h, event.metadata.deviceHeight);
+      if (pictureHeld(state)) {
+        state.stats.dropped++;
+        return;
+      }
       state.lastFrame = { t: "px", tab: state.target.targetId, data: event.data, w, h };
       clearFirstFrameTimer(state);
       noteMotionFrame(state);
@@ -775,6 +819,9 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
           clearFirstFrameTimer(state);
           state.fallback = undefined;
           delete state.lastFrame;
+          // The new document starts at 100%, which the picture must not show until the zoom is back.
+          if (opts.browserZoom && state.hub.mode === "px" && state.hub.pixelZoom > 1)
+            state.pictureHeldUntil = Number.POSITIVE_INFINITY;
           state.queue = state.queue.then(() => reassertZoom(state)).catch(report);
           if (state.screencasting && state.hub.mode === "px") {
             watchFirstFrame(state, state.generation);
@@ -918,7 +965,7 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
       reapply(state);
       return;
     }
-    if (video?.lost && !opts.backlogged?.()) restartVideo(state);
+    if (video?.lost && !opts.backlogged?.() && !pictureHeld(state)) restartVideo(state);
     if (state.grabChecking) return;
     state.grabChecking = true;
     void opts

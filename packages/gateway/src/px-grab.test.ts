@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { FlatSessionEventMap } from "./browser/launch";
 import { TabHub } from "./hub/tabhub";
-import { createScreencast } from "./px";
+import { ZOOM_BUBBLE_MS, createScreencast } from "./px";
 import type { GrabRegion, VideoEncoderEvents, JpegGrabEvents } from "./px-video";
 import type { TargetRef } from "./types";
 
@@ -35,11 +35,13 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
   const published: Down[] = [];
   const errors: unknown[] = [];
   const backlog = { value: false };
+  // What the page reports as its density: the browser zoom at a density of 1.
+  const page = { density: options.dpr ?? 1 };
   const controller = createScreencast({
     browser: {
       send: (async (_session: string, method: string, params?: Record<string, unknown>) => {
         calls.push({ method, ...(params ? { params } : {}) });
-        if (method === "Runtime.evaluate") return { result: { value: options.dpr ?? 1 } };
+        if (method === "Runtime.evaluate") return { result: { value: page.density } };
         return {};
       }) as never,
       onAttached: (callback: (target: TargetRef) => void) => void (attached = callback),
@@ -62,6 +64,7 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
     browserZoom: {
       set: async (_target, level) => {
         calls.push({ method: `press ${level}` });
+        page.density = level;
       },
     },
     createVideoEncoder: () => ({ write: () => {}, close: () => {} }),
@@ -107,6 +110,7 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
   return {
     calls,
     hub,
+    page,
     slots,
     encoders,
     jpegs,
@@ -185,7 +189,9 @@ describe("screen grab", () => {
 
   it("never lays the page out narrow, and shows it only once it is back in shape", async () => {
     const { controller, calls } = setup({ dpr: 2 });
-    await controller.handle({ ...PX, quality: "sharp" });
+    const switching = controller.handle({ ...PX, quality: "sharp" });
+    await vi.advanceTimersByTimeAsync(ZOOM_BUBBLE_MS);
+    await switching;
     const zoomed = calls.findIndex(({ method }) => method === "press 2");
     const widened = calls.findIndex(
       ({ method, params }) =>
@@ -289,6 +295,55 @@ describe("screen grab", () => {
     controller.requestKeyframe("tab-1");
     expect(encoders).toHaveLength(2);
     expect(encoders[0]!.closed).toBe(true);
+    controller.dispose();
+  });
+  it("starts the picture only once Chromium's zoom bubble has gone", async () => {
+    const { controller, encoders, published } = setup({ dpr: 2 });
+    const switching = controller.handle({ ...PX, quality: "sharp" });
+    await vi.advanceTimersByTimeAsync(ZOOM_BUBBLE_MS - 100);
+    expect(encoders).toHaveLength(0);
+    expect(published.some((message) => message.t === "mode")).toBe(false);
+    await vi.advanceTimersByTimeAsync(100);
+    await switching;
+    expect(encoders).toHaveLength(1);
+    expect(published).toContainEqual({ t: "mode", tab: "tab-1", mode: "px" });
+    controller.dispose();
+  });
+
+  it("starts at once when the zoom does not change", async () => {
+    const { controller, encoders } = setup({ dpr: 1 });
+    await controller.handle(PX);
+    expect(encoders).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("holds the picture while a new page is at 100% and the bubble is up, then starts again", async () => {
+    const { controller, encoders, published, calls, navigate, page } = setup({ dpr: 2 });
+    const switching = controller.handle({ ...PX, quality: "sharp" });
+    await vi.advanceTimersByTimeAsync(ZOOM_BUBBLE_MS);
+    await switching;
+    const first = encoders[0]!;
+    const chunks = () => published.filter((message) => message.t === "vid").length;
+    first.events.onChunk(Buffer.from("key"), true);
+    expect(chunks()).toBe(1);
+
+    // A new document starts at 100%, and stays so until the zoom is set again.
+    page.density = 1;
+    navigate();
+    first.events.onChunk(Buffer.from("at 100%"), false);
+    expect(chunks()).toBe(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls.map(({ method }) => method)).toContain("press 2");
+    first.events.onChunk(Buffer.from("bubble"), false);
+    await vi.advanceTimersByTimeAsync(ZOOM_BUBBLE_MS - TICK_MS);
+    expect(chunks()).toBe(1);
+    expect(encoders).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(TICK_MS * 2);
+    // A new stream, which begins with a keyframe.
+    expect(encoders.length).toBeGreaterThan(1);
+    expect(first.closed).toBe(true);
+    encoders.at(-1)!.events.onChunk(Buffer.from("key"), true);
+    expect(chunks()).toBe(2);
     controller.dispose();
   });
 });
