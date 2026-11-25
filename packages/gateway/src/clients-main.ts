@@ -2,7 +2,13 @@
  * Independent workspaces over one Chrome per account. Sessions on one account share its login
  * profile. Profiles separate site storage; shared infrastructure is not an unlinkability guarantee.
  */
-import { encodeMsg, type Down, type Up, type ServerStatusMsg } from "@mirror/protocol";
+import {
+  encodeMsg,
+  LOCAL_RESYNC_REASON,
+  type Down,
+  type Up,
+  type ServerStatusMsg,
+} from "@mirror/protocol";
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
@@ -1490,7 +1496,15 @@ export async function startClientGateway(
     }
     if (message.t === "resync-req") {
       ws.fanout.flushSession(runtime.sid);
-      runtime.tabs.hubFor(message.tab)?.requestSnapshot("resync");
+      const hub = runtime.tabs.hubFor(message.tab);
+      const viewer = viewers.get(id)?.viewer;
+      // This viewer's typing echo went its own way; the stream itself is fine, so the cached
+      // state answers it without making every viewer rebuild from a new page snapshot.
+      if (message.reason === LOCAL_RESYNC_REASON && hub !== undefined && viewer !== undefined) {
+        viewer.sendCatchUp(hub.joinPayload());
+        return;
+      }
+      hub?.requestSnapshot("resync");
       return;
     }
     if (message.t === "vid-key") {

@@ -21,7 +21,7 @@ import {
 import { takeRemoteCcLink, RemoteCcLoginBanner } from "./network-remote-cc-panel";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { AgentMsg, Down, eventWithTime, TabId } from "@mirror/protocol";
-import { EventType, IncrementalSource } from "@mirror/protocol";
+import { EventType, IncrementalSource, LOCAL_RESYNC_REASON } from "@mirror/protocol";
 import { createMirror, type Mirror } from "./mirror";
 import { attachMirrorInput } from "./input";
 import { createInputResync, focusedValueMessage, type InputResync } from "./input/resync-input";
@@ -588,11 +588,14 @@ export function App() {
       storage: sessionStorageOrNull(),
     });
     const echo = createEchoFilter({
+      // Through the mirror and its rate limit, like any recovery. The reason asks the gateway to
+      // answer this page alone from its cached state, not every viewer from a new page snapshot.
       onContenteditableReconcile: () => {
         const tab = presentation.activeTab();
-        if (tab !== null && presentation.canInput(tab, "dom"))
-          socket?.send({ t: "resync-req", tab, reason: "editable-clear" });
+        if (tab !== null && presentation.canInput(tab, "dom") && mirror.getActiveTab() === tab)
+          mirror.recover(LOCAL_RESYNC_REASON);
       },
+      nodeFor: (id) => mirror.getReplayer()?.getMirror().getNode(id) ?? null,
     });
     // A file input in the mirror opens its own picker, and the same click reaches the remote page.
     let mirrorPickerOpenedAt = Number.NEGATIVE_INFINITY;

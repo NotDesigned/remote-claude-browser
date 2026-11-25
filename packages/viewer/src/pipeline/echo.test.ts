@@ -29,10 +29,19 @@ class FakeContenteditable {
   readonly isContentEditable = true;
   innerHTML = "";
   textContent = "";
+  /** Text nodes this editor holds, by rrweb id. */
+  readonly children = new Map<number, { textContent: string }>();
 
   set value(_value: string) {
     throw new Error("contenteditable must never receive a scalar value snap");
   }
+
+  contains(node: unknown): boolean {
+    return [...this.children.values()].includes(node as { textContent: string });
+  }
+
+  /** The replay's id lookup, as app.tsx wires it from the Replayer's mirror. */
+  nodeFor = (id: number) => (this.children.get(id) ?? null) as Node | null;
 }
 
 function inputEvent(id: number, text: string, isChecked = false): eventWithTime {
@@ -70,6 +79,36 @@ function mutationEvent(
       adds,
     },
   } as eventWithTime;
+}
+
+function removal(parentId: number, id: number): eventWithTime {
+  return {
+    type: EventType.IncrementalSnapshot,
+    timestamp: 1,
+    data: {
+      source: IncrementalSource.Mutation,
+      texts: [],
+      attributes: [],
+      removes: [{ parentId, id }],
+      adds: [],
+    },
+  } as eventWithTime;
+}
+
+/** Timers the test fires itself. */
+function manualTimers() {
+  const callbacks: (() => void)[] = [];
+  return {
+    options: {
+      setTimer: ((callback: () => void) => {
+        callbacks.push(callback);
+        return callbacks.length as unknown as ReturnType<typeof setTimeout>;
+      }) as typeof setTimeout,
+      clearTimer: (() => {}) as typeof clearTimeout,
+    },
+    first: () => callbacks[0]!(),
+    last: () => callbacks.at(-1)!(),
+  };
 }
 
 describe("F5 native local typing echo", () => {
@@ -261,9 +300,11 @@ describe("F5 native local typing echo", () => {
     ]);
     expect(field.innerHTML).toBe("local");
 
+    // Past the window the page's own change shows, even while the editor keeps focus: holding
+    // everything back as long as it had focus left a stale editor for good.
     now = 1_001;
     const authoritative = mutationEvent([{ id: 21, value: "authoritative" }]);
-    expect(echo(authoritative, { tab: "T1", nowMs: now })).toBeNull();
+    expect(echo(authoritative, { tab: "T1", nowMs: now })).toBe(authoritative);
     echo.setFocused(null);
     expect(echo(authoritative, { tab: "T1", nowMs: now })).toBe(authoritative);
   });
@@ -299,12 +340,17 @@ describe("F5 native local typing echo", () => {
     echo.setFocused(null);
     expect(field.innerHTML).toBe("<b>local subtree</b>");
   });
-  it("reconciles an authoritative clear after local echo has expired", () => {
+  it("lets a clear after the window through, where it applies, without a reconcile", () => {
     let time = 0;
     const reconcile = vi.fn();
-    const echo = createEchoFilter({ now: () => time, onContenteditableReconcile: reconcile });
     const field = new FakeContenteditable();
+    const echo = createEchoFilter({
+      now: () => time,
+      onContenteditableReconcile: reconcile,
+      nodeFor: field.nodeFor,
+    });
     field.textContent = "已经发送的问题";
+    field.children.set(22, { textContent: "已经发送的问题" });
     const focus = {
       element: field as unknown as HTMLElement,
       nodeId: 20,
@@ -312,26 +358,128 @@ describe("F5 native local typing echo", () => {
     };
     echo.input(focus);
     time = 2000;
-    echo(mutationEvent([{ id: 22, value: "" }]), { nowMs: time } as never);
+    const clear = mutationEvent([{ id: 22, value: "" }]);
+    expect(echo(clear, { nowMs: time } as never)).toBe(clear);
+    expect(reconcile).not.toHaveBeenCalled();
+    echo.reset();
+  });
+
+  it("reconciles when the page changes a node whose addition the echo kept from this replay", () => {
+    let time = 0;
+    const timers = manualTimers();
+    const reconcile = vi.fn();
+    const field = new FakeContenteditable();
+    const echo = createEchoFilter({
+      now: () => time,
+      onContenteditableReconcile: reconcile,
+      nodeFor: field.nodeFor,
+      ...timers.options,
+    });
+    const focus = {
+      element: field as unknown as HTMLElement,
+      nodeId: 20,
+      subtreeNodeIds: new Set([20]),
+    };
+    // Typing "hello": the page adds text node 31, which this replay never gets.
+    field.textContent = "hello";
+    echo.setFocused(focus);
+    echo.input(focus);
+    time = 80;
+    const echoed = mutationEvent(
+      [{ id: 31, value: "hello" }],
+      [{ parentId: 20, nextId: null, node: { id: 31, type: 3, textContent: "h" } }],
+    );
+    expect(echo(echoed, { nowMs: time } as never)).toBeNull();
+    // Settled: the page holds exactly what was typed here.
+    time = 1_000;
+    timers.last();
+    expect(reconcile).not.toHaveBeenCalled();
+
+    // Sent: the page clears its editor by removing node 31, which this replay cannot do.
+    time = 3_000;
+    const cleared = removal(20, 31);
+    expect(echo(cleared, { nowMs: time } as never)).toBe(cleared);
+    expect(reconcile).toHaveBeenCalledOnce();
+    // Once until the rebuild that answers it.
+    echo(cleared, { nowMs: time } as never);
     expect(reconcile).toHaveBeenCalledOnce();
     echo.reset();
+    echo(cleared, { nowMs: time } as never);
+    expect(reconcile).toHaveBeenCalledOnce();
+  });
+
+  it("reconciles when typing settles on text the page has and this replay lacks", () => {
+    let time = 0;
+    const timers = manualTimers();
+    const reconcile = vi.fn();
+    const field = new FakeContenteditable();
+    const echo = createEchoFilter({
+      now: () => time,
+      onContenteditableReconcile: reconcile,
+      nodeFor: field.nodeFor,
+      ...timers.options,
+    });
+    const focus = {
+      element: field as unknown as HTMLElement,
+      nodeId: 20,
+      subtreeNodeIds: new Set([20]),
+    };
+    field.textContent = "hel";
+    echo.setFocused(focus);
+    echo.input(focus);
+    time = 100;
+    // The page's editor completed the word on its own.
+    echo(
+      mutationEvent(
+        [],
+        [{ parentId: 20, nextId: null, node: { id: 31, type: 3, textContent: "hello world" } }],
+      ),
+      { nowMs: time } as never,
+    );
+    expect(reconcile).not.toHaveBeenCalled();
+    // Leaving the editor mid-burst waits for the window to end.
+    echo.setFocused(null);
+    expect(reconcile).not.toHaveBeenCalled();
+    time = 1_000;
+    timers.last();
+    expect(reconcile).toHaveBeenCalledOnce();
+  });
+
+  it("does not move the caret for an echo that arrives after its window", () => {
+    let time = 0;
+    const field = new FakeContenteditable();
+    const echo = createEchoFilter({ now: () => time, nodeFor: field.nodeFor });
+    field.children.set(21, { textContent: "typed" });
+    field.textContent = "typed";
+    const focus = {
+      element: field as unknown as HTMLElement,
+      nodeId: 20,
+      subtreeNodeIds: new Set([20, 21]),
+    };
+    echo.setFocused(focus);
+    echo.input(focus);
+    time = 1_500;
+    expect(echo(mutationEvent([{ id: 21, value: "typed" }]), { nowMs: time } as never)).toBeNull();
+    const changed = mutationEvent([{ id: 21, value: "typed!" }]);
+    expect(echo(changed, { nowMs: time } as never)).toBe(changed);
+    // That change may still wait in the replay buffer: an equal one right after must apply.
+    const back = mutationEvent([{ id: 21, value: "typed" }]);
+    expect(echo(back, { nowMs: time + 10 } as never)).toBe(back);
   });
 
   it("keeps new typing protected until the reconciliation window ends", () => {
     let time = 0;
-    const timers: (() => void)[] = [];
+    const timers = manualTimers();
     const reconcile = vi.fn();
+    const field = new FakeContenteditable();
     const echo = createEchoFilter({
       now: () => time,
       onContenteditableReconcile: reconcile,
-      setTimer: ((callback: () => void) => {
-        timers.push(callback);
-        return timers.length as unknown as ReturnType<typeof setTimeout>;
-      }) as typeof setTimeout,
-      clearTimer: (() => {}) as typeof clearTimeout,
+      nodeFor: field.nodeFor,
+      ...timers.options,
     });
-    const field = new FakeContenteditable();
     field.textContent = "问题一";
+    field.children.set(22, { textContent: "问题一" });
     const focus = {
       element: field as unknown as HTMLElement,
       nodeId: 20,
@@ -339,16 +487,42 @@ describe("F5 native local typing echo", () => {
     };
     echo.input(focus);
     time = 100;
-    echo(mutationEvent([{ id: 22, value: "" }]), { nowMs: time } as never);
+    // The page cleared the sent question; this replay still shows it.
+    expect(echo(mutationEvent([{ id: 22, value: "" }]), { nowMs: time } as never)).toBeNull();
     time = 500;
-    field.textContent = "下一条问题";
+    field.textContent = "问题一下一条问题";
     echo.input(focus);
     time = 1100;
-    timers[0]!();
+    timers.first();
     expect(reconcile).not.toHaveBeenCalled();
     time = 1500;
-    timers.at(-1)!();
+    timers.last();
     expect(reconcile).toHaveBeenCalledOnce();
     echo.reset();
+  });
+
+  it("asks for nothing when the page and this replay both emptied the editor", () => {
+    let time = 0;
+    const timers = manualTimers();
+    const reconcile = vi.fn();
+    const field = new FakeContenteditable();
+    const echo = createEchoFilter({
+      now: () => time,
+      onContenteditableReconcile: reconcile,
+      nodeFor: field.nodeFor,
+      ...timers.options,
+    });
+    field.children.set(22, { textContent: "" });
+    const focus = {
+      element: field as unknown as HTMLElement,
+      nodeId: 20,
+      subtreeNodeIds: new Set([20, 22]),
+    };
+    echo.input(focus);
+    time = 100;
+    echo(mutationEvent([{ id: 22, value: "" }]), { nowMs: time } as never);
+    time = 1_000;
+    timers.last();
+    expect(reconcile).not.toHaveBeenCalled();
   });
 });
