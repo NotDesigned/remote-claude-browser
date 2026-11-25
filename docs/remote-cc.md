@@ -27,7 +27,7 @@ remote-cc 的出口主机（主机令牌）──兑换会话授权、复查节�
 - 连接码 10 分钟内有效。同一个 IP 最多 5 个、全站最多 200 个等待确认的请求；已批准或已拒绝的请求不再占名额（`remote-cc/flows.ts`）。
 - 用户没有登录时，链接里的连接码在登录后保留下来。
 - 批准页显示请求来源的 IP、客户端（`User-Agent`）和发起时间。来源 IP 取决于网关信任的反向代理（`MIRROR_TRUSTED_PROXIES`），没有配置好时显示的是代理的地址。
-- 出口主机的请求只有管理员能批准。
+- 出口主机的请求只有管理员能批准或拒绝。
 - 批准后，令牌只交给发起请求的那一方一次；工作台只保存它的 SHA-256 摘要。
 - 每个用户每种令牌最多 20 个（`remote-cc/store.ts`）。
 
@@ -115,7 +115,7 @@ GET    /api/remote-cc/tokens
 DELETE /api/remote-cc/tokens/:id
 GET    /api/remote-cc/devices/:code           → {request: {userCode, kind, name, createdAt, expiresAt, ip, userAgent}}
 POST   /api/remote-cc/devices/:code/approve   出口主机只有管理员能批准
-POST   /api/remote-cc/devices/:code/deny
+POST   /api/remote-cc/devices/:code/deny      出口主机只有管理员能拒绝
 GET    /api/remote-cc/logins                  → {logins: [{id, profileId, profileName, status, createdAt, tokenName}]}
 DELETE /api/remote-cc/logins/:id              只能取消自己的登录，204
 ```

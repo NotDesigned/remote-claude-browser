@@ -10,17 +10,17 @@
 
 ### 基本
 
-| 变量                     |      必填      | 默认                 | 说明                                                                                                                                                                                                 |
-| ------------------------ | :------------: | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `COMPOSE_FILE`           |       是       | `compose.yml`        | Docker Compose 自己读取的文件列表，用 `:` 分隔。要打开浏览器配置，必须包含 `compose.runtime.yml`                                                                                                     |
-| `MIRROR_ACCESS_PASSWORD` |       是       | 无                   | 初始管理员的密码，至少 8 个字符。只在用户数据库为空时使用；之后修改它不会改变任何用户的密码。Compose 要求它非空                                                                                      |
-| `MIRROR_ADMIN_USERNAME`  |       否       | `admin`              | 初始管理员的用户名。只在用户数据库为空时使用，之后修改它不会给已有用户改名                                                                                                                           |
-| `MIRROR_AUTH_SECRET`     |       是       | 无                   | 至少 16 个字符（`production-guard.ts`），用 `openssl rand -hex 32` 生成并保持不变。用于签名设备和会话归属，以及派生 remote-cc 会话授权的签名密钥。轮换它不会撤销用户的工作台登录                     |
-| `MIRROR_PUBLIC_ORIGIN`   | 从公网访问时是 | 空                   | 用户实际打开的来源，例如 `https://browser.example.com`。来自其他来源的 WebSocket 会被拒绝；单点登录的回调地址也由它推出。只在本机试用时可以留空                                                      |
-| `MIRROR_START_URL`       |       否       | `https://claude.ai/` | 新会话打开的第一个页面                                                                                                                                                                               |
-| `MIRROR_IDLE_GRACE_MS`   |       否       | 900000（15 分钟）    | 一个会话的所有设备都断开后，过多久关闭它的远程页面，单位毫秒（`session/resource-policy.ts`）；必须是不小于 0 的整数，否则网关拒绝启动                                                                |
-| `SERVER_IMAGE`           |       否       | 本地构建             | 预构建的服务端镜像，例如 `ghcr.io/notdesigned/remote-claude-browser-server:latest`                                                                                                                   |
-| `TZ`                     |       否       | `Etc/UTC`            | 服务进程和日志的时区。无效的 IANA 时区名会让容器启动失败。浏览器的时区不看它，而是跟随各自的出口（见[使用 · 当地时间](usage.md#当地时间)）。`docker compose exec server date -Is` 显示服务进程的时间 |
+| 变量                     | 必填 | 默认                 | 说明                                                                                                                                                                                                                                                        |
+| ------------------------ | :--: | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `COMPOSE_FILE`           |  是  | `compose.yml`        | Docker Compose 自己读取的文件列表，用 `:` 分隔。要打开浏览器配置，必须包含 `compose.runtime.yml`                                                                                                                                                            |
+| `MIRROR_ACCESS_PASSWORD` |  是  | 无                   | 初始管理员的密码，至少 8 个字符。只在用户数据库为空时使用；之后修改它不会改变任何用户的密码。Compose 要求它非空                                                                                                                                             |
+| `MIRROR_ADMIN_USERNAME`  |  否  | `admin`              | 初始管理员的用户名。只在用户数据库为空时使用，之后修改它不会给已有用户改名                                                                                                                                                                                  |
+| `MIRROR_AUTH_SECRET`     |  是  | 无                   | 至少 16 个字符（`production-guard.ts`），用 `openssl rand -hex 32` 生成并保持不变。用于签名设备和会话归属，以及派生 remote-cc 会话授权的签名密钥。轮换它不会撤销用户的工作台登录                                                                            |
+| `MIRROR_PUBLIC_ORIGIN`   |  是  | 无                   | 用户实际打开的来源，例如 `https://browser.example.com`；本机试用写 `http://127.0.0.1:3010`（`scripts/bootstrap.sh` 默认写入它）。来自其他来源的 WebSocket 和表单提交会被拒绝；单点登录的回调地址也由它推出。没有设置时网关拒绝启动（`production-guard.ts`） |
+| `MIRROR_START_URL`       |  否  | `https://claude.ai/` | 新会话打开的第一个页面                                                                                                                                                                                                                                      |
+| `MIRROR_IDLE_GRACE_MS`   |  否  | 900000（15 分钟）    | 一个会话的所有设备都断开后，过多久关闭它的远程页面，单位毫秒（`session/resource-policy.ts`）；必须是不小于 0 的整数，否则网关拒绝启动                                                                                                                       |
+| `SERVER_IMAGE`           |  否  | 本地构建             | 预构建的服务端镜像，例如 `ghcr.io/notdesigned/remote-claude-browser-server:latest`                                                                                                                                                                          |
+| `TZ`                     |  否  | `Etc/UTC`            | 服务进程和日志的时区。无效的 IANA 时区名会让容器启动失败。浏览器的时区不看它，而是跟随各自的出口（见[使用 · 当地时间](usage.md#当地时间)）。`docker compose exec server date -Is` 显示服务进程的时间                                                        |
 
 ### 网络和入口
 
@@ -103,9 +103,9 @@
 | `MIRROR_OIDC_CLIENT_SECRET`   | 设置 issuer 时 | 无                     | 工作台的客户端密钥，只写在 `.env` 里                                                                                                               |
 | `MIRROR_OIDC_LABEL`           |       否       | `使用单点登录`         | 登录页按钮上的文字                                                                                                                                 |
 | `MIRROR_OIDC_ADMIN_GROUP`     |       否       | 空                     | 这个组的成员是管理员。只作用于通过单点登录创建的用户，每次登录时同步；不会撤掉最后一个管理员                                                       |
-| `MIRROR_OIDC_ALLOWED_DOMAINS` |       否       | 空                     | 允许**首次**登录的邮箱域名，逗号分隔，要求邮箱已验证（`email_verified`）                                                                           |
-| `MIRROR_OIDC_ALLOWED_EMAILS`  |       否       | 空                     | 允许首次登录的邮箱，逗号分隔，要求邮箱已验证                                                                                                       |
-| `MIRROR_OIDC_ALLOWED_GROUPS`  |       否       | 空                     | 允许首次登录的组，逗号分隔。三个允许列表都为空时，身份提供方放行的每个人都会得到一个账号                                                           |
+| `MIRROR_OIDC_ALLOWED_DOMAINS` |       否       | 空                     | 允许登录的邮箱域名，逗号分隔，要求邮箱已验证（`email_verified`）。允许列表在**每次**单点登录时检查，不再满足的人无法再用单点登录进入               |
+| `MIRROR_OIDC_ALLOWED_EMAILS`  |       否       | 空                     | 允许登录的邮箱，逗号分隔，要求邮箱已验证                                                                                                           |
+| `MIRROR_OIDC_ALLOWED_GROUPS`  |       否       | 空                     | 允许登录的组，逗号分隔。三个允许列表都为空时，身份提供方放行的每个人都会得到一个账号                                                               |
 | `MIRROR_OIDC_SESSION_DAYS`    |       否       | `7`                    | 单点登录得到的工作台登录的有效天数，1 到 60（`auth/oidc.ts`）                                                                                      |
 | `MIRROR_OIDC_REVALIDATE_DAYS` |       否       | `30`                   | **没有本地密码**的用户超过这么多天没有单点登录时，其 remote-cc 令牌暂停使用，1 到 60（`auth/oidc.ts`）                                             |
 | `MIRROR_OIDC_SCOPES`          |       否       | `openid profile email` | 覆盖请求的 scope，一般不用改                                                                                                                       |
@@ -131,14 +131,15 @@
 
 下面这些不从 `.env` 读取。要改，在自己的覆盖文件里给 `server` 服务的 `environment` 加上，再把这个文件加进 `COMPOSE_FILE`。
 
-| 变量                     | 默认                              | 说明                                                                                                  |
-| ------------------------ | --------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `MIRROR_TRUSTED_PROXIES` | `SERVER_SUBNET` 的值              | 可以设置 `X-Forwarded-For` 的代理地址，逗号分隔。它决定日志、登录限速和 remote-cc 批准页看到的来源 IP |
-| `MIRROR_DISABLE_RTC`     | 不设置                            | `1` 关闭页面模式里经 WebRTC 播放视频                                                                  |
-| `MIRROR_SCREEN_GRAB`     | 开启                              | `0` 关闭画面模式直接截取显示内容，改用 Chromium 的截屏                                                |
-| `XVFB_SCREEN`            | `12800x2880x24`                   | 每个浏览器配置的私有虚拟显示的尺寸。显示占用的资源随运行中的配置增加                                  |
-| `MIRROR_USERS_DB`        | `<数据目录>/profile/users.sqlite` | 用户数据库的路径；收件箱数据库放在它旁边。放在持久、受保护的存储上，并纳入[备份](deployment.md#备份)  |
-| `MIRROR_ACCOUNTS_DIR`    | `<数据目录>/profile-accounts`     | 默认配置以外的浏览器配置存放 Chrome 资料的目录                                                        |
+| 变量                                      | 默认                              | 说明                                                                                                                                                               |
+| ----------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `MIRROR_TRUSTED_PROXIES`                  | `SERVER_SUBNET` 的值              | 可以设置 `X-Forwarded-For` 的代理地址，逗号分隔。它决定日志、登录限速和 remote-cc 批准页看到的来源 IP                                                              |
+| `MIRROR_DISABLE_RTC`                      | 不设置                            | `1` 关闭页面模式里经 WebRTC 播放视频                                                                                                                               |
+| `MIRROR_SCREEN_GRAB`                      | 开启                              | `0` 关闭画面模式直接截取显示内容，改用 Chromium 的截屏                                                                                                             |
+| `XVFB_SCREEN`                             | `12800x2880x24`                   | 每个浏览器配置的私有虚拟显示的尺寸。显示占用的资源随运行中的配置增加                                                                                               |
+| `MIRROR_USERS_DB`                         | `<数据目录>/profile/users.sqlite` | 用户数据库的路径；收件箱数据库放在它旁边。放在持久、受保护的存储上，并纳入[备份](deployment.md#备份)                                                               |
+| `MIRROR_ACCOUNTS_DIR`                     | `<数据目录>/profile-accounts`     | 默认配置以外的浏览器配置存放 Chrome 资料的目录                                                                                                                     |
+| `MIRROR_PROXY_SUBSCRIPTION_ALLOW_PRIVATE` | 不设置                            | `1` 允许订阅地址指向私有、回环、链路本地和其他保留地址。不设置时，导入和刷新订阅只连接公网地址（`net/public-target.ts`），任何登录的用户都不能借订阅让网关访问内网 |
 
 Compose 把密码和签名密钥作为容器的环境变量传入。能查看容器或控制 Docker 守护进程的人都能读到它们，而控制 Docker 守护进程本身就等于宿主机的 root。
 
