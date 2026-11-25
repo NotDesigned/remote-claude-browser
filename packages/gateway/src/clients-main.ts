@@ -225,22 +225,10 @@ export async function startClientGateway(
   const egressScope = (userId: string, nodeId: string) =>
     `scope-${createHash("sha256").update(`${userId}/${nodeId}`).digest("hex").slice(0, 32)}`;
   const resetProfileRuntime = async (id: string) => {
-    const sessions = clientSessions
-      .all()
-      .filter((record) => (record.profile ?? DEFAULT_PROFILE) === id);
-    for (const record of sessions) closing.add(record.sid);
-    try {
-      for (const record of sessions) await stopRuntime(record.sid);
-      const account = accounts.get(id) ?? (await openingAccounts.get(id));
-      if (account) await closeAccount(account);
-    } finally {
-      for (const record of sessions) {
-        runtimes.delete(record.sid);
-        runtimePromises.delete(record.sid);
-        closing.delete(record.sid);
-      }
-      broadcastStatus();
-    }
+    for (const record of clientSessions.all())
+      if ((record.profile ?? DEFAULT_PROFILE) === id) await teardownSession(record.sid);
+    const account = accounts.get(id) ?? (await openingAccounts.get(id));
+    if (account) await closeAccount(account);
   };
   const invalidateNodes = async (ids: string[]) => {
     await accountLifecycle.run(async () => {
@@ -822,26 +810,24 @@ export async function startClientGateway(
       accountLifecycle.run(async () => {
         const current = clientSessions.get(sid);
         if (!current || current !== token || onlineSessions().has(sid)) return;
-        closing.add(sid);
-        try {
-          const runtime = runtimes.get(sid);
-          const tabs = runtime && runtime.tabs.size > 0 ? await runtime.tabs.tabsMessage() : null;
-          // An offline viewer can reconnect to this identity after its windows are released.
-          await stopRuntime(sid);
-          if (tabs)
-            sleepingWindows.set(sid, {
-              token,
-              profile: clientSessions.profileOf(sid),
-              urls: tabs.tabs.map((tab) => tab.url),
-              active: tabs.tabs.findIndex((tab) => tab.active),
-            });
-          await clientSessions.setSleeping(current, true);
-        } finally {
-          runtimes.delete(sid);
-          runtimePromises.delete(sid);
-          closing.delete(sid);
-          broadcastStatus();
-        }
+        let tabs: Awaited<ReturnType<ClientRuntime["tabs"]["tabsMessage"]>> | null = null;
+        // An offline viewer can reconnect to this identity after its windows are released.
+        await teardownSession(sid, {
+          async beforeStop() {
+            const runtime = runtimes.get(sid);
+            tabs = runtime && runtime.tabs.size > 0 ? await runtime.tabs.tabsMessage() : null;
+          },
+          async afterStop() {
+            if (tabs)
+              sleepingWindows.set(sid, {
+                token,
+                profile: clientSessions.profileOf(sid),
+                urls: tabs.tabs.map((tab) => tab.url),
+                active: tabs.tabs.findIndex((tab) => tab.active),
+              });
+            await clientSessions.setSleeping(current, true);
+          },
+        });
       }),
     graceMs: sessionIdleGraceMs(process.env.MIRROR_IDLE_GRACE_MS, e2e),
     now: sessionNow,
@@ -1621,7 +1607,48 @@ export async function startClientGateway(
       }
     },
   );
-  /** Closes a session's windows and forgets its runtime. The caller marks it closing. */
+  /**
+   * The one way a session's browser goes away: mark it closing (so nothing new reaches it), close
+   * its windows, do what the caller needs while it is still closing, then forget its runtime and
+   * tell every other session the new totals.
+   */
+  async function teardownSession(
+    sid: string,
+    options: {
+      /** The session is over for good: its viewers get the terminal close code. */
+      ended?: boolean;
+      /** Also release the session record, which this owner holds. */
+      release?: string;
+      /** Runs once the session is marked closing, before its windows close. */
+      beforeStop?: () => Promise<void>;
+      /** Runs after the windows closed (and the record was released), still marked closing. */
+      afterStop?: () => Promise<void>;
+      /** Reports a failure to close the windows and goes on instead of failing the teardown. */
+      onStopError?: (error: unknown) => void;
+    } = {},
+  ): Promise<void> {
+    closing.add(sid);
+    try {
+      await options.beforeStop?.();
+      try {
+        await stopRuntime(sid, options.ended);
+      } catch (error) {
+        if (!options.onStopError) throw error;
+        options.onStopError(error);
+      }
+      if (options.release !== undefined) {
+        await clientSessions.release(options.release, sid);
+        ws.forgetSession(sid);
+      }
+      await options.afterStop?.();
+    } finally {
+      runtimes.delete(sid);
+      runtimePromises.delete(sid);
+      closing.delete(sid);
+      broadcastStatus();
+    }
+  }
+  /** Closes a session's windows and forgets its runtime. Only teardownSession calls it. */
   async function stopRuntime(sid: string, ended = false): Promise<void> {
     sleepingWindows.delete(sid);
     ws.closeSession(sid, ended ? 4010 : undefined);
@@ -1665,17 +1692,7 @@ export async function startClientGateway(
     if (!clientSessions.owns(owner, sid))
       throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "这个会话已结束");
     if (closing.has(sid)) throw new ClientSessionError(409, "CLIENT_CLOSING", "会话正在结束");
-    closing.add(sid);
-    try {
-      await stopRuntime(sid, true);
-      await clientSessions.release(owner, sid);
-      ws.forgetSession(sid);
-    } finally {
-      runtimes.delete(sid);
-      runtimePromises.delete(sid);
-      closing.delete(sid);
-      broadcastStatus();
-    }
+    await teardownSession(sid, { ended: true, release: owner });
   }
   /** Moves a session to another account. Its windows close; the viewer reconnects to new ones. */
   async function switchAccount(request: IncomingMessage, owner: string, sid: string, id: string) {
@@ -1693,16 +1710,7 @@ export async function startClientGateway(
     requireBrowserExit(id);
     if (closing.has(sid)) throw new ClientSessionError(409, "CLIENT_CLOSING", "会话正在结束");
     if (clientSessions.profileOf(sid) === id) return;
-    closing.add(sid);
-    try {
-      await stopRuntime(sid);
-      await clientSessions.setProfile(owner, sid, id);
-    } finally {
-      runtimes.delete(sid);
-      runtimePromises.delete(sid);
-      closing.delete(sid);
-      broadcastStatus();
-    }
+    await teardownSession(sid, { afterStop: () => clientSessions.setProfile(owner, sid, id) });
   }
   function userIdForOwner(owner: string): string | undefined {
     return e2e && owner.startsWith("test-")
@@ -2163,22 +2171,10 @@ export async function startClientGateway(
     }
     for (const record of clientSessions.all()) {
       if (userIdForOwner(record.owner) !== userId) continue;
-      closing.add(record.sid);
-      try {
-        await stopRuntime(record.sid);
-      } catch (error) {
-        report("revoked workspace cleanup failed", error);
-      } finally {
-        runtimes.delete(record.sid);
-        runtimePromises.delete(record.sid);
-        try {
-          await clientSessions.release(record.owner, record.sid);
-          ws.forgetSession(record.sid);
-        } catch (error) {
-          failures.push(error);
-        }
-        closing.delete(record.sid);
-      }
+      await teardownSession(record.sid, {
+        release: record.owner,
+        onStopError: (error) => report("revoked workspace cleanup failed", error),
+      }).catch((error: unknown) => failures.push(error));
     }
     for (const id of profiles) {
       const account = accounts.get(id);
@@ -2477,16 +2473,9 @@ export async function startClientGateway(
           console.error(`Chrome for account ${account.id} died; closing its sessions`);
           for (const runtime of [...runtimes.values()]) {
             if (runtime.account !== account) continue;
-            closing.add(runtime.sid);
-            try {
-              await stopRuntime(runtime.sid);
-            } catch (error) {
-              report("crashed workspace cleanup", error);
-            } finally {
-              runtimes.delete(runtime.sid);
-              runtimePromises.delete(runtime.sid);
-              closing.delete(runtime.sid);
-            }
+            await teardownSession(runtime.sid, {
+              onStopError: (error) => report("crashed workspace cleanup", error),
+            });
           }
           await closeAccount(account);
         }
