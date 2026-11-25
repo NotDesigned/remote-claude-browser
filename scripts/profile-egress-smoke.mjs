@@ -1329,6 +1329,11 @@ async function host() {
         fileURLToPath(new URL("../deploy/browser-filesystem.sh", import.meta.url)),
         "browser-filesystem.sh",
       ],
+      // browser-filesystem.sh installs the policies it finds beside itself.
+      [
+        fileURLToPath(new URL("../deploy/browser-policies.json", import.meta.url)),
+        "browser-policies.json",
+      ],
     ])
       await writeFile(join(work, name), await readFile(source), { mode: 0o644 });
     const require = createRequire(new URL("../packages/gateway/package.json", import.meta.url));
@@ -1403,6 +1408,7 @@ async function host() {
       "profile-network.sh",
       "config.mjs",
       "browser-zoom.mjs",
+      "browser-policies.json",
     ])
       await chmod(join(work, name), 0o644);
     await chmod(join(work, "browser-filesystem.sh"), 0o755);
