@@ -585,6 +585,9 @@ async function checkPicture(browser) {
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH,
   headless: true,
+  // Offer this machine's address instead of an mDNS name: the server cannot resolve .local
+  // names, and when the runner's DNS also fails to resolve the STUN server, WebRTC has no path.
+  args: ["--disable-features=WebRtcHideLocalIpsWithMdns"],
 });
 try {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
