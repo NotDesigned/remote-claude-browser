@@ -41,8 +41,8 @@
   gap: 3px;
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--ink);
   text-align: left;
@@ -50,7 +50,7 @@
   cursor: pointer;
 }
 .mailbox-list button:hover {
-  background: var(--sunken);
+  background: var(--hover);
 }
 .mailbox-body {
   font: inherit;

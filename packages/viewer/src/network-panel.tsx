@@ -52,15 +52,10 @@ export function NetworkPanel({
       >
         <header class="network-panel-heading">
           <div>
-            <h2 id="network-panel-title">代理与 API</h2>
+            <h2 id="network-panel-title">网络与接入</h2>
             <p class="network-muted">管理可用节点、独立 CPA 授权和 remote-cc 连接。</p>
           </div>
-          <button
-            type="button"
-            class="network-close"
-            aria-label="关闭代理与 API 管理"
-            onClick={onClose}
-          >
+          <button type="button" class="network-close" aria-label="关闭网络与接入" onClick={onClose}>
             ×
           </button>
         </header>

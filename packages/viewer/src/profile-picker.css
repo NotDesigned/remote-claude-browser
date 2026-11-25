@@ -12,10 +12,11 @@
   flex-direction: column;
   align-items: center;
   overflow-y: auto;
-  padding: 24px 16px;
+  padding: 20px 16px;
   background: var(--bg);
   color: var(--ink);
   box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .profile-topbar {
@@ -47,7 +48,8 @@
   color: var(--ink);
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
   user-select: all;
   overflow-wrap: anywhere;
 }
@@ -62,17 +64,20 @@
   padding: 0 12px;
   color: var(--ink);
   background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
 }
 .profile-proxy-editor {
   display: grid;
   gap: 12px;
   padding: 16px;
   margin: 16px 0;
-  border: 1px solid var(--line);
-  border-radius: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
   background: var(--surface);
+}
+.profile-proxy-editor label {
+  font-weight: 600;
 }
 .profile-proxy-editor select {
   width: 100%;
@@ -80,11 +85,18 @@
   min-height: 44px;
   color: var(--ink);
   background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
   font: inherit;
-  font-size: 16px;
+  font-size: 15px;
+}
+/* The native ring is thick and black; ours matches every other field. */
+.profile-proxy-editor select:focus-visible,
+.profile-new-form select:focus-visible {
+  border-color: var(--focus);
+  outline: 2px solid color-mix(in srgb, var(--focus) 30%, transparent);
+  outline-offset: 0;
 }
 .profile-proxy-editor p {
   margin: 0;
@@ -96,27 +108,60 @@
   gap: 8px;
 }
 .profile-proxy-editor button {
-  min-height: 44px;
+  min-height: 40px;
   min-width: 44px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
   color: var(--ink);
-  padding: 8px 12px;
+  padding: 8px 16px;
+  font: inherit;
   cursor: pointer;
+}
+.profile-proxy-editor button:hover:enabled {
+  background: var(--hover);
+}
+.profile-proxy-editor button[type="submit"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+.profile-proxy-editor button[type="submit"]:hover:enabled {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+}
+.profile-proxy-editor button[type="button"] {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.profile-proxy-editor button:disabled {
+  opacity: 0.5;
+  cursor: wait;
 }
 .profile-tools > button,
 .profile-tools .workspace-menu-trigger {
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--ink);
-  padding: 7px 10px;
+  padding: 6px 12px;
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
   min-width: 44px;
-  min-height: 44px;
+  min-height: 36px;
+}
+.profile-tools > button:hover,
+.profile-tools .workspace-menu-trigger:hover {
+  background: var(--hover);
+}
+@media (pointer: coarse) {
+  .profile-tools > button,
+  .profile-tools .workspace-menu-trigger {
+    min-height: 44px;
+  }
 }
 .profile-tools button:focus-visible {
   outline: 2px solid var(--focus);
@@ -125,9 +170,10 @@
 .profile-body {
   flex: 1;
   display: grid;
-  place-items: center;
+  justify-items: center;
+  align-content: start;
   width: 100%;
-  padding: 48px 0;
+  padding: clamp(16px, 7vh, 64px) 0 48px;
 }
 
 .profile-panel {
@@ -141,8 +187,8 @@
 
 .profile-eyebrow {
   display: inline-block;
-  margin-bottom: 10px;
-  color: var(--muted);
+  margin-bottom: 8px;
+  color: var(--accent);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -150,7 +196,7 @@
 
 .profile-panel h1 {
   margin: 0 0 8px;
-  font-size: 28px;
+  font-size: 26px;
   font-weight: 600;
   letter-spacing: -0.01em;
 }
@@ -165,13 +211,10 @@
 .profile-map {
   --wire-gap: clamp(24px, 10vw, 108px);
   --map-columns: minmax(0, 1.55fr) minmax(0, 1fr);
-  --wire: color-mix(in srgb, var(--muted) 60%, var(--line));
+  --wire: var(--line-strong);
   display: grid;
   gap: 12px;
-  border-block: 1px solid var(--line);
-  padding: 14px 0;
-  background-image: radial-gradient(var(--line) 0.75px, transparent 0.75px);
-  background-size: 14px 14px;
+  padding: 4px 0 14px;
 }
 .map-head,
 .map-group {
@@ -180,9 +223,9 @@
   column-gap: var(--wire-gap);
 }
 .map-head {
+  padding-bottom: 2px;
   font-size: 12px;
   color: var(--muted);
-  font-weight: 600;
 }
 .map-members {
   display: grid;
@@ -199,7 +242,7 @@
   position: absolute;
   width: calc(var(--wire-gap) / 2 + 1px);
   top: 50%;
-  border-top: 1.5px solid var(--wire);
+  border-top: 2px solid var(--wire);
   pointer-events: none;
 }
 .map-member::after {
@@ -214,7 +257,7 @@
   left: calc(100% + var(--wire-gap) / 2);
   top: 0;
   bottom: -10px;
-  border-left: 1.5px solid var(--wire);
+  border-left: 2px solid var(--wire);
   pointer-events: none;
 }
 .map-group[data-bound="true"] .map-member:first-child:not(:only-child)::before {
@@ -229,20 +272,28 @@
 }
 .map-exit {
   align-self: center;
-  min-height: 58px;
+  box-sizing: border-box;
+  min-height: 76px;
   min-width: 0;
   text-align: left;
   display: grid;
   align-content: center;
   gap: 4px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 9px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  padding: 10px 14px;
   background: var(--surface);
   color: var(--ink);
   font: inherit;
   cursor: pointer;
   overflow-wrap: anywhere;
+}
+.map-exit:hover {
+  border-color: var(--accent);
+}
+.map-exit:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 .map-exit span,
 .map-summary > span,
@@ -256,12 +307,18 @@
 .map-member[data-highlight="true"] .profile-entry > .profile-card {
   border-color: var(--accent);
 }
-.profile-platform {
-  font-size: 12px;
+/* Platform and 「默认」 are the same chip: one outlined, one filled. */
+.profile-platform,
+.profile-badge {
+  box-sizing: border-box;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
   color: var(--ink);
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 1px 5px;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
 }
 .map-detail {
   position: sticky;
@@ -273,9 +330,10 @@
   flex-wrap: wrap;
   gap: 8px 18px;
   background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
   padding: 11px 14px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 8%);
 }
 .map-summary {
   display: grid;
@@ -284,9 +342,9 @@
   overflow-wrap: anywhere;
 }
 .map-detail button {
-  min-height: 44px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  min-height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
   padding: 8px 12px;
   background: var(--surface);
   color: var(--ink);
@@ -306,8 +364,10 @@
 }
 .profile-entry > .profile-card {
   display: grid;
+  align-content: center;
   gap: 5px;
-  padding: 10px 44px 10px 12px;
+  min-height: 76px;
+  padding: 10px 44px 10px 14px;
 }
 .profile-menu-toggle {
   position: absolute;
@@ -397,8 +457,8 @@
   width: 100%;
   min-height: 72px;
   padding: 14px 16px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
   background: var(--surface);
   color: inherit;
   font: inherit;
@@ -516,16 +576,13 @@ button.profile-card:focus-visible {
 }
 
 .profile-badge {
-  padding: 2px 8px;
-  border-radius: 999px;
+  border-color: transparent;
   background: var(--sunken);
   color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
 }
 
 .profile-new {
-  border: 1px dashed var(--line);
+  border: 1px dashed var(--line-strong);
   background: transparent;
   box-shadow: none;
 }
@@ -551,7 +608,7 @@ button.profile-card:focus-visible {
   min-height: 44px;
   padding: 9px 12px;
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   background: var(--bg);
   color: inherit;
   font: inherit;
@@ -576,8 +633,8 @@ button.profile-card:focus-visible {
   flex: 1;
   min-width: 0;
   padding: 9px 12px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
   background: var(--bg);
   color: inherit;
   font: inherit;
@@ -586,18 +643,19 @@ button.profile-card:focus-visible {
 }
 
 .profile-create input:focus {
-  border-color: var(--accent);
-  outline: none;
+  border-color: var(--focus);
+  outline: 2px solid color-mix(in srgb, var(--focus) 30%, transparent);
+  outline-offset: 0;
 }
 
 .profile-create button,
 .profile-error button {
   flex: none;
-  padding: 9px 14px;
+  padding: 9px 16px;
   border: 0;
-  border-radius: 9px;
-  background: var(--ink);
-  color: var(--surface);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--on-accent);
   font: inherit;
   font-weight: 600;
   cursor: pointer;
@@ -630,7 +688,7 @@ button.profile-card:focus-visible {
   gap: 12px;
   margin: 0 0 12px;
   padding: 10px 14px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--warn-bg);
   color: var(--warn-ink);
   font-size: 14px;

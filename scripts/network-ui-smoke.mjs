@@ -468,8 +468,9 @@ try {
     await page.reload();
     await page.locator(".map-exit").getByText("共享出口", { exact: true }).waitFor();
     await click(page.getByRole("button", { name: "工作台", exact: true }));
-    await click(page.getByRole("button", { name: "代理", exact: true }));
-    const panel = page.getByRole("dialog", { name: "代理与 API", exact: true });
+    await click(page.getByRole("button", { name: "网络与接入", exact: true }));
+    await click(page.getByRole("tab", { name: "代理来源", exact: true }));
+    const panel = page.getByRole("dialog", { name: "网络与接入", exact: true });
     assert.equal(await page.locator('#shell[data-picking="true"]').count(), 1);
     assert.equal(await page.locator(".network-panel-backdrop").isVisible(), true);
     await click(panel.getByRole("button", { name: "检查出口", exact: true }).first());
@@ -651,9 +652,10 @@ try {
     await click(panel.getByRole("tab", { name: "代理来源", exact: true }));
     await click(panel.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
     assert.equal(await panel.getByLabel("授权回调 URL 或授权码").inputValue(), "fixture-draft");
-    await click(panel.getByRole("button", { name: "关闭代理与 API 管理", exact: true }));
+    await click(panel.getByRole("button", { name: "关闭网络与接入", exact: true }));
     await click(page.getByRole("button", { name: "工作台", exact: true }));
-    await click(page.getByRole("button", { name: "API", exact: true }));
+    await click(page.getByRole("button", { name: "网络与接入", exact: true }));
+    await click(page.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
     await panel.getByLabel("授权回调 URL 或授权码", { exact: true }).waitFor();
     assert.equal(
       await panel.getByLabel("授权回调 URL 或授权码", { exact: true }).inputValue(),
@@ -662,7 +664,8 @@ try {
     await page.reload();
     await page.getByRole("button", { name: /默认配置.*未登录/ }).waitFor();
     await click(page.getByRole("button", { name: "工作台", exact: true }));
-    await click(page.getByRole("button", { name: "API", exact: true }));
+    await click(page.getByRole("button", { name: "网络与接入", exact: true }));
+    await click(page.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
     await panel.getByLabel("授权回调 URL 或授权码", { exact: true }).waitFor();
     assert.equal(await oauthProxy.inputValue(), "proxy-private");
     assert.equal(await panel.getByLabel("授权回调 URL 或授权码").inputValue(), "fixture-draft");
@@ -697,13 +700,14 @@ try {
       await panel.getByLabel("API Base URL", { exact: true }).inputValue(),
       origin + "/v1",
     );
-    await click(panel.getByRole("button", { name: "关闭代理与 API 管理", exact: true }));
+    await click(panel.getByRole("button", { name: "关闭网络与接入", exact: true }));
     await click(page.getByRole("button", { name: "工作台", exact: true }));
-    await click(page.getByRole("button", { name: "API", exact: true }));
+    await click(page.getByRole("button", { name: "网络与接入", exact: true }));
+    await click(page.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
     await panel.waitFor();
     assert.equal(await panel.getByLabel("新 API Key（仅此一次）", { exact: true }).count(), 0);
     const closeBox = await panel
-      .getByRole("button", { name: "关闭代理与 API 管理", exact: true })
+      .getByRole("button", { name: "关闭网络与接入", exact: true })
       .boundingBox();
     assert.ok(
       closeBox && closeBox.y >= 0 && closeBox.y + closeBox.height <= (mobile ? 568 : 900),
@@ -745,7 +749,7 @@ try {
     await page.screenshot({
       path: `artifacts/network-panel-${engine}-${mobile ? "phone" : "desktop"}.png`,
     });
-    await click(panel.getByRole("button", { name: "关闭代理与 API 管理", exact: true }));
+    await click(panel.getByRole("button", { name: "关闭网络与接入", exact: true }));
     await panel.waitFor({ state: "hidden" });
     await click(page.getByRole("button", { name: "管理「默认配置」", exact: true }));
     await click(page.getByRole("button", { name: "设置出口", exact: true }));
@@ -776,7 +780,8 @@ try {
         toolbarLayout.scroll <= toolbarLayout.width + 1,
     );
     await click(page.getByRole("button", { name: "工作台", exact: true }));
-    await click(page.getByRole("button", { name: "API", exact: true }));
+    await click(page.getByRole("button", { name: "网络与接入", exact: true }));
+    await click(page.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
     await panel.waitFor();
     await click(panel.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
     const inheritedOAuthProxy = panel.getByLabel("授权使用的代理");
@@ -835,10 +840,11 @@ try {
       "remote OAuth must dismiss the profile picker",
     );
     await click(page.getByRole("button", { name: "工作台", exact: true }));
-    await click(page.getByRole("button", { name: "API", exact: true }));
+    await click(page.getByRole("button", { name: "网络与接入", exact: true }));
+    await click(page.getByRole("tab", { name: "CPA 授权与 Key", exact: true }));
     await remoteOpen.waitFor();
     await panel.getByLabel("授权回调 URL 或授权码").waitFor();
-    await click(panel.getByRole("button", { name: "关闭代理与 API 管理", exact: true }));
+    await click(panel.getByRole("button", { name: "关闭网络与接入", exact: true }));
     checks.push({
       mobile,
       privateImportEditSubscriptionRefreshDelete: true,
@@ -896,7 +902,7 @@ try {
     });
     await page.goto(origin);
     await page.getByRole("button", { name: "工作台", exact: true }).click();
-    await page.getByRole("button", { name: "API", exact: true }).click();
+    await page.getByRole("button", { name: "网络与接入", exact: true }).click();
     await page.getByRole("tab", { name: "CPA 授权与 Key", exact: true }).click();
     await requested;
     await page.getByRole("button", { name: /共享实例/ }).click();

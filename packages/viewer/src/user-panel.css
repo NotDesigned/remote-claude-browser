@@ -17,9 +17,10 @@
   background: var(--surface);
   color: var(--ink);
   box-shadow: 0 20px 70px rgb(0 0 0 / 25%);
-  font-family: inherit;
+  font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.5;
+  -webkit-tap-highlight-color: transparent;
 }
 .user-panel button,
 .user-panel input,
@@ -35,8 +36,12 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 22px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 20px 22px 18px;
   border-bottom: 1px solid var(--line);
+  background: var(--surface);
 }
 .user-panel h2,
 .user-panel h3,
@@ -44,10 +49,12 @@
   margin: 0;
 }
 .user-panel h2 {
-  font-size: 19px;
+  font-size: 18px;
+  font-weight: 600;
 }
 .user-panel h3 {
-  font-size: 16px;
+  font-size: 15px;
+  font-weight: 600;
 }
 .user-panel-heading p,
 .user-panel-muted {
@@ -59,11 +66,16 @@
   width: 36px;
   height: 36px;
   border: 0;
-  border-radius: 9px;
-  background: var(--sunken);
-  color: var(--ink);
-  font-size: 24px !important;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 22px !important;
+  line-height: 1;
   cursor: pointer;
+}
+.user-panel-close:hover {
+  background: var(--hover);
+  color: var(--ink);
 }
 .user-panel-content {
   display: grid;
@@ -81,16 +93,18 @@
 .user-panel-list button {
   padding: 10px 12px;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--ink);
   text-align: left;
   cursor: pointer;
 }
-.user-panel-list button:hover:enabled,
+.user-panel-list button:hover:enabled {
+  background: var(--hover);
+}
 .user-panel-list button[aria-pressed="true"] {
-  border-color: var(--line);
-  background: var(--sunken);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 .user-panel-person {
   display: flex;
@@ -123,9 +137,15 @@
   min-height: 40px;
   padding: 8px 10px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--bg);
   color: var(--ink);
+}
+.user-panel-form input:not([type="checkbox"]):focus-visible,
+.user-panel-form select:focus-visible {
+  border-color: var(--focus);
+  outline: 2px solid color-mix(in srgb, var(--focus) 30%, transparent);
+  outline-offset: 0;
 }
 .user-panel-form .user-panel-check {
   flex-direction: row;
@@ -146,15 +166,27 @@
 .user-panel-actions button {
   min-height: 40px;
   padding: 8px 16px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
   cursor: pointer;
 }
-.user-panel-save {
-  background: var(--accent);
-  color: #fff;
+.user-panel-actions button:hover:enabled {
+  background: var(--hover);
 }
-.user-panel-delete {
+.user-panel .user-panel-save {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+.user-panel .user-panel-save:hover:enabled {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+}
+.user-panel .user-panel-delete {
+  border-color: transparent;
   background: transparent;
   color: var(--bad);
 }
@@ -167,7 +199,7 @@
 .user-panel .user-panel-message {
   margin: 16px 22px 0;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--sunken);
   color: var(--ok);
 }
@@ -189,19 +221,34 @@
 .admin-view-sessions,
 .admin-filter select {
   min-height: 40px;
-  padding: 8px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  padding: 8px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--ink);
   cursor: pointer;
 }
-.admin-tabs button[aria-pressed="true"] {
-  background: var(--sunken);
+.admin-tabs button:hover,
+.admin-session-list button:hover:enabled,
+.admin-view-sessions:hover {
+  background: var(--hover);
+}
+.admin-tabs button[aria-pressed="true"],
+.admin-tabs button[aria-pressed="true"]:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
   font-weight: 600;
 }
+/* 刷新: an action, not a section. */
 .admin-tabs button:last-child {
   margin-left: auto;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.admin-tabs button:last-child:hover {
+  background: var(--hover);
+  color: var(--ink);
 }
 .admin-summary {
   color: var(--muted);
@@ -255,17 +302,29 @@
 }
 .admin-resources {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 10px;
   margin: 0;
+}
+.admin-resources > div {
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--sunken);
 }
 .admin-resources dt {
   color: var(--muted);
+  font-size: 12px;
 }
 .admin-resources dd {
   margin: 4px 0 0;
   font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
+}
+.admin-summary {
+  font-variant-numeric: tabular-nums;
 }
 @media (max-width: 600px) {
   .user-panel-backdrop {
@@ -273,9 +332,18 @@
   }
   .user-panel {
     max-height: calc(100dvh - 24px);
-    border-radius: 14px;
+    border-radius: var(--radius-lg);
   }
-  .user-panel-heading,
+  .user-panel-heading {
+    align-items: center;
+    padding: 10px 8px 10px 16px;
+  }
+  #user-panel-description {
+    display: none;
+  }
+  .user-panel h2 {
+    font-size: 16px;
+  }
   .user-panel-form {
     padding: 16px;
   }
@@ -304,6 +372,13 @@
     font-size: 16px;
   }
   .admin-resources {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .admin-resources > div {
+    padding: 10px 12px;
+  }
+  .admin-resources dd {
+    font-size: 15px;
   }
 }

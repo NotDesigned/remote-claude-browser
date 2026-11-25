@@ -341,6 +341,12 @@ export function CpaPanel({
                 ? "共享账号池由管理员维护。每个用户管理自己的调用 Key；管理员可查看归属并撤销。"
                 : "此实例属于你，授权凭据仅由你管理。浏览器网页登录与 CPA 授权互相独立。"}
             </p>
+            {instance.canManage && (
+              <p class="network-muted">
+                原生管理页用于实例配置、统计和诊断。对外调用 Key、Claude
+                授权和出口绑定在此工作台管理。
+              </p>
+            )}
           </section>
           {instance.canManage && (
             <>
@@ -577,12 +583,6 @@ export function CpaPanel({
                 )}
               </section>
             </>
-          )}
-          {instance.canManage && (
-            <p class="network-muted">
-              原生管理页用于实例配置、统计和诊断。对外调用 Key、Claude
-              授权和出口绑定在此工作台管理。
-            </p>
           )}
           <section class="network-card network-form" aria-labelledby="cpa-keys-title">
             <h3 id="cpa-keys-title">

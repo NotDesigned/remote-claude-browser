@@ -817,11 +817,11 @@ try {
   assert.equal(await createSubmit.isDisabled(), true);
   assert.equal(await createWithApple.isDisabled(), true);
   await page.getByRole("button", { name: "导入节点或订阅", exact: true }).click();
-  const importPanel = page.getByRole("dialog", { name: "代理与 API", exact: true });
+  const importPanel = page.getByRole("dialog", { name: "网络与接入", exact: true });
   await importPanel.waitFor();
   await importPanel.getByRole("heading", { name: "导入代理来源", exact: true }).waitFor();
   await page.unroute("**/api/proxies");
-  await importPanel.getByRole("button", { name: "关闭代理与 API 管理", exact: true }).click();
+  await importPanel.getByRole("button", { name: "关闭网络与接入", exact: true }).click();
   assert.equal(
     await page.getByLabel("浏览器配置名称").inputValue(),
     "新工作",

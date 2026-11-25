@@ -47,7 +47,7 @@ docker compose ps
 
 不想在服务器上构建镜像时，在 `.env` 里设置 `SERVER_IMAGE=ghcr.io/notdesigned/remote-claude-browser-server:latest`，再执行 `docker compose pull && docker compose up -d`。
 
-登录工作台后，先在「代理与 API」→「代理来源」导入节点，再新建浏览器配置，见[使用](usage.md)。
+登录工作台后，先在「网络与接入」→「代理来源」导入节点，再新建浏览器配置，见[使用](usage.md)。
 
 ## 可用的 compose 组合
 

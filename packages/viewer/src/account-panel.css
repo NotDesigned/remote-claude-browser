@@ -31,8 +31,8 @@
   justify-content: space-between;
   gap: 12px;
   padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
 }
 .account-session-list li > div {
   min-width: 0;
@@ -41,12 +41,15 @@
 .account-sessions button {
   min-height: 40px;
   padding: 8px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--ink);
   cursor: pointer;
   flex: none;
+}
+.account-sessions button:hover:enabled {
+  background: var(--hover);
 }
 .account-password {
   border-top: 1px solid var(--line);

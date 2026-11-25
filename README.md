@@ -63,7 +63,7 @@ echo 'COMPOSE_FILE=compose.yml:compose.runtime.yml' >> .env
 
 用浏览器打开 `http://127.0.0.1:3010`，用户名 `admin`，密码是脚本打印的那个。然后：
 
-1. 在「代理与 API」→「代理来源」导入至少一个节点。
+1. 在「网络与接入」→「代理来源」导入至少一个节点。
 2. 在配置选择页点「新建浏览器配置」，填写名称、选择出口，再点「检查并打开」。已有的配置通过卡片的「⋯」→「设置出口」绑定节点。
 
 每一步的细节见[使用](docs/usage.md)。要从公网访问，在 `.env` 里设置 `MIRROR_PUBLIC_ORIGIN=https://browser.example.com`，执行 `docker compose up -d`，再按[部署 · 公网入口](docs/deployment.md#公网入口)配置反向代理。其他 compose 组合见[部署 · 可用的 compose 组合](docs/deployment.md#可用的-compose-组合)。

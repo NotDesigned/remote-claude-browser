@@ -1,4 +1,5 @@
 /** Self-contained access page. */
+import { SITE_ICON_LINK } from "../site-icon";
 const escapeHtml = (value: string) =>
   value.replace(
     /[&<>"']/g,
@@ -12,6 +13,7 @@ export function renderGatePage(error?: string, oidcLabel?: string): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
+${SITE_ICON_LINK}
 <title>登录</title>
 <style>
 :root {

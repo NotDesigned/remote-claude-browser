@@ -3,7 +3,7 @@ import type { FrontendUser } from "./users";
 import "./workspace-menu.css";
 
 export type WorkspaceDestination =
-  "profiles" | "proxies" | "cpa" | "admin" | "account" | "onboarding" | "mailboxes";
+  "profiles" | "network" | "proxies" | "cpa" | "admin" | "account" | "onboarding" | "mailboxes";
 export interface WorkspaceMenuProps {
   user: FrontendUser;
   onboardingAvailable?: boolean;
@@ -41,8 +41,7 @@ export function WorkspaceMenu(props: WorkspaceMenuProps) {
   }, [open]);
   const destinations: [WorkspaceDestination, string][] = [
     ["profiles", "浏览器配置"],
-    ["proxies", "代理"],
-    ["cpa", "API"],
+    ["network", "网络与接入"],
     ["mailboxes", "收件箱"],
     ...(props.user.role === "admin"
       ? [["admin", "管理后台"] as [WorkspaceDestination, string]]

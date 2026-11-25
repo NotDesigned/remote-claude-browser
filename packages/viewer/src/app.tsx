@@ -1039,7 +1039,10 @@ export function App() {
     setAccountPanelOpen(destination === "account");
     setOnboardingOpen(destination === "onboarding");
     setMailboxOpen(destination === "mailboxes");
-    setNetworkPanelOpen(destination === "proxies" || destination === "cpa");
+    // 「网络与接入」 opens on the tab last used; other callers name the tab.
+    setNetworkPanelOpen(
+      destination === "network" || destination === "proxies" || destination === "cpa",
+    );
     if (destination === "proxies" || destination === "cpa") setNetworkTab(destination);
     if (destination === "profiles") {
       if (clientPhase === "ready") setProfilePickerOpen(true);

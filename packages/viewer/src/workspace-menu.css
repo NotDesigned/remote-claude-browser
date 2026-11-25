@@ -15,10 +15,13 @@
 .workspace-menu-trigger {
   min-height: 36px;
   padding: 6px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
   background: var(--surface);
   font-size: 13px !important;
+}
+.workspace-menu-trigger:hover {
+  background: var(--hover);
 }
 .workspace-menu-panel {
   position: absolute;
@@ -32,7 +35,7 @@
   padding: 8px;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 10px 32px rgb(0 0 0 / 14%);
 }
 .workspace-menu-panel p {
@@ -53,11 +56,11 @@
   min-height: 40px;
   padding: 8px 10px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: transparent;
 }
 .workspace-menu-panel button:hover {
-  background: var(--sunken);
+  background: var(--hover);
 }
 .workspace-menu-panel .workspace-logout {
   border-top: 1px solid var(--line);

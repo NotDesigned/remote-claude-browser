@@ -9,12 +9,14 @@
 ### 新增
 
 - AliasMode 的 Windows、Mac 身份可以显示对应系统的字体：`scripts/fingerprint-fonts.sh` 导入并检查字体，`compose.fingerprint.yml` 把 `FINGERPRINT_FONTS_DIR`（默认 `local/fingerprint-fonts`）只挂给浏览器。以前这些身份几乎没有字体，容易被识别。见 [docs/deployment.md](docs/deployment.md#aliasmode-内核)。
-- 「代理与 API」→「remote-cc」页签下方新增「使用说明」：从安装、加入服务器（管理员添加和邀请码）、出口主机、批准电脑到选配置、登录 Claude 和启动的全流程，以及换新电脑、切换配置和服务器、常见问题。其中的命令按 remote-cc 0.8 写。
+- 「网络与接入」→「remote-cc」页签下方新增「使用说明」：从安装、加入服务器（管理员添加和邀请码）、出口主机、批准电脑到选配置、登录 Claude 和启动的全流程，以及换新电脑、切换配置和服务器、常见问题。其中的命令按 remote-cc 0.8 写。
 - `MIRROR_IDLE_GRACE_MS`：一个会话的所有设备都断开后，过多久关闭它的远程页面（毫秒，默认 15 分钟）。见 [docs/configuration.md](docs/configuration.md)。
 
 ### 变更
 
-无
+- 工作台菜单的「代理」「API」合并为一项「网络与接入」，面板也改叫「网络与接入」，打开时停在上次用的页签。
+- 界面统一：主按钮改用主题色，选中和焦点状态不再出现蓝色，字体、圆角和边框统一，深色模式的卡片边框更清楚；「网络与接入」面板去掉了卡片嵌套，手机上标题压成一行；管理后台的标题固定在顶部，资源改成两列数字方块；配置选择页内容上移、去掉点阵背景；顶栏状态点在有提醒时改为外圈光晕。
+- 网站图标改为 SphereN Claude。
 
 ### 移除
 
