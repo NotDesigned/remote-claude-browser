@@ -93,6 +93,10 @@ jobs:
     needs: quality
     env:
       CHROME_PATH: /usr/bin/google-chrome
+      # The CPA images the Compose smoke builds. Named here, it keeps them for the CPA smokes
+      # below; its own project-scoped default tags are removed when it ends.
+      CPA_BROKER_IMAGE: remote-claude-browser-cpa-broker:ci
+      CPA_BROKER_ENGINE_IMAGE: remote-claude-browser-cpa:ci
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
