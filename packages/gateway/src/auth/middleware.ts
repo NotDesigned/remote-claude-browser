@@ -7,6 +7,7 @@
  */
 import type { FastifyInstance, FastifyRequest, preHandlerAsyncHookHandler } from "fastify";
 import type { IncomingMessage } from "node:http";
+import { readCookie } from "./cookies";
 import { type Invite, verifyInvite } from "./invite";
 
 export const SESSION_COOKIE = "__Host-mirror-session";
@@ -43,8 +44,8 @@ export function createSessionGuard(options: SessionGuardOptions): SessionGuard {
   }
 
   const session = (request: IncomingMessage): Invite | null => {
-    const token = readCookie(request.headers.cookie, cookieName);
-    return token === undefined ? null : verifyInvite(token, options.key, now());
+    const token = readCookie(request, cookieName);
+    return token === undefined || token === "" ? null : verifyInvite(token, options.key, now());
   };
 
   const preHandler: preHandlerAsyncHookHandler = async (request, reply) => {
@@ -89,17 +90,6 @@ function matchesRouteSession(request: FastifyRequest, sid: string): boolean {
   if (typeof params !== "object" || params === null) return true;
   const routeSid = (params as Record<string, unknown>).sid;
   return routeSid === undefined || routeSid === sid;
-}
-
-function readCookie(header: string | undefined, name: string): string | undefined {
-  if (header === undefined) return undefined;
-  for (const piece of header.split(";")) {
-    const separator = piece.indexOf("=");
-    if (separator < 0 || piece.slice(0, separator).trim() !== name) continue;
-    const value = piece.slice(separator + 1).trim();
-    return value === "" ? undefined : value;
-  }
-  return undefined;
 }
 
 function isCookieName(value: string): boolean {
