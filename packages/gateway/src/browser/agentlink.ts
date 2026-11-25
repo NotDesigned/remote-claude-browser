@@ -105,6 +105,8 @@ interface TargetState {
   nextReqId: number;
   pending: Map<number, PendingCommand>;
   reassembler: ChunkReassembler;
+  /** Per document, the next message number its agent will send; insertion-ordered for pruning. */
+  nextMsgIds: Map<number, number>;
   cleanedDocuments: Set<string>;
   bridgeReady?: Promise<void>;
 }
@@ -145,9 +147,44 @@ function asVoiceAgentMsg(msg: AgentMsg): VoiceAgentMsg | null {
   return typeof value.mic === "boolean" ? { mic: value.mic } : null;
 }
 
+/** Documents per target whose message numbering is followed (same-process frames each have one). */
+const MAX_TRACKED_DOCUMENTS = 64;
+
 export function createAgentLink(browser: BrowserHandle, options: AgentLinkOptions = {}): AgentLink {
   const statesByTarget = new Map<string, TargetState>();
   const statesBySession = new Map<string, TargetState>();
+  const lossListeners = new Set<(targetId: string) => void>();
+
+  /** Only the canonical document's stream feeds the hub; losses elsewhere change nothing. */
+  const lost = (state: TargetState, docId: number) => {
+    if (state.docId !== docId || statesByTarget.get(state.target.targetId) !== state) return;
+    for (const listener of lossListeners) {
+      try {
+        listener(state.target.targetId);
+      } catch {
+        // One listener's failure must not keep the others from recovering.
+      }
+    }
+  };
+
+  /**
+   * The agent numbers its document's messages 0, 1, 2… and sends each one's chunks in order, so
+   * a completed message past the next expected number means those in between were lost.
+   */
+  const noteMessage = (state: TargetState, docId: number, msgId: number) => {
+    const expected = state.nextMsgIds.get(docId);
+    if (expected === undefined) {
+      state.nextMsgIds.set(docId, msgId + 1);
+      if (state.nextMsgIds.size > MAX_TRACKED_DOCUMENTS) {
+        const oldest = state.nextMsgIds.keys().next().value!;
+        state.nextMsgIds.delete(oldest);
+      }
+      return;
+    }
+    if (msgId < expected) return;
+    state.nextMsgIds.set(docId, msgId + 1);
+    if (msgId > expected) lost(state, docId);
+  };
 
   browser.onSessionEvent("Runtime.bindingCalled", (sessionId, event) => {
     if (event.name !== agentBridgeChannel(browser, sessionId)?.bindingName) return;
@@ -161,9 +198,14 @@ export function createAgentLink(browser: BrowserHandle, options: AgentLinkOption
     try {
       msg = state.reassembler.add(event.payload);
     } catch {
+      // Malformed JSON is a lost message too.
+      noteMessage(state, chunk.docId, chunk.msgId);
+      lost(state, chunk.docId);
       return;
     }
     if (msg === null) return;
+    // Numbering follows completed messages only: chunks of one message arrive back to back.
+    noteMessage(state, chunk.docId, chunk.msgId);
 
     const clipboard = asClipboardAgentMsg(msg);
     if (clipboard !== null) {
@@ -273,7 +315,9 @@ export function createAgentLink(browser: BrowserHandle, options: AgentLinkOption
       seenDocIds: new Set(),
       nextReqId: 1,
       pending: new Map(),
-      reassembler: new ChunkReassembler(),
+      // A message given up as incomplete is lost from its document's stream.
+      reassembler: new ChunkReassembler((docId) => lost(state, docId)),
+      nextMsgIds: new Map(),
       cleanedDocuments: new Set(),
     };
     statesByTarget.set(target.targetId, state);
@@ -296,6 +340,10 @@ export function createAgentLink(browser: BrowserHandle, options: AgentLinkOption
   });
 
   return {
+    onStreamLoss(listener) {
+      lossListeners.add(listener);
+      return () => lossListeners.delete(listener);
+    },
     msgs(targetId) {
       const state = statesByTarget.get(targetId);
       if (state !== undefined) return state.stream;

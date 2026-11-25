@@ -43,6 +43,12 @@ export interface AgentLink {
    * With a frame id, it goes to that frame's agent rather than the one the target's bridge has.
    */
   sendCmd(targetId: string, cmd: AgentCmdInput, frameId?: string): Promise<CmdRes>;
+  /**
+   * Hears of a target whose current document lost a message on the way (a gap in its message
+   * numbers, or a chunked message that never completed). Its stream goes on without it, so the
+   * listener must bring the replay back with a fresh snapshot. Returns an unsubscribe function.
+   */
+  onStreamLoss?(listener: (targetId: string) => void): () => void;
 }
 
 /** Target lifecycle notifications. Owner: browser domain; consumer: gateway-core (tab hubs). */

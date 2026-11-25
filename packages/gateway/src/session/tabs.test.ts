@@ -668,6 +668,92 @@ describe("createTabLifecycle", () => {
     }
   });
 
+  it("asks a page for a snapshot when its stream lost an event", async () => {
+    const browser = new MockBrowser();
+    const stream = new MessageQueue();
+    let report: ((targetId: string) => void) | undefined;
+    const unsubscribe = vi.fn();
+    const sendCmd = vi.fn(async () => ({ reqId: 1, ok: true }));
+    const lifecycle = createTabLifecycle({
+      browser,
+      assetTokenKey: Buffer.alloc(32, 8),
+      sessionId: "session",
+      agentLink: {
+        msgs: () => stream,
+        sendCmd,
+        onStreamLoss(listener) {
+          report = listener;
+          return unsubscribe;
+        },
+      },
+      publish: () => undefined,
+    });
+    browser.attach({ targetId: "tab", sessionId: "cdp", type: "page" });
+    stream.push(hello(1));
+    stream.push(event(EventType.Meta, { href: "https://doc.test/", width: 1, height: 1 }, 1));
+    stream.push(
+      event(
+        EventType.FullSnapshot,
+        { node: { type: 0, id: 1, childNodes: [] }, initialOffset: { top: 0, left: 0 } },
+        2,
+      ),
+    );
+    try {
+      await vi.waitFor(() => expect(lifecycle.hubFor("tab")?.snapshot).not.toBeNull());
+      sendCmd.mockClear();
+      report!("tab");
+      report!("another-session's-tab");
+      expect(sendCmd).toHaveBeenCalledExactlyOnceWith("tab", { cmd: "snapshot" });
+    } finally {
+      lifecycle.dispose();
+    }
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("gives a tab attached again under a new session epochs its old hub never used", async () => {
+    const browser = new MockBrowser();
+    const streams = [new MessageQueue(), new MessageQueue()];
+    let attachments = 0;
+    const published: Down[] = [];
+    const lifecycle = createTabLifecycle({
+      browser,
+      assetTokenKey: Buffer.alloc(32, 8),
+      sessionId: "session",
+      agentLink: {
+        msgs: () => streams[attachments - 1]!,
+        sendCmd: async () => ({ reqId: 1, ok: true }),
+      },
+      publish: (message) => published.push(message),
+    });
+    const open = async (session: string) => {
+      attachments += 1;
+      browser.attach({ targetId: "tab", sessionId: session, type: "page" });
+      const stream = streams[attachments - 1]!;
+      stream.push(hello(1));
+      stream.push(event(EventType.Meta, { href: "https://doc.test/", width: 1, height: 1 }, 1));
+      stream.push(
+        event(
+          EventType.FullSnapshot,
+          { node: { type: 0, id: 1, childNodes: [] }, initialOffset: { top: 0, left: 0 } },
+          2,
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(published.filter((message) => message.t === "snapshot")).toHaveLength(attachments),
+      );
+    };
+    try {
+      await open("cdp-1");
+      await open("cdp-2");
+      const [first, second] = published.filter((message) => message.t === "snapshot");
+      expect(first!.t === "snapshot" && second!.t === "snapshot").toBe(true);
+      if (first?.t === "snapshot" && second?.t === "snapshot")
+        expect(second.epoch).not.toBe(first.epoch);
+    } finally {
+      lifecycle.dispose();
+    }
+  });
+
   it("reactively creates a tab when detaching the final page leaves none", async () => {
     const browser = new MockBrowser();
     browser.autoAttachCreatedTarget = true;
