@@ -327,7 +327,7 @@ describe("OIDC sign-in", () => {
     }
   });
 
-  it("applies the allow-list to first sign-ins only", async () => {
+  it("applies the allow-list to first sign-ins", async () => {
     const { signIn } = await fixture({ allowedDomains: ["corp.com"] });
     expect(
       (await signIn({ sub: "u-1", email: "a@corp.com", email_verified: false })).statusCode,
@@ -338,6 +338,60 @@ describe("OIDC sign-in", () => {
     expect(
       (await signIn({ sub: "u-2", email: "b@else.com", email_verified: true })).statusCode,
     ).toBe(403);
+  });
+
+  it("re-checks the allow-list on every sign-in of an existing identity", async () => {
+    const { store, oidc, signIn, advance } = await fixture({
+      allowedGroups: ["rcb"],
+      allowedDomains: ["corp.com"],
+    });
+    expect(
+      (await signIn({ sub: "u-1", preferred_username: "gina", groups: ["rcb"] })).statusCode,
+    ).toBe(303);
+    const gina = store.listUsers().find((user) => user.username === "gina")!;
+    const before = store.identities(gina.id)[0]!.lastLoginAt;
+    advance(60_000);
+    // Removed from the group, and the e-mail is not on an allowed domain.
+    const refused = await signIn({
+      sub: "u-1",
+      groups: [],
+      email: "gina@else.com",
+      email_verified: true,
+    });
+    expect(refused.statusCode).toBe(403);
+    expect(refused.body).toContain("已不在这个工作台的允许范围内");
+    expect(refused.headers["set-cookie"]).not.toEqual(
+      expect.arrayContaining([expect.stringContaining(USER_COOKIE)]),
+    );
+    // The refused attempt is not a recent sign-in.
+    expect(store.identities(gina.id)[0]!.lastLoginAt).toBe(before);
+    expect(oidc.recentlySignedIn(gina.id)).toBe(true);
+    // Still admitted through another route (a verified allowed domain): signs in again.
+    expect(
+      (
+        await signIn({
+          sub: "u-1",
+          groups: [],
+          email: "gina@corp.com",
+          email_verified: true,
+        })
+      ).statusCode,
+    ).toBe(303);
+  });
+
+  it("refuses an identity linked to a local user once it leaves the allow-list", async () => {
+    const { app, store, signIn, cookieOf } = await fixture({ allowedGroups: ["rcb"] });
+    const login = await app.inject({
+      method: "POST",
+      url: "/gate",
+      headers: { "content-type": "application/x-www-form-urlencoded", origin: PUBLIC_ORIGIN },
+      payload: "username=admin&password=owner-password-1",
+    });
+    const session = cookieOf(login.headers["set-cookie"], USER_COOKIE)!;
+    await signIn({ sub: "u-9", groups: ["rcb"] }, session, "/gate/oidc/link");
+    expect(store.identities(store.bootstrapAdmin.id)).toHaveLength(1);
+    expect((await signIn({ sub: "u-9", groups: ["rcb"] })).statusCode).toBe(303);
+    expect((await signIn({ sub: "u-9", groups: [] })).statusCode).toBe(403);
   });
 
   it("follows the admin group for accounts it created, from the ID token or userinfo", async () => {
