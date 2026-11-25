@@ -32,10 +32,6 @@
   --radius-md: 10px;
   --radius-lg: 14px;
   --shellbar-height: 44px;
-  --chrome-border: var(--line);
-  --chrome-ink: var(--ink);
-  --chrome-muted: var(--muted);
-  --chrome-accent: var(--accent);
   color: var(--ink);
   background: var(--bg);
 }
@@ -94,7 +90,6 @@ body {
 }
 #shell .client-session-overlay {
   inset: var(--shellbar-height) 0 0;
-  background: var(--bg);
 }
 #viewer-hud-layer {
   top: calc(var(--shellbar-height) + var(--tabstrip-height) + 7px);
@@ -698,65 +693,6 @@ body {
   .status-primary {
     height: 44px;
   }
-}
-
-/* Let the shared tokens win over the browser chrome's older per-theme values. */
-#shell,
-#shell[data-theme="dark"] {
-  --chrome-border: var(--line);
-  --chrome-ink: var(--ink);
-  --chrome-muted: var(--muted);
-  --chrome-accent: var(--accent);
-}
-/* The browser's bars and status pill take their colours from the same tokens as everything else. */
-#shell #urlbar {
-  color: var(--muted);
-  background: var(--bg);
-  border-color: var(--line);
-}
-#shell #urlbar button {
-  color: var(--muted);
-}
-#shell #urlbar button:not(:disabled):hover {
-  background: var(--hover);
-}
-#shell #urlbar input {
-  color: var(--ink);
-  background: var(--sunken);
-  border-color: var(--line);
-}
-#shell #urlbar input:focus {
-  background: var(--surface);
-  border-color: var(--muted);
-}
-#shell #urlbar input::placeholder {
-  color: var(--muted);
-}
-#shell #urlbar button:disabled {
-  opacity: 0.4;
-}
-#shell .browser-tab {
-  color: var(--muted);
-}
-#shell .browser-tab[data-active="true"] {
-  color: var(--ink);
-  background: var(--surface);
-  border-color: var(--line);
-}
-#shell .browser-tab:not([data-active="true"]):hover,
-#shell #new-tab:not(:disabled):hover {
-  color: var(--ink);
-  background: var(--hover);
-}
-
-#shell .client-session-card {
-  color: var(--ink);
-  background: var(--surface);
-  border-color: var(--line);
-}
-#shell .client-session-card p,
-#shell .session-eyebrow {
-  color: var(--muted);
 }
 
 /* Native progress bars follow the accent instead of the platform blue. */
