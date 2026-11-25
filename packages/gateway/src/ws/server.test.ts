@@ -401,6 +401,39 @@ describe("session-scoped WebSocket upgrades", () => {
     }
   });
 
+  it("catches one viewer up from a hub's cached state without repeating it later", () => {
+    const hub = readyHub("a");
+    const fanout = new Fanout(30, undefined, true);
+    const own = peer();
+    const other = peer();
+    fanout.addViewer(own.viewer, "a");
+    fanout.addViewer(other.viewer, "a");
+    own.socket.messages.length = 0;
+    other.socket.messages.length = 0;
+    const live = hub.ingest({
+      kind: "rrweb",
+      docId: 1,
+      e: {
+        type: EventType.IncrementalSnapshot,
+        timestamp: 3,
+        data: { source: IncrementalSource.Scroll, id: 7, x: 0, y: 3 },
+      },
+    })[0]!;
+
+    own.viewer.sendCatchUp(hub.joinPayload());
+    expect(own.socket.messages.map((message) => message.t)).toEqual([
+      "resync",
+      "snapshot",
+      "delta",
+    ]);
+    expect(other.socket.messages).toEqual([]);
+    // The live broadcast of that same delta reaches the other viewer, not this one again.
+    fanout.publishToSession("a", live);
+    expect(own.socket.messages).toHaveLength(3);
+    expect(other.socket.messages).toEqual([live]);
+    hub.invalidateDocument();
+  });
+
   it("ignores a message type from a newer viewer build instead of closing on it", async () => {
     const server = createServer();
     const onUp = vi.fn();

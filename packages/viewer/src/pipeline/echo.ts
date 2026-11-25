@@ -3,8 +3,14 @@
  *
  * Plain value controls suppress rrweb INPUT echoes and reconcile their scalar `.value` on decay.
  * Contenteditables edit natively too, but their value is a DOM subtree: suppress only rrweb
- * MUTATION records addressed into the active subtree, then let later authoritative mutations flow.
- * Never attempt a `.value` snap for contenteditable. Clear the node map on resync (register onReset).
+ * MUTATION records addressed into the active subtree, and only within the echo window after local
+ * typing; later authoritative mutations flow. Never attempt a `.value` snap for contenteditable.
+ * Clear the node map on resync (register onReset).
+ *
+ * What was suppressed is remembered. When typing settles (or on blur), text the page has that
+ * this editor lacks, or text it removed that this editor still shows, means the two went apart,
+ * and the filter asks for a reconcile. So does a later mutation naming a node whose addition was
+ * suppressed: this replay never got that node, so it cannot apply the change.
  */
 import { EventType, IncrementalSource, type eventWithTime } from "@mirror/protocol";
 import {
@@ -24,7 +30,17 @@ interface EditingState {
   pendingServerValue?: string;
   subtreeNodeIds?: Set<number>;
   timer: ReturnType<typeof setTimeout> | null;
-  needsReconcile?: boolean;
+  /** What the page did to this editor that its replay did not see, while typing. */
+  suppressed?: SuppressedEdits;
+}
+
+interface SuppressedEdits {
+  /** The page's latest text of each text node it changed or added. */
+  texts: Map<number, string>;
+  /** Parents of the nodes it added, to forget the texts of a subtree it removed again. */
+  parents: Map<number, number>;
+  /** Text the page removed. */
+  removed: string[];
 }
 
 interface EchoRestoreState {
@@ -40,6 +56,8 @@ interface EchoRestoreState {
 // @rrweb/types MouseInteractions.Focus/Blur. Protocol intentionally exports only the frozen rrweb
 // event surface, so keep these replay-internal discriminators local to the viewer.
 const MOUSE_INTERACTION_FOCUS_EVENTS = new Set([5, 6]);
+/** How long an applied text change may still wait in the replay buffer. */
+const PASSED_TEXT_MEMORY_MS = 3_000;
 
 export interface EchoFilter extends Stage {
   setFocused(focus: EditableFocus | null): void;
@@ -55,7 +73,10 @@ export interface EchoFilterOptions {
   now?: () => number;
   setTimer?: typeof setTimeout;
   clearTimer?: typeof clearTimeout;
+  /** A contenteditable's replay went apart from the page; once until the next reset. */
   onContenteditableReconcile?: () => void;
+  /** The replay's node for an rrweb id, to compare local text with what the page reports. */
+  nodeFor?: (id: number) => Node | null;
 }
 
 export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
@@ -63,8 +84,20 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
   const now = options.now ?? Date.now;
   const schedule = options.setTimer ?? setTimeout;
   const cancel = options.clearTimer ?? clearTimeout;
+  const nodeFor = options.nodeFor ?? (() => null);
   const nodes = new Map<number, EditingState>();
   let focused: EditableFocus | null = null;
+  /** Nodes the page added while their additions were suppressed: this replay never had them. */
+  const unmapped = new Set<number>();
+  /** Text mutations let through to a focused editor, by node, to know none is still buffered. */
+  const passedTexts = new Map<number, number>();
+  let reconcileRequested = false;
+
+  const requestReconcile = () => {
+    if (reconcileRequested) return;
+    reconcileRequested = true;
+    options.onContenteditableReconcile?.();
+  };
 
   const clearState = (nodeId: number) => {
     const state = nodes.get(nodeId);
@@ -81,19 +114,18 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       return;
     }
     if (!isValueEchoField(state.element)) {
-      state.timer = null;
-      if (state.needsReconcile && state.element.textContent?.trim()) {
-        const remaining = Math.max(
-          0,
-          ...[...nodes.values()].map((edit) => edit.lastKeyTs + decayMs - now()),
-        );
-        if (remaining > 0) {
-          state.timer = schedule(() => reconcile(nodeId), remaining);
-          return;
-        }
-        clearState(nodeId);
-        options.onContenteditableReconcile?.();
+      // Leaving the editor mid-burst: its last echoes are still on the way.
+      const remaining = state.lastKeyTs + decayMs - now();
+      if (remaining > 0) {
+        if (state.timer !== null) cancel(state.timer);
+        state.timer = schedule(() => reconcile(nodeId), remaining);
+        return;
       }
+      state.timer = null;
+      const suppressed = state.suppressed;
+      clearState(nodeId);
+      if (suppressed !== undefined && diverged(state.element, suppressed, nodeFor))
+        requestReconcile();
       return;
     }
     if (
@@ -148,7 +180,9 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       return null;
     }
     if (data.source === IncrementalSource.Mutation) {
-      const activeSubtrees: Set<number>[] = [];
+      // Suppression lasts only the echo window after local typing, focus or not: past it, the
+      // page's own changes to the editor must show.
+      const active: EditingState[] = [];
       for (const [nodeId, state] of nodes) {
         if (state.element.isConnected === false) {
           clearState(nodeId);
@@ -158,41 +192,75 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
         const ids = state.subtreeNodeIds;
         for (const mutation of data.adds)
           if (ids.has(mutation.parentId)) collectSerializedNodeIds(mutation.node, ids);
-        const texts = data.texts.filter((mutation) => ids.has(mutation.id));
-        const removes = data.removes.filter(
-          (mutation) => ids.has(mutation.id) || ids.has(mutation.parentId),
-        );
-        const adds = data.adds.filter((mutation) => ids.has(mutation.parentId));
-        if (texts.length > 0 || removes.length > 0 || adds.length > 0)
-          state.needsReconcile =
-            texts.every((mutation) => !mutation.value?.trim()) &&
-            adds.every((mutation) => !hasSerializedText(mutation.node));
-        const recent = ctx.nowMs - state.lastKeyTs < decayMs;
-        if (!recent && state.needsReconcile) reconcile(nodeId);
-        else if (recent || focused?.element === state.element) activeSubtrees.push(ids);
+        if (ctx.nowMs - state.lastKeyTs < decayMs) active.push(state);
       }
-      if (activeSubtrees.length === 0) return event;
 
-      const isSuppressed = (id: number) => activeSubtrees.some((ids) => ids.has(id));
+      const owner = (id: number) => active.find((state) => state.subtreeNodeIds!.has(id));
+      const record = (state: EditingState): SuppressedEdits =>
+        (state.suppressed ??= { texts: new Map(), parents: new Map(), removed: [] });
       const adds = data.adds.filter((mutation) => {
-        const suppressed = isSuppressed(mutation.parentId) || isSuppressed(mutation.node.id);
-        if (suppressed) {
-          for (const ids of activeSubtrees) {
-            if (ids.has(mutation.parentId) || ids.has(mutation.node.id)) {
-              collectSerializedNodeIds(mutation.node, ids);
-            }
-          }
-        }
-        return !suppressed;
+        const state = owner(mutation.parentId) ?? owner(mutation.node.id);
+        if (state === undefined) return true;
+        collectSerializedNodeIds(mutation.node, state.subtreeNodeIds!);
+        collectSerializedNodeIds(mutation.node, unmapped);
+        recordAddedTexts(record(state), mutation.node, mutation.parentId);
+        return false;
       });
       // Adds can introduce ids referenced by another record in the same rrweb mutation batch.
-      const texts = data.texts.filter((mutation) => !isSuppressed(mutation.id));
-      const attributes = data.attributes.filter((mutation) => !isSuppressed(mutation.id));
-      const removes = data.removes.filter(
-        (mutation) => !isSuppressed(mutation.id) && !isSuppressed(mutation.parentId),
-      );
+      const texts = data.texts.filter((mutation) => {
+        const state = owner(mutation.id);
+        if (state === undefined) return true;
+        record(state).texts.set(mutation.id, mutation.value ?? "");
+        return false;
+      });
+      const attributes = data.attributes.filter((mutation) => owner(mutation.id) === undefined);
+      const removes = data.removes.filter((mutation) => {
+        const state = owner(mutation.id) ?? owner(mutation.parentId);
+        if (state === undefined) return true;
+        const edits = record(state);
+        const known = edits.texts.get(mutation.id);
+        const text = known ?? nodeFor(mutation.id)?.textContent ?? "";
+        forgetSubtree(edits, mutation.id);
+        edits.removed.push(text);
+        return false;
+      });
+
+      // What passes and names a node this replay never got cannot be applied here.
       if (
-        texts.length === data.texts.length &&
+        unmapped.size > 0 &&
+        (texts.some((mutation) => unmapped.has(mutation.id)) ||
+          attributes.some((mutation) => unmapped.has(mutation.id)) ||
+          removes.some(
+            (mutation) => unmapped.has(mutation.id) || unmapped.has(mutation.parentId),
+          ) ||
+          adds.some(
+            (mutation) =>
+              unmapped.has(mutation.parentId) ||
+              (mutation.nextId !== null && unmapped.has(mutation.nextId)),
+          ))
+      ) {
+        requestReconcile();
+      }
+
+      // Setting a text node's data, even to what it already holds, moves a caret inside it to
+      // the start. An echo that arrives after its window changes nothing but that.
+      const focusedEditor =
+        focused !== null && isContenteditableEchoField(focused.element) ? focused.element : null;
+      const unchanged = (mutation: { id: number; value: string | null }) => {
+        if (focusedEditor === null) return false;
+        const node = nodeFor(mutation.id);
+        if (node === null || !focusedEditor.contains(node)) return false;
+        const at = passedTexts.get(mutation.id);
+        // An earlier change still waiting in the replay buffer would make this one necessary.
+        if (at !== undefined && ctx.nowMs - at < PASSED_TEXT_MEMORY_MS) return false;
+        if (node.textContent === (mutation.value ?? "")) return true;
+        passedTexts.set(mutation.id, ctx.nowMs);
+        if (passedTexts.size > 256) passedTexts.delete(passedTexts.keys().next().value!);
+        return false;
+      };
+      const applied = texts.filter((mutation) => !unchanged(mutation));
+      if (
+        applied.length === data.texts.length &&
         attributes.length === data.attributes.length &&
         removes.length === data.removes.length &&
         adds.length === data.adds.length
@@ -200,14 +268,17 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
         return event;
       }
       if (
-        texts.length === 0 &&
+        applied.length === 0 &&
         attributes.length === 0 &&
         removes.length === 0 &&
         adds.length === 0
       ) {
         return null;
       }
-      return { ...event, data: { ...data, texts, attributes, removes, adds } } as eventWithTime;
+      return {
+        ...event,
+        data: { ...data, texts: applied, attributes, removes, adds },
+      } as eventWithTime;
     }
     if (data.source !== IncrementalSource.Input || data.isChecked) return event;
     const state = nodes.get(data.id);
@@ -265,6 +336,10 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
   filter.reset = () => {
     for (const nodeId of [...nodes.keys()]) clearState(nodeId);
     focused = null;
+    // A rebuilt replay has every node of the page again.
+    unmapped.clear();
+    passedTexts.clear();
+    reconcileRequested = false;
   };
 
   filter.restoreHook = {
@@ -329,13 +404,62 @@ function collectSerializedNodeIds(
   }
 }
 
-function hasSerializedText(node: {
+interface SerializedNode {
   id: number;
+  type?: number;
   textContent?: string;
   childNodes?: unknown[];
-}): boolean {
-  return (
-    Boolean(node.textContent?.trim()) ||
-    (node.childNodes ?? []).some((child) => hasSerializedText(child as typeof node))
-  );
+}
+
+/** rrweb's serialized node type for text. */
+const SERIALIZED_TEXT = 3;
+
+function recordAddedTexts(edits: SuppressedEdits, node: SerializedNode, parentId: number): void {
+  edits.parents.set(node.id, parentId);
+  if (node.type === SERIALIZED_TEXT) edits.texts.set(node.id, node.textContent ?? "");
+  for (const child of node.childNodes ?? []) {
+    recordAddedTexts(edits, child as SerializedNode, node.id);
+  }
+}
+
+/** A removed node takes the text of everything the page had added below it along. */
+function forgetSubtree(edits: SuppressedEdits, id: number): void {
+  const inside = (node: number): boolean => {
+    for (let at: number | undefined = node; at !== undefined; at = edits.parents.get(at)) {
+      if (at === id) return true;
+    }
+    return false;
+  };
+  for (const node of [...edits.texts.keys()]) if (inside(node)) edits.texts.delete(node);
+}
+
+function normalizedText(text: string): string {
+  return text.replace(/ /g, " ").trim();
+}
+
+/**
+ * Whether the page's editor, as far as the suppressed changes tell, holds other text than this
+ * replay's: a text node both have reads differently, the page has text this one lacks, or it
+ * removed text that this one still shows. Echoes of local typing pass: their text is all here
+ * already, in whatever nodes the browser made.
+ */
+function diverged(
+  element: HTMLElement,
+  edits: SuppressedEdits,
+  nodeFor: (id: number) => Node | null,
+): boolean {
+  for (const [id, text] of edits.texts) {
+    const node = nodeFor(id);
+    if (node !== null && element.contains(node)) {
+      if (normalizedText(node.textContent ?? "") !== normalizedText(text)) return true;
+    }
+  }
+  const local = normalizedText(element.textContent ?? "");
+  const remote = [...edits.texts.values()].map(normalizedText).filter((text) => text !== "");
+  if (remote.some((text) => !local.includes(text))) return true;
+  return edits.removed
+    .map(normalizedText)
+    .some(
+      (text) => text !== "" && local.includes(text) && !remote.some((kept) => kept.includes(text)),
+    );
 }

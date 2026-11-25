@@ -58,6 +58,13 @@ export type PxQuality = "smooth" | "balanced" | "sharp";
 
 export type SnapshotReason = "nav" | "viewport" | "trim" | "resync";
 
+/**
+ * `resync-req` reason for a divergence of this viewer's own making (local typing echo), not of
+ * the stream's: the gateway answers that viewer alone from its cached snapshot and deltas,
+ * without asking the page for a new snapshot that every viewer would have to rebuild from.
+ */
+export const LOCAL_RESYNC_REASON = "editable";
+
 /** Gateway -> viewer. */
 export interface ServerStatusMsg {
   t: "server-status";

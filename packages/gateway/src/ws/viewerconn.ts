@@ -118,7 +118,16 @@ export class ViewerConn {
   /** Initial join and drain recovery share the hub's canonical resync path. */
   sendJoinPayload(): void {
     if (!this.isOpen()) return;
-    for (const msg of this.getJoinPayload()) {
+    this.sendCatchUp(this.getJoinPayload());
+  }
+
+  /**
+   * One tab's join payload for this viewer alone, which rebuilds it from the hub's cached state.
+   * The fan-out must have flushed its pending batch first, as for a join.
+   */
+  sendCatchUp(payload: readonly Down[]): void {
+    if (!this.isOpen()) return;
+    for (const msg of payload) {
       this.socket.send(msg.t === "snapshot" ? this.snapshotFrame(msg) : encodeMsg(msg));
       this.advanceCursor(msg);
     }
