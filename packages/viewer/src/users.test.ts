@@ -1,7 +1,7 @@
 import { ApiError } from "./api";
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { createUser, currentUser, deleteUser, listUsers, logout, updateUser } from "./users";
+import { createUser, currentUser, deleteUser, logout, updateUser } from "./users";
 
 const user = {
   id: "u-one",
@@ -12,13 +12,16 @@ const user = {
 };
 const response = (body: unknown, status = 200) =>
   vi.fn<typeof fetch>(
-    async () => new Response(status === 204 ? null : JSON.stringify(body), { status }),
+    async () =>
+      new Response(status === 204 ? null : JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json; charset=utf-8" },
+      }),
   );
 
 describe("frontend user API", () => {
-  it("reads current identity and the managed user list", async () => {
+  it("reads current identity", async () => {
     await expect(currentUser(response({ user }))).resolves.toMatchObject({ username: "alice" });
-    await expect(listUsers(response({ users: [user] }))).resolves.toEqual([user]);
   });
 
   it("sends creation and changes only to authenticated same-origin APIs", async () => {
@@ -63,7 +66,7 @@ describe("frontend user API", () => {
     await expect(
       deleteUser("u-one", response({ error: "最后一个管理员不能删除" }, 409)),
     ).rejects.toThrow("最后一个管理员不能删除");
-    await expect(listUsers(response({ error: "无权管理用户" }, 403))).rejects.toThrow(
+    await expect(updateUser("u-one", {}, response({ error: "无权管理用户" }, 403))).rejects.toThrow(
       "无权管理用户",
     );
     await expect(currentUser(response(null, 401))).rejects.toMatchObject({
@@ -71,5 +74,8 @@ describe("frontend user API", () => {
       status: 401,
     });
     expect(new ApiError(401, "expired")).toBeInstanceOf(Error);
+    // Signing out of a sign-in that already expired has nothing left to do.
+    await expect(logout(response({ error: "请登录工作台" }, 401))).resolves.toBeUndefined();
+    await expect(logout(response({ error: "服务暂不可用" }, 503))).rejects.toThrow("服务暂不可用");
   });
 });

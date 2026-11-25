@@ -83,6 +83,15 @@ export interface CpaBrowserAuthorization {
   proxyId: string;
 }
 
+/** A stored CPA authorization waiting for its browser; anything else in storage is ignored. */
+export function isCpaBrowserAuthorization(value: unknown): value is CpaBrowserAuthorization {
+  if (value === null || typeof value !== "object") return false;
+  const fields = value as Record<string, unknown>;
+  return ["userId", "instanceId", "state", "proxyId"].every(
+    (key) => typeof fields[key] === "string" && fields[key] !== "",
+  );
+}
+
 export interface ProxySourceInput {
   name: string;
   visibility: "shared" | "private";

@@ -29,7 +29,7 @@ export function pollServerStatus({
 }: {
   sid?: string;
   onSample(value: ServerStatusMsg): void;
-  onReachable(reachable: boolean): void;
+  onReachable?(reachable: boolean): void;
   onAuthFailure(): void;
   fetcher?: typeof fetch;
 }): () => void {
@@ -53,7 +53,7 @@ export function pollServerStatus({
       if (response.status === 401 || response.status === 403) {
         stopped = true;
         clearInterval(timer);
-        onReachable(false);
+        onReachable?.(false);
         onAuthFailure();
         return;
       }
@@ -62,9 +62,9 @@ export function pollServerStatus({
       if (stopped) return;
       if (!isServerStatus(value)) throw new Error("invalid status response");
       onSample(value);
-      onReachable(true);
+      onReachable?.(true);
     } catch {
-      if (!stopped) onReachable(false);
+      if (!stopped) onReachable?.(false);
     } finally {
       clearTimeout(timeout);
       if (pending === controller) pending = null;

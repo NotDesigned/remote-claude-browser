@@ -81,6 +81,8 @@ export function ShellBar(props: ShellBarProps) {
     if (open === "menu") props.onMenuOpen?.();
     // Keyboard users land inside the popover, as they would in a dialog.
     if (open === "connection") connectionRef.current?.focus();
+    if (open === "menu")
+      menuRef.current?.querySelector<HTMLElement>("button:not([disabled])")?.focus();
   }, [open]);
 
   // Listen as soon as the popup is drawn, not after the next frame: an Escape pressed right
@@ -109,9 +111,7 @@ export function ShellBar(props: ShellBarProps) {
   }, [open]);
 
   // A sample older than ~10 s is stale: say nothing rather than warn on an old reading.
-  const fresh =
-    props.serverStatus !== null &&
-    Date.now() - props.serverStatus.receivedAt < SERVER_STATUS_STALE_MS;
+  const fresh = useFresh(props.serverStatus);
   const warning = fresh ? resourceWarning(props.serverStatus) : null;
   const stormTabs = props.diagnostics ? resyncStormTabs(props.diagnostics.resyncByTab) : [];
   // The zone does not go stale with the numbers: keep showing the last one heard.
@@ -179,8 +179,9 @@ export function ShellBar(props: ShellBarProps) {
           class="shell-icon"
           id="shell-menu-toggle"
           aria-label="菜单"
-          aria-haspopup="true"
+          aria-haspopup="dialog"
           aria-expanded={open === "menu"}
+          aria-controls={open === "menu" ? "shell-menu" : undefined}
           onClick={() => toggle("menu")}
         >
           <MenuIcon />
@@ -409,6 +410,22 @@ export function resourceWarning(received: ReceivedServerStatus | null): string |
   )
     return "服务器内存紧张，新建会话可能失败；已打开的会话不受影响。";
   return null;
+}
+
+/**
+ * Whether the last status sample is still fresh. Only this bar redraws when it turns stale, once,
+ * instead of the whole page every second.
+ */
+function useFresh(sample: ReceivedServerStatus | null): boolean {
+  const [, redraw] = useState(0);
+  const age = sample === null ? Infinity : Date.now() - sample.receivedAt;
+  const fresh = age < SERVER_STATUS_STALE_MS;
+  useEffect(() => {
+    if (!fresh) return;
+    const timer = setTimeout(() => redraw((count) => count + 1), SERVER_STATUS_STALE_MS - age + 50);
+    return () => clearTimeout(timer);
+  }, [sample, fresh]);
+  return fresh;
 }
 
 /**

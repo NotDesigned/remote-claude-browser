@@ -1,5 +1,7 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { FrontendUser } from "./users";
+import { useAsyncAction } from "./async-action";
+import { useConfirm } from "./panel";
 import { ExitHealthDetails } from "./exit-health";
 import {
   proxyApi,
@@ -9,13 +11,12 @@ import {
   type ExitHealth,
 } from "./network-api";
 
-export function ProxyPanel({ user }: { user: FrontendUser }) {
+export function ProxyPanel({ user, open }: { user: FrontendUser; open: boolean }) {
   const [sources, setSources] = useState<ProxySourceInfo[]>([]);
   const [proxies, setProxies] = useState<ProxyInfo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const { busy, error, notice, setError, setNotice, run } = useAsyncAction();
+  const { confirm, dialog } = useConfirm();
   const [editing, setEditing] = useState<ProxySourceInfo | null>(null);
   const [name, setName] = useState("");
   const [visibility, setVisibility] = useState<ProxySourceInput["visibility"]>("private");
@@ -24,29 +25,32 @@ export function ProxyPanel({ user }: { user: FrontendUser }) {
   const [url, setUrl] = useState("");
   const [health, setHealth] = useState<Record<string, ExitHealth>>({});
 
+  // Only the newest load may fill the lists: an older one can finish after it.
+  const loads = useRef(0);
   const reload = async () => {
+    const load = ++loads.current;
     const [catalog, nodes] = await Promise.all([proxyApi.sources(), proxyApi.proxies()]);
+    if (load !== loads.current) return;
     setSources(catalog.sources);
     setProxies(nodes.proxies);
     setHealth({});
   };
+  // Loaded each time the tab is shown, not at page start: a failure then is retried on reopening.
   useEffect(() => {
-    void reload()
-      .catch((reason: Error) => setError(reason.message))
-      .finally(() => setLoading(false));
-  }, []);
-  const run = async (action: () => Promise<void>) => {
-    setBusy(true);
+    if (!open) return;
+    let active = true;
     setError(null);
-    setNotice(null);
-    try {
-      await action();
-    } catch (reason) {
-      setError((reason as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
+    void reload()
+      .catch((reason: Error) => {
+        if (active) setError(reason.message);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [open]);
   const reset = () => {
     setEditing(null);
     setName("");
@@ -75,7 +79,12 @@ export function ProxyPanel({ user }: { user: FrontendUser }) {
               : "节点或可见范围发生变化时，相关浏览器会话会断开重连；不可用的节点需要重新选择。"
           }`
         : "当前没有浏览器配置或 CPA 授权绑定这些节点。";
-    return window.confirm(`${question}\n\n所有者：${ownerLabel(source)}。${impact}`);
+    return confirm({
+      title: question,
+      message: `所有者：${ownerLabel(source)}。${impact}`,
+      confirmLabel: action === "delete" ? "删除" : "继续",
+      danger: action === "delete",
+    });
   };
   const save = (event: Event) => {
     event.preventDefault();
@@ -326,6 +335,7 @@ export function ProxyPanel({ user }: { user: FrontendUser }) {
           })}
         </ul>
       </section>
+      {dialog}
     </div>
   );
 }

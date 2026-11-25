@@ -1,30 +1,65 @@
 import { useLayoutEffect, useRef } from "preact/hooks";
 
+const FOCUSABLE =
+  'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex="0"]';
+
+/** Where focus goes when the control that opened a dialog is gone: the ⋯ menu that leads there. */
+const FOCUS_FALLBACK = "#shell-menu-toggle, .workspace-menu-trigger";
+
+/** Open dialogs, innermost last: only the innermost one answers Escape and Tab. */
+const openDialogs: object[] = [];
+
+export function focusableIn(root: ParentNode): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+    (element) => element.getClientRects().length > 0,
+  );
+}
+
+/** Moves focus to `element`, or to the ⋯ trigger when it has left the page. */
+export function restoreFocus(element: Element | null): void {
+  const target =
+    element instanceof HTMLElement && element.isConnected
+      ? element
+      : document.querySelector<HTMLElement>(FOCUS_FALLBACK);
+  target?.focus();
+}
+
 /** Shared focus and keyboard behavior for workbench dialogs. */
 export function useDialog(open: boolean, onClose: () => void) {
   const panel = useRef<HTMLElement>(null);
   const close = useRef(onClose);
   close.current = onClose;
   useLayoutEffect(() => {
-    if (!open) return;
+    const root = panel.current;
+    if (!open || !root) return;
+    const token = {};
+    openDialogs.push(token);
     const previous = document.activeElement;
-    panel.current!.querySelector<HTMLButtonElement>("button")!.focus();
+    const first = root.querySelector<HTMLElement>(FOCUSABLE);
+    if (first) first.focus();
+    else {
+      // Nothing to press yet (still loading): the dialog itself takes focus.
+      if (!root.hasAttribute("tabindex")) root.tabIndex = -1;
+      root.focus();
+    }
     const onKey = (event: KeyboardEvent) => {
-      if (event.isComposing) return;
+      if (event.isComposing || openDialogs.at(-1) !== token) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
         close.current();
+        return;
       }
       if (event.key !== "Tab") return;
-      const controls = [
-        ...panel.current!.querySelectorAll<HTMLElement>(
-          'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex="0"]',
-        ),
-      ].filter((element) => element.getClientRects().length > 0);
+      const controls = focusableIn(root);
+      const outside = !root.contains(document.activeElement);
+      if (controls.length === 0) {
+        event.preventDefault();
+        root.focus();
+        return;
+      }
       const first = controls[0]!,
         last = controls.at(-1)!;
-      const outside = !panel.current!.contains(document.activeElement);
       if (event.shiftKey && (document.activeElement === first || outside)) {
         event.preventDefault();
         last.focus();
@@ -36,7 +71,16 @@ export function useDialog(open: boolean, onClose: () => void) {
     document.addEventListener("keydown", onKey, true);
     return () => {
       document.removeEventListener("keydown", onKey, true);
-      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+      openDialogs.splice(openDialogs.indexOf(token), 1);
+      // Focus stays where it is when it already moved somewhere else on purpose.
+      const active = document.activeElement;
+      if (
+        active === null ||
+        active === document.body ||
+        root.contains(active) ||
+        !active.isConnected
+      )
+        restoreFocus(previous);
     };
   }, [open]);
   return panel;

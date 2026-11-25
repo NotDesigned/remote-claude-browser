@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium, webkit } from "playwright";
+import { confirmDialogs } from "./confirm-dialog.mjs";
 
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use scripts/limited-run.sh");
 const root = resolve("packages/viewer/dist");
@@ -404,7 +405,8 @@ try {
     const page = await context.newPage();
     page.on("pageerror", (error) => errors.push(error.message));
     const dialogs = [];
-    page.on("dialog", (dialog) => {
+    // The workbench's own confirmation dialog, accepted the way the native one was.
+    (await confirmDialogs(page)).on((dialog) => {
       dialogs.push(dialog.message());
       void dialog.accept();
     });

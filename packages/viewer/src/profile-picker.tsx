@@ -28,6 +28,10 @@ import {
 } from "./accounts";
 import { ExitHealthDetails } from "./exit-health";
 import { proxyApi, type ExitHealth } from "./network-api";
+import { onOutsidePress } from "./outside-press";
+import { createInFlightGuard } from "./async-action";
+import { useConfirm } from "./panel";
+import { usePolling } from "./polling";
 import "./profile-picker.css";
 
 const LAST_ACCOUNT_KEY = "mirror.last-account";
@@ -77,35 +81,50 @@ function ProfileCard(props: {
     scope: "browser" | "node";
     health: ExitHealth;
   } | null>(null);
-  useEffect(() => setExitCheck(null), [account.proxyId, account.running, account.checkedAt]);
+  // A check still running when the exit changes (or the card goes away) answers for the old one.
+  const exitChecks = useRef(0);
+  useEffect(() => {
+    exitChecks.current++;
+    setExitCheck(null);
+  }, [account.proxyId, account.running, account.checkedAt]);
+  useEffect(
+    () => () => {
+      exitChecks.current++;
+    },
+    [],
+  );
   const checkExit = async () => {
-    setExitCheck({ scope: account.running ? "browser" : "node", health: { status: "checking" } });
+    const check = ++exitChecks.current;
+    const scope = account.running ? "browser" : "node";
+    setExitCheck({ scope, health: { status: "checking" } });
+    let result: NonNullable<typeof exitCheck>;
     try {
-      setExitCheck(await checkAccountExit(account.id));
+      result = await checkAccountExit(account.id);
     } catch (error) {
-      setExitCheck({
-        scope: account.running ? "browser" : "node",
+      result = {
+        scope,
         health: { status: "error", checkedAt: Date.now(), error: (error as Error).message },
-      });
+      };
     }
+    if (check === exitChecks.current) setExitCheck(result);
   };
   const entry = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
   useLayoutEffect(() => {
     if (!menuOpen) return;
-    const outside = (event: PointerEvent) => {
-      if (!entry.current!.contains(event.target as Node)) setMenuOpen(false);
-    };
+    const stopOutside = onOutsidePress(
+      (target) => target instanceof Node && !!entry.current?.contains(target),
+      () => setMenuOpen(false),
+    );
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setMenuOpen(false);
-        toggle.current!.focus();
+        toggle.current?.focus();
       }
     };
-    document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", escape);
     return () => {
-      document.removeEventListener("pointerdown", outside);
+      stopOutside();
       document.removeEventListener("keydown", escape);
     };
   }, [menuOpen]);
@@ -291,7 +310,9 @@ export function ProfilePicker(props: {
 }) {
   const [accounts, setAccounts] = useState<AccountInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const { confirm, dialog } = useConfirm();
+  // One create or open at a time: `disabled={busy}` only applies after the next render.
+  const [actions] = useState(createInFlightGuard);
   const [selection, setSelection] = useState<{ profile?: string; exit?: string }>({});
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
@@ -314,7 +335,6 @@ export function ProfilePicker(props: {
     account: AccountInfo;
     value: BrowserPlatform;
   } | null>(null);
-  const [refreshAttempt, setRefreshAttempt] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   const proxySelect = useRef<HTMLSelectElement>(null);
   const platformSelect = useRef<HTMLSelectElement>(null);
@@ -343,39 +363,17 @@ export function ProfilePicker(props: {
     };
   }, [creating, props.proxyManagerOpen, proxyRefresh, props.requiredProxyId]);
 
+  // Every 5 s while the tab is visible; a failed poll shows until one succeeds.
+  const polled = usePolling(() => listAccounts(null), 5000);
+  const loadError = polled.error;
   useEffect(() => {
-    let active = true;
-    let pending = false;
-    const load = async () => {
-      if (pending) return;
-      pending = true;
-      try {
-        const list = await listAccounts(null);
-        if (active) {
-          setAccounts(list.accounts);
-          setDefaultId(list.default);
-          setPlatforms(list.platforms);
-          setDefaultPlatform(list.defaultPlatform);
-          setLoadError(null);
-        }
-      } catch (reason) {
-        if (active) setLoadError((reason as Error).message);
-      } finally {
-        pending = false;
-      }
-    };
-    const visible = () => {
-      if (!document.hidden) void load();
-    };
-    void load();
-    const timer = setInterval(visible, 5000);
-    document.addEventListener("visibilitychange", visible);
-    return () => {
-      active = false;
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", visible);
-    };
-  }, [refreshAttempt]);
+    const list = polled.data;
+    if (!list) return;
+    setAccounts(list.accounts);
+    setDefaultId(list.default);
+    setPlatforms(list.platforms);
+    setDefaultPlatform(list.defaultPlatform);
+  }, [polled.data]);
   useEffect(() => {
     if (accounts !== null && (creating || editing !== null)) {
       input.current!.focus();
@@ -397,7 +395,7 @@ export function ProfilePicker(props: {
   }, [proxyEditor?.account.id]);
 
   const changed = () => {
-    setRefreshAttempt((value) => value + 1);
+    void polled.refresh();
     props.onChanged?.();
   };
   const rename = async (event: Event) => {
@@ -435,9 +433,13 @@ export function ProfilePicker(props: {
   };
   const remove = async (account: AccountInfo) => {
     if (
-      !window.confirm(
-        `删除「${account.name}」？它的网站登录和浏览数据会被清除，正在使用它的本设备会话会切回默认配置。此操作不能恢复。`,
-      )
+      !(await confirm({
+        title: `删除「${account.name}」？`,
+        message:
+          "它的网站登录和浏览数据会被清除，正在使用它的本设备会话会切回默认配置。此操作不能恢复。",
+        confirmLabel: "删除配置",
+        danger: true,
+      }))
     )
       return;
     setBusy(true);
@@ -485,7 +487,15 @@ export function ProfilePicker(props: {
           ? "频繁更换账号的出口 IP 可能触发平台风控，要求重新验证或限制账号。请确认你了解影响并希望继续。"
           : "请确认你希望继续。",
       );
-      if (!window.confirm(warning.join("\n\n"))) return;
+      if (
+        !(await confirm({
+          title: "更换网络出口？",
+          message: warning,
+          confirmLabel: "更换出口",
+          danger: account.proxyId !== null && account.proxyId !== undefined,
+        }))
+      )
+        return;
     }
     setBusy(true);
     setError(null);
@@ -509,13 +519,15 @@ export function ProfilePicker(props: {
       return;
     }
     if (
-      !window.confirm(
-        [
+      !(await confirm({
+        title: "切换系统身份？",
+        message: [
           `将「${account.name}」的系统身份从「${PLATFORM_LABELS[account.platform]}」切换为「${PLATFORM_LABELS[value]}」。`,
           "这会改变网站看到的系统和设备特征，并关闭该配置在所有设备上打开的页面。重新连接时会按新身份启动。",
           "频繁切换可能触发平台风控或要求重新验证。请确认你了解影响并希望继续。",
-        ].join("\n\n"),
-      )
+        ],
+        confirmLabel: "切换系统",
+      }))
     )
       return;
     setBusy(true);
@@ -537,22 +549,26 @@ export function ProfilePicker(props: {
     remember(id);
   };
 
-  const pick = async (id: string) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await open(id);
-    } catch (reason) {
-      setError((reason as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
+  const pick = (id: string) =>
+    actions.run(async () => {
+      setBusy(true);
+      setError(null);
+      try {
+        await open(id);
+      } catch (reason) {
+        setError((reason as Error).message);
+      } finally {
+        setBusy(false);
+      }
+    });
   const creationProxy = creationProxies?.find((node) => node.id === creationProxyId);
   const canCreate = !busy && name.trim() !== "" && !!creationProxy;
   const create = async (event: SubmitEvent) => {
     event.preventDefault();
-    if (!canCreate) return;
+    if (!canCreate || !creationProxy) return;
+    await actions.run(() => createAndOpen(creationProxy));
+  };
+  const createAndOpen = async (creationProxy: ProxyChoice) => {
     setError(null);
     setBusy(true);
     setCreationProgress("正在检查出口…");
@@ -601,7 +617,7 @@ export function ProfilePicker(props: {
   const selectedGroup = selection.exit ? groups.get(selection.exit) : undefined;
   const editingAccount = visible.find((account) => account.id === editing);
   return (
-    <main class="profile-picker">
+    <section class="profile-picker" role="region" aria-label="浏览器配置">
       <div class="profile-topbar">
         <div class="profile-tools">
           {props.onBack && (
@@ -651,7 +667,7 @@ export function ProfilePicker(props: {
           {loadError !== null && (
             <p class="profile-error" role="alert">
               {loadError}
-              <button type="button" onClick={() => setRefreshAttempt((value) => value + 1)}>
+              <button type="button" onClick={() => void polled.refresh()}>
                 重试
               </button>
             </p>
@@ -1011,6 +1027,7 @@ export function ProfilePicker(props: {
           </p>
         </section>
       </div>
-    </main>
+      {dialog}
+    </section>
   );
 }

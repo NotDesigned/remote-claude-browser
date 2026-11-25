@@ -1,4 +1,4 @@
-import { apiRequest } from "./api";
+import { ApiError, apiRequest } from "./api";
 import type { ServerStatusMsg } from "@mirror/protocol";
 /** Frontend identities. Browser-site credentials stay inside each user's Chrome profile. */
 export type UserRole = "admin" | "user";
@@ -38,11 +38,6 @@ export async function currentUser(fetcher?: typeof fetch): Promise<FrontendUser>
   return (await apiRequest<{ user: FrontendUser }>("/api/me", "GET", undefined, fetcher)).user;
 }
 
-export async function listUsers(fetcher?: typeof fetch): Promise<ManagedUser[]> {
-  return (await apiRequest<{ users: ManagedUser[] }>("/api/users", "GET", undefined, fetcher))
-    .users;
-}
-
 export function createUser(
   details: { username: string; password: string; role: UserRole; maxSessions?: number | null },
   fetcher?: typeof fetch,
@@ -62,8 +57,13 @@ export function deleteUser(id: string, fetcher?: typeof fetch): Promise<void> {
   return apiRequest(`/api/users/${encodeURIComponent(id)}`, "DELETE", undefined, fetcher);
 }
 
-export function logout(fetcher?: typeof fetch): Promise<void> {
-  return apiRequest("/logout", "POST", undefined, fetcher);
+/** Signing out of a sign-in that has already expired is done, not a failure. */
+export async function logout(fetcher?: typeof fetch): Promise<void> {
+  await apiRequest("/logout", "POST", undefined, fetcher, { allowUnauthorized: true }).catch(
+    (error: unknown) => {
+      if (!(error instanceof ApiError && error.status === 401)) throw error;
+    },
+  );
 }
 
 export interface AdminSession {

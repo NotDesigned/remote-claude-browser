@@ -1,6 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { ExitHealthDetails } from "./exit-health";
 import type { FrontendUser } from "./users";
+import { useAsyncAction } from "./async-action";
+import { useConfirm } from "./panel";
+import { readItem, removeItem, sessionArea, writeItem } from "./storage";
 import {
   cpaApi,
   proxyApi,
@@ -68,10 +71,9 @@ export function CpaPanel({
   const [proxies, setProxies] = useState<ProxyInfo[]>([]);
   const [credentials, setCredentials] = useState<CpaCredential[]>([]);
   const [keys, setKeys] = useState<CpaKey[]>([]);
-  const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const { busy, error, notice, setError, setNotice, run } = useAsyncAction();
+  const { confirm, dialog } = useConfirm();
   const [oauth, setOAuth] = useState<CpaPendingOAuth | null>(null);
   const oauthRef = useRef(oauth);
   oauthRef.current = oauth;
@@ -84,11 +86,11 @@ export function CpaPanel({
   }, [open, issuedKey]);
   const instance = instances.find((item) => item.id === selected);
   const draftKey = `mirror-cpa-callback:${user.id}:${selected}:${oauth?.state ?? ""}`;
-  const callback = drafts[draftKey] ?? sessionStorage.getItem(draftKey) ?? "";
+  const callback = drafts[draftKey] ?? readItem(sessionArea(), draftKey) ?? "";
   const setCallback = (value: string) => {
     setDrafts((previous) => ({ ...previous, [draftKey]: value }));
-    if (value) sessionStorage.setItem(draftKey, value);
-    else sessionStorage.removeItem(draftKey);
+    if (value) writeItem(sessionArea(), draftKey, value);
+    else removeItem(sessionArea(), draftKey);
   };
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
@@ -155,18 +157,6 @@ export function CpaPanel({
       detailRequest.current++;
     };
   }, [selected, instance?.status]);
-  const run = async (action: () => Promise<void>) => {
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await action();
-    } catch (reason) {
-      setError((reason as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
   const create = (scope: CpaInstance["scope"]) =>
     void run(async () => {
       const result = await cpaApi.create(scope);
@@ -392,13 +382,15 @@ export function CpaPanel({
                           placeholder={
                             credential.proxyId ? "当前节点不可用，请重新选择" : "请选择出口节点"
                           }
-                          onChange={(proxyId) => {
+                          onChange={async (proxyId) => {
                             if (
                               credential.proxyId &&
                               credential.proxyId !== proxyId &&
-                              !window.confirm(
-                                "频繁更换账号出口可能触发平台风控。确认理解影响并切换？",
-                              )
+                              !(await confirm({
+                                title: "更换凭据的出口？",
+                                message: "频繁更换账号出口可能触发平台风控。确认理解影响并切换？",
+                                confirmLabel: "切换出口",
+                              }))
                             )
                               return;
                             void run(async () => {
@@ -439,9 +431,14 @@ export function CpaPanel({
                           type="button"
                           class="network-danger"
                           disabled={busy || instance.status !== "running"}
-                          onClick={() => {
+                          onClick={async () => {
                             if (
-                              window.confirm(`删除凭据「${credential.email || credential.name}」？`)
+                              await confirm({
+                                title: `删除凭据「${credential.email || credential.name}」？`,
+                                message: "删除后需要重新授权才能使用这个账号。",
+                                confirmLabel: "删除凭据",
+                                danger: true,
+                              })
                             )
                               void run(async () => {
                                 await cpaApi.removeCredential(instance.id, credential.name);
@@ -663,11 +660,14 @@ export function CpaPanel({
                       class="network-danger"
                       disabled={busy}
                       aria-label={`撤销 API Key「${key.name}」`}
-                      onClick={() => {
+                      onClick={async () => {
                         if (
-                          window.confirm(
-                            `撤销 API Key「${key.name}」？使用它的客户端将无法继续调用。`,
-                          )
+                          await confirm({
+                            title: `撤销 API Key「${key.name}」？`,
+                            message: "使用它的客户端将无法继续调用。",
+                            confirmLabel: "撤销 Key",
+                            danger: true,
+                          })
                         )
                           void run(async () => {
                             await cpaApi.removeKey(instance.id, key.id);
@@ -685,6 +685,7 @@ export function CpaPanel({
           </section>
         </div>
       )}
+      {dialog}
     </div>
   );
 }

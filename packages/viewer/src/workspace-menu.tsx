@@ -82,8 +82,11 @@ export function WorkspaceMenu(props: WorkspaceMenuProps & { children?: Component
     setOpen(false);
     trigger.current!.focus();
   };
+  const panel = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
+    // Keyboard users land inside the menu, as they would in a dialog.
+    panel.current?.querySelector<HTMLElement>("button:not([disabled])")?.focus();
     const stopOutside = onOutsidePress(
       (target) => target instanceof Node && !!root.current?.contains(target),
       () => setOpen(false),
@@ -107,14 +110,21 @@ export function WorkspaceMenu(props: WorkspaceMenuProps & { children?: Component
         type="button"
         ref={trigger}
         aria-label="菜单"
-        aria-haspopup="true"
+        aria-haspopup="dialog"
         aria-expanded={open}
+        aria-controls={open ? "workspace-menu-panel" : undefined}
         onClick={() => setOpen(!open)}
       >
         <MenuIcon />
       </button>
       {open && (
-        <div class="workspace-menu-panel" role="dialog" aria-label="菜单">
+        <div
+          id="workspace-menu-panel"
+          class="workspace-menu-panel"
+          ref={panel}
+          role="dialog"
+          aria-label="菜单"
+        >
           <WorkspaceNav {...props} onDone={close} />
           {props.children && <div class="workspace-settings">{props.children}</div>}
           <WorkspaceAccount {...props} />

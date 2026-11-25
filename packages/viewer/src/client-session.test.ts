@@ -267,7 +267,10 @@ describe("client session bootstrap", () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ code: "CLIENT_FORBIDDEN" }), { status: 403 }),
+        new Response(JSON.stringify({ code: "CLIENT_FORBIDDEN" }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        }),
       )
       .mockResolvedValueOnce(new Response(JSON.stringify(SESSION), { status: 200 }));
     await expect(
@@ -290,7 +293,10 @@ describe("client session bootstrap", () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ code: "CLIENT_FORBIDDEN" }), { status: 403 }),
+        new Response(JSON.stringify({ code: "CLIENT_FORBIDDEN" }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        }),
       )
       .mockResolvedValueOnce(new Response(JSON.stringify(SESSION), { status: 200 }));
     await requestClientSession(
