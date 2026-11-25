@@ -10,7 +10,7 @@
  * shows it there a moment late. Pixel pointers carry the node-less sentinel and use their
  * negotiated viewport coordinates directly.
  */
-import { Mod, NODE_IN_FRAME_ERROR, type RectResult, type Up } from "@mirror/protocol";
+import { Mod, NODE_IN_FRAME_ERROR, type Down, type RectResult, type Up } from "@mirror/protocol";
 import { resolveNode, type FrameHop, type ResolveNodeDeps } from "../browser/resolvenode";
 import type { AgentLink, CdpSend } from "../types";
 import { describeKey } from "./keymap";
@@ -46,7 +46,8 @@ export interface InputRelayDeps {
   ): Promise<boolean>;
   viewportFor(tabId: string): { w: number; h: number } | undefined;
   rectTimeoutMs?: number;
-  onValueStatus?(tabId: string, failed: boolean): void;
+  /** `reason` is short Chinese text for the person, never anything from the page. */
+  onValueStatus?(tabId: string, failed: boolean, reason?: string): void;
 }
 
 export type InputMsg = Extract<
@@ -60,7 +61,22 @@ export type InputRelay = ((viewerId: string, msg: InputMsg) => Promise<boolean>)
   resetTab(tabId: string): void;
   /** Test-mode instrumentation; production callers need not expose it. */
   rectFallbacksFor(tabId: string): number;
+  /**
+   * Every tab whose last field sync failed, as the `input-status` a newly connected viewer needs:
+   * it starts from "all synced", and nothing else would tell it the field it sees is stale.
+   */
+  valueStatusMessages(): Extract<Down, { t: "input-status" }>[];
 };
+
+/** Why a field sync failed, in words the person can act on. Never quotes page content. */
+export function valueFailureReason(error: unknown): string {
+  const text = String(error ?? "");
+  if (/timed out/i.test(text)) return "远端页面响应超时";
+  if (/not found|another frame|no longer|detached|not a value control/i.test(text))
+    return "远端输入框已被页面替换";
+  if (/does not match|update failed|edit failed/i.test(text)) return "远端编辑器未接受这次输入";
+  return "远端页面未接受这次输入";
+}
 
 const FAILURE_REPORT_INTERVAL_MS = 60_000;
 const lastFailureReports = new Map<string, number>();
@@ -95,12 +111,18 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
   >();
   const generations = new Map<string, number>();
   const rectFallbacks = new Map<string, number>();
-  const failedValues = new Set<string>();
-  const valueStatus = (tab: string, failed: boolean) => {
-    if (failedValues.has(tab) === failed) return;
-    if (failed) failedValues.add(tab);
-    else failedValues.delete(tab);
-    deps.onValueStatus?.(tab, failed);
+  /** Tab -> why its last field sync failed. */
+  const failedValues = new Map<string, string>();
+  const valueStatus = (tab: string, failed: boolean, reason?: string) => {
+    if (!failed) {
+      if (!failedValues.delete(tab)) return;
+      deps.onValueStatus?.(tab, false);
+      return;
+    }
+    const why = reason ?? "远端页面未接受这次输入";
+    if (failedValues.get(tab) === why) return;
+    failedValues.set(tab, why);
+    deps.onValueStatus?.(tab, true, why);
   };
   const rectCache = new Map<string, { at: number; value: ResolvedRect }>();
   /** Where the held button was pressed, in the page and in the viewer. */
@@ -171,6 +193,8 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     touchPositions.delete(tabId);
   };
   relay.rectFallbacksFor = (tabId) => rectFallbacks.get(tabId) ?? 0;
+  relay.valueStatusMessages = () =>
+    [...failedValues].map(([tab, reason]) => ({ t: "input-status", tab, failed: true, reason }));
   return relay;
 
   async function dispatch(viewerId: string, msg: InputMsg, generation: number): Promise<boolean> {
@@ -179,12 +203,11 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
       deps.isDriver(viewerId) &&
       deps.allowsInput(viewerId, msg.tab);
     if (!valid()) return false;
-    if (
-      failedValues.has(msg.tab) &&
-      ((msg.t === "key" && msg.key === "Enter") ||
-        (msg.t === "ptr" && (msg.kind === "down" || msg.kind === "up")))
-    )
-      return false;
+    // While the remote field may hold different text from what the person sees, Enter would
+    // submit that stale text, so it stays blocked until a field sync succeeds. Clicks are let
+    // through: a click cannot send the field's text, and blocking it left no way to click back
+    // into the field (or anywhere else) to recover, so the person was stuck until a reload.
+    if (failedValues.has(msg.tab) && msg.t === "key" && msg.key === "Enter") return false;
 
     const sessionId = deps.sessionFor(msg.tab);
     if (sessionId === undefined) return false;
@@ -226,7 +249,11 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
             resolved.frameId,
           );
           if (!valid()) return false;
-          valueStatus(msg.tab, !response.ok);
+          valueStatus(
+            msg.tab,
+            !response.ok,
+            response.ok ? undefined : valueFailureReason(response.err),
+          );
           return response.ok;
         }
         case "scroll": {
@@ -257,7 +284,7 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
       }
     } catch (error) {
       reportFailure(`${msg.t} was dropped`, error);
-      if (msg.t === "value" && valid()) valueStatus(msg.tab, true);
+      if (msg.t === "value" && valid()) valueStatus(msg.tab, true, valueFailureReason(error));
       // Navigation/detach can invalidate a session between authorization and dispatch. Input is
       // ephemeral; dropping that event is safer than turning a transient race into a WS failure.
       return false;

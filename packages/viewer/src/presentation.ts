@@ -10,6 +10,42 @@ import { extractSnapshotViewport, fitViewportScale, type Mirror } from "./mirror
 import { createPxView, type PxView } from "./pxview";
 import { videoOption } from "./px-video";
 import type { GatewayConnectionState } from "./ws";
+import { deepActiveElement, isTextEditable } from "./input/keys";
+import { followsFocusByItself } from "./input/focus-follow";
+
+/**
+ * Whether a measured size change must wait. Android WebViews (WeChat, QQ, UC, Samsung) shrink
+ * the page for the soft keyboard. Reporting that as a new viewport made the stage inert while the
+ * remote page re-laid out, which took focus from the field, closed the keyboard, grew the page
+ * back and started over. A height-only change while a field here has focus is the keyboard; the
+ * mirror just rescales, and the real size is reported once nobody is typing.
+ */
+export function defersViewport(
+  current: { w: number; h: number; dpr: number } | undefined,
+  measured: { w: number; h: number; dpr: number },
+  editing: boolean,
+): boolean {
+  return (
+    editing &&
+    current !== undefined &&
+    current.w === measured.w &&
+    current.dpr === measured.dpr &&
+    current.h !== measured.h
+  );
+}
+
+/**
+ * On a phone, a text field in the mirror, or pixel mode's keyboard textarea, has focus. A desktop
+ * has no soft keyboard, and its pixel textarea keeps focus all the time.
+ */
+function editingIn(host: HTMLElement): boolean {
+  if (followsFocusByItself(host.ownerDocument.defaultView)) return false;
+  const active = deepActiveElement(host.ownerDocument);
+  if (active === null || active === host.ownerDocument.body) return false;
+  return (
+    isTextEditable(active) && (host.contains(active) || active.ownerDocument !== host.ownerDocument)
+  );
+}
 
 type Snapshot = Extract<Down, { t: "snapshot" }>;
 type Viewport = Extract<Up, { t: "view" }>;
@@ -59,7 +95,8 @@ export function createPresentation(options: PresentationOptions) {
   const inputReady = (value: boolean) => {
     if (value === ready) return;
     ready = value;
-    host.inert = !ready;
+    // Making the stage inert takes focus from its field, which closes a phone's keyboard.
+    host.inert = !ready && !editingIn(host);
     options.onInputReady(ready);
   };
 
@@ -85,6 +122,11 @@ export function createPresentation(options: PresentationOptions) {
     if (!driver || tab === null) return;
     const measured = measureViewport();
     if (measured.w <= 0 || measured.h <= 0 || viewportMatchesHost(measured)) return;
+    if (viewport?.tab === tab && defersViewport(viewport, measured, editingIn(host))) {
+      // Look again later: the keyboard closes, or the person leaves the field.
+      scheduleViewport(1_000);
+      return;
+    }
     inputReady(false);
     viewport = { t: "view", tab, ...measured };
     send(viewport);

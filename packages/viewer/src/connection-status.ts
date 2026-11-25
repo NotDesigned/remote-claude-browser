@@ -29,6 +29,8 @@ export function describeConnection(input: {
   clientPhase: ClientPhase;
   connection: GatewayConnectionState;
   inputUnsynced: boolean;
+  /** The gateway's short reason, while input is not synced. */
+  inputFailureReason?: string;
   inputReady: boolean;
 }): ConnectionStatus {
   const { clientPhase, connection } = input;
@@ -76,7 +78,9 @@ export function describeConnection(input: {
       kind: "input-unsynced",
       text: "输入未同步",
       tone: "bad",
-      reason: "最近一次输入没有同步到页面，回车和点击暂时不会发送。",
+      reason:
+        "最近一次输入没有同步到页面，回车暂时不会发送；会自动重试，也可以点「重新同步」。" +
+        (input.inputFailureReason ? `原因：${input.inputFailureReason}` : ""),
     };
   if (!input.inputReady)
     return {

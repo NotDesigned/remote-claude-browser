@@ -44,6 +44,9 @@ export interface CommandDependencies {
   recordReadiness?: RecordReadiness;
   snapshotReadyTimeoutMs?: number;
   takeFullSnapshot?: () => void;
+  /** Timers for re-checking an editor after an edit; tests replace them. */
+  schedule?: (callback: () => void, delayMs: number) => void;
+  editableSettleDelaysMs?: readonly number[];
 }
 
 const DEFAULT_SNAPSHOT_READY_TIMEOUT_MS = 2_000;
@@ -200,10 +203,60 @@ function announceScrollUp(scroller: Element, y: number): void {
   scroller.dispatchEvent(new WheelEvent("wheel", { deltaY, bubbles: true, cancelable: true }));
 }
 
+/**
+ * Rich editors (ProseMirror, Lexical, claude.ai's composer) answer an `insertText` by rebuilding
+ * their DOM a moment later, and store a typed space as U+00A0 or end with an empty paragraph. An
+ * exact check one microtask after the edit therefore reported failures that were not failures and
+ * blocked the user's Enter. These are the differences no reader of the text could see.
+ */
+export function normalizeEditableText(text: string): string {
+  return text
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\n+$/, "");
+}
+
+export function sameEditableText(actual: string, expected: string): boolean {
+  return actual === expected || normalizeEditableText(actual) === normalizeEditableText(expected);
+}
+
+/** When to look again after the edit: about 100 ms in all, which a rich editor settles within. */
+const EDITABLE_SETTLE_DELAYS_MS = [0, 16, 34, 50];
+
+/**
+ * Resolves true as soon as the editor shows the expected text, and false only once it still does
+ * not after the last look. The gateway gives a command 3 s, far longer than these ~100 ms.
+ */
+export async function settleEditable(
+  read: () => string | null,
+  expected: string,
+  schedule: (callback: () => void, delayMs: number) => void,
+  delaysMs: readonly number[] = EDITABLE_SETTLE_DELAYS_MS,
+): Promise<boolean> {
+  await Promise.resolve();
+  for (let attempt = 0; ; attempt++) {
+    const actual = read();
+    if (actual !== null && sameEditableText(actual, expected)) return true;
+    if (attempt >= delaysMs.length) return false;
+    await new Promise<void>((resolve) => schedule(resolve, delaysMs[attempt]!));
+  }
+}
+
+function focusedEditingHost(document: Document): HTMLElement | null {
+  let active = document.activeElement as HTMLElement | null;
+  if (active === null || !active.isContentEditable) return null;
+  while (active.parentElement?.isContentEditable) active = active.parentElement;
+  return active;
+}
+
 export function createCommandHandler(
   emitter: Pick<Emitter, "emit">,
   dependencies: CommandDependencies = {},
 ): (cmd: AgentCmd) => void {
+  const schedule =
+    dependencies.schedule ??
+    ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
+  const settleDelaysMs = dependencies.editableSettleDelaysMs ?? EDITABLE_SETTLE_DELAYS_MS;
   const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
   const getNodeMirror = dependencies.getNodeMirror ?? (() => record.mirror);
   const takeFullSnapshot = dependencies.takeFullSnapshot ?? (() => record.takeFullSnapshot(true));
@@ -376,13 +429,24 @@ export function createCommandHandler(
               if (!document.execCommand("insertText", false, insert))
                 throw new Error("editable update failed");
             }
-            queueMicrotask(() => {
-              const actual = editableText(host);
+            const expected = cmd.value;
+            const reqId = cmd.reqId;
+            void settleEditable(
+              () => {
+                // A framework can re-render the editor and replace the host after the edit. The
+                // focused editing host is then the same editor, not a different field.
+                const current = host.isConnected ? host : focusedEditingHost(host.ownerDocument);
+                return current === null ? null : editableText(current);
+              },
+              expected,
+              schedule,
+              settleDelaysMs,
+            ).then((matched) => {
               emitter.emit({
                 kind: "cmdres",
-                reqId: cmd.reqId,
-                ok: actual === cmd.value,
-                ...(actual === cmd.value ? {} : { err: "editable text does not match" }),
+                reqId,
+                ok: matched,
+                ...(matched ? {} : { err: "editable text does not match" }),
               });
             });
             return;

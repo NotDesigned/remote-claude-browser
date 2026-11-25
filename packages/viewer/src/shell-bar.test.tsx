@@ -79,7 +79,7 @@ describe("connection status", () => {
       kind: "input-unsynced",
       text: "输入未同步",
       tone: "bad",
-      reason: "最近一次输入没有同步到页面，回车和点击暂时不会发送。",
+      reason: "最近一次输入没有同步到页面，回车暂时不会发送；会自动重试，也可以点「重新同步」。",
     });
     expect(status({ connection: "connecting" })).toMatchObject({ text: "连接中", tone: "busy" });
     expect(status({ connection: "closed" })).toMatchObject({
@@ -121,7 +121,7 @@ describe("the 「连接」 popover", () => {
     const unsynced = status({ inputUnsynced: true });
     expect(buttons(details({ status: unsynced }).nodes)).toEqual([]);
     const { nodes, text } = details({ status: unsynced, onResyncInput });
-    expect(text).toContain("回车和点击暂时不会发送");
+    expect(text).toContain("回车暂时不会发送");
     expect(buttons(nodes)).toEqual(["重新同步"]);
     (nodes.find((node) => node.type === "button")!.props.onClick as () => void)();
     expect(onResyncInput).toHaveBeenCalledOnce();

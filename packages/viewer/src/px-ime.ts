@@ -1,13 +1,25 @@
 import { Mod, type TabId, type Up } from "@mirror/protocol";
 
 interface PxKeyboardOptions {
-  canvas: HTMLCanvasElement;
+  /** The surface the textarea serves: the pixel canvas, or the page mode's replay iframe. */
+  canvas: HTMLElement;
   tab: TabId;
   send(message: Up): void;
+  /**
+   * Pixel mode: keys pressed on the canvas itself are handled here and focusing the canvas
+   * focuses the textarea. Page mode has its own key capture inside the replay and sets false.
+   */
+  ownerKeys?: boolean;
 }
 
-/** A real local editor gives the OS an IME caret while the remote page owns the actual text. */
+export type PxKeyboard = ReturnType<typeof attachPxKeyboard>;
+
+/**
+ * A real local editor gives the OS an IME caret while the remote page owns the actual text.
+ * Page mode uses it too, when the remote page has a field focused that the mirror cannot focus.
+ */
 export function attachPxKeyboard(options: PxKeyboardOptions) {
+  const ownerKeys = options.ownerKeys ?? true;
   const input = options.canvas.ownerDocument.createElement("textarea");
   input.className = "px-ime-input";
   input.tabIndex = -1;
@@ -57,6 +69,24 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
       input.style.top = `${Math.max(0, point.clientY)}px`;
     }
     input.focus({ preventScroll: true });
+  };
+  /**
+   * Commit what is still being composed. Android keyboards keep a whole word (a password is one)
+   * in composition until a space or punctuation, and a tap on the page does not end it: the tap
+   * refocuses this same textarea, so the word was never sent and the page got an empty or partial
+   * field. Before any tap, tab switch or mode switch, the pending text goes out, and blurring ends
+   * the keyboard's composition; its compositionend repeats the same text, which `commit` drops.
+   */
+  const flush = () => {
+    if (disposed || !composing) return;
+    const text = input.value;
+    composing = false;
+    trustedComposition = false;
+    trustedPreedit = null;
+    if (text.length > 0) options.send({ t: "text", tab: options.tab, insert: text });
+    committedText = text || null;
+    if (input.ownerDocument.activeElement === input) input.blur();
+    clearInput();
   };
   const onCanvasFocus = () => focus();
   const sendKey = (event: KeyboardEvent, kind: "down" | "up") => {
@@ -180,8 +210,8 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
     commit(text);
   };
 
-  options.canvas.addEventListener("focus", onCanvasFocus);
-  const keyboardTargets: HTMLElement[] = [options.canvas, input];
+  if (ownerKeys) options.canvas.addEventListener("focus", onCanvasFocus);
+  const keyboardTargets: HTMLElement[] = ownerKeys ? [options.canvas, input] : [input];
   for (const target of keyboardTargets) {
     target.addEventListener("keydown", onKeyDown);
     target.addEventListener("keyup", onKeyUp);
@@ -194,7 +224,11 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
   input.addEventListener("paste", onPaste);
   return {
     focus,
+    flush,
+    hasFocus: () => input.ownerDocument.activeElement === input,
+    blur: () => input.blur(),
     dispose() {
+      flush();
       disposed = true;
       options.canvas.removeEventListener("focus", onCanvasFocus);
       for (const target of keyboardTargets) {

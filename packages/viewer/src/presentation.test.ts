@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventType, type Down, type Up } from "@mirror/protocol";
 import type { Mirror } from "./mirror";
-import { createPresentation } from "./presentation";
+import { createPresentation, defersViewport } from "./presentation";
 
 function snapshot(tab = "a", w = 1280, h = 800): Extract<Down, { t: "snapshot" }> {
   return {
@@ -188,5 +188,18 @@ describe("viewer presentation", () => {
     expect(controller.activeTab()).toBe("a");
     expect(controller.canInput("a", "dom")).toBe(false);
     expect(sent().some((m) => m.t === "nav" || m.t === "view")).toBe(false);
+  });
+});
+
+describe("keyboard-driven resizes", () => {
+  const view = { w: 390, h: 700, dpr: 3 };
+  it("waits on a height-only change while a field has focus", () => {
+    expect(defersViewport(view, { ...view, h: 380 }, true)).toBe(true);
+  });
+  it("applies it once nobody is typing, and any width or density change at once", () => {
+    expect(defersViewport(view, { ...view, h: 380 }, false)).toBe(false);
+    expect(defersViewport(view, { ...view, w: 700, h: 380 }, true)).toBe(false);
+    expect(defersViewport(view, { ...view, dpr: 2, h: 380 }, true)).toBe(false);
+    expect(defersViewport(undefined, { ...view, h: 380 }, true)).toBe(false);
   });
 });

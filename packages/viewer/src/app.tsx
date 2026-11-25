@@ -15,6 +15,7 @@ import type { AgentMsg, Down, eventWithTime, TabId } from "@mirror/protocol";
 import { EventType, IncrementalSource } from "@mirror/protocol";
 import { createMirror, type Mirror } from "./mirror";
 import { attachMirrorInput } from "./input";
+import { createInputResync, focusedValueMessage, type InputResync } from "./input/resync-input";
 import { EventPipeline } from "./pipeline";
 import { createEchoFilter } from "./pipeline/echo";
 import { createScrollFilter } from "./pipeline/scroll";
@@ -126,6 +127,7 @@ export function App() {
   const hostRef = useRef<HTMLElement>(null);
   const socketRef = useRef<GatewaySocket | null>(null);
   const presentationRef = useRef<ReturnType<typeof createPresentation> | null>(null);
+  const inputResyncRef = useRef<InputResync | null>(null);
   const dismissedDownloadIdsRef = useRef(new Set<string>());
   const runtimeCleanupRef = useRef<(() => void) | null>(null);
   const endControllerRef = useRef<AbortController | null>(null);
@@ -175,6 +177,8 @@ export function App() {
   const [, setStatusNow] = useState(Date.now);
   const [inputReady, setInputReady] = useState(false);
   const [inputFailures, setInputFailures] = useState<Record<TabId, boolean>>({});
+  /** Why each failed tab's field sync failed, for the UI to show beside 「输入未同步」. */
+  const [inputFailureReasons, setInputFailureReasons] = useState<Record<TabId, string>>({});
   const [pageStates, setPageStates] = useState<Record<TabId, "recovering" | "ready" | "failed">>(
     {},
   );
@@ -727,6 +731,18 @@ export function App() {
     });
     presentationRef.current = presentation;
     pendingModeRef.current = null;
+    const inputResync = createInputResync({
+      valueFor: (tab) => {
+        const replayer = mirror.getReplayer();
+        const root = replayer?.iframe.contentDocument;
+        if (!replayer || !root || mirror.getActiveTab() !== tab) return null;
+        return focusedValueMessage(root, tab, (node) => replayer.getMirror().getId(node));
+      },
+      send: (message) => {
+        if (presentation.canInput(message.tab, "dom")) socket?.send(message);
+      },
+    });
+    inputResyncRef.current = inputResync;
     const frameRateTimer = setInterval(() => {
       setFrameRates({ ...gatewayFrames, display: paintedFrames });
       paintedFrames = 0;
@@ -747,6 +763,8 @@ export function App() {
       voiceRef.current?.setSender(null);
       presentationRef.current = null;
       presentation.dispose();
+      inputResync.dispose();
+      inputResyncRef.current = null;
       resync.dispose();
       clipboard.dispose();
       uploads.dispose();
@@ -783,6 +801,13 @@ export function App() {
         }
         if (message.t === "input-status") {
           setInputFailures((previous) => ({ ...previous, [message.tab]: message.failed }));
+          setInputFailureReasons((previous) => {
+            const next = { ...previous };
+            if (message.failed) next[message.tab] = message.reason ?? "远端页面未接受这次输入";
+            else delete next[message.tab];
+            return next;
+          });
+          inputResync.status(message.tab, message.failed);
           return;
         }
         if (message.t === "cpa-oauth") {
@@ -808,7 +833,9 @@ export function App() {
         presentation.handle(message);
         if (message.t === "hello") {
           setOAuthCallbacks({});
+          // The gateway follows `hello` with the input-status of every tab still failed.
           setInputFailures({});
+          setInputFailureReasons({});
           setPageStates({});
           sessionId = message.sessionId;
           setViewerId(message.viewerId);
@@ -978,10 +1005,18 @@ export function App() {
     setStartAppleOnboarding(true);
     setOnboardingOpen(true);
   }, [clientPhase, connection, currentProfile?.id]);
+  const resyncInput = useCallback(
+    () => (activeTab === null ? false : (inputResyncRef.current?.resync(activeTab) ?? false)),
+    [activeTab],
+  );
+  // The gateway's short reason while the active tab's input is not synced.
+  const inputFailureReason =
+    activeTab !== null && inputFailures[activeTab] ? inputFailureReasons[activeTab] : undefined;
   const shellStatus = describeConnection({
     clientPhase,
     connection,
     inputUnsynced: activeTab !== null && !!inputFailures[activeTab],
+    inputFailureReason,
     inputReady,
   });
   const changeView = (mode: ViewMode, remember = true) => {
@@ -1084,6 +1119,7 @@ export function App() {
         frameRate={pixelMode ? (frameRates?.display ?? null) : null}
         profileName={currentProfile?.name}
         onReconnect={clientPhase === "ready" ? () => socketRef.current?.reconnect() : undefined}
+        onResyncInput={clientPhase === "ready" ? () => void resyncInput() : undefined}
         diagnostics={
           clientPhase === "ready"
             ? {
