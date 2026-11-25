@@ -352,6 +352,55 @@ describe("session-scoped WebSocket upgrades", () => {
     }
   });
 
+  it("decides a reconnect's resume once, so its hello and its join payload always agree", async () => {
+    const server = createServer();
+    const hub = readyHub("a");
+    const [opened] = hub.joinPayload().filter((message) => message.t === "snapshot");
+    if (opened?.t !== "snapshot") throw new Error("no snapshot");
+    const cursor = { tab: hub.tabId, epoch: opened.epoch, nextSeq: opened.seq + 1 };
+    let accept = false;
+    const offered: unknown[] = [];
+    const wsServer = createWsServer({
+      server,
+      sessionForRequest: () => "a",
+      hubsForSession: () => [hub],
+      onConnection(_viewer, _request, _sid, resumable) {
+        offered.push(resumable);
+        // The geometry agreement could not be inherited: the viewer is told it did not resume.
+        return accept ? resumable : [];
+      },
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const resume = encodeURIComponent(JSON.stringify([[cursor.tab, cursor.epoch, cursor.nextSeq]]));
+    const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/ws?resume=${resume}`;
+    const join = async () => {
+      const socket = new WebSocket(url);
+      const messages: Down[] = [];
+      socket.on("message", (raw) => messages.push(decodeDown(raw.toString())));
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve);
+        socket.once("error", reject);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      socket.terminate();
+      return messages.map((message) => message.t);
+    };
+    try {
+      // Refused: a full join, with the snapshot the viewer will be waiting for.
+      expect(await join()).toEqual(["resync", "snapshot"]);
+      accept = true;
+      // Accepted: the viewer is current, so nothing at all.
+      expect(await join()).toEqual([]);
+      expect(offered).toEqual([[cursor], [cursor]]);
+    } finally {
+      await wsServer.close();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+      hub.invalidateDocument();
+    }
+  });
+
   it("revokes a released session before transport close and lets its new owner reconnect without affecting peers", async () => {
     const server = createServer();
     const connected = new Map<string, ViewerConn>();

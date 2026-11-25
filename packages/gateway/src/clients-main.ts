@@ -90,7 +90,7 @@ import { createProfileStore, DEFAULT_PROFILE, MAX_PROFILES } from "./session/pro
 import { createResourceSampler } from "./monitor/resources";
 import type { TargetRef, AgentLink } from "./types";
 import { createRoleManager } from "./ws/roles";
-import { createWsServer, resumeCursorsFor } from "./ws/server";
+import { createWsServer } from "./ws/server";
 import type { ViewerConn } from "./ws/viewerconn";
 
 /** One account: its Chrome, and what the gateway keeps for that Chrome. */
@@ -608,8 +608,8 @@ export async function startClientGateway(
         return false;
       }
     },
-    onConnection(viewer, request, sid) {
-      if (!sid) return;
+    onConnection(viewer, request, sid, resumable) {
+      if (!sid) return [];
       const id = `viewer-${nextViewer++}`;
       viewerIds.set(viewer, id);
       viewers.set(id, {
@@ -622,13 +622,13 @@ export async function startClientGateway(
       idleReaper.touch(sid);
       const runtime = runtimes.get(sid)!;
       // A reconnect whose replay position is still buffered keeps its geometry agreement: the
-      // epoch did not change, so this viewer identity inherits the acknowledgement directly.
-      const resumed = resumeCursorsFor(request)
-        .filter((cursor) =>
-          runtime.tabs.hubFor(cursor.tab)?.canResume(cursor.epoch, cursor.nextSeq),
-        )
-        .filter((cursor) => runtime.viewport.gate.inheritAgreement(id, cursor.tab))
-        .map((cursor) => cursor.tab);
+      // epoch did not change, so this viewer identity inherits the acknowledgement directly. One
+      // that cannot inherit it is not resumed at all: its join payload then carries a snapshot,
+      // as its `hello` says, rather than deltas the viewer would wait in vain to see completed.
+      const accepted = resumable.filter((cursor) =>
+        runtime.viewport.gate.inheritAgreement(id, cursor.tab),
+      );
+      const resumed = accepted.map((cursor) => cursor.tab);
       roles.connect({
         sessionId: sid,
         inviteRole: "driver",
@@ -662,6 +662,7 @@ export async function startClientGateway(
         .tabsMessage()
         .then((message) => viewer.send(message, encodeMsg(message)))
         .catch((error) => report("client tabs unavailable", error));
+      return accepted;
     },
     onDisconnection(viewer, sid) {
       const id = viewerIds.get(viewer);

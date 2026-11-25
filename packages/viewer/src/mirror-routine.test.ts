@@ -150,7 +150,7 @@ const fakeRrweb = vi.hoisted(() => {
 
 vi.mock("@rrweb/replay", () => ({ Replayer: fakeRrweb.FakeReplayer }));
 
-import { createMirror } from "./mirror";
+import { createMirror, RECONNECT_SNAPSHOT_WAIT_MS } from "./mirror";
 import { EventPipeline } from "./pipeline";
 import { RebuildRestoreHooks } from "./rebuild-restore";
 import { REPLAY_CURSOR_PASSTHROUGH_RULE } from "./replay-cursor";
@@ -807,7 +807,9 @@ describe("D10 recovery triggers", () => {
     mirror.connectionLost();
     expect(mirror.resumeCursor()).toBeNull();
     mirror.connectionRestored();
-    expect(requests).toEqual(["seq gap: expected 2, got 3", "ws reconnect"]);
+    // The join payload that follows a reconnect brings its own snapshot.
+    expect(requests).toEqual(["seq gap: expected 2, got 3"]);
+    expect(rawContainer.dataset.resyncPending).toBe("true");
     mirror.handle({ t: "resync", tab: "T1" });
     mirror.handle({
       t: "snapshot",
@@ -851,7 +853,8 @@ describe("D10 recovery triggers", () => {
     expect(rawContainer.dataset.mirrorState).toBe("live");
   });
 
-  it("keeps the mirror visible across a socket drop and requests reconnect recovery", () => {
+  it("keeps the mirror visible across a socket drop and asks for a snapshot only if the join brings none", () => {
+    vi.useFakeTimers();
     fakeRrweb.FakeReplayer.instances.length = 0;
     const document = new FakeDocument();
     const rawContainer = new FakeElement(document);
@@ -874,8 +877,59 @@ describe("D10 recovery triggers", () => {
     expect(mirror.getReplayer()).toBe(previous);
     expect(rawContainer.dataset).toMatchObject({ mirrorState: "live", connectionStale: "true" });
     mirror.connectionRestored();
-    expect(requests).toEqual(["ws reconnect"]);
+    expect(requests).toEqual([]);
     expect(rawContainer.dataset.connectionStale).toBeUndefined();
+    vi.advanceTimersByTime(RECONNECT_SNAPSHOT_WAIT_MS);
+    expect(requests).toEqual(["ws reconnect"]);
+    vi.useRealTimers();
+  });
+
+  it("rebuilds once, from the join payload, after a reconnect that did not resume", () => {
+    vi.useFakeTimers();
+    fakeRrweb.FakeReplayer.instances.length = 0;
+    const document = new FakeDocument();
+    const requests: string[] = [];
+    const mirror = createMirror({
+      container: new FakeElement(document) as unknown as HTMLElement,
+      pipeline: new EventPipeline(),
+      requestResync: (_tab, reason) => requests.push(reason),
+    });
+    mirror.handle({ t: "snapshot", tab: "T1", epoch: 7, seq: 1, data: [full(1_000)] });
+    mirror.handle({ t: "delta", tab: "T1", epoch: 7, seq: 2, data: [delta(1_001)] });
+    mirror.connectionLost();
+    mirror.connectionRestored(false);
+    // The join payload: resync, the hub's cached snapshot, its buffered deltas.
+    mirror.handle({ t: "resync", tab: "T1" });
+    mirror.handle({ t: "snapshot", tab: "T1", epoch: 7, seq: 1, data: [full(1_000)] });
+    mirror.handle({ t: "delta", tab: "T1", epoch: 7, seq: 2, data: [delta(1_001)] });
+    vi.advanceTimersByTime(RECONNECT_SNAPSHOT_WAIT_MS * 2);
+    expect(requests).toEqual([]);
+    expect(fakeRrweb.FakeReplayer.instances).toHaveLength(2);
+    expect(mirror.resumeCursor()).toEqual({ tab: "T1", epoch: 7, nextSeq: 3 });
+    mirror.teardown();
+    vi.useRealTimers();
+  });
+
+  it("rebuilds for a lower epoch: a tab attached again starts a new hub", () => {
+    fakeRrweb.FakeReplayer.instances.length = 0;
+    const document = new FakeDocument();
+    const mirror = createMirror({
+      container: new FakeElement(document) as unknown as HTMLElement,
+      pipeline: new EventPipeline(),
+      requestResync: () => {},
+    });
+    mirror.handle({ t: "snapshot", tab: "T1", epoch: 9, seq: 40, data: [full(1_000)] });
+    mirror.handle({
+      t: "snapshot",
+      tab: "T1",
+      epoch: 1,
+      seq: 1,
+      reason: "nav",
+      data: [full(2_000)],
+    });
+    expect(fakeRrweb.FakeReplayer.instances).toHaveLength(2);
+    expect(mirror.resumeCursor()).toEqual({ tab: "T1", epoch: 1, nextSeq: 2 });
+    mirror.teardown();
   });
 
   it("renews iframe interaction listeners after a routine document rebuild", () => {

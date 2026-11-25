@@ -7,9 +7,17 @@ import {
   type eventWithTime,
 } from "@mirror/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TabHub } from "../hub/tabhub";
+import { TabHub as BaseTabHub, type TabHubOpts } from "../hub/tabhub";
 import { Fanout } from "./server";
 import { RESUME_BYTES, STALL_BYTES, ViewerConn, type ViewerSocket } from "./viewerconn";
+
+/** Per-hub epochs from 1, as these tests read them; production epochs are process-wide. */
+class TabHub extends BaseTabHub {
+  constructor(opts: TabHubOpts) {
+    let epoch = 0;
+    super({ nextEpoch: () => ++epoch, ...opts });
+  }
+}
 
 class MockSocket implements ViewerSocket {
   readyState = 1;

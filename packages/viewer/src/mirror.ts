@@ -38,6 +38,11 @@ import { remoteFocusReplay } from "./remote-focus";
 
 /** How long the page in view waits for the snapshot of the tab that is replacing it. */
 const TAB_SWITCH_WAIT_MS = 1_500;
+/**
+ * How long a reconnect that did not resume waits for the snapshot its join payload carries. A hub
+ * with none cached asks the page itself, which normally answers well within this.
+ */
+export const RECONNECT_SNAPSHOT_WAIT_MS = 5_000;
 
 const REPLAY_TEXT_FOCUS_RULE = `
   @media (forced-colors: none) {
@@ -234,6 +239,8 @@ export function createMirror(opts: MirrorOpts): Mirror {
   let state: LiveState | null = null;
   let snapshotPending = false; // A snapshot is expected on this connection.
   let switchTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Asks for a snapshot if a reconnect's join payload brought none. */
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   const parkedLimit = opts.parkedTabs ?? 0;
   /** Oldest first. Never moved in the DOM, which would reload their iframes. */
   const parked = new Map<TabId, LiveState>();
@@ -368,6 +375,11 @@ export function createMirror(opts: MirrorOpts): Mirror {
     opts.pipeline.reset();
     park(live);
     renderStatus(message);
+  };
+
+  const clearReconnectTimer = () => {
+    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
   };
 
   const clearSwitchTimer = () => {
@@ -700,7 +712,9 @@ export function createMirror(opts: MirrorOpts): Mirror {
             } else if (
               state === null ||
               state.tab !== msg.tab ||
-              msg.epoch > state.epoch ||
+              // Any other epoch is another document: a tab attached again gets a new hub,
+              // whose epochs are not ordered after the old one's in any way the viewer knows.
+              msg.epoch !== state.epoch ||
               state.needsSnapshot ||
               snapshotPending
             ) {
@@ -737,6 +751,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
       if (activeTab !== null) requestFreshSnapshot(activeTab, reason);
     },
     connectionLost() {
+      clearReconnectTimer();
       for (const tab of [...parked.keys()]) dropParked(tab);
       endTabSwitch();
       // Plain pages keep their unused media discovery plugin when DOM replay resumes. A lane
@@ -754,8 +769,22 @@ export function createMirror(opts: MirrorOpts): Mirror {
     },
     connectionRestored(resumed = false) {
       delete opts.container.dataset.connectionStale;
-      if (resumed && state?.tab === activeTab && !state.needsSnapshot) return;
-      if (activeTab !== null) requestFreshSnapshot(activeTab, "ws reconnect");
+      clearReconnectTimer();
+      if (activeTab === null) return;
+      if (resumed) {
+        if (state?.tab === activeTab && !state.needsSnapshot) return;
+        // Resumed by a gateway that sends no snapshot, but this page cannot continue.
+        requestFreshSnapshot(activeTab, "ws reconnect");
+        return;
+      }
+      // A connection that did not resume opens with the tab's resync and cached snapshot, so
+      // asking for another would only rebuild the page twice. Ask only if none comes.
+      const tab = activeTab;
+      awaitSnapshot(tab);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        if (snapshotPending && activeTab === tab) opts.requestResync(tab, "ws reconnect");
+      }, RECONNECT_SNAPSHOT_WAIT_MS);
     },
     resumeCursor() {
       if (state === null || state.needsSnapshot || state.tab !== activeTab) return null;
@@ -822,6 +851,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
       for (const tab of [...parked.keys()]) if (!tabs.includes(tab)) dropParked(tab);
     },
     teardown() {
+      clearReconnectTimer();
       endTabSwitch();
       for (const tab of [...parked.keys()]) dropParked(tab);
       pendingRestore = null;

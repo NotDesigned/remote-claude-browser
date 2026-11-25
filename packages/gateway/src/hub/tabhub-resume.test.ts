@@ -81,6 +81,24 @@ describe("TabHub reconnect resume", () => {
     }
   });
 
+  it("never resumes a cursor from the hub that a re-attached tab replaced", () => {
+    // The same target attached again under a new CDP session gets a brand-new hub. Its first
+    // epoch used to be 1 again, so an old cursor resumed onto a different document.
+    const old = liveHub(4);
+    const replacement = liveHub(4);
+    expect(replacement.epoch).not.toBe(old.epoch);
+    expect(replacement.epoch).toBeGreaterThan(old.epoch);
+    const cursor = { epoch: old.epoch, nextSeq: old.snapshotSeq + 2 };
+    expect(replacement.hub.canResume(cursor.epoch, cursor.nextSeq)).toBe(false);
+    expect(replacement.hub.joinPayload(cursor)[0]).toEqual({ t: "resync", tab: "tab-1" });
+  });
+
+  it("does not resume an epoch-0 cursor on a hub that has no snapshot yet", () => {
+    const hub = new TabHub({ sessionId: "s1", tabId: "tab-1" });
+    hub.ingest(hello(1));
+    expect(hub.canResume(0, 1)).toBe(false);
+  });
+
   it("round-trips resume cursors and ignores malformed input", () => {
     const cursors = [{ tab: "ABCDEF0123", epoch: 4, nextSeq: 91 }];
     expect(decodeResumeCursors(encodeResumeCursors(cursors))).toEqual(cursors);

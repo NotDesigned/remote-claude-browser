@@ -254,11 +254,17 @@ export interface WsServerOpts {
   /** Reject old keyless viewers before they can replace a newer page; opt-in migration guard. */
   requireConnectionKey?: boolean;
   onUp?: (viewer: ViewerConn, msg: Up, sessionId: string | undefined) => void | Promise<void>;
+  /**
+   * `resumable` lists the viewer's resume cursors that its hubs can continue from. The join
+   * payload resumes exactly the cursors returned here (all of `resumable` when nothing is
+   * returned), so whatever this tells the viewer about resumed tabs matches what it receives.
+   */
   onConnection?: (
     viewer: ViewerConn,
     request: IncomingMessage,
     sessionId: string | undefined,
-  ) => void;
+    resumable: readonly ResumeCursor[],
+  ) => readonly ResumeCursor[] | void;
   onDisconnection?: (viewer: ViewerConn, sessionId: string | undefined) => void;
 }
 
@@ -386,15 +392,21 @@ export function createWsServer(opts: WsServerOpts): WsServer {
       if (connectionKey) activeKeys.set(sessionId, connectionKey);
       else activeKeys.delete(sessionId);
     }
+    const sessionHubs = (): TabHub[] => [
+      ...(sessionId === undefined ? (opts.hubs?.() ?? []) : opts.hubsForSession!(sessionId)),
+    ];
     // A reconnecting viewer may continue from its resume cursors, but only on its first join:
-    // drain recovery after a stall always rebuilds from a fresh snapshot.
-    let resumeCursors = resumeCursorsFor(request);
+    // drain recovery after a stall always rebuilds from a fresh snapshot. Whether it resumes is
+    // decided once, here and in onConnection, and nothing between that and the join can change it.
+    let resumeCursors: readonly ResumeCursor[] = resumeCursorsFor(request).filter((cursor) =>
+      sessionHubs().some(
+        (hub) => hub.tabId === cursor.tab && hub.canResume(cursor.epoch, cursor.nextSeq),
+      ),
+    );
     const joinPayload = (): Down[] => {
-      const hubs =
-        sessionId === undefined ? (opts.hubs?.() ?? []) : opts.hubsForSession!(sessionId);
       const cursors = resumeCursors;
       resumeCursors = [];
-      return [...hubs].flatMap((hub) =>
+      return sessionHubs().flatMap((hub) =>
         hub.joinPayload(cursors.find((cursor) => cursor.tab === hub.tabId)),
       );
     };
@@ -470,7 +482,11 @@ export function createWsServer(opts: WsServerOpts): WsServer {
       }
     });
     if (opts.replaceSessionOnConnect && sessionId !== undefined) replaceSession(sessionId, viewer);
-    opts.onConnection?.(viewer, request, sessionId);
+    const accepted = opts.onConnection?.(viewer, request, sessionId, resumeCursors);
+    if (accepted !== undefined) {
+      resumeCursors = resumeCursors.filter((cursor) => accepted.includes(cursor));
+    }
+    // Synchronously after the decision: the hubs cannot have moved on in between.
     if (viewerSockets.has(viewer)) fanout.addViewer(viewer, sessionId);
   });
 
