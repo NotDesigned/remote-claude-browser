@@ -4,12 +4,13 @@ import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium, webkit } from "playwright";
+import { viewerDist } from "./viewer-dist.mjs";
 import { confirmDialogs } from "./confirm-dialog.mjs";
 const engine = process.env.USER_UI_BROWSER ?? "chromium";
 
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use scripts/limited-run.sh");
 const watchdog = setTimeout(() => process.exit(124), 120000);
-const root = resolve("packages/viewer/dist");
+const root = viewerDist();
 const admin = {
   id: "fixture-admin",
   username: "admin",

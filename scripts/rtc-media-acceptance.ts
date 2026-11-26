@@ -14,6 +14,7 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright";
+import { viewerDist } from "./viewer-dist.mjs";
 
 const CHROME_PATH = process.env.CHROME_PATH ?? "/usr/bin/google-chrome";
 const START_TIMEOUT_MS = 60_000;
@@ -280,7 +281,7 @@ function startGateway(port: number, temp: string): { child: ChildProcess; logs: 
       MIRROR_DISABLE_RTC: "0",
       MIRROR_PUBLIC_ORIGIN: `http://127.0.0.1:${port}`,
       MIRROR_ACCESS_PASSWORD: "rtc-media-fixture-only",
-      VIEWER_DIST_ROOT: resolve("packages/viewer/dist"),
+      VIEWER_DIST_ROOT: viewerDist(),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

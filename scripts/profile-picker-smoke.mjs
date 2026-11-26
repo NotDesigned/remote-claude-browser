@@ -4,10 +4,11 @@ import { createServer } from "node:http";
 import { mkdir, readFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium, webkit } from "playwright";
+import { viewerDist } from "./viewer-dist.mjs";
 import { confirmDialogs } from "./confirm-dialog.mjs";
 
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use scripts/limited-run.sh");
-const root = resolve("packages/viewer/dist");
+const root = viewerDist();
 const accounts = [
   {
     id: "default",

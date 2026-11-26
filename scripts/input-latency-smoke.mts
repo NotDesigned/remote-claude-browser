@@ -10,12 +10,13 @@ import { createAgentBundle } from "../packages/agent/dist/index.js";
 import { ChunkReassembler } from "../packages/protocol/src/index";
 import { editableText } from "../packages/protocol/src/index";
 import type { Up, Down, eventWithTime } from "../packages/protocol/src/index";
+import { viewerDist } from "./viewer-dist.mjs";
 
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use limited-run.sh");
 const watchdog = setTimeout(() => process.exit(124), 90000);
 const require = createRequire(new URL("../packages/gateway/package.json", import.meta.url));
 const { WebSocketServer } = require("ws");
-const root = resolve("packages/viewer/dist");
+const root = viewerDist();
 const editorStyle =
   "position:absolute;left:20px;top:30px;width:400px;height:120px;border:1px solid black;font-size:18px;white-space:pre-wrap";
 const remoteHtml = `<!doctype html><html><body style="margin:0"><div id="editor" contenteditable="true" role="textbox" style="${editorStyle}"><p><br></p></div></body></html>`;

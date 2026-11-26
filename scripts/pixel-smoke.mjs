@@ -5,6 +5,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { resolve, extname } from "node:path";
 import { chromium } from "playwright";
+import { viewerDist } from "./viewer-dist.mjs";
 
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use scripts/limited-run.sh");
 const watchdog = setTimeout(() => {
@@ -13,7 +14,7 @@ const watchdog = setTimeout(() => {
 }, 90000);
 const require = createRequire(new URL("../packages/gateway/package.json", import.meta.url));
 const { WebSocketServer } = require("ws");
-const root = resolve("packages/viewer/dist");
+const root = viewerDist();
 const server = createServer(async (request, response) => {
   const path = new URL(request.url, "http://fixture.test").pathname;
   if (path === "/api/client/session") {

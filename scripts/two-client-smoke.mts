@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import type { Down, Up } from "../packages/protocol/src/index";
 import { decodePxBinary, encodeResumeCursors } from "../packages/protocol/src/index";
+import { viewerDist } from "./viewer-dist.mjs";
 
 /** Binary pixel frames carry raw JPEG; keep only the metadata the checks use. */
 function pixelDown(raw: Buffer): Down {
@@ -375,7 +376,7 @@ try {
       GATEWAY_HOST: "127.0.0.1",
       GATEWAY_PORT: String(gatewayPort),
       CHROME_USER_DATA_DIR: profile,
-      VIEWER_DIST_ROOT: resolve("packages/viewer/dist"),
+      VIEWER_DIST_ROOT: viewerDist(),
       MIRROR_ACCESS_PASSWORD: "two-client-fixture-only",
     },
   });

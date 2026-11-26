@@ -5,6 +5,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { extname, resolve } from "node:path";
 import { chromium } from "playwright";
+import { viewerDist } from "./viewer-dist.mjs";
 
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use scripts/limited-run.sh");
 const watchdog = setTimeout(() => {
@@ -13,7 +14,7 @@ const watchdog = setTimeout(() => {
 }, 120000);
 const require = createRequire(new URL("../packages/gateway/package.json", import.meta.url));
 const { WebSocketServer } = require("ws");
-const root = resolve("packages/viewer/dist");
+const root = viewerDist();
 const artifacts = resolve("artifacts");
 const events = [];
 const creates = [];
