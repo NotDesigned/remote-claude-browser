@@ -41,6 +41,7 @@ import { captureDocumentContext } from "./document-context";
 import { startWorkingMarkCapture } from "./working-mark";
 import { startFocusReport } from "./focus-report";
 import {
+  acknowledgeAttachedDocument,
   broadcastStitchSync,
   createReturnedDocumentCheck,
   installStitchReadyListener,
@@ -152,9 +153,9 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   const fontCapture = installFontCapture(window, {
     onLateFont: () => {
       if (!isCrossOriginChild() || !recordReadiness.isStarted()) return;
+      // That replaces the nodes of the frames below, which have to report again: the snapshot's
+      // own processing (below) asks them, once.
       record.takeFullSnapshot(true);
-      // That replaced the nodes of the frames below, which have to report again.
-      broadcastStitchSync();
     },
   });
 
@@ -281,7 +282,8 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
             );
           },
           eventProcessor: (event) => {
-            captureDocumentContext(event, mirrorNode);
+            const framesFound = captureDocumentContext(event, mirrorNode);
+            acknowledgeAttachedDocument(event, mirrorNode);
             // rrweb processes this initial snapshot in both top-level and cross-origin child
             // recorders. Waiting snapshot commands resume in a microtask, after rrweb finishes the
             // current startup call stack and flips its internal recording flag.
@@ -296,7 +298,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
               // Its canvases are blank in the replay until they are sent again.
               canvasSampler?.reset();
             }
-            if (isReturnedDocument(event)) broadcastStitchSync();
+            if (isReturnedDocument(event, framesFound)) broadcastStitchSync();
             return event;
           },
         },

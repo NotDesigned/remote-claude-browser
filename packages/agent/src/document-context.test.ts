@@ -32,3 +32,40 @@ it("keeps each document's URL and base through snapshots and late iframe documen
   });
   expect(child).toMatchObject({ documentUrl: urls.get(3)![0], baseUrl: urls.get(3)![1] });
 });
+
+it("returns the frames of each tree it walks, so they need no second walk", () => {
+  const frame = (id: number, ...childNodes: unknown[]) => ({
+    type: 2,
+    id,
+    tagName: "iframe",
+    childNodes,
+  });
+  const none = () => null;
+  expect(
+    captureDocumentContext(
+      {
+        type: EventType.FullSnapshot,
+        data: { node: { type: 0, id: 1, childNodes: [frame(5), { type: 2, id: 6 }] } },
+      } as unknown as eventWithTime,
+      none,
+    ),
+  ).toEqual([[5]]);
+  expect(
+    captureDocumentContext(
+      {
+        type: EventType.IncrementalSnapshot,
+        data: {
+          source: IncrementalSource.Mutation,
+          adds: [
+            { node: { type: 2, id: 7, tagName: "div", childNodes: [frame(8)] } },
+            { node: { type: 3, id: 9 } },
+          ],
+        },
+      } as unknown as eventWithTime,
+      none,
+    ),
+  ).toEqual([[8], []]);
+  expect(
+    captureDocumentContext({ type: EventType.Meta, data: {} } as unknown as eventWithTime, none),
+  ).toBeUndefined();
+});

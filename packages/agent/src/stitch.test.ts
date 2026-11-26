@@ -1,8 +1,11 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  STITCH_ACK_MESSAGE_TYPE,
   STITCH_READY_MESSAGE_TYPE,
   STITCH_SYNC_MESSAGE_TYPE,
+  STITCH_SYNC_MIN_INTERVAL_MS,
+  acknowledgeAttachedDocument,
   broadcastStitchSync,
   createReturnedDocumentCheck,
   installStitchReadyListener,
@@ -79,7 +82,11 @@ describe("stitch-sync", () => {
     expect(isCrossOriginChild(crossOriginChild)).toBe(true);
   });
 
+  /** Past the rate limit's interval after the recorder's own first snapshot. */
+  const settle = () => vi.advanceTimersByTimeAsync(STITCH_SYNC_MIN_INTERVAL_MS);
+
   it("forwards stitch-sync through nested child frames", async () => {
+    vi.useFakeTimers();
     const deepest = windowHarness();
     const grandchild = windowHarness([deepest.window]);
     const child = windowHarness([grandchild.window]);
@@ -94,7 +101,7 @@ describe("stitch-sync", () => {
       grandchild.window,
       stitchDependencies(grandchildReadiness, grandchildSnapshot),
     );
-    await Promise.resolve();
+    await settle();
 
     child.dispatch({ type: STITCH_SYNC_MESSAGE_TYPE });
 
@@ -113,7 +120,7 @@ describe("stitch-sync", () => {
     const readiness = createRecordReadiness();
     readiness.markStarted();
     installStitchSyncListener(child.window, stitchDependencies(readiness, takeFullSnapshot));
-    await Promise.resolve();
+    await settle();
 
     child.dispatch({ type: STITCH_SYNC_MESSAGE_TYPE });
     child.dispatch({ type: STITCH_SYNC_MESSAGE_TYPE });
@@ -134,21 +141,22 @@ describe("stitch-sync", () => {
     const readiness = createRecordReadiness();
     readiness.markStarted();
     installStitchSyncListener(child.window, stitchDependencies(readiness, takeFullSnapshot));
-    await Promise.resolve();
+    await settle();
 
     child.dispatch({ type: STITCH_SYNC_MESSAGE_TYPE });
     expect(descendant.window.postMessage).toHaveBeenCalledOnce();
     expect(takeFullSnapshot).toHaveBeenLastCalledWith(true);
 
-    // Too soon for another: the frames below answer this one before the snapshot is taken.
+    // Too soon for another: the snapshot put off asks the frames below itself when it is taken.
     child.dispatch({ type: STITCH_SYNC_MESSAGE_TYPE });
-    expect(descendant.window.postMessage).toHaveBeenCalledTimes(2);
+    expect(descendant.window.postMessage).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(250);
     expect(takeFullSnapshot).toHaveBeenCalledTimes(2);
     expect(takeFullSnapshot).toHaveBeenLastCalledWith(false);
   });
 
-  it("queues a snapshot received before readiness and still forwards it", async () => {
+  it("forwards a request received before readiness, which the first snapshot then answers", async () => {
+    vi.useFakeTimers();
     const parent = windowHarness();
     const descendant = windowHarness();
     const child = windowHarness([descendant.window], parent.window);
@@ -164,12 +172,11 @@ describe("stitch-sync", () => {
       "*",
     );
 
+    // The recorder's first snapshot comes after the request.
     readiness.markStarted();
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(1_000);
 
-    expect(takeFullSnapshot).toHaveBeenCalledOnce();
-    // Taken after the frames below were asked, so it asks them again.
-    expect(takeFullSnapshot).toHaveBeenCalledWith(false);
+    expect(takeFullSnapshot).not.toHaveBeenCalled();
     expect(parent.window.postMessage).toHaveBeenCalledWith(
       { type: STITCH_READY_MESSAGE_TYPE },
       "*",
@@ -183,7 +190,112 @@ describe("stitch-sync", () => {
 
     parent.dispatch({ type: STITCH_READY_MESSAGE_TYPE }, child.window);
 
-    expect(child.window.postMessage).toHaveBeenCalledWith({ type: STITCH_SYNC_MESSAGE_TYPE }, "*");
+    expect(child.window.postMessage).toHaveBeenCalledWith(
+      { type: STITCH_SYNC_MESSAGE_TYPE, ready: true },
+      "*",
+    );
+  });
+
+  /** A child recorder whose ready message reaches a parent that answers it, as index.ts does. */
+  function startingChild() {
+    const parent = windowHarness();
+    const child = windowHarness([], parent.window);
+    installStitchReadyListener(parent.window);
+    const takeFullSnapshot = vi.fn();
+    const readiness = createRecordReadiness();
+    installStitchSyncListener(child.window, stitchDependencies(readiness, takeFullSnapshot));
+    return { parent, child, readiness, takeFullSnapshot };
+  }
+
+  it("sends a frame's first snapshot once when the frame above took it in", async () => {
+    vi.useFakeTimers();
+    const { parent, child, readiness, takeFullSnapshot } = startingChild();
+    // The frame above takes in the first snapshot before the ready message, and says so.
+    parent.window.postMessage = vi.fn((data: unknown) => {
+      if ((data as { type?: unknown }).type === STITCH_READY_MESSAGE_TYPE)
+        child.dispatch({ type: STITCH_ACK_MESSAGE_TYPE });
+      parent.dispatch(data, child.window);
+    });
+    readiness.markStarted();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(child.window.postMessage).toHaveBeenCalledWith(
+      { type: STITCH_SYNC_MESSAGE_TYPE, ready: true },
+      "*",
+    );
+    expect(takeFullSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("sends a frame's first snapshot again when the frame above dropped it", async () => {
+    vi.useFakeTimers();
+    const { parent, child, readiness, takeFullSnapshot } = startingChild();
+    parent.window.postMessage = vi.fn((data: unknown) => parent.dispatch(data, child.window));
+    readiness.markStarted();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(takeFullSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it("lets a snapshot the frame above took in after a request answer it", async () => {
+    vi.useFakeTimers();
+    const descendant = windowHarness();
+    const child = windowHarness([descendant.window]);
+    const takeFullSnapshot = vi.fn();
+    const readiness = createRecordReadiness();
+    readiness.markStarted();
+    installStitchSyncListener(child.window, stitchDependencies(readiness, takeFullSnapshot));
+    await Promise.resolve();
+
+    // Asked again just after the first snapshot: put off, and not passed down yet.
+    child.dispatch({ type: STITCH_SYNC_MESSAGE_TYPE });
+    expect(descendant.window.postMessage).not.toHaveBeenCalled();
+    // The first snapshot reaches the frame above after the request was sent.
+    child.dispatch({ type: STITCH_ACK_MESSAGE_TYPE });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(takeFullSnapshot).not.toHaveBeenCalled();
+    expect(descendant.window.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("still answers a request whose snapshot was taken in before it was sent", async () => {
+    vi.useFakeTimers();
+    const child = windowHarness();
+    const takeFullSnapshot = vi.fn();
+    const readiness = createRecordReadiness();
+    readiness.markStarted();
+    installStitchSyncListener(child.window, stitchDependencies(readiness, takeFullSnapshot));
+    await Promise.resolve();
+
+    child.dispatch({ type: STITCH_ACK_MESSAGE_TYPE });
+    child.dispatch({ type: STITCH_SYNC_MESSAGE_TYPE });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(takeFullSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it("tells a frame's document that its snapshot was taken in", () => {
+    const frameWindow = { postMessage: vi.fn() };
+    const frame = { contentWindow: frameWindow } as unknown as Node;
+    const attach = (isAttachIframe: boolean, type: number) =>
+      ({
+        type: EventType.IncrementalSnapshot,
+        timestamp: 1,
+        data: {
+          source: IncrementalSource.Mutation,
+          texts: [],
+          attributes: [],
+          removes: [],
+          adds: [{ parentId: 9, nextId: null, node: { type, id: 10, childNodes: [] } }],
+          isAttachIframe,
+        },
+      }) as unknown as eventWithTime;
+    const nodeFor = (id: number) => (id === 9 ? frame : null);
+
+    acknowledgeAttachedDocument(attach(false, 0), nodeFor);
+    acknowledgeAttachedDocument(attach(true, 2), nodeFor);
+    expect(frameWindow.postMessage).not.toHaveBeenCalled();
+    acknowledgeAttachedDocument(attach(true, 0), nodeFor);
+    expect(frameWindow.postMessage).toHaveBeenCalledWith({ type: STITCH_ACK_MESSAGE_TYPE }, "*");
   });
 
   it("broadcasts only to immediate child browsing contexts", () => {

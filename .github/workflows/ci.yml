@@ -77,6 +77,8 @@ jobs:
         run: pnpm run test:browser-lifecycle
       - name: Test cross-site frame assumptions
         run: pnpm run probe:oopif
+      - name: Test that nested frames send their documents once
+        run: node packages/agent/test/frames.acceptance.mjs
       - name: Test picture mode and touch input
         run: |
           pnpm run test:pixel-ui

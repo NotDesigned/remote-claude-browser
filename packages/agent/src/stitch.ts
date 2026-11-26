@@ -13,6 +13,12 @@ const DOCUMENT_NODE = 0;
 
 export const STITCH_SYNC_MESSAGE_TYPE = "@mirror/stitch-sync";
 export const STITCH_READY_MESSAGE_TYPE = "@mirror/stitch-ready";
+/**
+ * Sent down by the recorder that took in a child's snapshot. The answer to the child's ready
+ * message only matters when its snapshot came before the frame was known and was dropped: one that
+ * was taken in needs no second snapshot, which would rebuild the frame in the replay once more.
+ */
+export const STITCH_ACK_MESSAGE_TYPE = "@mirror/stitch-ack";
 export const STITCH_SYNC_MIN_INTERVAL_MS = 250;
 
 export interface StitchSyncDependencies {
@@ -74,7 +80,7 @@ export function installStitchReadyListener(target: Window = window): () => void 
 
     // Reply directly to the ready child. A nested child forwards the resulting sync to its own
     // descendants, preserving the depth>=2 path without waking unrelated sibling recorders.
-    (event.source as Window).postMessage({ type: STITCH_SYNC_MESSAGE_TYPE }, "*");
+    (event.source as Window).postMessage({ type: STITCH_SYNC_MESSAGE_TYPE, ready: true }, "*");
   };
 
   target.addEventListener("message", onMessage);
@@ -101,21 +107,26 @@ function framesIn(node: SerializedTree, found: number[] = []): number[] {
  * the same id, as does a document. A snapshot requests the reports itself, and a report arriving is
  * only remembered, since treating it as a return would ask for another report forever.
  */
-export function createReturnedDocumentCheck(): (event: eventWithTime) => boolean {
+export function createReturnedDocumentCheck(): (
+  event: eventWithTime,
+  /** The frames in the snapshot, or in each added tree, when the caller has already walked them. */
+  framesFound?: readonly (readonly number[])[],
+) => boolean {
   const attached = new Set<number>();
   const frames = new Set<number>();
-  return (event) => {
+  return (event, framesFound) => {
     if (event.type === EventType.FullSnapshot) {
       attached.clear();
       frames.clear();
-      for (const id of framesIn(event.data.node as unknown as SerializedTree)) frames.add(id);
+      const found = framesFound?.[0] ?? framesIn(event.data.node as unknown as SerializedTree);
+      for (const id of found) frames.add(id);
       return false;
     }
     if (event.type !== EventType.IncrementalSnapshot) return false;
     if (event.data.source !== IncrementalSource.Mutation) return false;
     let returned = false;
-    for (const { node } of event.data.adds) {
-      const found = framesIn(node as unknown as SerializedTree);
+    for (const [index, { node }] of event.data.adds.entries()) {
+      const found = framesFound?.[index] ?? framesIn(node as unknown as SerializedTree);
       if (node.type === DOCUMENT_NODE) {
         if (attached.has(node.id)) returned = true;
         attached.add(node.id);
@@ -126,6 +137,31 @@ export function createReturnedDocumentCheck(): (event: eventWithTime) => boolean
     }
     return returned;
   };
+}
+
+/**
+ * rrweb turns a child's snapshot that it takes in into an attachment of the child's document to its
+ * frame. Tell that frame's document, so it can leave out the snapshot the ready answer asks for.
+ */
+export function acknowledgeAttachedDocument(
+  event: eventWithTime,
+  nodeFor: (id: number) => Node | null,
+): void {
+  if (
+    event.type !== EventType.IncrementalSnapshot ||
+    event.data.source !== IncrementalSource.Mutation ||
+    event.data.isAttachIframe !== true
+  )
+    return;
+  for (const { parentId, node } of event.data.adds) {
+    if (node.type !== DOCUMENT_NODE) continue;
+    const frame = nodeFor(parentId) as HTMLIFrameElement | null;
+    try {
+      frame?.contentWindow?.postMessage({ type: STITCH_ACK_MESSAGE_TYPE }, "*");
+    } catch {
+      // A frame on its way out has no window to tell.
+    }
+  }
 }
 
 /**
@@ -148,9 +184,16 @@ export function installStitchSyncListener(
   const now = dependencies.now ?? Date.now;
   let lastSnapshotAt = Number.NEGATIVE_INFINITY;
   let pendingSnapshot = false;
+  /** The frame above took in this document's latest snapshot. */
+  let acknowledged = false;
   let pendingTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const honorPendingSnapshot = (framesAsked = false): void => {
+  /**
+   * `request`: called for a request that has just come. A snapshot taken now passes it to the
+   * frames below first, as it follows the request down. One put off asks them itself when it is
+   * taken (index.ts), and one that turns out not to be needed has nothing to ask them for.
+   */
+  const honorPendingSnapshot = (request = false): void => {
     if (!pendingSnapshot || !dependencies.isRecorderStarted()) return;
 
     const snapshotAt = now();
@@ -165,9 +208,11 @@ export function installStitchSyncListener(
       return;
     }
 
+    if (request) broadcastStitchSync(target);
     try {
-      dependencies.takeFullSnapshot(framesAsked);
+      dependencies.takeFullSnapshot(request);
       pendingSnapshot = false;
+      acknowledged = false;
       lastSnapshotAt = snapshotAt;
       if (pendingTimer !== null) clearTimeout(pendingTimer);
       pendingTimer = null;
@@ -178,24 +223,40 @@ export function installStitchSyncListener(
   };
 
   const removeRecorderStartedListener = dependencies.onRecorderStarted(() => {
+    // The recorder's first snapshot has just gone up, after any request that came while it was
+    // starting: that request is answered. The snapshot counts for the rate limit, and the answer to
+    // the ready message below asks for another only if the frame above dropped it.
+    lastSnapshotAt = now();
+    acknowledged = false;
+    pendingSnapshot = false;
     target.parent.postMessage({ type: STITCH_READY_MESSAGE_TYPE }, "*");
-    honorPendingSnapshot();
   });
 
   const onMessage = (event: MessageEvent): void => {
-    if (
-      typeof event.data !== "object" ||
-      event.data === null ||
-      (event.data as { type?: unknown }).type !== STITCH_SYNC_MESSAGE_TYPE
-    ) {
+    if (typeof event.data !== "object" || event.data === null) return;
+    const data = event.data as { type?: unknown; ready?: unknown };
+    if (data.type === STITCH_ACK_MESSAGE_TYPE) {
+      acknowledged = true;
+      // The frame above took in a snapshot of this document after the request that is waiting
+      // was sent, which is all that request asked for.
+      if (pendingSnapshot) {
+        pendingSnapshot = false;
+        if (pendingTimer !== null) clearTimeout(pendingTimer);
+        pendingTimer = null;
+      }
       return;
     }
-
-    // Forward even while this recorder is starting so an intermediate frame cannot prevent a
-    // ready descendant from honoring the request.
-    broadcastStitchSync(target);
+    if (data.type !== STITCH_SYNC_MESSAGE_TYPE) return;
+    // The answer to this document's ready message, whose snapshot the frame above already has.
+    if (data.ready === true && acknowledged && !pendingSnapshot) return;
 
     pendingSnapshot = true;
+    // Forward even while this recorder is starting so an intermediate frame cannot prevent a
+    // ready descendant from honoring the request.
+    if (!dependencies.isRecorderStarted()) {
+      broadcastStitchSync(target);
+      return;
+    }
     // Only a snapshot taken now follows the request on its way down. One taken later, after the
     // frames below have answered, rebuilds them in the replay and has to ask them again.
     honorPendingSnapshot(true);
