@@ -35,6 +35,19 @@ export function networkIdentity(id, offset = 0) {
   };
 }
 
+/** An IANA zone name as the exit lookup reports it, or undefined. It ends up in a path and env. */
+export function validTimeZone(value) {
+  if (typeof value !== "string" || !/^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+)*$/.test(value))
+    return undefined;
+  try {
+    return new Intl.DateTimeFormat("en", { timeZone: value }).resolvedOptions().timeZone === value
+      ? value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function validateBrowserOptions(options, dataRoot = "/data") {
   const dir = resolve(options.userDataDir);
   if (!dir.startsWith(resolve(dataRoot) + "/")) throw new Error("Profile must be in /data");
@@ -454,11 +467,98 @@ export async function startProfileBroker({
     }
     return item.exitMetadata;
   };
+  /** Starts Chromium in the profile's namespaces with the given zone; registers nothing. */
+  const launchChromium = async (egress, options, timeZone) => {
+    const cdpPath = join(runtimeRoot, `${egress.info.name}.cdp`);
+    const child = spawn(
+      "ip",
+      [
+        "netns",
+        "exec",
+        egress.info.name,
+        filesystemScript,
+        join(egress.dir, "root"),
+        options.userDataDir,
+        options.engine === "aliasmode" ? ALIASMODE_PATH : chromePath,
+        ...options.args,
+        ...(options.engine === "aliasmode" ? [`--fingerprint-timezone=${timeZone}`] : []),
+        `--user-data-dir=${options.userDataDir}`,
+        "--remote-debugging-pipe",
+      ],
+      {
+        detached: true,
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME ?? "/tmp/home",
+          LANG: "C.UTF-8",
+          TZ: timeZone,
+          MIRROR_BROWSER_DOH_TEMPLATE: egress.dohTemplate,
+          ...options.env,
+        },
+        stdio: [
+          "ignore",
+          "ignore",
+          process.env.MIRROR_DIAGNOSTIC_STDERR === "1" ? "inherit" : "ignore",
+          "pipe",
+          "pipe",
+        ],
+      },
+    );
+    const item = {
+      child,
+      socketPath: cdpPath,
+      connection: undefined,
+      server: undefined,
+      timeZone,
+      lookups: new Map(),
+    };
+    child.stdio[3].on("error", () => {});
+    item.server = socketServer((connection) => {
+      if (item.connection) return connection.destroy();
+      item.connection = connection;
+      connection.pipe(child.stdio[3], { end: false });
+      child.stdio[4].pipe(connection);
+      connection.on("error", () => {});
+      connection.once("close", () => void closeBrowser(item.id));
+    });
+    try {
+      await listen(item.server, cdpPath);
+      await chmod(cdpPath, 0o600);
+      await chown(cdpPath, UID, UID);
+    } catch (error) {
+      await discardChromium(item);
+      throw error;
+    }
+    return item;
+  };
+  const discardChromium = async (item) => {
+    item.server.close();
+    await closeChromium(item.child);
+    await rm(item.socketPath, { force: true });
+  };
+  /**
+   * The profile's network and its exit lookup, started ahead of the browser: the gateway calls this
+   * while it prepares the browser's display, and the browser start then finds both under way.
+   */
+  const prepareBrowser = async (id, body) => {
+    if (!ID.test(id)) throw new Error("Invalid browser id");
+    await closingBrowsers.get(id);
+    if (browsers.has(id)) return { ok: true };
+    const egress = await ensureNetwork(`browser-${id}`, body.node);
+    if (!egress.prepared && !egress.exitMetadata) {
+      const lookup = metadataForNetwork(egress);
+      // Its failure belongs to the browser start that follows, which reports it.
+      lookup.catch(() => {});
+      egress.prepared = lookup;
+    }
+    return { ok: true };
+  };
   const startBrowser = async (id, body) => {
     if (!ID.test(id)) throw new Error("Invalid browser id");
     await closingBrowsers.get(id);
     if (browsers.has(id)) throw new Error("Browser already running");
     const options = validateBrowserOptions(body.options);
+    const hint = validTimeZone(body.timeZone);
     // browser-filesystem.sh enforces this on the open directory; this only fails early and clearly.
     const real = await realpath(options.userDataDir).catch(() => options.userDataDir);
     if (real !== options.userDataDir) throw new Error("Profile path must not contain symlinks");
@@ -481,90 +581,45 @@ export async function startProfileBroker({
       Object.assign(phases, egress.phases);
       egress.phases = undefined;
     }
-    let exitMetadata;
+    const lookup = egress.prepared ?? metadataForNetwork(egress);
+    egress.prepared = undefined;
+    // With the zone this profile's exit had last time, the browser starts while the lookup confirms
+    // it. A browser started on a zone the lookup does not confirm is closed before anyone sees it.
+    let launching = hint === undefined ? undefined : launchChromium(egress, options, hint);
+    launching?.catch(() => {});
+    let item;
     try {
-      exitMetadata = await metadataForNetwork(egress);
-    } catch (error) {
-      await removeNetwork(egress.id);
-      throw error;
-    }
-    phase("exit");
-    const cdpPath = join(runtimeRoot, `${egress.info.name}.cdp`);
-    const child = spawn(
-      "ip",
-      [
-        "netns",
-        "exec",
-        egress.info.name,
-        filesystemScript,
-        join(egress.dir, "root"),
-        options.userDataDir,
-        options.engine === "aliasmode" ? ALIASMODE_PATH : chromePath,
-        ...options.args,
-        ...(options.engine === "aliasmode"
-          ? [`--fingerprint-timezone=${exitMetadata.timeZone}`]
-          : []),
-        `--user-data-dir=${options.userDataDir}`,
-        "--remote-debugging-pipe",
-      ],
-      {
-        detached: true,
-        env: {
-          PATH: process.env.PATH,
-          HOME: process.env.HOME ?? "/tmp/home",
-          LANG: "C.UTF-8",
-          TZ: exitMetadata.timeZone,
-          MIRROR_BROWSER_DOH_TEMPLATE: egress.dohTemplate,
-          ...options.env,
-        },
-        stdio: [
-          "ignore",
-          "ignore",
-          process.env.MIRROR_DIAGNOSTIC_STDERR === "1" ? "inherit" : "ignore",
-          "pipe",
-          "pipe",
-        ],
-      },
-    );
-    const item = {
-      child,
-      socketPath: cdpPath,
-      connection: undefined,
-      server: undefined,
-      timeZone: exitMetadata.timeZone,
-      lookups: new Map(),
-    };
-    const server = socketServer((connection) => {
-      if (item.connection) return connection.destroy();
-      item.connection = connection;
-      connection.pipe(child.stdio[3], { end: false });
-      child.stdio[4].pipe(connection);
-      connection.on("error", () => {});
-      connection.once("close", () => void closeBrowser(id));
-    });
-    child.stdio[3].on("error", () => {});
-    item.server = server;
-    try {
-      await listen(server, cdpPath);
-      await chmod(cdpPath, 0o600);
-      await chown(cdpPath, UID, UID);
+      let exitMetadata;
+      try {
+        exitMetadata = await lookup;
+      } finally {
+        phase("exit");
+      }
+      item = await launching?.catch(() => undefined);
+      launching = undefined;
+      if (item && item.timeZone !== exitMetadata.timeZone) {
+        await discardChromium(item);
+        item = undefined;
+      }
+      phases.early = item ? 1 : 0;
+      item ??= await launchChromium(egress, options, exitMetadata.timeZone);
+      phase("spawn");
       if (
         stopping ||
         desired.get(egress.id) !== egress.target ||
         egress.child.exitCode !== null ||
         egress.child.signalCode !== null ||
-        child.exitCode !== null ||
-        child.signalCode !== null
+        item.child.exitCode !== null ||
+        item.child.signalCode !== null
       )
         throw new Error("Browser start cancelled");
+      item.id = id;
       browsers.set(id, item);
-      child.once("exit", () => void closeBrowser(id));
-      phase("spawn");
-      return { socketPath: cdpPath, proxyUrl: egress.proxyUrl, ...exitMetadata, phases };
+      item.child.once("exit", () => void closeBrowser(id));
+      return { socketPath: item.socketPath, proxyUrl: egress.proxyUrl, ...exitMetadata, phases };
     } catch (error) {
-      server.close();
-      await closeChromium(child);
-      await rm(cdpPath, { force: true });
+      item ??= await launching?.catch(() => undefined);
+      if (item && browsers.get(id) !== item) await discardChromium(item);
       if (desired.get(egress.id) === egress.target) await removeNetwork(egress.id);
       throw error;
     }
@@ -626,7 +681,7 @@ export async function startProfileBroker({
     try {
       const url = new URL(request.url, "http://runtime");
       const match =
-        /^\/(egress|browsers)\/([a-zA-Z0-9-]{1,64})(\/(?:start|timezone|status|check|resolve))?$/.exec(
+        /^\/(egress|browsers)\/([a-zA-Z0-9-]{1,64})(\/(?:start|prepare|timezone|status|check|resolve))?$/.exec(
           url.pathname,
         );
       if (!match) {
@@ -649,6 +704,15 @@ export async function startProfileBroker({
           const item = await ensureNetwork(`node-${id}`, body.node);
           result = { proxyUrl: item.proxyUrl, externalProxyUrl: item.externalProxyUrl };
         } else result = await startBrowser(id, body);
+      } else if (request.method === "POST" && type === "browsers" && action === "/prepare") {
+        const chunks = [];
+        let length = 0;
+        for await (const chunk of request) {
+          length += chunk.length;
+          if (length > 262144) throw new Error("Runtime request too large");
+          chunks.push(chunk);
+        }
+        result = await prepareBrowser(id, JSON.parse(Buffer.concat(chunks).toString()));
       } else if (request.method === "GET" && type === "browsers" && action === "/resolve") {
         const browser = browsers.get(id);
         const egress = networks.get(`browser-${id}`);

@@ -50,6 +50,10 @@ export async function registerViewerStatic(
   if (!existsSync(root)) return false;
   await app.register(fastifyStatic, {
     root,
+    // The viewer build writes .br and .gz beside each script and style sheet (see
+    // packages/viewer/vite.config.ts): a phone gets about a third of the bytes, and a proxy in
+    // front compresses nothing again.
+    preCompressed: true,
     cacheControl: false,
     // @fastify/static 10 passes the Fastify reply here, despite typings naming the raw response.
     setHeaders(response, filePath) {
@@ -71,7 +75,7 @@ export async function registerViewerStatic(
  * Everything sits behind the access gate, so shared caches must not keep it.
  */
 export function staticCacheControl(filePath: string): string {
-  return /[\\/]assets[\\/][^\\/]+-[A-Za-z0-9_-]{8,}\.[a-z0-9]+$/.test(filePath)
+  return /[\\/]assets[\\/][^\\/]+-[A-Za-z0-9_-]{8,}\.[a-z0-9]+(\.br|\.gz)?$/.test(filePath)
     ? "private, max-age=31536000, immutable"
     : "private, no-cache";
 }

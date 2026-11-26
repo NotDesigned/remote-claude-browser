@@ -1,6 +1,8 @@
 import preact from "@preact/preset-vite";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 import { defineConfig, type Plugin } from "vite";
 
 const gateway = process.env.VITE_GATEWAY_URL ?? "http://127.0.0.1:3000";
@@ -38,11 +40,43 @@ function viewerBuild(id: string): Plugin {
   };
 }
 
+/**
+ * Writes a Brotli and a gzip copy beside every script, style sheet and image the page loads, once
+ * at build time and at the highest levels: the gateway serves them (preCompressed in
+ * packages/gateway/src/serving.ts), so no request compresses anything, and a reverse proxy's
+ * on-the-fly compression leaves an already-encoded response alone.
+ */
+export function precompress(): Plugin {
+  return {
+    name: "viewer-precompress",
+    apply: "build",
+    writeBundle(options, bundle) {
+      for (const [fileName, output] of Object.entries(bundle)) {
+        if (!/\.(js|css|svg|html|json|txt)$/.test(fileName)) continue;
+        const source = output.type === "chunk" ? output.code : output.source;
+        const bytes = typeof source === "string" ? Buffer.from(source) : Buffer.from(source);
+        if (bytes.length < 1024) continue;
+        const file = join(options.dir!, fileName);
+        writeFileSync(
+          `${file}.br`,
+          brotliCompressSync(bytes, {
+            params: {
+              [constants.BROTLI_PARAM_QUALITY]: constants.BROTLI_MAX_QUALITY,
+              [constants.BROTLI_PARAM_SIZE_HINT]: bytes.length,
+            },
+          }),
+        );
+        writeFileSync(`${file}.gz`, gzipSync(bytes, { level: 9 }));
+      }
+    },
+  };
+}
+
 export default defineConfig(({ command }) => {
   // The development server and tests have no build to compare; such a page never reloads for one.
   const id = command === "build" ? buildId() : "dev";
   return {
-    plugins: [preact(), viewerBuild(id)],
+    plugins: [preact(), viewerBuild(id), precompress()],
     define: { __VIEWER_BUILD__: JSON.stringify(id) },
     server: {
       host: "127.0.0.1",

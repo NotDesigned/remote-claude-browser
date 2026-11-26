@@ -19,7 +19,7 @@ import type { TargetRef } from "../types";
 import { timed } from "../timing";
 import { createAgentLink, type VoiceAgentMsg } from "./agentlink";
 import { callAgentBridge } from "./bridge";
-import { launchBrokerBrowser } from "./broker";
+import { launchBrokerBrowser, prepareBrokerBrowser, stopBrokerBrowser } from "./broker";
 import { installZoomExtension } from "./browser-zoom";
 import { afterSignInUrl, createClientBrowserPool } from "./client-scope";
 import { createAccountDisplay, type AccountDisplay } from "./display";
@@ -262,15 +262,37 @@ export function createAccountPool(deps: AccountPoolDeps) {
         await mkdir(dir, { recursive: true, mode: 0o700 });
         const external = id === DEFAULT_PROFILE && !!process.env.BROWSER_CDP_URL;
         const identity = profiles.identity(id);
-        const display =
-          !external && process.env.CHROME_HEADFUL === "1"
-            ? await timed("display", createAccountDisplay)
-            : undefined;
+        const proxyId = profiles.get(id)!.proxyId;
+        let node: unknown;
+        if (proxyId) {
+          if (!process.env.MIRROR_RUNTIME_SOCKET || external)
+            throw new ClientSessionError(
+              503,
+              "PROXY_RUNTIME_DISABLED",
+              "当前部署未启用独立浏览器出口",
+            );
+          const owner = deps.profileUser(id);
+          if (!owner?.enabled)
+            throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器所属用户已停用");
+          node = deps.proxyCatalog.getNodeConfig(owner, proxyId);
+        }
+        // The exit's network and lookup start while the display does: neither needs the other.
+        const preparing =
+          node === undefined ? undefined : timed("prepare", () => prepareBrokerBrowser(id, node));
+        let display: AccountDisplay | undefined;
         let browser: BrowserHandle | undefined;
         let proxyUrl: string | undefined;
         let exit: ExitMetadata;
         try {
-          const proxyId = profiles.get(id)!.proxyId;
+          const [, created] = await Promise.allSettled([
+            preparing,
+            !external && process.env.CHROME_HEADFUL === "1"
+              ? timed("display", createAccountDisplay)
+              : undefined,
+          ]);
+          if (created.status === "rejected") throw created.reason;
+          display = created.value;
+          await preparing;
           const engine = profileBrowserOptions(identity);
           const launchOptions = {
             userDataDir: dir,
@@ -285,22 +307,16 @@ export function createAccountPool(deps: AccountPoolDeps) {
             ],
             env: { ...display?.env, ...(await identityEnvironment(dir, identity)) },
           };
-          if (proxyId) {
-            if (!process.env.MIRROR_RUNTIME_SOCKET || external)
-              throw new ClientSessionError(
-                503,
-                "PROXY_RUNTIME_DISABLED",
-                "当前部署未启用独立浏览器出口",
-              );
-            const owner = deps.profileUser(id);
-            if (!owner?.enabled)
-              throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器所属用户已停用");
-            const node = deps.proxyCatalog.getNodeConfig(owner, proxyId);
+          if (node !== undefined) {
+            // The zone this profile's exit had last time lets the browser start before the
+            // lookup confirms it (see startBrowser in deploy/profile-broker.mjs).
             const {
               browser: opened,
               proxyUrl: endpoint,
               ...metadata
-            } = await timed("broker", () => launchBrokerBrowser(id, node, launchOptions));
+            } = await timed("broker", () =>
+              launchBrokerBrowser(id, node, launchOptions, profiles.get(id)?.timeZone),
+            );
             browser = opened;
             proxyUrl = endpoint;
             exit = metadata;
@@ -322,7 +338,9 @@ export function createAccountPool(deps: AccountPoolDeps) {
           accounts.set(id, account);
           return account;
         } catch (error) {
-          await browser?.close().catch(() => {});
+          if (browser) await browser.close().catch(() => {});
+          // A prepared exit with no browser yet: the runtime removes it with the browser.
+          else if (preparing) await stopBrokerBrowser(id).catch(() => {});
           await display?.close();
           throw error;
         }

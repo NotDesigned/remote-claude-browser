@@ -34,11 +34,31 @@ export async function pipeTransport(path: string): Promise<ConnectionTransport> 
   return transport;
 }
 
-export async function launchBrokerBrowser(id: string, node: unknown, opts: LaunchOpts) {
+/** Starts the profile's exit network and its lookup, ahead of launchBrokerBrowser. */
+export async function prepareBrokerBrowser(id: string, node: unknown): Promise<void> {
+  await runtimeRequest(`/browsers/${id}/prepare`, "POST", { node });
+}
+
+/** Closes the profile's browser, or removes its prepared exit when it has none. */
+export async function stopBrokerBrowser(id: string): Promise<void> {
+  await runtimeRequest(`/browsers/${id}`, "DELETE");
+}
+
+/**
+ * `timeZone`, the zone the exit had last time, lets the runtime start the browser while it looks
+ * the exit up again; the browser it answers with always has the zone the lookup found.
+ */
+export async function launchBrokerBrowser(
+  id: string,
+  node: unknown,
+  opts: LaunchOpts,
+  timeZone?: string,
+) {
   const started = await runtimeRequest<
     ExitMetadata & { socketPath: string; proxyUrl: string; phases?: unknown }
   >(`/browsers/${id}/start`, "POST", {
     node,
+    ...(timeZone === undefined ? {} : { timeZone }),
     options: {
       userDataDir: opts.userDataDir,
       engine: opts.engine,
@@ -50,7 +70,7 @@ export async function launchBrokerBrowser(id: string, node: unknown, opts: Launc
     },
   });
   recordPhases("broker-", started.phases);
-  const stop = () => runtimeRequest(`/browsers/${id}`, "DELETE");
+  const stop = () => stopBrokerBrowser(id);
   try {
     const browser = await timed("cdp", async () =>
       connectBrowserTransport(await pipeTransport(started.socketPath)),

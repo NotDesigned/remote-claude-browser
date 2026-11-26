@@ -1,7 +1,8 @@
 import Fastify from "fastify";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import { createUserGate, USER_COOKIE } from "./auth/user-gate";
 import { createUserStore } from "./auth/users";
@@ -95,6 +96,50 @@ describe("gateway production serving", () => {
       "private, max-age=31536000, immutable",
     );
     expect(staticCacheControl("/opt/viewer/index.html")).toBe("private, no-cache");
+    // The precompressed copies are the same hashed files.
+    expect(staticCacheControl("/opt/viewer/assets/index-C-CYVKXa.css.br")).toBe(
+      "private, max-age=31536000, immutable",
+    );
+    expect(staticCacheControl("/opt/viewer/assets/index-Bplf6mt2.js.gz")).toBe(
+      "private, max-age=31536000, immutable",
+    );
+    expect(staticCacheControl("/opt/viewer/index.html.gz")).toBe("private, no-cache");
+  });
+
+  it("serves the build's precompressed copies to a browser that accepts them", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mirror-viewer-compressed-test-"));
+    roots.push(root);
+    const script = "export const value = 1;\n".repeat(200);
+    await mkdir(join(root, "assets"));
+    await writeFile(join(root, "index.html"), "<!doctype html><title>Mirror viewer</title>");
+    await writeFile(join(root, "assets", "index-Bplf6mt2.js"), script);
+    await writeFile(join(root, "assets", "index-Bplf6mt2.js.br"), brotliCompressSync(script));
+    await writeFile(join(root, "assets", "index-Bplf6mt2.js.gz"), gzipSync(script));
+    const app = Fastify();
+    await registerViewerStatic(app, root);
+
+    const get = (encoding?: string) =>
+      app.inject({
+        url: "/assets/index-Bplf6mt2.js",
+        headers: encoding === undefined ? {} : { "accept-encoding": encoding },
+      });
+    const brotli = await get("gzip, deflate, br, zstd");
+    expect(brotli.headers["content-encoding"]).toBe("br");
+    expect(brotli.headers["content-type"]).toContain("javascript");
+    expect(brotli.headers["cache-control"]).toBe("private, max-age=31536000, immutable");
+    expect(brotli.headers.vary).toContain("accept-encoding");
+    expect(brotliDecompressSync(brotli.rawPayload).toString()).toBe(script);
+    const gzip = await get("gzip");
+    expect(gzip.headers["content-encoding"]).toBe("gzip");
+    expect(gunzipSync(gzip.rawPayload).toString()).toBe(script);
+    const plain = await get();
+    expect(plain.headers["content-encoding"]).toBeUndefined();
+    expect(plain.body).toBe(script);
+    // The page has no compressed copy and still arrives, uncompressed.
+    const page = await app.inject({ url: "/", headers: { "accept-encoding": "br" } });
+    expect(page.statusCode).toBe(200);
+    expect(page.body).toContain("<title>Mirror viewer</title>");
+    await app.close();
   });
 });
 

@@ -28,54 +28,76 @@ case "$action" in
     ip -6 addr add "$host_ip6/126" dev "$host_if" nodad
     ip -n "$name" -6 addr add "$peer_ip6/126" dev eth0 nodad
     ip -n "$name" -6 route add default via "$host_ip6"
-    for chain in INPUT OUTPUT FORWARD; do
-      ip netns exec "$name" ip6tables -P "$chain" DROP
-    done
-    # Only neighbor discovery and Mihomo's root sockets may use the upstream IPv6 link.
-    for chain in INPUT OUTPUT; do
-      for type in neighbor-solicitation neighbor-advertisement; do
-        ip netns exec "$name" ip6tables -A "$chain" -p ipv6-icmp --icmpv6-type "$type" -m hl --hl-eq 255 -j ACCEPT
+    # The namespace is new: each family's rules load whole, in one restore each and both at once,
+    # instead of one process per rule (a new namespace's first ip6tables call alone takes ~35 ms).
+    {
+      echo '*filter'
+      echo ':INPUT DROP [0:0]'
+      echo ':FORWARD DROP [0:0]'
+      echo ':OUTPUT DROP [0:0]'
+      # Only neighbor discovery and Mihomo's root sockets may use the upstream IPv6 link.
+      for chain in INPUT OUTPUT; do
+        for type in neighbor-solicitation neighbor-advertisement; do
+          echo "-A $chain -p ipv6-icmp --icmpv6-type $type -m hl --hl-eq 255 -j ACCEPT"
+        done
+        echo "-A $chain -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
       done
-      ip netns exec "$name" ip6tables -A "$chain" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-    done
-    ip netns exec "$name" ip6tables -A INPUT -i lo -j ACCEPT
-    ip netns exec "$name" ip6tables -A OUTPUT -o lo -j ACCEPT
-    ip netns exec "$name" ip6tables -A OUTPUT -m owner --uid-owner "$browser_uid" -j REJECT
-    ip netns exec "$name" iptables -A OUTPUT -m owner --uid-owner "$browser_uid" -o lo -j ACCEPT
-    ip netns exec "$name" iptables -A OUTPUT -m owner --uid-owner "$browser_uid" ! -o profile0 -j REJECT
-    # User-imported proxy hosts must not turn root Mihomo into a route to host/LAN services.
-    # Only the isolated protocol fixture uses private proxy servers; production never sets this.
-    if [ "${EGRESS_TEST_PRIVATE_PROXY:-}" != 1 ]; then
-      ip netns exec "$name" iptables -N PROFILE-UPSTREAM
-      ip netns exec "$name" iptables -A PROFILE-UPSTREAM -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-      for network in 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.168.0.0/16 198.18.0.0/15 224.0.0.0/4 240.0.0.0/4; do
-        ip netns exec "$name" iptables -A PROFILE-UPSTREAM -d "$network" -j REJECT
+      echo '-A INPUT -i lo -j ACCEPT'
+      echo '-A OUTPUT -o lo -j ACCEPT'
+      echo "-A OUTPUT -m owner --uid-owner $browser_uid -j REJECT"
+      # User-imported proxy hosts must not turn root Mihomo into a route to host/LAN services.
+      # Only the isolated protocol fixture uses private proxy servers; production never sets this.
+      if [ "${EGRESS_TEST_PRIVATE_PROXY:-}" != 1 ]; then
+        echo ':PROFILE-UPSTREAM - [0:0]'
+        for network in ::/128 ::1/128 ::ffff:0:0/96 64:ff9b::/96 fc00::/7 fe80::/10 ff00::/8; do
+          echo "-A PROFILE-UPSTREAM -d $network -j REJECT"
+        done
+        for address in $(printf '%s' "${EGRESS_BLOCK:-}" | tr ',' ' '); do
+          case "$address" in *:*) echo "-A PROFILE-UPSTREAM -d $address -j REJECT" ;; esac
+        done
+        echo '-A OUTPUT -m owner --uid-owner 0 -j PROFILE-UPSTREAM'
+      fi
+      echo '-A OUTPUT -m owner --uid-owner 0 -j ACCEPT'
+      echo 'COMMIT'
+    } | ip netns exec "$name" ip6tables-restore &
+    ipv6_rules=$!
+    {
+      echo '*filter'
+      echo ':INPUT ACCEPT [0:0]'
+      echo ':FORWARD ACCEPT [0:0]'
+      echo ':OUTPUT ACCEPT [0:0]'
+      echo "-A OUTPUT -m owner --uid-owner $browser_uid -o lo -j ACCEPT"
+      echo "-A OUTPUT -m owner --uid-owner $browser_uid ! -o profile0 -j REJECT"
+      if [ "${EGRESS_TEST_PRIVATE_PROXY:-}" != 1 ]; then
+        echo ':PROFILE-UPSTREAM - [0:0]'
+        echo '-A PROFILE-UPSTREAM -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN'
+        for network in 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.168.0.0/16 198.18.0.0/15 224.0.0.0/4 240.0.0.0/4; do
+          echo "-A PROFILE-UPSTREAM -d $network -j REJECT"
+        done
+        for address in $(printf '%s' "${EGRESS_BLOCK:-}" | tr ',' ' '); do
+          case "$address" in *:*) ;; *) echo "-A PROFILE-UPSTREAM -d $address -j REJECT" ;; esac
+        done
+        echo '-A OUTPUT -m owner --uid-owner 0 -j PROFILE-UPSTREAM'
+      fi
+      # A profile proxy is reachable only from the gateway and broker, never another namespace.
+      echo '-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT'
+      echo '-A INPUT -i lo -j ACCEPT'
+      # The userspace TUN synthesizes return packets outside the kernel's conntrack flow.
+      echo '-A INPUT -i profile0 -j ACCEPT'
+      echo "-A INPUT -s $host_ip -p tcp --dport 8780 -j ACCEPT"
+      echo '-A INPUT -j REJECT'
+      echo 'COMMIT'
+      echo '*nat'
+      echo ':PREROUTING ACCEPT [0:0]'
+      echo ':INPUT ACCEPT [0:0]'
+      echo ':OUTPUT ACCEPT [0:0]'
+      echo ':POSTROUTING ACCEPT [0:0]'
+      for protocol in udp tcp; do
+        echo "-A OUTPUT -m owner --uid-owner $browser_uid -p $protocol --dport 53 -j REDIRECT --to-ports 1053"
       done
-      for address in $(printf '%s' "${EGRESS_BLOCK:-}" | tr ',' ' '); do
-        case "$address" in *:*) ;; *) ip netns exec "$name" iptables -A PROFILE-UPSTREAM -d "$address" -j REJECT ;; esac
-      done
-      ip netns exec "$name" iptables -A OUTPUT -m owner --uid-owner 0 -j PROFILE-UPSTREAM
-      ip netns exec "$name" ip6tables -N PROFILE-UPSTREAM
-      for network in ::/128 ::1/128 ::ffff:0:0/96 64:ff9b::/96 fc00::/7 fe80::/10 ff00::/8; do
-        ip netns exec "$name" ip6tables -A PROFILE-UPSTREAM -d "$network" -j REJECT
-      done
-      for address in $(printf '%s' "${EGRESS_BLOCK:-}" | tr ',' ' '); do
-        case "$address" in *:*) ip netns exec "$name" ip6tables -A PROFILE-UPSTREAM -d "$address" -j REJECT ;; esac
-      done
-      ip netns exec "$name" ip6tables -A OUTPUT -m owner --uid-owner 0 -j PROFILE-UPSTREAM
-    fi
-    ip netns exec "$name" ip6tables -A OUTPUT -m owner --uid-owner 0 -j ACCEPT
-    for protocol in udp tcp; do
-      ip netns exec "$name" iptables -t nat -A OUTPUT -m owner --uid-owner "$browser_uid" \
-        -p "$protocol" --dport 53 -j REDIRECT --to-ports 1053
-    done
-    # A profile proxy is reachable only from the gateway and broker, never another namespace.
-    ip netns exec "$name" iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-    ip netns exec "$name" iptables -A INPUT -i lo -j ACCEPT
-    # The userspace TUN synthesizes return packets outside the kernel's conntrack flow.
-    ip netns exec "$name" iptables -A INPUT -i profile0 -j ACCEPT
-    ip netns exec "$name" iptables -A INPUT -s "$host_ip" -p tcp --dport 8780 -j ACCEPT
-    ip netns exec "$name" iptables -A INPUT -j REJECT
+      echo 'COMMIT'
+    } | ip netns exec "$name" iptables-restore
+    wait "$ipv6_rules"
     iptables -t nat -A POSTROUTING -s "$subnet" ! -o "$host_if" -j MASQUERADE
     iptables -I FORWARD 1 -i "$host_if" -s "$peer_ip" -j ACCEPT
     iptables -I FORWARD 1 -o "$host_if" -d "$peer_ip" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { networkIdentity, validateBrowserOptions } from "./profile-broker.mjs";
+import { networkIdentity, validateBrowserOptions, validTimeZone } from "./profile-broker.mjs";
 
 test("profile addresses are stable, isolated /30 networks and safe kernel names", () => {
   const a = networkIdentity("browser-p-1234567890");
@@ -50,4 +50,22 @@ test("broker accepts only its two installed engines, never a caller's executable
     validateBrowserOptions({ ...options, executablePath: "/data/program" }).executablePath,
     undefined,
   );
+});
+
+test("a remembered zone starts the browser early only when it is a plain IANA name", () => {
+  for (const zone of ["Asia/Tokyo", "America/Los_Angeles", "Etc/GMT+5", "UTC"])
+    assert.equal(validTimeZone(zone), zone);
+  // It becomes TZ, a Chromium argument and a zoneinfo link in the browser's root.
+  for (const zone of [
+    "../../data/profile",
+    "Asia/../../data",
+    "/data/profile",
+    "Asia/Tokyo --no-sandbox",
+    "Not/AZone",
+    "asia/tokyo",
+    "",
+    42,
+    undefined,
+  ])
+    assert.equal(validTimeZone(zone), undefined, String(zone));
 });

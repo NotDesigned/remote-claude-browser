@@ -15,12 +15,14 @@
  *  - login → profile picker usable, and which API requests the picker waits for;
  *  - pick → browser started (the gateway's Server-Timing phases), viewer connected, first page
  *    rebuilt, input ready; on a new profile every run, so its browser starts cold;
- *  - the same profile picked again from another page while its browser runs (warm);
+ *  - the same profile picked again from another page while its browser runs (warm), and, with
+ *    PERF_CLOSE_BROWSER, once more after its browser closed (cold, with its exit known);
  *  - a navigation to a large page, and a reload of the workbench while its session lives.
  *
  * It creates one profile per cold run (named perf-load-…) and deletes it afterwards.
  */
 import assert from "node:assert/strict";
+import { execSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { chromium } from "playwright";
 
@@ -30,6 +32,10 @@ const password = process.env.PERF_PASSWORD ?? process.env.SMOKE_PASSWORD;
 const fixtureOrigin = process.env.PERF_FIXTURE_ORIGIN ?? process.env.SMOKE_FIXTURE_ORIGIN;
 const proxy = process.env.PERF_PROXY;
 const runs = Number(process.env.PERF_RUNS ?? 3);
+// A shell command that closes one profile's browser ({id} is its id), for example
+// `docker exec <server> pkill -f -- --user-data-dir=/data/accounts/{id}`; without it the
+// "known exit" cold start is not measured.
+const closeBrowser = process.env.PERF_CLOSE_BROWSER;
 assert.ok(
   origin && password && fixtureOrigin,
   "Set PERF_ORIGIN, PERF_PASSWORD and PERF_FIXTURE_ORIGIN",
@@ -201,6 +207,43 @@ async function prepare(page) {
   assert.equal(bound.status, 200, JSON.stringify(bound.json));
 }
 
+/** Picks the profile on a page showing the picker; its browser is not running. */
+async function pickCold(page, frames, name, label) {
+  await page.locator("button.profile-card").first().waitFor();
+  const framesBefore = frames.length;
+  const picked = Date.now();
+  const [response] = await Promise.all([
+    page.waitForResponse((response) => new URL(response.url()).pathname === "/api/client/session", {
+      timeout: 90_000,
+    }),
+    page.locator("button.profile-card").filter({ hasText: name }).click(),
+  ]);
+  const answered = Date.now();
+  assert.equal(response.status(), 200, await response.text());
+  const phases = serverTiming(await response.headerValue("server-timing"));
+  for (const [phase, ms] of Object.entries(phases)) record(`  ${label} server: ${phase}`, ms);
+  record(`pick → session answered (${label})`, answered - picked);
+  await page.waitForFunction(
+    () => document.querySelector("[data-connection]")?.getAttribute("data-connection") === "open",
+    undefined,
+    { timeout: 60_000, polling: 16 },
+  );
+  record(`pick → viewer connected (${label})`, Date.now() - picked);
+  await page.waitForFunction(
+    () => performance.getEntriesByName("mirror-rebuild").length > 0,
+    undefined,
+    { timeout: 60_000, polling: 16 },
+  );
+  record(`pick → first page rebuilt (${label})`, Date.now() - picked);
+  await inputReady(page);
+  record(`pick → input ready (${label})`, Date.now() - picked);
+  record(`first snapshot rebuild ms (${label})`, (await rebuildMeasures(page))[0]);
+  record(
+    `WS bytes until ready (${label})`,
+    frames.slice(framesBefore).reduce((sum, frame) => sum + frame.bytes, 0),
+  );
+}
+
 async function coldRun(run) {
   const context = await newContext();
   const { page, frames } = await newPage(context);
@@ -237,42 +280,7 @@ async function coldRun(run) {
   ).json;
   assert.ok(made?.id, "Could not create a profile");
   await page.reload();
-  await page.locator("button.profile-card").first().waitFor();
-  const framesBefore = frames.length;
-  const picked = Date.now();
-  const [response] = await Promise.all([
-    page.waitForResponse((response) => new URL(response.url()).pathname === "/api/client/session", {
-      timeout: 90_000,
-    }),
-    page
-      .locator("button.profile-card")
-      .filter({ hasText: `perf-load-${run}` })
-      .click(),
-  ]);
-  const answered = Date.now();
-  assert.equal(response.status(), 200, await response.text());
-  const phases = serverTiming(await response.headerValue("server-timing"));
-  for (const [name, ms] of Object.entries(phases)) record(`  server: ${name}`, ms);
-  record("pick → session answered (cold)", answered - picked);
-  await page.waitForFunction(
-    () => document.querySelector("[data-connection]")?.getAttribute("data-connection") === "open",
-    undefined,
-    { timeout: 60_000, polling: 16 },
-  );
-  record("pick → viewer connected (cold)", Date.now() - picked);
-  await page.waitForFunction(
-    () => performance.getEntriesByName("mirror-rebuild").length > 0,
-    undefined,
-    { timeout: 60_000, polling: 16 },
-  );
-  record("pick → first page rebuilt (cold)", Date.now() - picked);
-  await inputReady(page);
-  record("pick → input ready (cold)", Date.now() - picked);
-  record("first snapshot rebuild (ms)", (await rebuildMeasures(page))[0]);
-  record(
-    "WS bytes until ready (cold)",
-    frames.slice(framesBefore).reduce((sum, frame) => sum + frame.bytes, 0),
-  );
+  await pickCold(page, frames, `perf-load-${run}`, "cold, new profile");
 
   // A large page, then a reload of the workbench while the session lives.
   const address = page.locator("#urlbar input");
@@ -328,6 +336,23 @@ async function coldRun(run) {
   for (const target of [second.page, page]) {
     const sid = new URL(target.url()).searchParams.get("sid");
     if (sid) await call(target, "DELETE", `/api/client/session/${sid}`);
+  }
+
+  // The same profile once its browser has closed: the exit it had is known from last time.
+  if (closeBrowser) {
+    execSync(closeBrowser.replaceAll("{id}", made.id), { stdio: "inherit" });
+    const deadline = Date.now() + 30_000;
+    const running = async () =>
+      (await call(page, "GET", "/api/accounts")).json.accounts.find(
+        (account) => account.id === made.id,
+      )?.running;
+    while ((await running()) && Date.now() < deadline) await page.waitForTimeout(200);
+    assert.ok(!(await running()), "The profile's browser did not close");
+    const again = await newPage(context);
+    await again.page.goto(`${origin}/?new=1`);
+    await pickCold(again.page, again.frames, `perf-load-${run}`, "cold, known exit");
+    const sid = new URL(again.page.url()).searchParams.get("sid");
+    if (sid) await call(again.page, "DELETE", `/api/client/session/${sid}`);
   }
   const removed = await call(page, "DELETE", `/api/accounts/${made.id}`);
   assert.ok(removed.status < 300, `Deleting the profile failed: ${removed.status}`);
