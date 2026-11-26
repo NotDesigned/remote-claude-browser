@@ -255,6 +255,12 @@ async function checkNestedFramesRepeatedly(page, address) {
   for (let run = 1; run <= runs; run++) {
     const started = Date.now();
     try {
+      if (run > 1) {
+        // The last run's page has the same ids: start from another one, as the first run does.
+        await address.fill(fixturePage(`<!doctype html><p id="between">${run}</p>`));
+        await address.press("Enter");
+        await mirrorElement(page, "between", { text: String(run) });
+      }
       await checkNestedFrames(page, address);
     } catch (error) {
       failures.push(run);
