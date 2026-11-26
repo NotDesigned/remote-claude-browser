@@ -374,14 +374,31 @@ async function mirrorPoint(page, id) {
 }
 
 const ready = (page, timeout = 120_000) =>
-  page.waitForFunction(
-    (selector) =>
-      document.getElementById("mirror-host")?.dataset.inputReady === "true" &&
-      document.querySelector(selector)?.contentDocument?.getElementById("hud") !== null &&
-      document.querySelector(selector)?.contentDocument?.getElementById("hud") !== undefined,
-    MIRROR_FRAME,
-    { timeout, polling: 50 },
-  );
+  page
+    .waitForFunction(
+      (selector) =>
+        document.getElementById("mirror-host")?.dataset.inputReady === "true" &&
+        document.querySelector(selector)?.contentDocument?.getElementById("hud") !== null &&
+        document.querySelector(selector)?.contentDocument?.getElementById("hud") !== undefined,
+      MIRROR_FRAME,
+      { timeout, polling: 50 },
+    )
+    .catch(async (error) => {
+      const state = await page
+        .evaluate((selector) => {
+          const host = document.getElementById("mirror-host");
+          return {
+            inputReady: host?.dataset.inputReady,
+            mirrorState: host?.dataset.mirrorState,
+            status: document.querySelector("#shell-status")?.getAttribute("title"),
+            hud: !!document.querySelector(selector)?.contentDocument?.getElementById("hud"),
+            address: document.querySelector("#urlbar input")?.value.slice(0, 60),
+            overlay: document.querySelector("[role=dialog], .session-overlay")?.textContent?.slice(0, 120),
+          };
+        }, MIRROR_FRAME)
+        .catch(() => null);
+      throw new Error(`not ready: ${JSON.stringify(state)}`, { cause: error });
+    });
 
 async function openChat(viewer, hash = "") {
   await viewer.address.fill(fixturePage(CHAT_PAGE) + hash);
@@ -1054,6 +1071,8 @@ try {
           // A second device takes the session over; the desktop page is done after this.
           await desk.context.close();
           const phone = await openViewer({ phone: true });
+          await openChat(phone);
+          await focusKeeping(phone, { label: "phone-focus" });
           await openChat(phone);
           await touchScroll(phone);
           await typingLatency(phone, { label: "phone-typing", keys: 15 });
