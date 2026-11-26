@@ -88,6 +88,9 @@ vi.mock("./browser/launch", async (importOriginal) => ({
 vi.mock("./browser/broker", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./browser/broker")>()),
   launchBrokerBrowser: hooks.brokerLaunch,
+  // The exit is prepared ahead of the launch; here the launch is the runtime's boundary.
+  prepareBrokerBrowser: async () => {},
+  stopBrokerBrowser: async () => {},
 }));
 vi.mock("./session/profiles", async (importOriginal) => {
   const original = await importOriginal<typeof import("./session/profiles")>();
@@ -748,6 +751,8 @@ describe("multi-user management routes", () => {
           `--fingerprint-screen-width=${identity.screen.width}`,
         ]),
       }),
+      // A new profile on a node nobody has checked: no zone to start on before the lookup.
+      undefined,
     );
     expect(hooks.brokerLaunch.mock.calls[0]?.[2]).not.toHaveProperty("env.FONTCONFIG_FILE");
     expect(
