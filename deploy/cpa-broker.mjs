@@ -16,12 +16,19 @@ const IMAGE = "dev.remote-browser.cpa-image";
 const SPEC = "dev.remote-browser.cpa-spec";
 // The deployment an instance belongs to: the name of its broker's shared network.
 const DEPLOYMENT = "dev.remote-browser.cpa-deployment";
+// Set on the short-lived container that writes an instance's initial configuration, which is named
+// remote-browser-<id>-init. reconcile removes one left behind by a broker that stopped mid-way.
+const ROLE = "dev.remote-browser.cpa-role";
 const ID = /^cpa-[a-f0-9]{20}$/;
 // Docker Engine 27.3. Older engines reject the versioned paths below.
 export const DOCKER_API_VERSION = "1.47";
 const EGRESS_ALIAS = "runtime-egress";
 const EGRESS_PORT = 8781;
 const STAGED_CONFIG = ".initial-config.yaml";
+// runtime-egress relay: a connection with no traffic either way for this long is closed (CPA
+// streams send a keepalive every 15 s), and at most this many are open at once.
+const RELAY_IDLE_MS = 10 * 60_000;
+const RELAY_MAX_CONNECTIONS = 512;
 // Compose labels the images it builds. Containers inherit image labels, so without this an instance
 // would claim to be a service of the Compose project, and `docker compose down --remove-orphans`
 // or a scale change could remove it. A label set to "" matches no project or service.
@@ -97,18 +104,25 @@ export function instanceConfig(input) {
   };
 }
 // The broker uploads the initial configuration into the config volume before this runs, so the
-// keys never appear in a container's environment. An existing config.yaml is never replaced.
-const INITIALIZE = `
+// keys never appear in a container's environment. An existing config.yaml is never replaced: the
+// volumes outlive the container (a restore, a removed container, a replacement cut short), and
+// then config.yaml is already owned by the CPA user. The initializer runs as root with CHOWN but
+// not FOWNER, so it may only chmod what root owns: each path is taken over before its mode is set
+// and handed back afterwards. config.yaml must be a regular file, never a link the instance made.
+export const INITIALIZE = `
 const fs=require('node:fs/promises');
 (async()=>{
   for(const p of ['/config','/auth','/static']) { await fs.chown(p,0,0); await fs.chmod(p,448); }
-  const staged='/config/${STAGED_CONFIG}';
-  try { await fs.link(staged,'/config/config.yaml'); }
+  const staged='/config/${STAGED_CONFIG}', config='/config/config.yaml';
+  try { await fs.link(staged,config); }
   catch(e) { if(e.code!=='EEXIST') throw e; }
   await fs.rm(staged,{force:true});
-  await fs.chmod('/config/config.yaml',384);
-  for(const p of ['/config/config.yaml','/config','/auth','/static']) await fs.chown(p,10003,10003);
-})().catch(()=>{process.exitCode=1});`;
+  if(!(await fs.lstat(config)).isFile()) throw new Error('config.yaml is not a regular file');
+  await fs.lchown(config,0,0);
+  await fs.chmod(config,384);
+  await fs.lchown(config,10003,10003);
+  for(const p of ['/config','/auth','/static']) await fs.chown(p,10003,10003);
+})().catch((e)=>{console.error('CPA initialization: '+(e&&e.code||e&&e.message||e));process.exitCode=1});`;
 
 function instanceLabels(id, options) {
   const blank = {};
@@ -176,6 +190,7 @@ export function initializerSpec(id, options) {
   spec.HostConfig.CapAdd = ["CHOWN"];
   spec.HostConfig.RestartPolicy = { Name: "no" };
   spec.HostConfig.Memory = 96 * 1024 * 1024;
+  spec.Labels[ROLE] = "initializer";
   return spec;
 }
 
@@ -268,12 +283,22 @@ async function jsonBody(request) {
     if (length > 32_768) throw new BrokerError(413, "Request too large");
     chunks.push(chunk);
   }
-  return JSON.parse(Buffer.concat(chunks).toString() || "{}");
+  let value;
+  try {
+    value = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+  } catch {
+    throw new BrokerError(400, "Request body is not valid JSON");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new BrokerError(400, "Request body must be a JSON object");
+  return value;
 }
 function validateInitialization(input) {
   for (const name of ["apiKey", "managementKey"])
     if (typeof input[name] !== "string" || input[name].length < 32 || input[name].length > 128)
       throw new BrokerError(400, "Invalid instance key");
+  if (typeof input.proxyUrl !== "string" || !URL.canParse(input.proxyUrl))
+    throw new BrokerError(400, "Invalid runtime proxy");
   const url = new URL(input.proxyUrl);
   if (
     url.protocol !== "http:" ||
@@ -290,6 +315,8 @@ function validateInitialization(input) {
  * options.egress: host:port of the server's authenticated proxy on options.network.
  */
 export function createCpaBroker(options) {
+  // A malformed pool fails at startup, not on the first instance.
+  if (options.subnets !== undefined) instanceSubnet("cpa-00000000000000000000", 0, options.subnets);
   const docker = options.docker ?? createDockerClient(options.dockerSocket);
   const requestUpstream = options.requestUpstream ?? httpRequest;
   const log = options.log ?? ((message) => console.error(`cpa-broker: ${message}`));
@@ -327,9 +354,17 @@ export function createCpaBroker(options) {
     if (!owned(value)) throw new BrokerError(409, "CPA instance belongs to another deployment");
     return value;
   };
+  // Volumes carry the deployment label too. Ones created before it have only the instance labels:
+  // they are accepted for their instance ID, which the gateway draws at random (80 bits) and keeps
+  // in its own database, so another deployment only reaches them with a copy of that database.
   const volume = async (id, name) => {
     const value = await missing(() => docker("GET", `/volumes/${name}`));
-    return value && requireManaged(value, id, "Volume");
+    if (!value) return null;
+    requireManaged(value, id, "Volume");
+    const deployment = value.Labels?.[DEPLOYMENT];
+    if (deployment !== undefined && deployment !== options.network)
+      throw new BrokerError(409, "CPA volume belongs to another deployment");
+    return value;
   };
   const network = async (id) => {
     const value = await missing(() => docker("GET", `/networks/${instanceNetwork(id)}`));
@@ -364,6 +399,8 @@ export function createCpaBroker(options) {
   const ensureNetwork = async (id) => {
     const name = instanceNetwork(id);
     if (!(await network(id))) {
+      const bits = Number(String(options.subnets ?? "10.254.0.0/16").split("/")[1]);
+      const attempts = Math.min(32, 2 ** (28 - bits));
       for (let attempt = 0; ; attempt++) {
         try {
           await docker("POST", "/networks/create", {
@@ -377,7 +414,12 @@ export function createCpaBroker(options) {
         } catch (error) {
           // 403: the subnet overlaps another network; 409: created meanwhile.
           if (error.status === 409) break;
-          if (error.status !== 403 || attempt >= 31) throw error;
+          if (error.status !== 403) throw error;
+          if (attempt + 1 >= attempts)
+            throw new BrokerError(
+              503,
+              "No free /28 for a CPA network in CPA_INSTANCE_SUBNETS: widen it or move it off the networks it overlaps",
+            );
         }
       }
       await network(id);
@@ -399,14 +441,27 @@ export function createCpaBroker(options) {
       });
     await docker("DELETE", `/networks/${value.Name}`);
   };
+  // An instance's initializer left by a broker that stopped mid-way; it holds the volumes.
+  const removeInitializer = async (id) => {
+    const value = await missing(() => docker("GET", `/containers/remote-browser-${id}-init/json`));
+    if (!value) return false;
+    requireManaged(value, id);
+    if (!owned(value)) throw new BrokerError(409, "CPA instance belongs to another deployment");
+    await missing(() => docker("DELETE", `/containers/${value.Id}?force=1`));
+    return true;
+  };
   const initialize = async (id, input) => {
     for (const name of Object.values(volumeNames(id))) {
       if (!(await volume(id, name)))
-        await docker("POST", "/volumes/create", { Name: name, Labels: labels(id) });
+        await docker("POST", "/volumes/create", {
+          Name: name,
+          Labels: { ...labels(id), [DEPLOYMENT]: options.network },
+        });
     }
+    await removeInitializer(id);
     const created = await docker(
       "POST",
-      "/containers/create",
+      `/containers/create?name=remote-browser-${id}-init`,
       initializerSpec(id, { ...options, ...(await engine()) }),
     );
     try {
@@ -565,12 +620,16 @@ export function createCpaBroker(options) {
   const relay = createTcpServer((socket) => {
     const [host, port] = options.egress.split(":");
     const upstream = connectTcp({ host, port: Number(port) });
+    const idle = options.relayIdleMs ?? RELAY_IDLE_MS;
+    socket.setTimeout(idle, () => socket.destroy());
+    upstream.setTimeout(idle, () => upstream.destroy());
     socket.pipe(upstream).pipe(socket);
     socket.once("error", () => upstream.destroy());
     upstream.once("error", () => socket.destroy());
     socket.once("close", () => upstream.destroy());
     upstream.once("close", () => socket.destroy());
   });
+  relay.maxConnections = options.relayMaxConnections ?? RELAY_MAX_CONNECTIONS;
   return {
     server,
     relay,
@@ -606,6 +665,23 @@ export function createCpaBroker(options) {
       for (const item of found) {
         const id = item.Labels?.[INSTANCE];
         if (!ID.test(id ?? "") || !owned(item)) continue;
+        // An initializer left by a broker that stopped mid-way: named remote-browser-<id>-init, or
+        // from before that name, any other managed container of this instance.
+        const name = `/remote-browser-${id}`;
+        if (
+          item.Labels?.[ROLE] === "initializer" ||
+          (Array.isArray(item.Names) && !item.Names.includes(name))
+        ) {
+          await serialized(id, async () => {
+            const value = await missing(() => docker("GET", `/containers/${item.Id}/json`));
+            if (!value || value.Name === name) return;
+            requireManaged(value, id);
+            if (!owned(value)) return;
+            await missing(() => docker("DELETE", `/containers/${item.Id}?force=1`));
+            log(`removed a leftover initializer of ${id}`);
+          }).catch((error) => log(`could not remove an initializer of ${id}: ${error.message}`));
+          continue;
+        }
         try {
           await serialized(id, async () => {
             const value = await inspect(id);
