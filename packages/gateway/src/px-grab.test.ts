@@ -11,7 +11,14 @@ const PX = { t: "mode", tab: "tab-1", mode: "px", quality: "smooth", video: true
 const DOM = { t: "mode", tab: "tab-1", mode: "dom" } as const;
 const TICK_MS = 250;
 
-function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: number } = {}) {
+function setup(
+  options: {
+    slot?: number | null;
+    placeFails?: boolean;
+    dpr?: number;
+    firstFrameTimeoutMs?: number;
+  } = {},
+) {
   vi.useFakeTimers();
   let attached: ((target: TargetRef) => void) | undefined;
   const calls: { method: string; params?: Record<string, unknown> }[] = [];
@@ -22,6 +29,9 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
   const jpegs: { region: GrabRegion; events: JpegGrabEvents; closed: boolean }[] = [];
   let navigation:
     ((session: string, event: FlatSessionEventMap["Page.frameNavigated"]) => void) | undefined;
+  let screencastFrame:
+    ((session: string, event: FlatSessionEventMap["Page.screencastFrame"]) => void) | undefined;
+  const videoWrites: Buffer[] = [];
   const window = {
     pointer: vi.fn(async () => false),
     place: vi.fn(async (_target: string, _left: number, _w: number, _h: number) => {
@@ -36,18 +46,21 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
   const errors: unknown[] = [];
   const backlog = { value: false };
   // What the page reports as its density: the browser zoom at a density of 1.
-  const page = { density: options.dpr ?? 1 };
+  const page = { density: options.dpr ?? 1, zoomLags: false };
   const controller = createScreencast({
     browser: {
       send: (async (_session: string, method: string, params?: Record<string, unknown>) => {
         calls.push({ method, ...(params ? { params } : {}) });
         if (method === "Runtime.evaluate") return { result: { value: page.density } };
+        if (method === "Page.captureScreenshot") return { data: "c2hvdA==" };
         return {};
       }) as never,
       onAttached: (callback: (target: TargetRef) => void) => void (attached = callback),
       onDetached: () => {},
       onSessionEvent: ((method: string, callback: typeof navigation) => {
         if (method === "Page.frameNavigated") navigation = callback;
+        if (method === "Page.screencastFrame")
+          screencastFrame = callback as unknown as typeof screencastFrame;
         return () => {};
       }) as unknown as <K extends keyof FlatSessionEventMap>(
         method: K,
@@ -55,6 +68,9 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
       ) => () => void,
     },
     hubFor: () => hub,
+    ...(options.firstFrameTimeoutMs === undefined
+      ? {}
+      : { firstFrameTimeoutMs: options.firstFrameTimeoutMs }),
     publish: (message) => {
       published.push(message);
       if (message.t === "mode") calls.push({ method: `mode ${message.mode}` });
@@ -64,10 +80,13 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
     browserZoom: {
       set: async (_target, level) => {
         calls.push({ method: `press ${level}` });
-        page.density = level;
+        if (!page.zoomLags) page.density = level;
       },
     },
-    createVideoEncoder: () => ({ write: () => {}, close: () => {} }),
+    createVideoEncoder: () => ({
+      write: (frame: Buffer) => void videoWrites.push(frame),
+      close: () => {},
+    }),
     grab: {
       window,
       acquire: () => {
@@ -115,6 +134,13 @@ function setup(options: { slot?: number | null; placeFails?: boolean; dpr?: numb
     encoders,
     jpegs,
     navigate: () => navigation?.("cdp-1", { frame: { id: "tab-1" } } as never),
+    cast: (data: string) =>
+      screencastFrame?.("cdp-1", {
+        sessionId: 1,
+        data: Buffer.from(data).toString("base64"),
+        metadata: { deviceWidth: 1441, deviceHeight: 900 },
+      } as never),
+    videoWrites,
     window,
     published,
     errors,
@@ -344,6 +370,65 @@ describe("screen grab", () => {
     expect(first.closed).toBe(true);
     encoders.at(-1)!.events.onChunk(Buffer.from("key"), true);
     expect(chunks()).toBe(2);
+    controller.dispose();
+  });
+
+  it("shows the new page once the zoom is back, even when the page stops changing", async () => {
+    const { controller, published, navigate, page, cast, calls } = setup({
+      slot: null,
+      dpr: 2,
+      firstFrameTimeoutMs: 500,
+    });
+    const switching = controller.handle({ ...PX, quality: "sharp" });
+    await vi.advanceTimersByTimeAsync(ZOOM_BUBBLE_MS);
+    await switching;
+    cast("old page");
+    const captures = () => calls.filter(({ method }) => method === "Page.captureScreenshot").length;
+    const pictures = () => published.filter((message) => message.t === "px").length;
+
+    // The new page is at 100% and its zoom takes a while to come back.
+    page.density = 1;
+    page.zoomLags = true;
+    navigate();
+    // Its only frame arrives while the picture is held, and is dropped.
+    cast("new page at 100%");
+    const before = pictures();
+    const capturedBefore = captures();
+    // The first-frame capture comes while the picture is held.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(captures()).toBeGreaterThan(capturedBefore);
+    expect(pictures()).toBe(before);
+    page.density = 2;
+    // Held then, it tries again rather than giving up, and the new page shows.
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(pictures()).toBeGreaterThan(before);
+    controller.dispose();
+  });
+
+  it("keeps holding the picture for a second navigation while the first one's zoom check ends", async () => {
+    const { controller, navigate, page, cast, videoWrites } = setup({ slot: null, dpr: 2 });
+    const switching = controller.handle({ ...PX, quality: "sharp" });
+    await vi.advanceTimersByTimeAsync(ZOOM_BUBBLE_MS);
+    await switching;
+
+    page.density = 1;
+    page.zoomLags = true;
+    navigate();
+    await vi.advanceTimersByTimeAsync(500);
+    // Another page, while the first one's check is still waiting for the zoom.
+    navigate();
+    // The first check gives up; the second has not put the zoom back yet.
+    await vi.advanceTimersByTimeAsync(1_200);
+    const written = videoWrites.length;
+    cast("second page at 100%");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(videoWrites.length).toBe(written);
+
+    page.density = 2;
+    await vi.advanceTimersByTimeAsync(ZOOM_BUBBLE_MS + 500);
+    cast("second page zoomed");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(videoWrites.length).toBeGreaterThan(written);
     controller.dispose();
   });
 });
