@@ -6,7 +6,7 @@
  * Value-control paste is synchronized by change capture. Contenteditable paste and
  * composition commits are forwarded as text.
  */
-import type { TabId } from "@mirror/protocol";
+import { Mod, type TabId } from "@mirror/protocol";
 import { createForwardedInputClock, type ForwardedInputClock } from "./forwarded";
 import { isElement, type SendInput } from "./pointer";
 import { eventMods, isPasteShortcut, keyEventMessage, sendKeyPress } from "./encode";
@@ -326,6 +326,11 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
     if (enterDown) return;
     options.flushComposing?.(event.target, true);
     const mods = eventMods(event as InputEvent & KeyboardEvent);
+    // A soft keyboard's Enter that came without a key event is still the Enter that sends.
+    options.onKeyDown?.(
+      { key: "Enter", shiftKey: (mods & Mod.Shift) !== 0, isComposing: false } as KeyboardEvent,
+      focused,
+    );
     sendKeyPress(options.send, options.tab, "Enter", "Enter", mods);
   };
   const onPaste = (event: ClipboardEvent) => {

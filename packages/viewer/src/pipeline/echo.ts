@@ -11,6 +11,11 @@
  * this editor lacks, or text it removed that this editor still shows, means the two went apart,
  * and the filter asks for a reconcile. So does a later mutation naming a node whose addition was
  * suppressed: this replay never got that node, so it cannot apply the change.
+ *
+ * One change is not waited for: the page taking away the text that Enter just sent (a chat
+ * composer clearing itself after sending). Held back until typing settles, the replay showed the
+ * sent message in the composer while the next one was typed after it; the reconcile is asked for
+ * as soon as that change arrives.
  */
 import { EventType, IncrementalSource, type eventWithTime } from "@mirror/protocol";
 import {
@@ -61,6 +66,8 @@ const PASSED_TEXT_MEMORY_MS = 3_000;
 /** A reconcile the runtime could not send yet is asked for again this often, this many times. */
 const RECONCILE_RETRY_MS = 1_000;
 const RECONCILE_RETRIES = 30;
+/** How long after Enter the page taking the editor's text away counts as it sending that text. */
+const SENT_CLEAR_MS = 5_000;
 
 export interface EchoFilter extends Stage {
   setFocused(focus: EditableFocus | null): void;
@@ -105,10 +112,15 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
   /** Text mutations let through to a focused editor, by node, to know none is still buffered. */
   const passedTexts = new Map<number, number>();
   let reconcileRequested = false;
+  /** A reconcile was due while another was on its way, which may show the page from before. */
+  let reconcileAgain = false;
   let reconcileRetry: ReturnType<typeof setTimeout> | null = null;
   let reconcileRetries = 0;
+  /** Each editor's text when Enter was last pressed in it, and when. */
+  const sentTexts = new WeakMap<Element, { text: string; at: number }>();
 
-  const requestReconcile = () => {
+  const requestReconcile = (again = false) => {
+    if (again && reconcileRequested) reconcileAgain = true;
     if (reconcileRequested || reconcileRetry !== null) return;
     if (options.onContenteditableReconcile?.() === false) {
       // Latched only once sent: the divergence is still there when input to the tab returns.
@@ -229,19 +241,34 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       const owner = (id: number) => active.find((state) => state.subtreeNodeIds!.has(id));
       const record = (state: EditingState): SuppressedEdits =>
         (state.suppressed ??= { texts: new Map(), parents: new Map(), removed: [] });
+      /** The text each held-back editor's share of this batch took away and put in. */
+      const changed = new Map<EditingState, { removed: string; added: string }>();
+      const change = (state: EditingState, removed: string, added: string) => {
+        const entry = changed.get(state) ?? { removed: "", added: "" };
+        entry.removed += removed;
+        entry.added += added;
+        changed.set(state, entry);
+      };
       const adds = data.adds.filter((mutation) => {
         const state = owner(mutation.parentId) ?? owner(mutation.node.id);
         if (state === undefined) return true;
         collectSerializedNodeIds(mutation.node, state.subtreeNodeIds!);
         collectSerializedNodeIds(mutation.node, unmapped);
         recordAddedTexts(record(state), mutation.node, mutation.parentId);
+        change(state, "", serializedText(mutation.node));
         return false;
       });
       // Adds can introduce ids referenced by another record in the same rrweb mutation batch.
       const texts = data.texts.filter((mutation) => {
         const state = owner(mutation.id);
         if (state === undefined) return true;
-        record(state).texts.set(mutation.id, mutation.value ?? "");
+        const edits = record(state);
+        change(
+          state,
+          edits.texts.get(mutation.id) ?? nodeFor(mutation.id)?.textContent ?? "",
+          mutation.value ?? "",
+        );
+        edits.texts.set(mutation.id, mutation.value ?? "");
         return false;
       });
       const attributes = data.attributes.filter((mutation) => owner(mutation.id) === undefined);
@@ -251,10 +278,22 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
         const edits = record(state);
         const known = edits.texts.get(mutation.id);
         const text = known ?? nodeFor(mutation.id)?.textContent ?? "";
+        change(state, text || subtreeText(edits, mutation.id), "");
         forgetSubtree(edits, mutation.id);
         edits.removed.push({ id: mutation.id, text });
         return false;
       });
+      // The page took away the text Enter sent: it sent it and cleared the editor. Typing goes
+      // on, so waiting for it to settle would show the sent text for as long as it does.
+      for (const [state, { removed, added }] of changed) {
+        const sent = sentTexts.get(state.element);
+        if (sent === undefined || now() - sent.at > SENT_CLEAR_MS) continue;
+        const text = compact(sent.text);
+        if (text === "" || !compact(removed).includes(text) || compact(added).includes(text))
+          continue;
+        sentTexts.delete(state.element);
+        requestReconcile(true);
+      }
 
       // What passes and names a node this replay never got cannot be applied here.
       if (
@@ -357,10 +396,19 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
     armDecay(focus.nodeId, state);
   };
 
-  filter.keyDown = (_event, focus) => {
+  filter.keyDown = (event, focus) => {
     filter.setFocused(focus);
     // Enter is not an acknowledgement of earlier edits. Keep local text protected
     // until the ordinary reconciliation window; a delayed echo may be a prefix.
+    // What it may have sent is remembered, to know the page's clearing of it when it comes.
+    if (
+      event.key === "Enter" &&
+      !event.shiftKey &&
+      !event.isComposing &&
+      focus !== null &&
+      isContenteditableEchoField(focus.element)
+    )
+      sentTexts.set(focus.element, { text: focus.element.textContent ?? "", at: now() });
   };
 
   filter.getFocused = () => focused;
@@ -377,6 +425,11 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
     if (reconcileRetry !== null) cancel(reconcileRetry);
     reconcileRetry = null;
     reconcileRetries = 0;
+    // The page changed again after the snapshot this one came from was asked for.
+    if (reconcileAgain) {
+      reconcileAgain = false;
+      requestReconcile();
+    }
   };
   filter.reset = () => {
     for (const nodeId of [...nodes.keys()]) clearState(nodeId);
@@ -385,6 +438,7 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
     unmapped.clear();
     passedTexts.clear();
     reconcileRequested = false;
+    reconcileAgain = false;
     if (reconcileRetry !== null) cancel(reconcileRetry);
     reconcileRetry = null;
     reconcileRetries = 0;
@@ -468,6 +522,31 @@ function recordAddedTexts(edits: SuppressedEdits, node: SerializedNode, parentId
   for (const child of node.childNodes ?? []) {
     recordAddedTexts(edits, child as SerializedNode, node.id);
   }
+}
+
+/** A serialized node's text, as far as the record carries it. */
+function serializedText(node: SerializedNode): string {
+  if (node.type === SERIALIZED_TEXT) return node.textContent ?? "";
+  return (node.childNodes ?? []).map((child) => serializedText(child as SerializedNode)).join("");
+}
+
+/** The text the page had added below a node this replay never got. */
+function subtreeText(edits: SuppressedEdits, id: number): string {
+  let text = "";
+  for (const [node, value] of edits.texts) {
+    for (let at: number | undefined = node; at !== undefined; at = edits.parents.get(at)) {
+      if (at === id) {
+        text += value;
+        break;
+      }
+    }
+  }
+  return text;
+}
+
+/** Text without its whitespace, which editors spread over blocks and spaces as they like. */
+function compact(text: string): string {
+  return text.replace(/[\s\u00a0]+/g, "");
 }
 
 /** A removed node takes the text of everything the page had added below it along. */
