@@ -27,7 +27,7 @@ function chromium(headful) {
   const child = spawn(
     launcher,
     [
-      `/tmp/browser-root-${headful}`,
+      `/run/remote-browser/browser-${headful}/root`,
       profile,
       "/usr/bin/chromium",
       ...(headful ? [] : ["--headless=new"]),
@@ -111,6 +111,15 @@ function chromium(headful) {
 }
 
 async function inside() {
+  // Under the server's AppArmor profile, root (with CAP_SYS_ADMIN) may mount only what the
+  // launcher needs: no proc instance, and no bind of /proc, outside a browser root.
+  const confinement = await readFile("/proc/self/attr/current", "utf8").catch(() => "");
+  if (confinement.startsWith("remote-claude-browser ")) {
+    await mkdir("/tmp/proc-probe");
+    await assert.rejects(exec("mount", ["-t", "proc", "proc", "/tmp/proc-probe"]), /denied/i);
+    await assert.rejects(exec("mount", ["--bind", "/proc", "/tmp/proc-probe"]), /denied/i);
+    console.log("AppArmor confines the server's mounts");
+  } else console.log(`Not confined by the server's AppArmor profile (${confinement.trim()})`);
   await mkdir(`${profile}/uploads`, { recursive: true });
   await mkdir(`${profile}/downloads`);
   await mkdir("/data/profile/other");
@@ -156,14 +165,18 @@ async function inside() {
     assert.match(fs.readFileSync('/proc/self/status', 'utf8'), /CapEff:\\s+0000000000000000/);
     fs.writeFileSync('${profile}/persistent-marker', 'retained');
   `;
-  await exec(launcher, ["/tmp/probe-root", profile, "/usr/local/bin/node", "-e", boundaryProbe], {
-    env: {
-      PATH: process.env.PATH,
-      HOME: "/tmp/home",
-      TZ: "Asia/Tokyo",
-      MIRROR_BROWSER_DOH_TEMPLATE: "https://dns.example.test/dns-query",
+  await exec(
+    launcher,
+    ["/run/remote-browser/probe/root", profile, "/usr/local/bin/node", "-e", boundaryProbe],
+    {
+      env: {
+        PATH: process.env.PATH,
+        HOME: "/tmp/home",
+        TZ: "Asia/Tokyo",
+        MIRROR_BROWSER_DOH_TEMPLATE: "https://dns.example.test/dns-query",
+      },
     },
-  });
+  );
 
   // The browser user owns /data. Links it plants, or directories it does not own, are never mounted.
   await mkdir("/data/root-only", { mode: 0o700 });
@@ -178,7 +191,7 @@ async function inside() {
     "/data/root-only",
   ]) {
     const attempt = exec(launcher, [
-      "/tmp/attack-root",
+      "/run/remote-browser/attack/root",
       target,
       "/usr/local/bin/node",
       "-e",
@@ -226,7 +239,7 @@ async function inside() {
   });
   process.env.XAUTHORITY = authority;
   await exec(launcher, [
-    "/tmp/display-probe-root",
+    "/run/remote-browser/display-probe/root",
     profile,
     "/usr/local/bin/node",
     "-e",
@@ -379,6 +392,10 @@ if (process.argv.includes("--inside")) {
     "/tmp:mode=1777",
     "--tmpfs",
     "/data:mode=755",
+    // Browser roots live here, as in the server (deploy/profile-broker.mjs): the AppArmor profile
+    // allows the launcher's mounts only below it.
+    "--tmpfs",
+    "/run/remote-browser:mode=755",
     "--cap-drop",
     "ALL",
     "--security-opt",

@@ -2,8 +2,12 @@
 # Load it on the Docker host with scripts/install-apparmor.sh before starting the server.
 #
 # It is Docker's default profile (docker-default) with three changes, and nothing else:
-#   - mount and pivot_root are allowed: `ip netns` and browser-filesystem.sh build each browser
-#     profile's network and mount namespaces. docker-default denies every mount.
+#   - the mounts that `ip netns` and deploy/browser-filesystem.sh make are allowed, and only
+#     those: each browser profile's network namespace under /run/netns, and its mount namespace
+#     built under /run/remote-browser/<exit>/root. docker-default denies every mount. A proc
+#     mount is allowed only at that root's proc/, which the /proc rules below cover too, and
+#     nothing may be bound from /proc or /sys. pivot_root stays denied (Docker's seccomp profile
+#     blocks it as well).
 #   - userns is allowed: Chromium's sandbox puts each renderer in a user namespace. On hosts that
 #     restrict unprivileged user namespaces (Ubuntu 23.10 and later) only a profile that grants
 #     this may create one, so the host-wide sysctl can stay as it is.
@@ -12,16 +16,41 @@
 
 #include <tunables/global>
 
+# The proc instance browser-filesystem.sh mounts for each browser, seen from the server's own
+# mount namespace; inside the browser's namespace it is /proc.
+@{PROC}+=/run/remote-browser/*/root/proc/
+
 profile remote-claude-browser flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
 
   network,
   capability,
   file,
-  mount,
-  umount,
-  pivot_root,
   userns,
+
+  # ip netns add, exec and del (deploy/profile-network.sh, deploy/profile-broker.mjs).
+  mount options=(rw, rshared) -> /run/netns/,
+  mount options=(rw, rbind) /run/netns/ -> /run/netns/,
+  mount options=(rw, bind) -> /run/netns/*,
+  umount /run/netns/*,
+  mount options=(rw, rslave) -> /,
+  umount /sys/,
+  mount fstype=sysfs -> /sys/,
+
+  # unshare --mount and deploy/browser-filesystem.sh, inside each browser's mount namespace.
+  mount options=(rw, rprivate) -> /,
+  mount fstype=tmpfs -> /run/remote-browser/*/root/{,tmp/,dev/,dev/shm/},
+  mount fstype=proc -> /run/remote-browser/*/root/proc/,
+  mount options=(rw, bind) -> /run/remote-browser/*/root/**,
+  remount /run/remote-browser/*/root/**,
+  # Finally every top-level entry is covered with the root's own tree, or with /dev/null.
+  mount options=(rw, rbind) /run/remote-browser/*/root/proc/ -> /proc/,
+  mount options=(rw, rbind) /run/remote-browser/*/root/{[^p]*,p[^r]*,pr[^o]*,pro[^c]*,proc?*}/ -> /*/,
+  mount options=(rw, bind) /dev/null -> /*,
+
+  # The /proc and /sys rules go by path: nothing of them is mounted anywhere else.
+  deny mount /{proc,sys}{,/**} -> /**,
+  deny mount options=(rw, bind) /run/remote-browser/*/root/proc{,/**} -> /**,
 
   signal (receive) peer=unconfined,
   signal (receive) peer=runc,
