@@ -30,6 +30,7 @@
  * If a viewer's ws.bufferedAmount > 8MB the gateway marks it stalled: stop deltas/px; when
  * drained below 1MB, send `resync` + current snapshot. Slow viewers cost O(1) memory.
  */
+import type { NotifyEventType, NotifyPermission } from "./notify";
 import type { eventWithTime } from "./rrweb";
 
 /** A tab is identified by its CDP targetId. */
@@ -206,7 +207,32 @@ export type Down =
   /** Announces the current driver's viewerId. */
   | { t: "driver"; viewerId: string }
   | { t: "clip"; text: string }
-  | { t: "presence"; viewers: PresenceEntry[] };
+  | { t: "presence"; viewers: PresenceEntry[] }
+  /**
+   * A notification from a page of the session (see notify.ts). It travels on the notification
+   * feed, which stays open while the workbench is in the background, not on the WebSocket.
+   * `id` is the gateway's; text is already cut to the caps; `icon` is a same-origin asset path
+   * or a data URL.
+   */
+  | {
+      t: "notify";
+      id: string;
+      tab: TabId;
+      origin: string;
+      title: string;
+      body: string;
+      icon?: string;
+      tag?: string;
+      silent?: boolean;
+      requireInteraction?: boolean;
+      renotify?: boolean;
+    }
+  /** The page closed the notification, or it was replaced. */
+  | { t: "notify-close"; id: string }
+  /** A page asks to send notifications; the viewer asks the person (`id` names the request). */
+  | { t: "notify-ask"; id: string; tab: TabId; origin: string }
+  /** The request was answered elsewhere or gave up: its prompt goes away. */
+  | { t: "notify-ask-end"; id: string };
 
 /** Viewer -> gateway. */
 export type Up =
@@ -289,7 +315,20 @@ export type Up =
   | { t: "mic-pcm"; tab: TabId; pcm: string }
   /** Whether this device could open its microphone when the remote page asked. */
   | { t: "mic-state"; tab: TabId; ok: boolean }
-  | { t: "clip"; text: string };
+  | { t: "clip"; text: string }
+  /**
+   * This device's notification settings for the session's profile (NotifyPolicy). Sent on the
+   * notification feed's POST route, like the two below, never on the WebSocket.
+   */
+  | {
+      t: "notify-permission";
+      state: NotifyPermission;
+      origins: Record<string, "granted" | "denied">;
+    }
+  /** What happened to a notification this device was given. */
+  | { t: "notify-event"; id: string; type: NotifyEventType }
+  /** The person's answer to a `notify-ask`; "default" when they closed it unanswered. */
+  | { t: "notify-answer"; id: string; state: NotifyPermission };
 
 const DOWN_TAGS: ReadonlySet<string> = new Set([
   "hello",
@@ -318,6 +357,10 @@ const DOWN_TAGS: ReadonlySet<string> = new Set([
   "driver",
   "clip",
   "presence",
+  "notify",
+  "notify-close",
+  "notify-ask",
+  "notify-ask-end",
 ]);
 
 const UP_TAGS: ReadonlySet<string> = new Set([
@@ -340,6 +383,9 @@ const UP_TAGS: ReadonlySet<string> = new Set([
   "mic-pcm",
   "mic-state",
   "clip",
+  "notify-permission",
+  "notify-event",
+  "notify-answer",
 ]);
 
 /** Single serialization choke point (future CBOR switch lives here). */

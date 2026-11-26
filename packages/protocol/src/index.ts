@@ -13,5 +13,6 @@ export * from "./wire";
 export * from "./editable";
 export * from "./sheets";
 export * from "./voice";
+export * from "./notify";
 export * from "./working-mark";
 export * from "./focus";

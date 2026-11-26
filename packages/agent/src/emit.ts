@@ -17,6 +17,8 @@ export interface Emitter {
   emitClipboard(text: string): void;
   /** Private agent-binding lane for voice, carried like the clipboard. */
   emitVoice(message: object): void;
+  /** Private agent-binding lane for website notifications (see notifications.ts). */
+  emitNotify(message: object): void;
 }
 
 /** What waits for the binding at most, in messages and in UTF-16 units of their chunks. */
@@ -104,6 +106,9 @@ export function createEmitter(
     },
     emitVoice(message) {
       send({ kind: "voice", docId, ...message });
+    },
+    emitNotify(message) {
+      send({ kind: "notify", docId, ...message });
     },
   };
 }

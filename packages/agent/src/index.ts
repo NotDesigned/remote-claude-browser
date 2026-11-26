@@ -25,6 +25,7 @@ import {
 } from "./config";
 import { captureRtcConstructors, installCanvasRtcRecord } from "./canvas-rtc";
 import { installVoiceBridge } from "./voice";
+import { installNotificationShim } from "./notifications";
 import { captureMediaKeySystemAccess, installVideoDrmMonitor } from "./video";
 import { captureClipboardWrite, installClipboardHooks } from "./clipboard";
 import { canStartCanvasSnapshotWorker } from "./canvas-snapshot";
@@ -61,6 +62,7 @@ interface MainWorldBridge {
     command(value: unknown): void;
     node(nodeId: number): Node | null;
     voice(value: unknown): void;
+    notify(value: unknown): void;
   }): void;
 }
 
@@ -118,6 +120,10 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
           handlers.voice(args[0]);
           return;
         }
+        if (method === "notify") {
+          handlers.notify(args[0]);
+          return;
+        }
         if (method !== "node" || typeof args[0] !== "number") return;
         const node = handlers.node(args[0]);
         if (node === null) return;
@@ -168,6 +174,12 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   const voice =
     isTop && location.hostname === VOICE_HOSTNAME
       ? installVoiceBridge(window, (message) => emitter.emitVoice(message))
+      : null;
+  // Website notifications go to the person's device. Top documents only, and only with the
+  // gateway's bridge: the standalone fixtures have nothing to answer them.
+  const notifications =
+    isTop && mainWorldBridge !== undefined && /^https?:$/.test(location.protocol)
+      ? installNotificationShim(window, (message) => emitter.emitNotify(message))
       : null;
   let crossOriginIframeMirror: CrossOriginIframeMirror | null = null;
   const recordReadiness = createRecordReadiness();
@@ -246,6 +258,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
       },
       node: mirrorNode,
       voice: (value) => voice?.receive(value),
+      notify: (value) => notifications?.receive(value),
     });
   }
 
