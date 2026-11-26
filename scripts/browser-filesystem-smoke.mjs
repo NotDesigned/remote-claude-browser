@@ -116,10 +116,16 @@ async function inside() {
   const confinement = await readFile("/proc/self/attr/current", "utf8").catch(() => "");
   if (confinement.startsWith("remote-claude-browser ")) {
     await mkdir("/tmp/proc-probe");
-    // mount(8) retries read-only after EACCES, and then reports that instead.
-    const refused = /permission denied|cannot mount \S+ read-only/i;
-    await assert.rejects(exec("mount", ["-t", "proc", "proc", "/tmp/proc-probe"]), refused);
-    await assert.rejects(exec("mount", ["--bind", "/proc", "/tmp/proc-probe"]), refused);
+    // mount(8) words a refusal differently by version and by what it retried, so check the outcome:
+    // the command fails and nothing is mounted there.
+    const mountedAtProbe = async () =>
+      (await readFile("/proc/self/mountinfo", "utf8"))
+        .split("\n")
+        .some((line) => line.split(" ")[4] === "/tmp/proc-probe");
+    await assert.rejects(exec("mount", ["-t", "proc", "proc", "/tmp/proc-probe"]));
+    assert.equal(await mountedAtProbe(), false, "a proc instance was mounted outside a root");
+    await assert.rejects(exec("mount", ["--bind", "/proc", "/tmp/proc-probe"]));
+    assert.equal(await mountedAtProbe(), false, "/proc was bound outside a root");
     console.log("AppArmor confines the server's mounts");
   } else console.log(`Not confined by the server's AppArmor profile (${confinement.trim()})`);
   await mkdir(`${profile}/uploads`, { recursive: true });
