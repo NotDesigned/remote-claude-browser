@@ -48,7 +48,8 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
   let trustedComposition = false;
   let trustedPreedit: string | null = null;
   let committedText: string | null = null;
-  const forwardedKeys = new Set<string>();
+  /** Keys pressed on the page and not yet released there, with the press that sent them. */
+  const forwardedKeys = new Map<string, KeyboardEvent>();
   const clearInput = () => {
     input.value = "";
   };
@@ -114,7 +115,7 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
     )
       return;
     event.preventDefault();
-    forwardedKeys.add(event.code || event.key);
+    forwardedKeys.set(event.code || event.key, event);
     sendKey(event, "down");
   };
   const onKeyUp = (event: KeyboardEvent) => {
@@ -214,6 +215,10 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
     blur: () => input.blur(),
     dispose() {
       flush();
+      // Its key-ups will not come here any more: a key left down on the page repeats there, or
+      // keeps a modifier applied to whatever the person does next.
+      for (const press of forwardedKeys.values()) sendKey(press, "up");
+      forwardedKeys.clear();
       disposed = true;
       options.canvas.removeEventListener("focus", onCanvasFocus);
       for (const target of keyboardTargets) {

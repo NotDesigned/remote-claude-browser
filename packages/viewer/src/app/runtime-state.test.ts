@@ -138,6 +138,9 @@ describe("mirror runtime state", () => {
       { type: "hello", viewerId: "v1", driver: true },
       { type: "downloads", downloads: [download("a")] },
       { type: "rtt", ms: 40 },
+      { type: "tab-mode", tab: "t1", mode: "px" },
+      { type: "page-state", tab: "t1", state: "recovering" },
+      { type: "input-status", tab: "t1", failed: true, reason: "x" },
     );
     for (const connection of ["closed", "replaced"] as const) {
       const reset = run(running, { type: "reset", connection });
@@ -151,6 +154,10 @@ describe("mirror runtime state", () => {
         driverId: null,
         downloads: [],
         rttMs: 40,
+        modeByTab: {},
+        pageStates: {},
+        inputFailures: {},
+        inputFailureReasons: {},
       });
     }
   });

@@ -383,6 +383,17 @@ describe("P2 viewer pixel fallback", () => {
     view.destroy();
   });
 
+  it("releases on the page the keys still held when the view goes away", () => {
+    const { container, view, input, sent } = pixelInputFixture();
+    container.canvas.fire("focus", {});
+    input.fire("keydown", key({ key: "Shift", code: "ShiftLeft" }));
+    input.fire("keydown", key({ key: "ArrowDown", code: "ArrowDown" }));
+    input.fire("keyup", key({ key: "ArrowDown", code: "ArrowDown" }));
+    sent.length = 0;
+    view.destroy();
+    expect(sent).toMatchObject([{ t: "key", kind: "up", key: "Shift", code: "ShiftLeft" }]);
+  });
+
   it("sends a pending composition when the view goes away", () => {
     const { container, view, input, sent } = pixelInputFixture();
     container.canvas.fire("focus", {});

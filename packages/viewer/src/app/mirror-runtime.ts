@@ -325,7 +325,12 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
       const unlock = () => options.voice()?.unlock();
       frame?.addEventListener("pointerdown", unlock, true);
       frame?.addEventListener("keydown", unlock, true);
-      return attachMirrorInput({
+      // A parked page gets its interaction again each time it is shown: these must not pile up.
+      const unlockCleanup = () => {
+        frame?.removeEventListener("pointerdown", unlock, true);
+        frame?.removeEventListener("keydown", unlock, true);
+      };
+      const detachInput = attachMirrorInput({
         replayer,
         tab,
         send: (message) => {
@@ -353,6 +358,10 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
         },
         scrollFilter: scroll,
       });
+      return () => {
+        unlockCleanup();
+        detachInput();
+      };
     },
   });
   let paintedFrames = 0;

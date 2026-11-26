@@ -321,6 +321,7 @@ export function buildLive(options: BuildLiveOptions): BuildResult {
       // paused/scrub UI, so keep author animations live.
       pauseAnimation: false,
       plugins: [
+        closeNestedReplayDocuments(),
         workingMarkReplay(),
         remoteFocusReplay(),
         ...(rtc === null ? [] : [rtc.controller.replayPlugin]),
@@ -406,6 +407,25 @@ export function buildLive(options: BuildLiveOptions): BuildResult {
   };
   for (const event of initialCanvas) void live.canvas.apply(event);
   return { ok: true, live };
+}
+
+/**
+ * rrweb builds a frame's document with document.open() too (attachDocumentToIframe), and leaves
+ * it open: quirks mode whatever the page's doctype, and SVG animations that never start. The
+ * document's own onBuild comes once its nodes are all in place; the top document is closed on
+ * "fullsnapshot-rebuilded" instead.
+ */
+export function closeNestedReplayDocuments() {
+  return {
+    onBuild(node: { nodeType: number }, { replayer }: { replayer: Pick<Replayer, "iframe"> }) {
+      if (node.nodeType !== 9 || node === replayer.iframe.contentDocument) return;
+      try {
+        closeReplayDocument(node as Document);
+      } catch {
+        // A frame on its way out: its document is of no further use.
+      }
+    },
+  };
 }
 
 function createRtcLane(): string {

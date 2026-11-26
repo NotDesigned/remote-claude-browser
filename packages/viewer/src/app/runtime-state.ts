@@ -211,6 +211,13 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         viewerId: null,
         driverId: null,
         downloads: [],
+        modeByTab: {},
+        resyncByTab: {},
+        pageStates: {},
+        chromeByTab: {},
+        inputFailures: {},
+        inputFailureReasons: {},
+        oauthCallbacks: {},
       });
   }
 }

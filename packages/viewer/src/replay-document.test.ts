@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { closeReplayDocument } from "./replay-document";
+import { closeNestedReplayDocuments } from "./mirror-replayer";
 
 function fakeDocument(readyState: DocumentReadyState, doctype: string | null) {
   const calls: string[] = [];
@@ -35,6 +36,18 @@ describe("closeReplayDocument", () => {
     const { doc, calls } = fakeDocument("loading", null);
     closeReplayDocument(doc);
     expect(calls).toEqual(["close"]);
+  });
+
+  it("closes a frame's replay document once it is built, and leaves the top one alone", () => {
+    const top = fakeDocument("loading", "<!DOCTYPE html>");
+    const frame = fakeDocument("loading", "<!DOCTYPE html>");
+    const plugin = closeNestedReplayDocuments();
+    const replayer = { iframe: { contentDocument: top.doc } } as never;
+    plugin.onBuild(Object.assign(top.doc, { nodeType: 9 }), { replayer });
+    plugin.onBuild({ nodeType: 1 }, { replayer });
+    plugin.onBuild(Object.assign(frame.doc, { nodeType: 9 }), { replayer });
+    expect(top.calls).toEqual([]);
+    expect(frame.calls).toEqual(["write <!DOCTYPE html>", "close"]);
   });
 
   it("never writes once the parser is closed, which would reopen and wipe the document", () => {
