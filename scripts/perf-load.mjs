@@ -33,7 +33,7 @@ const fixtureOrigin = process.env.PERF_FIXTURE_ORIGIN ?? process.env.SMOKE_FIXTU
 const proxy = process.env.PERF_PROXY;
 const runs = Number(process.env.PERF_RUNS ?? 3);
 // A shell command that closes one profile's browser ({id} is its id), for example
-// `docker exec <server> pkill -f -- --user-data-dir=/data/accounts/{id}`; without it the
+// `docker exec <server> pkill -f /data/profile-accounts/{id}`; without it the
 // "known exit" cold start is not measured.
 const closeBrowser = process.env.PERF_CLOSE_BROWSER;
 assert.ok(

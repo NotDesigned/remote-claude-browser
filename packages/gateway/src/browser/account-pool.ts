@@ -83,6 +83,11 @@ export interface AccountPoolDeps {
   /** The user a profile belongs to. */
   profileUser(profileId: string): FrontendUser | undefined;
   proxyCatalog: Pick<ProxyCatalog, "getNodeConfig">;
+  /** The zone the user's latest check of the node found, if any (see likelyExitZone). */
+  checkedExitZone?(
+    userId: string,
+    proxyId: string,
+  ): { timeZone: string; checkedAt: number } | undefined;
   memoryShort(extraBytes: number): Promise<boolean>;
   isPhoneSession(sid: string): boolean;
   isClosing(sid: string): boolean;
@@ -100,6 +105,32 @@ export interface AccountPoolDeps {
 export type VoiceTarget = Pick<Account, "browser" | "sessionTargets">;
 
 export type AccountPool = ReturnType<typeof createAccountPool>;
+
+/**
+ * The zone a profile's exit most likely has: the one it had last time, else the newest one found
+ * for the same node by the user's other profiles or by the user's last check of the node (the
+ * picker checks a node before it creates a profile on it). It only saves waiting for the lookup:
+ * the runtime closes a browser started on a zone the lookup does not confirm.
+ */
+export function likelyExitZone(
+  deps: Pick<AccountPoolDeps, "profiles" | "profileUser" | "checkedExitZone">,
+  id: string,
+  userId: string,
+  proxyId: string,
+): string | undefined {
+  const own = deps.profiles.get(id)?.timeZone;
+  if (own) return own;
+  let best = deps.checkedExitZone?.(userId, proxyId);
+  for (const other of deps.profiles.all())
+    if (
+      other.proxyId === proxyId &&
+      other.timeZone &&
+      deps.profileUser(other.id)?.id === userId &&
+      (other.checkedAt ?? 0) > (best?.checkedAt ?? -1)
+    )
+      best = { timeZone: other.timeZone, checkedAt: other.checkedAt ?? 0 };
+  return best?.timeZone;
+}
 
 export function createAccountPool(deps: AccountPoolDeps) {
   const { profiles, report } = deps;
@@ -264,6 +295,7 @@ export function createAccountPool(deps: AccountPoolDeps) {
         const identity = profiles.identity(id);
         const proxyId = profiles.get(id)!.proxyId;
         let node: unknown;
+        let zoneHint: string | undefined;
         if (proxyId) {
           if (!process.env.MIRROR_RUNTIME_SOCKET || external)
             throw new ClientSessionError(
@@ -275,6 +307,7 @@ export function createAccountPool(deps: AccountPoolDeps) {
           if (!owner?.enabled)
             throw new ClientSessionError(403, "PROFILE_FORBIDDEN", "这个浏览器所属用户已停用");
           node = deps.proxyCatalog.getNodeConfig(owner, proxyId);
+          zoneHint = likelyExitZone(deps, id, owner.id, proxyId);
         }
         // The exit's network and lookup start while the display does: neither needs the other.
         const preparing =
@@ -308,15 +341,13 @@ export function createAccountPool(deps: AccountPoolDeps) {
             env: { ...display?.env, ...(await identityEnvironment(dir, identity)) },
           };
           if (node !== undefined) {
-            // The zone this profile's exit had last time lets the browser start before the
-            // lookup confirms it (see startBrowser in deploy/profile-broker.mjs).
+            // A likely zone lets the browser start before the lookup confirms it (see
+            // startBrowser in deploy/profile-broker.mjs).
             const {
               browser: opened,
               proxyUrl: endpoint,
               ...metadata
-            } = await timed("broker", () =>
-              launchBrokerBrowser(id, node, launchOptions, profiles.get(id)?.timeZone),
-            );
+            } = await timed("broker", () => launchBrokerBrowser(id, node, launchOptions, zoneHint));
             browser = opened;
             proxyUrl = endpoint;
             exit = metadata;

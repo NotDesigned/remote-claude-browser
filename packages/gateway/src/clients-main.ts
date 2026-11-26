@@ -168,6 +168,8 @@ export async function startClientGateway(
   });
   /** Each check of a node starts its own probe egress; these are bounded per user and in all. */
   const exitChecks = createExitCheckLimiter();
+  /** The zone each user's latest check of a node found: a profile created on it starts sooner. */
+  const checkedZones = new Map<string, { timeZone: string; checkedAt: number }>();
   const checkProxy = async (user: FrontendUser, id: string) => {
     const node = proxyCatalog.getNodeConfig(user, id);
     return exitChecks.run(user.id, async () => {
@@ -175,7 +177,17 @@ export async function startClientGateway(
       try {
         try {
           await networkRuntime.startEgress(probeId, node);
-          return await networkRuntime.checkEgress(probeId);
+          const health = await networkRuntime.checkEgress(probeId);
+          if (health.status === "healthy" && health.timeZone) {
+            const key = `${user.id}/${id}`;
+            checkedZones.delete(key);
+            checkedZones.set(key, {
+              timeZone: health.timeZone,
+              checkedAt: health.checkedAt ?? Date.now(),
+            });
+            if (checkedZones.size > 1000) checkedZones.delete(checkedZones.keys().next().value!);
+          }
+          return health;
         } finally {
           await networkRuntime.stopEgress(probeId);
         }
@@ -372,6 +384,7 @@ export async function startClientGateway(
     profiles: accountStore,
     profileUser,
     proxyCatalog,
+    checkedExitZone: (userId, proxyId) => checkedZones.get(`${userId}/${proxyId}`),
     memoryShort: (extraBytes) => resources.memoryShort(extraBytes),
     isPhoneSession: (sid) => clientSessions.get(sid)?.phone === true,
     isClosing: (sid) => registry.isClosing(sid),
