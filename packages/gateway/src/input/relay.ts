@@ -296,6 +296,7 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
               ...(msg.values === undefined ? {} : { values: msg.values }),
               ...(msg.selectionStart === undefined ? {} : { selectionStart: msg.selectionStart }),
               ...(msg.selectionEnd === undefined ? {} : { selectionEnd: msg.selectionEnd }),
+              ...(typeof msg.base === "string" ? { base: msg.base } : {}),
             },
             resolved.frameId,
           );

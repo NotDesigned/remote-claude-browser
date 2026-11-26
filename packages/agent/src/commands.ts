@@ -243,22 +243,94 @@ export function sameEditableText(actual: string, expected: string): boolean {
 const EDITABLE_SETTLE_DELAYS_MS = [0, 16, 34, 50];
 
 /**
- * Resolves true as soon as the editor shows the expected text, and false only once it still does
- * not after the last look. The gateway gives a command 3 s, far longer than these ~100 ms.
+ * Resolves true as soon as the editor shows the expected text. Past the last look it is also true
+ * when the editor took the edit and made something of its own from it, and has stopped changing:
+ * its text is no longer what it was before the edit (`before`) and the last two looks agree. That
+ * is a page rewriting what was typed (ProseMirror's input rules turn "--" into "—", Markdown
+ * shortcuts and smart quotes do the same), which is the page's answer, not a lost edit. An edit
+ * that never reached the editor leaves its text as it was, and that stays a failure. The gateway
+ * gives a command 3 s, far longer than these ~100 ms.
  */
 export async function settleEditable(
   read: () => string | null,
   expected: string,
   schedule: (callback: () => void, delayMs: number) => void,
   delaysMs: readonly number[] = EDITABLE_SETTLE_DELAYS_MS,
+  before?: string,
 ): Promise<boolean> {
   await Promise.resolve();
+  let previous: string | null = null;
   for (let attempt = 0; ; attempt++) {
     const actual = read();
     if (actual !== null && sameEditableText(actual, expected)) return true;
-    if (attempt >= delaysMs.length) return false;
+    if (attempt >= delaysMs.length)
+      return (
+        before !== undefined &&
+        actual !== null &&
+        previous !== null &&
+        sameEditableText(actual, previous) &&
+        !sameEditableText(actual, before)
+      );
+    previous = actual;
     await new Promise<void>((resolve) => schedule(resolve, delaysMs[attempt]!));
   }
+}
+
+/** Equal-length folding for comparing a page's text with a viewer's: U+00A0 reads as a space. */
+const foldSpaces = (text: string) => text.replace(/\u00a0/g, " ");
+
+/**
+ * The text the page's editor should hold after a viewer's edit, made against what the page holds
+ * now rather than against what the viewer saw.
+ *
+ * The viewer edits its own copy of the editor and sends the whole text (`value`) with the text it
+ * edited (`base`). Most of the time the page holds `base` too. When it does not, the page changed
+ * the editor meanwhile: it cleared it after sending a message, or rewrote what was typed. Setting
+ * the page to `value` would undo that and, after a send, put the message just sent back into the
+ * composer. Instead the one change from `base` to `value` is made at the same place in the page's
+ * text: typing at the end goes on at the end, an edit elsewhere is found by the unchanged text
+ * before or after it. Only when neither is still there does the viewer's whole text win, as it
+ * did before.
+ */
+export function rebaseEditable(
+  current: string,
+  base: string,
+  value: string,
+  split: (text: string) => string[] = (text) => Array.from(text),
+): string {
+  if (sameEditableText(current, base)) return value;
+  const was = split(base);
+  const now = split(value);
+  let prefix = 0;
+  while (prefix < was.length && prefix < now.length && was[prefix] === now[prefix]) prefix++;
+  let suffix = 0;
+  while (
+    suffix < was.length - prefix &&
+    suffix < now.length - prefix &&
+    was[was.length - suffix - 1] === now[now.length - suffix - 1]
+  )
+    suffix++;
+  // Nothing was edited (a flush of text already sent): what the page made of it stands.
+  if (prefix === was.length && prefix === now.length) return current;
+  const before = was.slice(0, prefix).join("");
+  const removed = was.slice(prefix, was.length - suffix).join("");
+  const after = was.slice(was.length - suffix).join("");
+  const insert = now.slice(prefix, now.length - suffix).join("");
+  const page = foldSpaces(current);
+  const at = (position: number) =>
+    current.slice(0, position) + insert + current.slice(position + removed.length);
+  const fromStart = () =>
+    page.startsWith(foldSpaces(before + removed)) ? at(before.length) : null;
+  const fromEnd = (end: number) =>
+    foldSpaces(page.slice(0, end)).endsWith(foldSpaces(removed + after))
+      ? at(end - removed.length - after.length)
+      : null;
+  if (after === "") {
+    // At the end of the text: on at the end of the page's text, before an editor's closing break.
+    const end = base.endsWith("\n") ? current.length : current.replace(/\n+$/, "").length;
+    return fromEnd(end) ?? fromStart() ?? value;
+  }
+  return fromStart() ?? fromEnd(current.length) ?? value;
 }
 
 function focusedEditingHost(document: Document): HTMLElement | null {
@@ -409,15 +481,21 @@ export function createCommandHandler(
               throw new Error("invalid editable value");
             host.focus({ preventScroll: true });
             const current = editableText(host);
-            if (current !== cmd.value) {
+            const segment = (text: string) =>
+              Array.from(graphemes.segment(text), (part) => part.segment);
+            const wanted =
+              cmd.base === undefined
+                ? cmd.value
+                : rebaseEditable(current, cmd.base, cmd.value, segment);
+            if (current !== wanted) {
               const document = host.ownerDocument;
               const range = document.createRange();
               range.selectNodeContents(host);
-              let insert = cmd.value;
+              let insert = wanted;
               // Preserve inline formatting when the browser text has no block separators.
               if (current.length > 0 && host.textContent === current) {
-                const before = Array.from(graphemes.segment(current), (part) => part.segment);
-                const after = Array.from(graphemes.segment(cmd.value), (part) => part.segment);
+                const before = segment(current);
+                const after = segment(wanted);
                 let prefix = 0;
                 while (
                   prefix < before.length &&
@@ -454,7 +532,7 @@ export function createCommandHandler(
               if (!document.execCommand("insertText", false, insert))
                 throw new Error("editable update failed");
             }
-            const expected = cmd.value;
+            const expected = wanted;
             const reqId = cmd.reqId;
             void settleEditable(
               () => {
@@ -466,6 +544,7 @@ export function createCommandHandler(
               expected,
               schedule,
               settleDelaysMs,
+              current,
             ).then((matched) => {
               emitter.emit({
                 kind: "cmdres",

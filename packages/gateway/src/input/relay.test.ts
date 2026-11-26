@@ -267,6 +267,23 @@ describe("InputRelay", () => {
     expect(await lost.relay("driver", { ...typed, value: "ab", base: "a" })).toBe(true);
     expect(lost.cdp[0]).toMatchObject({ method: "Input.insertText", params: { text: "b" } });
   });
+  it("hands an editor edit's base to the page, which makes the edit on its own text", async () => {
+    const h = harness();
+    const typed: InputMsg = {
+      t: "value",
+      tab: "tab-1",
+      nodeId: 42,
+      value: "sent textn",
+      base: "sent text",
+      commit: false,
+    };
+    expect(await h.relay("driver", typed)).toBe(true);
+    expect(h.commands.find((command) => command.cmd === "value")).toMatchObject({
+      cmd: "value",
+      value: "sent textn",
+      base: "sent text",
+    });
+  });
   it("leaves any other edit to a replaced editor as a failed sync", async () => {
     const h = harness({ value: async () => ({ reqId: 1, ok: false, err: "node not found" }) });
     const base: InputMsg = { t: "value", tab: "tab-1", nodeId: 42, value: "ac", commit: false };

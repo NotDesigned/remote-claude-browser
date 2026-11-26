@@ -69,6 +69,11 @@ export type AgentCmd =
       /** Restore selection after setting a text control's native value. */
       selectionStart?: number;
       selectionEnd?: number;
+      /**
+       * An editing host's text in the viewer before this edit. When the page's editor no longer
+       * holds it (cleared after sending, or rewritten), the edit is made on the page's text.
+       */
+      base?: string;
     } // native text edit or control setter + input/change
   | { cmd: "ping"; reqId: number }; // liveness
 

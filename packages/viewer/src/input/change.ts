@@ -66,19 +66,46 @@ export function attachChangeCapture(options: ChangeCaptureOptions): {
       passwordBefore.set(target, passwordSelection(target));
   };
   const onBeforeInput = (event: InputEvent) => {
-    if (event.isTrusted) capturePassword(event.target);
+    if (!event.isTrusted) return;
+    capturePassword(event.target);
+    if (
+      options.committedContenteditable &&
+      isElement(event.target) &&
+      isContenteditableEchoField(event.target)
+    ) {
+      const host = contenteditableHost(event.target);
+      if (!editBases.has(host)) {
+        editBases.set(host, sendableText(host));
+        baseTakenBy = { event, host };
+      }
+    }
+  };
+  /** The edit that took a base and was then cancelled (Enter, sent as a key) never happens. */
+  let baseTakenBy: { event: Event; host: HTMLElement } | null = null;
+  const afterBeforeInput = (event: Event) => {
+    if (baseTakenBy?.event !== event) return;
+    if (event.defaultPrevented) editBases.delete(baseTakenBy.host);
+    baseTakenBy = null;
   };
   const onFocusIn = (event: FocusEvent) => capturePassword(event.target);
   capturePassword(options.doc.activeElement);
 
-  /** Each editing host's text as last sent: the base of its next edit. */
+  /** Each editing host's text as last sent: the base of an edit that began unseen. */
   const sentEditables = new WeakMap<HTMLElement, string>();
+  /**
+   * Each editing host's text before the edits not sent yet, taken when the first of them began.
+   * The page makes the edit from this to the text sent on its own text, which can differ from
+   * this replay's: the page cleared its composer after sending, or rewrote what was typed, and
+   * this replay holds those changes back while someone types. Sending the whole text alone would
+   * put the message just sent back into the composer, or undo the page's rewrite.
+   */
+  const editBases = new WeakMap<HTMLElement, string>();
   const sendEditable = (host: HTMLElement) => {
     const nodeId = options.getNodeId(host);
     if (nodeId < 0) return;
-    const text = editableText(host);
-    const value = text.trim() ? text : "";
-    const base = sentEditables.get(host);
+    const value = sendableText(host);
+    const base = editBases.get(host) ?? sentEditables.get(host);
+    editBases.delete(host);
     sentEditables.set(host, value);
     options.send({
       t: "value",
@@ -299,6 +326,7 @@ export function attachChangeCapture(options: ChangeCaptureOptions): {
 
   options.doc.addEventListener("input", onInput, true);
   options.doc.addEventListener("beforeinput", onBeforeInput, true);
+  options.doc.addEventListener("beforeinput", afterBeforeInput);
   options.doc.addEventListener("focusin", onFocusIn, true);
   options.doc.addEventListener("change", onChange, true);
   options.doc.addEventListener("compositionstart", onCompositionStart, true);
@@ -306,6 +334,7 @@ export function attachChangeCapture(options: ChangeCaptureOptions): {
   const dispose = () => {
     options.doc.removeEventListener("input", onInput, true);
     options.doc.removeEventListener("beforeinput", onBeforeInput, true);
+    options.doc.removeEventListener("beforeinput", afterBeforeInput);
     options.doc.removeEventListener("focusin", onFocusIn, true);
     options.doc.removeEventListener("change", onChange, true);
     options.doc.removeEventListener("compositionstart", onCompositionStart, true);
@@ -315,6 +344,12 @@ export function attachChangeCapture(options: ChangeCaptureOptions): {
     composeFlushTimers.clear();
   };
   return { dispose, flush };
+}
+
+/** An editing host's text as sent: an editor holding only blank lines holds nothing. */
+function sendableText(host: HTMLElement): string {
+  const text = editableText(host);
+  return text.trim() ? text : "";
 }
 
 function contenteditableHost(element: HTMLElement): HTMLElement {
