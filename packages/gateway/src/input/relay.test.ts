@@ -326,6 +326,34 @@ describe("InputRelay", () => {
     // A tab that is still open keeps working.
     expect(await h.relay("driver", pointer("move"))).toBe(true);
   });
+
+  it("releases a button Chromium holds when the tab is reset before the release arrives", async () => {
+    const h = harness();
+    await expect(h.relay("driver", pointer("down"))).resolves.toBe(true);
+    expect(h.cdp.at(-1)?.params).toMatchObject({ type: "mousePressed", button: "left" });
+    h.relay.resetTab("tab-1");
+    expect(h.cdp.at(-1)?.params).toMatchObject({
+      type: "mouseReleased",
+      button: "left",
+      x: 60,
+      y: 40,
+      buttons: 0,
+    });
+    const sent = h.cdp.length;
+    // Nothing is held any more: another reset releases nothing.
+    h.relay.resetTab("tab-1");
+    expect(h.cdp).toHaveLength(sent);
+  });
+
+  it("releases nothing on reset once the press has been released", async () => {
+    const h = harness();
+    await h.relay("driver", pointer("down"));
+    await h.relay("driver", pointer("up"));
+    const sent = h.cdp.length;
+    h.relay.resetTab("tab-1");
+    expect(h.cdp).toHaveLength(sent);
+  });
+
   it("releases a click where its press landed and preserves their wire order", async () => {
     let releaseFirstRect!: () => void;
     const firstRectReady = new Promise<void>((resolve) => (releaseFirstRect = resolve));

@@ -134,6 +134,28 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
   /** Where the held button was pressed, in the page and in the viewer. */
   const presses = new Map<string, { x: number; y: number; vx: number; vy: number }>();
   const touchPositions = new Map<string, Point>();
+  /** A mouse button this relay pressed in Chromium and has not released yet. */
+  const heldButtons = new Map<
+    string,
+    { sessionId: string; x: number; y: number; button: string }
+  >();
+  /** Chromium keeps a pressed button down until told otherwise, whatever happens to the page. */
+  const releaseHeld = (tabId: string): void => {
+    const held = heldButtons.get(tabId);
+    if (held === undefined) return;
+    heldButtons.delete(tabId);
+    void deps
+      .send(held.sessionId, "Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: held.x,
+        y: held.y,
+        button: held.button,
+        buttons: 0,
+        clickCount: 1,
+        modifiers: 0,
+      })
+      .catch(() => undefined);
+  };
   const resolverDeps: ResolveNodeDeps = {
     agentLink: deps.agentLink,
     send: deps.send,
@@ -190,6 +212,8 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     return result;
   }) as InputRelay;
   relay.resetTab = (tabId) => {
+    // The release queued behind the press is dropped with the rest: send it now.
+    releaseHeld(tabId);
     pendingMoves.delete(tabId);
     valueStatus(tabId, false);
     generations.set(tabId, (generations.get(tabId) ?? 0) + 1);
@@ -374,12 +398,18 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
         return true;
       case "down":
       case "up":
+        if (msg.kind === "up") heldButtons.delete(msg.tab);
         await deps.send(sessionId, "Input.dispatchMouseEvent", {
           ...common,
           type: msg.kind === "down" ? "mousePressed" : "mouseReleased",
           button: mouseButton(msg.button),
           clickCount: msg.clicks ?? 1,
         });
+        if (msg.kind === "down") {
+          heldButtons.set(msg.tab, { sessionId, x, y, button: mouseButton(msg.button) });
+          // Reset while the press was on its way: its release will never come through here.
+          if (!valid()) releaseHeld(msg.tab);
+        }
         return true;
     }
   }
