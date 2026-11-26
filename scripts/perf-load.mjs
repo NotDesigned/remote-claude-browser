@@ -109,6 +109,14 @@ async function newContext() {
     try {
       localStorage.setItem("mirror.view-mode", "dom");
     } catch {}
+    // When the picker first shows a profile, in the page's own time: from the start of its
+    // navigation, which for the page after logging in includes the login's POST and redirect.
+    const watch = new MutationObserver(() => {
+      if (!document.querySelector("button.profile-card")) return;
+      window.__perfPickerAt = performance.now();
+      watch.disconnect();
+    });
+    watch.observe(document, { childList: true, subtree: true });
   });
   return context;
 }
@@ -167,7 +175,10 @@ async function login(page) {
   const submitted = Date.now();
   await page.locator('button[type="submit"]').click();
   await page.locator("button.profile-card").first().waitFor({ timeout: 60_000 });
-  return { gate: submitted - started, picker: Date.now() - submitted };
+  return {
+    gate: submitted - started,
+    picker: await page.evaluate(() => window.__perfPickerAt),
+  };
 }
 
 /** What the workbench page loaded, from its resource timing. */
@@ -255,7 +266,7 @@ async function coldRun(run) {
     apiRequests.push({ path, start: timing.startTime, end: timing.startTime + timing.responseEnd });
   });
   const steps = await login(page);
-  record("login → picker usable", steps.picker);
+  record("login POST → picker usable", steps.picker);
   if (run === 0) {
     const loaded = await resources(page);
     console.log("\nWorkbench assets (first cold load):");
