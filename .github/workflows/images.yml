@@ -13,6 +13,13 @@ on:
 permissions:
   contents: read
 
+# Runs for main publish one at a time, in the order they started, so an older commit's run cannot
+# finish after a newer one and move latest back; a queued one gives way to a newer one, and none is
+# cancelled while it pushes. Each version tag has its own group and never sets latest.
+concurrency:
+  group: images-${{ github.event_name == 'push' && github.ref || 'main' }}
+  cancel-in-progress: false
+
 jobs:
   gate:
     if: github.event_name == 'push' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
@@ -20,9 +27,11 @@ jobs:
     timeout-minutes: 5
     permissions:
       actions: read
+      contents: read
     outputs:
       sha: ${{ steps.commit.outputs.sha }}
       short: ${{ steps.commit.outputs.short }}
+      latest: ${{ steps.commit.outputs.latest }}
     steps:
       - id: commit
         name: Pick the commit and require a passing CI run on it
@@ -30,8 +39,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
+          latest=false
           if [[ $GITHUB_EVENT_NAME == workflow_run ]]; then
             sha=$RUN_SHA
+            # latest follows main: a run whose commit main has already moved past publishes only
+            # its sha- tag.
+            head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+            if [[ $head == "$sha" ]]; then latest=true; fi
           else
             sha=$GITHUB_SHA
             passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$sha&status=success&per_page=1" --jq '.total_count')
@@ -42,6 +56,7 @@ jobs:
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "short=${sha::7}" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
 
   publish:
     needs: gate
@@ -73,23 +88,25 @@ jobs:
             file: client/Dockerfile
             target: ""
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.gate.outputs.sha }}
       - id: image
         run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/remote-claude-browser-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ steps.image.outputs.name }}
+          # Only the line below sets latest; without this a version tag would move it as well.
+          flavor: latest=false
           tags: |
-            type=raw,value=latest,enable=${{ github.event_name == 'workflow_run' }}
+            type=raw,value=latest,enable=${{ needs.gate.outputs.latest == 'true' }}
             type=raw,value=sha-${{ needs.gate.outputs.short }}
             type=semver,pattern={{version}},enable=${{ github.event_name == 'push' }}
             type=semver,pattern={{major}}.{{minor}},enable=${{ github.event_name == 'push' }}
@@ -97,7 +114,7 @@ jobs:
           labels: |
             org.opencontainers.image.revision=${{ needs.gate.outputs.sha }}
       - id: build
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
