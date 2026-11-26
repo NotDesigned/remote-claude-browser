@@ -87,13 +87,25 @@ export async function apiFetch(
       ...(options.signal ? { signal: options.signal } : {}),
     });
   // The page may have started this very request already; one that failed is sent again.
+  const body = init.body == null ? "" : typeof init.body === "string" ? init.body : undefined;
   const early =
-    options.fetcher || options.signal || (init.method ?? "GET") !== "GET" || init.body != null
+    options.fetcher || body === undefined
       ? undefined
-      : takeBootRequest(path);
-  const response = early ? await early.catch(send) : await send();
+      : takeBootRequest(init.method ?? "GET", path, body);
+  const response = early ? await untilAborted(early.catch(send), options.signal) : await send();
   if (response.status === 401 && !options.allowUnauthorized) authExpired();
   return response;
+}
+
+/** An early request cannot be aborted itself; an aborted caller stops waiting for it. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 export async function apiRequest<T>(

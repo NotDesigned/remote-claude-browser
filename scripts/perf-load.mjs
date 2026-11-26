@@ -8,7 +8,8 @@
  *
  * PERF_NETWORK picks the device's network: "4g" (100 ms round trip, 10 Mbit/s down, 5 up, the
  * default), "wifi" (20 ms, 50/20 Mbit/s) or "none". PERF_RUNS (default 3) repeats each
- * measurement; the table shows the median. PERF_JSON=file also writes every sample.
+ * measurement; the table shows the median. PERF_JSON=file also writes every sample. PERF_CPU=4
+ * slows the device's processor four times (a mid-range phone; default 1).
  *
  * What it measures, each in a fresh browser context unless noted:
  *  - the workbench's assets: bytes on the wire and in memory for every script and style sheet;
@@ -48,6 +49,8 @@ const NETWORKS = {
 };
 const network = process.env.PERF_NETWORK ?? "4g";
 assert.ok(network in NETWORKS, `PERF_NETWORK is one of ${Object.keys(NETWORKS).join(", ")}`);
+const cpuSlowdown = Number(process.env.PERF_CPU ?? 1);
+assert.ok(cpuSlowdown >= 1, "PERF_CPU is a slowdown factor of 1 or more");
 
 const fixturePage = (html) => `${fixtureOrigin}/?html=${Buffer.from(html).toString("base64url")}`;
 /** A long conversation-like page, built by its own script so that the address stays short. */
@@ -89,6 +92,7 @@ async function newPage(context) {
   await cdp.send("Network.enable");
   if (NETWORKS[network])
     await cdp.send("Network.emulateNetworkConditions", { offline: false, ...NETWORKS[network] });
+  if (cpuSlowdown > 1) await cdp.send("Emulation.setCPUThrottlingRate", { rate: cpuSlowdown });
   // WebSocket frames, for the size of what the viewer receives.
   const frames = [];
   cdp.on("Network.webSocketFrameReceived", ({ timestamp, response }) =>
@@ -376,7 +380,7 @@ try {
     await coldRun(run);
     console.log(`run ${run + 1}/${runs} took ${Date.now() - started} ms`);
   }
-  console.log(`\nMedians over ${runs} runs, network ${network}:`);
+  console.log(`\nMedians over ${runs} runs, network ${network}, CPU slowdown ${cpuSlowdown}:`);
   for (const [name, values] of Object.entries(samples))
     console.log(
       `  ${name.padEnd(42)} ${String(Math.round(median(values))).padStart(9)}   [${values.map((value) => Math.round(value)).join(", ")}]`,
