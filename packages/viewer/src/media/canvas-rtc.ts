@@ -221,16 +221,20 @@ export function createCanvasRtc(options: CanvasRtcOptions): CanvasRtc {
     });
   };
 
-  const downgrade = (id: number, stream: MediaStream, error?: unknown) => {
-    const lane = live.get(id);
-    if (lane?.stream !== stream) return;
+  /**
+   * Ends a lane, if it is still the one shown for its node. A lane a rebuilt element replaced can
+   * still report a failure: its cleanup pauses the element, and the play() it was waiting on then
+   * rejects. The stream is the same one the new lane shows, so only the lane itself tells them apart.
+   */
+  const downgrade = (id: number, lane: LiveLane, error?: unknown) => {
+    if (live.get(id) !== lane) return;
     live.delete(id);
     lane.cleanup();
-    stopStream(stream);
+    stopStream(lane.stream);
     options.onDowngrade?.(id, error);
   };
   const downgradeAll = (error?: unknown) => {
-    for (const [id, lane] of [...live]) downgrade(id, lane.stream, error);
+    for (const [id, lane] of [...live]) downgrade(id, lane, error);
   };
 
   /**
@@ -260,7 +264,7 @@ export function createCanvasRtc(options: CanvasRtcOptions): CanvasRtc {
       const lane: LiveLane = { stream, cleanup: () => {} };
       live.set(id, lane);
       try {
-        lane.cleanup = video.startStream(target, stream, (error) => downgrade(id, stream, error));
+        lane.cleanup = video.startStream(target, stream, (error) => downgrade(id, lane, error));
         options.onUpgrade?.(id);
       } catch (error) {
         live.delete(id);
@@ -280,7 +284,7 @@ export function createCanvasRtc(options: CanvasRtcOptions): CanvasRtc {
     const lane: LiveLane = { stream, cleanup: () => {} };
     live.set(id, lane);
     try {
-      lane.cleanup = renderTrack(target, stream, (error) => downgrade(id, stream, error));
+      lane.cleanup = renderTrack(target, stream, (error) => downgrade(id, lane, error));
       options.onUpgrade?.(id);
     } catch (error) {
       live.delete(id);

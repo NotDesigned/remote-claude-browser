@@ -237,6 +237,56 @@ describe("canvas WebRTC upgrade lane", () => {
     expect(videoTrack.stop).toHaveBeenCalledOnce();
   });
 
+  it("ignores the failure of a video's superseded element, which pausing it causes", async () => {
+    const fakePlugin = {
+      peer: null,
+      initPlugin: vi.fn(() => ({ onBuild: vi.fn() }) as never),
+      signalReceive: vi.fn(),
+      startStream: vi.fn(),
+    };
+    const failures: Array<(error: unknown) => void> = [];
+    const videoCompositor = {
+      onBuild: vi.fn(() => "rtc" as const),
+      startStream: vi.fn<VideoCompositor["startStream"]>((_target, _stream, onFailure) => {
+        failures.push(onFailure);
+        return vi.fn();
+      }),
+      showBlocked: vi.fn(),
+      dispose: vi.fn(),
+    } satisfies VideoCompositor;
+    const onDowngrade = vi.fn();
+    const rtc = createCanvasRtc({
+      send: () => {},
+      createPlugin: () => fakePlugin,
+      videoCompositor,
+      onDowngrade,
+    });
+    const replayPlugin = rtc.replayPlugin as unknown as {
+      onBuild(node: Node, context: { id: number }): void;
+    };
+    const videoTrack = { kind: "video", stop: vi.fn() };
+    const stream = { getTracks: () => [videoTrack] } as unknown as MediaStream;
+    const first = { nodeType: 1, nodeName: "VIDEO" } as unknown as HTMLVideoElement;
+    const rebuilt = { nodeType: 1, nodeName: "VIDEO" } as unknown as HTMLVideoElement;
+    replayPlugin.onBuild(first, { id: 8 });
+    replayPlugin.onBuild(rebuilt, { id: 8 });
+    await Promise.resolve();
+
+    fakePlugin.startStream(first, stream);
+    fakePlugin.startStream(rebuilt, stream);
+    // The first element's cleanup paused it, and its pending play() rejects.
+    failures[0]!(new DOMException("The play() request was interrupted", "AbortError"));
+
+    expect(videoTrack.stop).not.toHaveBeenCalled();
+    expect(onDowngrade).not.toHaveBeenCalled();
+    expect(rtc.isLive(8)).toBe(true);
+
+    // The element in use failing still ends the stream.
+    failures[1]!(new Error("decode failed"));
+    expect(videoTrack.stop).toHaveBeenCalledOnce();
+    expect(rtc.isLive(8)).toBe(false);
+  });
+
   it("waits for source children appended in the same build before choosing direct playback", async () => {
     const h = setup();
     const sources: { getAttribute(name: string): string | null }[] = [];
