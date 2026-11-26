@@ -17,6 +17,8 @@
  * permission merges them (mergedNotifyPermission): granted when any device can show its
  * notifications, denied only when all refuse. A device's policy is forgotten once its feed has
  * been gone for DEVICE_GRACE_MS, so a closed workbench stops speaking for the person.
+ * A notification goes to every workbench; one that may not show it reports "error", which
+ * reaches the page only once every workbench it went to has; the page hears "show" once.
  */
 import {
   mergedNotifyPermission,
@@ -83,6 +85,11 @@ interface Shown {
   agentId: number;
   origin: string;
   tag?: string;
+  /** Workbenches it went to, and how many could not show it. */
+  devices: number;
+  errors: number;
+  /** Whether the page has heard "show" (once, however many devices show it). */
+  told: boolean;
 }
 
 interface Ask {
@@ -168,6 +175,15 @@ export function createNotifyRelay(deps: NotifyRelayDeps) {
     if (state === undefined) return;
     for (const tab of state.tabs.keys()) tellTab(sid, state, tab);
   };
+  /** Open workbenches: feeds without a device id count one each. */
+  const devicesOf = (state: SessionState): number => {
+    const named = new Set<string>();
+    let anonymous = 0;
+    for (const device of state.feeds.values())
+      if (device === ANY_DEVICE) anonymous += 1;
+      else named.add(device);
+    return Math.max(1, anonymous + named.size);
+  };
   const deviceOf = (value: unknown): string =>
     typeof value === "string" && NOTIFY_DEVICE_PATTERN.test(value) ? value : ANY_DEVICE;
   /** Asks whose site is now decided get their answer. */
@@ -251,7 +267,15 @@ export function createNotifyRelay(deps: NotifyRelayDeps) {
       for (const [id, shown] of state.shown)
         if (shown.origin === origin && shown.tag === tag) forgetShown(state, id, false);
     const id = newId();
-    state.shown.set(id, { tab, agentId, origin, tag });
+    state.shown.set(id, {
+      tab,
+      agentId,
+      origin,
+      tag,
+      devices: devicesOf(state),
+      errors: 0,
+      told: false,
+    });
     for (const oldest of state.shown.keys()) {
       if (state.shown.size <= MAX_OPEN_NOTIFICATIONS) break;
       forgetShown(state, oldest, true);
@@ -356,6 +380,12 @@ export function createNotifyRelay(deps: NotifyRelayDeps) {
         if (shown === undefined) return;
         const type: NotifyEventType = message.type;
         if (!["show", "click", "close", "error"].includes(type)) return;
+        // A device that may not show it says "error"; it failed only once every device has.
+        if (type === "error" && ++shown.errors < shown.devices) return;
+        if (type === "show") {
+          if (shown.told) return;
+          shown.told = true;
+        }
         if (type === "close" || type === "error") forgetShown(state, message.id, true);
         if (type === "click") deps.activate(sid, shown.tab);
         // Only the document that sent it, which is still the one there.

@@ -315,6 +315,31 @@ describe("notification relay", () => {
     expect(agent.pop()?.value).toEqual({ permission: "default", away: true });
   });
 
+  it("tells the page show once and error only when every open workbench failed", () => {
+    const { relay, agent, feed } = setup();
+    const laptop = feed();
+    const phone = feed();
+    relay.addFeed("s1", laptop, "laptop-0001");
+    relay.addFeed("s1", phone, "phone-00001");
+    relay.onViewer("s1", { ...granted, device: "laptop-0001" });
+    relay.onAgent("s1", "T1", { op: "hello", origin: "https://claude.ai" });
+    relay.onAgent("s1", "T1", { op: "show", id: 1, title: "a" });
+    relay.onAgent("s1", "T1", { op: "show", id: 2, title: "b" });
+    agent.length = 0;
+    // The phone may not show it; the laptop does, so the page hears show and nothing else.
+    relay.onViewer("s1", { t: "notify-event", id: "g1", type: "error" });
+    relay.onViewer("s1", { t: "notify-event", id: "g1", type: "show" });
+    relay.onViewer("s1", { t: "notify-event", id: "g1", type: "show" });
+    expect(agent.map(({ value }) => value)).toEqual([{ event: 1, type: "show" }]);
+    expect(laptop.received.some((message) => message.t === "notify-close")).toBe(false);
+    // Both failed with the second.
+    agent.length = 0;
+    relay.onViewer("s1", { t: "notify-event", id: "g2", type: "error" });
+    relay.onViewer("s1", { t: "notify-event", id: "g2", type: "error" });
+    expect(agent.map(({ value }) => value)).toEqual([{ event: 2, type: "error" }]);
+    expect(relay.inspect("s1")?.shown).toBe(1);
+  });
+
   it("keeps a bounded number of device policies and ignores malformed device ids", () => {
     const { relay } = setup();
     for (let index = 0; index < MAX_DEVICES + 3; index += 1)
