@@ -343,6 +343,9 @@ export async function startProfileBroker({
         dohTemplate: config.dns.nameserver
           .find((address) => address.startsWith("https://"))
           ?.split("#", 1)[0],
+        // Mihomo opens its listeners before its tunnel runs, and until then answers a proxied
+        // request with 502 itself; the first exit lookup tries again within this window.
+        forwardingBy: Date.now() + 5000,
         proxyUrl: `http://${info.peerIp}:${port}`,
         externalProxyUrl: `http://${token}:x@${proxyHost}:${proxyPort}`,
       };
@@ -400,8 +403,13 @@ export async function startProfileBroker({
     if (fresh && !item.checking) item.exitMetadata = undefined;
     if (!item.exitMetadata) {
       item.target.health = { status: "checking" };
-      item.checking = detectExitMetadata({ proxyUrl: item.proxyUrl, url: geoUrl })
+      item.checking = detectExitMetadata({
+        proxyUrl: item.proxyUrl,
+        url: geoUrl,
+        retryUntil: item.forwardingBy,
+      })
         .then((metadata) => {
+          item.forwardingBy = 0;
           if (
             networks.get(item.id) !== item ||
             desired.get(item.id) !== item.target ||
@@ -698,7 +706,13 @@ export async function startProfileBroker({
               : { error: "Browser network runtime failed" },
         ),
       );
-      console.error("Profile runtime operation failed:", error.code ?? error.name);
+      // An exit error's message is the gateway's own text (an HTTP status at most), which tells a
+      // proxy that answered by itself (502) from a provider's refusal (429).
+      console.error(
+        "Profile runtime operation failed:",
+        error.code ?? error.name,
+        ...(timeZoneError ? [error.message] : []),
+      );
     }
   });
   await listen(api, socketPath);

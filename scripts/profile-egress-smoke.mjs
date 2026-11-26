@@ -1450,6 +1450,10 @@ async function host() {
         "DAC_READ_SEARCH",
       ].map((cap) => `--cap-add=${cap}`),
       "--tmpfs=/tmp:rw,nosuid,nodev,size=512m,mode=1777",
+      // A CI runner's few cores, where start-up races show (for example PROFILE_EGRESS_SMOKE_CPUS=0.6).
+      ...(process.env.PROFILE_EGRESS_SMOKE_CPUS
+        ? [`--cpus=${process.env.PROFILE_EGRESS_SMOKE_CPUS}`]
+        : []),
       "--tmpfs=/data:rw,size=256m,uid=10001,gid=10001,mode=0700",
       "--mount=type=tmpfs,dst=/C:,tmpfs-mode=0755,tmpfs-size=1048576",
       "--tmpfs=/run/netns:rw,size=16m",

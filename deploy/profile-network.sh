@@ -87,6 +87,14 @@ case "$action" in
     iptables -I OUTPUT 1 -m owner --uid-owner "$browser_uid" -d "$peer_ip" -p tcp --dport 8780 -j ACCEPT
     ;;
   route)
+    # Mihomo accepts connections before it has created and raised its TUN; a route through a
+    # device that is not up yet fails ("Device for nexthop is not up"). Wait for it, bounded.
+    tries=0
+    until ip -n "$name" link show profile0 2>/dev/null | grep -q '[<,]UP[,>]'; do
+      tries=$((tries + 1))
+      [ "$tries" -lt 250 ] || break
+      sleep 0.02
+    done
     ip -n "$name" route add table 201 default dev profile0
     ip -n "$name" rule add priority 100 uidrange "$browser_uid-$browser_uid" lookup 201
     ;;

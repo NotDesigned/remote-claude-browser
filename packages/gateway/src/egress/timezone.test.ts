@@ -127,6 +127,75 @@ describe("exit time zone", () => {
     );
   });
 
+  /** A proxy that answers 502 itself, as Mihomo does just after it starts, the first `failures` times. */
+  async function startingProxy(failures: number, status = 502) {
+    let seen = 0;
+    const proxy = createServer((_request, response) => {
+      seen++;
+      if (seen <= failures) {
+        response.writeHead(status, { connection: "close", "content-length": "0" });
+        response.end();
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json", connection: "close" });
+      response.end(JSON.stringify({ ip: "203.0.113.7", timezone: { id: "Asia/Tokyo" } }));
+    });
+    return { proxyUrl: await listen(proxy), seen: () => seen, close: () => proxy.close() };
+  }
+
+  it("tries again while a just-started proxy does not forward yet", async () => {
+    const proxy = await startingProxy(2);
+    try {
+      const metadata = await detectExitMetadata({
+        proxyUrl: proxy.proxyUrl,
+        url: "http://203.0.113.1/geo",
+        retryUntil: Date.now() + 5_000,
+      });
+      expect(metadata.timeZone).toBe("Asia/Tokyo");
+      expect(proxy.seen()).toBe(3);
+    } finally {
+      proxy.close();
+    }
+  });
+
+  it("does not retry a proxy failure without a start window, or past it", async () => {
+    const proxy = await startingProxy(100);
+    try {
+      await expect(
+        detectExitMetadata({ proxyUrl: proxy.proxyUrl, url: "http://203.0.113.1/geo" }),
+      ).rejects.toMatchObject({ code: "EXIT_LOOKUP" });
+      expect(proxy.seen()).toBe(1);
+      const started = Date.now();
+      await expect(
+        detectExitMetadata({
+          proxyUrl: proxy.proxyUrl,
+          url: "http://203.0.113.1/geo",
+          retryUntil: started + 300,
+        }),
+      ).rejects.toMatchObject({ code: "EXIT_LOOKUP" });
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(proxy.seen()).toBeGreaterThan(2);
+    } finally {
+      proxy.close();
+    }
+  });
+
+  it("never retries the provider's own refusal", async () => {
+    const proxy = await startingProxy(1, 429);
+    try {
+      await expect(
+        detectExitMetadata({
+          proxyUrl: proxy.proxyUrl,
+          url: "http://203.0.113.1/geo",
+          retryUntil: Date.now() + 5_000,
+        }),
+      ).rejects.toMatchObject({ code: "EXIT_LOOKUP" });
+      expect(proxy.seen()).toBe(1);
+    } finally {
+      proxy.close();
+    }
+  });
+
   it("keeps proxy URL credentials out of lookup errors", async () => {
     await expect(
       detectExitTimeZone({ proxyUrl: "invalid://private-user:private-secret@proxy.invalid" }),
