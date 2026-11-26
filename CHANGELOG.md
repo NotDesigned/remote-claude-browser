@@ -10,17 +10,17 @@
 
 - `MIRROR_PROXY_SUBSCRIPTION_ALLOW_PRIVATE`：设为 `1` 时，代理订阅地址可以指向内网和其他保留地址（默认拒绝）。见 [docs/configuration.md](docs/configuration.md#写在-compose-文件里的变量)。
 - 部署新版本后，旧页面会显示「页面已更新」，并在没有输入、上传进行时自动刷新到新版本，也可以点「立即刷新」。
-- 服务端容器自带 AppArmor 配置文件 `deploy/apparmor/remote-claude-browser`，用 `scripts/install-apparmor.sh` 加载。以前在 Docker 使用 AppArmor 的宿主机（Ubuntu、Debian）上，Docker 默认的配置文件挡住了每个浏览器配置的网络和文件系统要用的挂载，配置打不开；Ubuntu 23.10 起还要改宿主机的 `kernel.apparmor_restrict_unprivileged_userns`。新的配置文件只在 Docker 默认配置文件上多允许挂载、用户命名空间和本配置文件内的信号，这个系统参数不用改。
-- `pnpm check:host` 还检查 Docker API 版本（需要 Docker Engine 27.3）、用户命名空间和 AppArmor 配置文件是否已加载。
+- 服务端容器自带 AppArmor 配置文件 `deploy/apparmor/remote-claude-browser`，用 `scripts/install-apparmor.sh` 加载。以前在 Docker 使用 AppArmor 的宿主机（Ubuntu、Debian）上，Docker 默认的配置文件挡住了每个浏览器配置的网络和文件系统要用的挂载，配置打不开；Ubuntu 23.10 起还要改宿主机的 `kernel.apparmor_restrict_unprivileged_userns`。新的配置文件只在 Docker 默认配置文件上多允许三样：服务端自己的脚本用到的那几种挂载（只能挂到浏览器配置的网络命名空间目录和各个浏览器的根目录下，`/proc`、`/sys` 不能挂到别处，`pivot_root` 仍被禁止）、用户命名空间和本配置文件内的信号，这个系统参数不用改。
 - CPA 实例自动升级：`cpa-broker` 启动时和每次启动实例前，核对实例的镜像和模板，有变化就保留数据卷、重建容器。
 - 预构建镜像增加 `remote-claude-browser-cpa-broker` 和 `remote-claude-browser-cpa`，四个镜像都按版本标签发布（例如 `v0.5.0`），只发布 CI 通过的那个提交，并附带构建来源证明。见 [docs/deployment.md](docs/deployment.md#安装)。
-- 部署文档新增「日志和磁盘」，备份一节给出包括 CPA 卷和 Caddy 证书在内的完整命令和还原方法。
+- 部署文档新增「日志和磁盘」，备份一节给出包括 CPA 卷和 Caddy 证书在内的完整命令和还原方法。命令只处理本部署的 CPA 容器和卷（按部署标签和实例 ID 筛选），同一台 Docker 主机上别的部署不受影响。
 - `MIRROR_ASSET_MAX_BYTES`：经代理的单个网页资源的字节上限，默认 64 MB。见 [docs/configuration.md](docs/configuration.md#写在-compose-文件里的变量)。
 
 ### 变更
 
 - 页面刚打开的几分钟里，打字时页面不会再闪回 Claude 首页再切回来：工作台补发页面时，把缓存的快照和之后的变化合成一条一起应用，中间那个旧画面不会再被画出来。断线重连和切换标签页时的追赶也一样。
 - 网关不会再因为查看端的异常连接而退出：一条解压后超过上限的消息，或在登录检查期间断开的连接，以前会让整个网关进程崩溃、所有会话断开，现在只关闭那一条连接。
+- `pnpm check:host` 还检查 Docker API 版本（需要 Docker Engine 27.3）、用户命名空间和 AppArmor 配置文件是否已加载。
 - 安全加固：
   - 经代理的资源只保留网站的内容类型和缓存相关响应头，网站的 CSP、CORS、防嵌入、`Link`、`Refresh` 等头一律丢弃，换成网关自己的安全头，并给每个资源加上 `sandbox` CSP；HTML、XML 和脚本类型改成纯文本发送。图片、字体、样式和媒体照常显示。
   - 资源代理和代理订阅拒绝的地址范围扩大到 `0.0.0.0/8`、`198.18.0.0/15`、组播和保留地址、IPv4 映射、NAT64、6to4、Teredo 等；网关自己发起连接时只连到检查过的地址，防止域名在检查后改解析。
@@ -29,7 +29,7 @@
   - 改密码、改权限、停用、删除和退出登录后，这个用户相应的连接立即断开，不再等几秒后的定时检查。
   - 登录的并发限制改为每个 IP 同时一个密码校验、全站最多 16 个（原来全站 4 个，几个地址就能挡住所有人登录）。
   - 出口主机的连接请求只有管理员能拒绝（和批准一致）。
-  - CPA 调用接口规范化请求路径，只转发 `/v1/` 下的路径。
+  - CPA 调用接口（`/v1`）规范化请求路径，只把 `/v1/` 下的推理路径转给 CPA。`cpa-broker` 另外只放行 CPA 自己的管理路径，供工作台的 CPA 授权和原生管理面板使用。
   - 本机直接启动的 Chromium 只继承运行所需的环境变量，不再拿到网关的密钥。
   - 升级 fastify、undici、`@fastify/static`、puppeteer-core 和有漏洞的间接依赖，`pnpm audit --prod` 没有已知漏洞。
   - 资源代理边取边发：查看端收到第一批数据不再等整个文件写完磁盘缓存。单个资源超过上限（默认 64 MB）、总用时超过 5 分钟或 30 秒没有新数据时中断；查看端断开时立即停止从网站取数据。临时文件在中断、超限或会话结束时都会删除，以前一个大文件或不停输出的地址可以写满磁盘。
@@ -49,6 +49,14 @@
 - 浏览器配置的目录、它的扩展目录和显示授权文件，只有是浏览器用户自己的、路径里没有符号链接时才挂进浏览器；以前浏览器用户可以用符号链接让 root 把别的目录挂进去。
 - `cpa-broker` 的健康检查同时确认 Docker 守护进程可达；Docker Engine 早于 27.3 时它启动失败，并说明原因。
 - 各服务的日志改用 Docker 的 `local` 驱动并自动轮转。
+- `cpa-broker` 更稳健：
+  - 实例的容器不在了而数据卷还在时（还原备份、手动删了容器、重建容器中途中断），启动实例不再一直报「CPA initialization failed」，会用原来的数据卷重新创建容器。
+  - 初始化容器有固定的名称 `remote-browser-<实例 ID>-init`；`cpa-broker` 中途退出留下的初始化容器在下次启动时删除，不再占着数据卷。
+  - 新建的 CPA 数据卷也带部署标签，别的部署的卷一律拒绝；较早的卷没有这个标签，仍按实例 ID 认领。
+  - `CPA_INSTANCE_SUBNETS` 写错时 `cpa-broker` 启动失败；子网分完时返回 503 并说明要改什么，不再是「Docker operation failed」。请求体不是合法的 JSON 时返回 400。
+  - 实例出网的中转连接空闲 10 分钟后关闭，同时打开的连接最多 512 个。
+- `scripts/install-apparmor.sh` 连不上 Docker 时提示用 root 运行，不再误报「不使用 AppArmor」；`scripts/bootstrap.sh` 无法读取 AppArmor 状态时给出提示，不再跳过检查。
+- 预构建镜像：打版本标签不再移动 `latest`；`latest` 只跟随通过 CI 的 `main`，较早的提交晚完成时也不会把它改回去。
 - 基础镜像和 Caddy 镜像按摘要固定。
 - 上传附件不再弹出左下角的提示框：上传中只在屏幕最底部显示一条细进度条，叠在界面上，不挤动布局；完成后什么都不留，网页里直接显示附件。需要点按「选择本机文件」或上传失败时，仍然显示提示框。
 - 远程浏览器不再弹出自己的「保存密码」「更新密码」提示：画面模式里它挡着页面又点不掉。地址和银行卡的自动填充保存、翻译、通知授权、默认浏览器检查和浏览器登录也一并关掉（Chromium 策略 `deploy/browser-policies.json`，对已有配置同样生效）。网站的登录状态不受影响；浏览器里以前保存的密码仍然保留。
@@ -97,6 +105,8 @@
 
 ### 移除
 
+- `pnpm invite`（`scripts/invite.ts`）和网关的 `/join` 邀请流程：它打印的 `/join` 链接网关已不再处理。添加用户改在「管理后台」进行，见 [docs/admin.md](docs/admin.md)。
+- `scripts/latency-probe.mjs`：要连一个正式部署的诊断脚本，没有任何文档或检查用到它。
 - `scripts/multi-user-smoke.mts` 和 `scripts/gate-browser-smoke.mjs`：前者在当前必须绑定节点的架构下已经跑不通，后者要连一个正式部署，它们检查的内容由 `pnpm smoke:compose` 和 `pnpm test:users-ui` 覆盖。
 
 ### 升级步骤

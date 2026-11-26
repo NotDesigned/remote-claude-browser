@@ -110,7 +110,7 @@
 | `MIRROR_OIDC_SESSION_DAYS`    |       否       | `7`                    | 单点登录得到的工作台登录的有效天数，1 到 60（`auth/oidc.ts`）                                                                                      |
 | `MIRROR_OIDC_REVALIDATE_DAYS` |       否       | `30`                   | **没有本地密码**的用户超过这么多天没有单点登录时，其 remote-cc 令牌暂停使用，1 到 60（`auth/oidc.ts`）                                             |
 | `MIRROR_OIDC_SCOPES`          |       否       | `openid profile email` | 覆盖请求的 scope，一般不用改                                                                                                                       |
-| `MIRROR_OIDC_REDIRECT_URI`    |       否       | 由公开来源推出         | 覆盖回调地址，一般不用改。没有设置 `MIRROR_PUBLIC_ORIGIN` 时必须设置它                                                                             |
+| `MIRROR_OIDC_REDIRECT_URI`    |       否       | 由公开来源推出         | 覆盖回调地址，一般不用改：默认是 `<MIRROR_PUBLIC_ORIGIN>/gate/oidc/callback`。入口把工作台放在另一个地址下时才设置它                                 |
 
 ## 入口机（`client/.env`）
 
