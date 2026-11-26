@@ -39,8 +39,8 @@ interface SuppressedEdits {
   texts: Map<number, string>;
   /** Parents of the nodes it added, to forget the texts of a subtree it removed again. */
   parents: Map<number, number>;
-  /** Text the page removed. */
-  removed: string[];
+  /** The nodes the page removed, with their text. */
+  removed: Array<{ id: number; text: string }>;
 }
 
 interface EchoRestoreState {
@@ -58,6 +58,9 @@ interface EchoRestoreState {
 const MOUSE_INTERACTION_FOCUS_EVENTS = new Set([5, 6]);
 /** How long an applied text change may still wait in the replay buffer. */
 const PASSED_TEXT_MEMORY_MS = 3_000;
+/** A reconcile the runtime could not send yet is asked for again this often, this many times. */
+const RECONCILE_RETRY_MS = 1_000;
+const RECONCILE_RETRIES = 30;
 
 export interface EchoFilter extends Stage {
   setFocused(focus: EditableFocus | null): void;
@@ -73,8 +76,11 @@ export interface EchoFilterOptions {
   now?: () => number;
   setTimer?: typeof setTimeout;
   clearTimer?: typeof clearTimeout;
-  /** A contenteditable's replay went apart from the page; once until the next reset. */
-  onContenteditableReconcile?: () => void;
+  /**
+   * A contenteditable's replay went apart from the page; once until the next reset. Returns false
+   * when nothing could be sent (no input to this tab right now): it is asked again later.
+   */
+  onContenteditableReconcile?: () => boolean | void;
   /** The replay's node for an rrweb id, to compare local text with what the page reports. */
   nodeFor?: (id: number) => Node | null;
 }
@@ -92,11 +98,22 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
   /** Text mutations let through to a focused editor, by node, to know none is still buffered. */
   const passedTexts = new Map<number, number>();
   let reconcileRequested = false;
+  let reconcileRetry: ReturnType<typeof setTimeout> | null = null;
+  let reconcileRetries = 0;
 
   const requestReconcile = () => {
-    if (reconcileRequested) return;
+    if (reconcileRequested || reconcileRetry !== null) return;
+    if (options.onContenteditableReconcile?.() === false) {
+      // Latched only once sent: the divergence is still there when input to the tab returns.
+      if (reconcileRetries >= RECONCILE_RETRIES) return;
+      reconcileRetries += 1;
+      reconcileRetry = schedule(() => {
+        reconcileRetry = null;
+        requestReconcile();
+      }, RECONCILE_RETRY_MS);
+      return;
+    }
     reconcileRequested = true;
-    options.onContenteditableReconcile?.();
   };
 
   const clearState = (nodeId: number) => {
@@ -221,7 +238,7 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
         const known = edits.texts.get(mutation.id);
         const text = known ?? nodeFor(mutation.id)?.textContent ?? "";
         forgetSubtree(edits, mutation.id);
-        edits.removed.push(text);
+        edits.removed.push({ id: mutation.id, text });
         return false;
       });
 
@@ -340,6 +357,9 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
     unmapped.clear();
     passedTexts.clear();
     reconcileRequested = false;
+    if (reconcileRetry !== null) cancel(reconcileRetry);
+    reconcileRetry = null;
+    reconcileRetries = 0;
   };
 
   filter.restoreHook = {
@@ -448,18 +468,31 @@ function diverged(
   edits: SuppressedEdits,
   nodeFor: (id: number) => Node | null,
 ): boolean {
-  for (const [id, text] of edits.texts) {
-    const node = nodeFor(id);
-    if (node !== null && element.contains(node)) {
-      if (normalizedText(node.textContent ?? "") !== normalizedText(text)) return true;
-    }
-  }
   const local = normalizedText(element.textContent ?? "");
   const remote = [...edits.texts.values()].map(normalizedText).filter((text) => text !== "");
-  if (remote.some((text) => !local.includes(text))) return true;
-  return edits.removed
-    .map(normalizedText)
-    .some(
-      (text) => text !== "" && local.includes(text) && !remote.some((kept) => kept.includes(text)),
-    );
+  // A node this replay has is compared as itself; only text it never got is looked for in the
+  // editor's text, where another node holding the same words would otherwise pass for it.
+  for (const [id, text] of edits.texts) {
+    const node = nodeFor(id);
+    if (node === null) {
+      const wanted = normalizedText(text);
+      if (wanted !== "" && !local.includes(wanted)) return true;
+    } else if (element.contains(node)) {
+      if (normalizedText(node.textContent ?? "") !== normalizedText(text)) return true;
+    }
+    // The page moved the node out of this editor: not this editor's text.
+  }
+  return edits.removed.some(({ id, text }) => {
+    const node = nodeFor(id);
+    // The page took this node out: this editor still showing it, with text the page holds
+    // nowhere else, is apart from it. Another node with the same words is not.
+    const shown =
+      node === null
+        ? normalizedText(text)
+        : element.contains(node)
+          ? normalizedText(node.textContent ?? "")
+          : "";
+    if (shown === "" || remote.some((kept) => kept.includes(shown))) return false;
+    return node !== null || local.includes(shown);
+  });
 }

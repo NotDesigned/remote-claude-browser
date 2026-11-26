@@ -183,8 +183,10 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     // answer this page alone from its cached state, not every viewer from a new page snapshot.
     onContenteditableReconcile: () => {
       const tab = presentation.activeTab();
-      if (tab !== null && presentation.canInput(tab, "dom") && mirror.getActiveTab() === tab)
-        mirror.recover(LOCAL_RESYNC_REASON);
+      if (tab === null || !presentation.canInput(tab, "dom") || mirror.getActiveTab() !== tab)
+        return false;
+      mirror.recover(LOCAL_RESYNC_REASON);
+      return true;
     },
     nodeFor: (id) => mirror.getReplayer()?.getMirror().getNode(id) ?? null,
   });

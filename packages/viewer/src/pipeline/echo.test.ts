@@ -501,6 +501,82 @@ describe("F5 native local typing echo", () => {
     echo.reset();
   });
 
+  it("does not take other text with the same words for a node the page removed", () => {
+    let time = 0;
+    const timers = manualTimers();
+    const reconcile = vi.fn();
+    const field = new FakeContenteditable();
+    // Two lines say "ok"; the person deleted the second here, and the page removed its node.
+    const deleted = { textContent: "ok" };
+    const echo = createEchoFilter({
+      now: () => time,
+      onContenteditableReconcile: reconcile,
+      nodeFor: (id) => (id === 23 ? (deleted as unknown as Node) : field.nodeFor(id)),
+      ...timers.options,
+    });
+    field.children.set(22, { textContent: "ok" });
+    field.textContent = "ok";
+    const focus = {
+      element: field as unknown as HTMLElement,
+      nodeId: 20,
+      subtreeNodeIds: new Set([20, 22, 23]),
+    };
+    echo.input(focus);
+    time = 100;
+    expect(echo(removal(20, 23), { nowMs: time } as never)).toBeNull();
+    time = 1_000;
+    timers.last();
+    expect(reconcile).not.toHaveBeenCalled();
+
+    // This replay still showing the very node the page removed is apart from it.
+    echo.input(focus);
+    time = 1_100;
+    expect(echo(removal(20, 22), { nowMs: time } as never)).toBeNull();
+    time = 2_100;
+    timers.last();
+    expect(reconcile).toHaveBeenCalledOnce();
+  });
+
+  it("asks for a reconcile again until the runtime could send it", () => {
+    let time = 0;
+    const timers = manualTimers();
+    const sent: boolean[] = [false, false, true];
+    const reconcile = vi.fn(() => sent.shift());
+    const field = new FakeContenteditable();
+    const echo = createEchoFilter({
+      now: () => time,
+      onContenteditableReconcile: reconcile,
+      nodeFor: field.nodeFor,
+      ...timers.options,
+    });
+    const focus = {
+      element: field as unknown as HTMLElement,
+      nodeId: 20,
+      subtreeNodeIds: new Set([20]),
+    };
+    echo.input(focus);
+    time = 100;
+    echo(
+      mutationEvent(
+        [],
+        [{ parentId: 20, nextId: null, node: { id: 31, type: 3, textContent: "x" } }],
+      ),
+      { nowMs: time } as never,
+    );
+    // A later change names the node this replay never got.
+    time = 3_000;
+    echo(mutationEvent([{ id: 31, value: "xy" }]), { nowMs: time } as never);
+    expect(reconcile).toHaveBeenCalledOnce();
+    timers.last();
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    timers.last();
+    expect(reconcile).toHaveBeenCalledTimes(3);
+    // Sent: latched until the rebuild that answers it.
+    echo(mutationEvent([{ id: 31, value: "xyz" }]), { nowMs: time } as never);
+    expect(reconcile).toHaveBeenCalledTimes(3);
+    echo.reset();
+  });
+
   it("asks for nothing when the page and this replay both emptied the editor", () => {
     let time = 0;
     const timers = manualTimers();
