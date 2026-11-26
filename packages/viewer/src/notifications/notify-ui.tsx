@@ -54,6 +54,31 @@ export function NotificationPrompts({ control }: { control: NotificationsControl
   const ask = control.state?.asks[0];
   if (ask === undefined) return null;
   const blocked = control.state?.device === "denied";
+  // No notifications in this browser at all: an iPhone or iPad tab rather than a home-screen app.
+  // An 「允许」 here could only fail, so say how to get them instead.
+  if (control.state?.device === "unsupported")
+    return (
+      <div id="notify-prompt" role="dialog" aria-label="网页通知请求" data-origin={ask.origin}>
+        <p>
+          <strong>{siteLabel(ask.origin)} 想给你发通知</strong>
+          <span>
+            这个浏览器不能显示网页通知。iPhone、iPad
+            上需要先用分享按钮把工作台「添加到主屏幕」，再从主屏幕上的图标打开工作台，在那里允许通知（iOS
+            16.4 及以上）。
+          </span>
+        </p>
+        <div class="notify-prompt-actions">
+          <button
+            type="button"
+            data-notify-answer="unsupported"
+            class="notify-prompt-allow"
+            onClick={() => control.dismiss(ask.id)}
+          >
+            知道了
+          </button>
+        </div>
+      </div>
+    );
   return (
     <div id="notify-prompt" role="dialog" aria-label="网页通知请求" data-origin={ask.origin}>
       <p>

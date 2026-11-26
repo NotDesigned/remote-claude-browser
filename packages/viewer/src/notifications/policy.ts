@@ -105,7 +105,7 @@ export function notifySummary(
   if (device === "unsupported")
     return {
       tone: "unsupported",
-      text: "这个浏览器不能显示通知（iPhone、iPad 需先把工作台添加到主屏幕）",
+      text: "这个浏览器不能显示通知。iPhone、iPad 上需先把工作台「添加到主屏幕」，再从主屏幕打开",
     };
   if (!settings.enabled) return { tone: "off", text: "已关闭：网页会看到通知被拒绝" };
   if (device === "denied")
