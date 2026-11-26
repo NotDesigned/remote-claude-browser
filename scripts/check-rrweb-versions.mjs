@@ -5,11 +5,13 @@
  * *silent blank replay*, so we make it loud. A PR bumping one @rrweb/* package alone fails here.
  *
  * Checks both the declared manifests (exact pins, no ranges) and — when node_modules exists —
- * the actually-resolved installed versions.
+ * the actually-resolved installed versions, and that the patched packages are built from the
+ * patches as they are now, with the hashes the lockfile records.
  */
 import { readdirSync, readFileSync, existsSync, realpathSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkPatches } from "./rrweb-patches.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const RRWEB = /^(@rrweb\/|rrweb$|rrweb-)/;
@@ -116,6 +118,9 @@ if (!existsSync(recordLink)) {
   }
 }
 
+// The patched packages must be the builds of the patches as they are now (see rrweb-patches.mjs).
+errors.push(...checkPatches(root));
+
 if (errors.length > 0) {
   console.error("rrweb version check FAILED:\n" + errors.map((e) => `  - ${e}`).join("\n"));
   console.error(
@@ -125,5 +130,5 @@ if (errors.length > 0) {
 }
 const version = [...declaredVersions][0] ?? "(none declared)";
 console.log(
-  `rrweb version check OK: ${declared.size} declarations, all @ ${version}; OOPIF mirror accessor present`,
+  `rrweb version check OK: ${declared.size} declarations, all @ ${version}; OOPIF mirror accessor present; patches installed as locked`,
 );
