@@ -522,6 +522,92 @@ async function checkVideo(page, address) {
   console.log("Picture and sound arrived over WebRTC.");
 }
 
+/**
+ * A website notification travels from the remote page to this device: the page asks, the workbench
+ * prompts, 允许 grants it, the page's notification shows here (recorded by NOTIFICATION_RECORDER)
+ * and a click on it reaches the page's own onclick.
+ */
+const NOTIFY_PAGE = `<!doctype html><meta charset="utf-8"><title>通知检查</title>
+<button id="notify-ask" style="font-size:20px">通知我</button>
+<p id="notify-permission">-</p><p id="notify-shown">no</p><p id="notify-clicked">no</p>
+<script>
+const permission = document.getElementById("notify-permission");
+permission.textContent = Notification.permission;
+document.getElementById("notify-ask").addEventListener("click", async () => {
+  permission.textContent = await Notification.requestPermission();
+  const note = new Notification("任务完成", { body: "Claude 已回复", tag: "done" });
+  note.onshow = () => (document.getElementById("notify-shown").textContent = "yes");
+  note.onclick = () => (document.getElementById("notify-clicked").textContent = "yes");
+});
+</script>`;
+
+/** Replaces the workbench's Notification with one that records what it was asked to show. */
+const NOTIFICATION_RECORDER = () => {
+  const Native = window.Notification;
+  if (typeof Native !== "function" || window.top !== window) return;
+  const shown = [];
+  Object.defineProperty(window, "__notifications", { value: shown });
+  class Recorded extends EventTarget {
+    constructor(title, options = {}) {
+      super();
+      Object.assign(this, { title, body: options.body, tag: options.tag, closed: false });
+      this.onclick = this.onshow = this.onclose = this.onerror = null;
+      shown.push(this);
+      setTimeout(() => this.onshow?.(new Event("show")), 0);
+    }
+    close() {
+      this.closed = true;
+    }
+    static get permission() {
+      return Native.permission;
+    }
+    static requestPermission(callback) {
+      return Native.requestPermission(callback);
+    }
+  }
+  window.Notification = Recorded;
+};
+
+async function checkNotifications(page, address) {
+  await address.fill(fixturePage(NOTIFY_PAGE));
+  await address.press("Enter");
+  await mirrorElement(page, "notify-permission", { text: "default" });
+  // The ⋯ menu shows the setting and this browser's permission (granted by the test).
+  await page.locator("#shell-menu-toggle").click();
+  await page.locator("#shell-notify-setting").waitFor();
+  assert.equal(
+    await page.locator("#shell-notify-setting").getAttribute("data-notify-tone"),
+    "on",
+    "The notification setting is not on",
+  );
+  await page.locator("#shell-menu-toggle").click();
+  const button = await mirrorElement(page, "notify-ask");
+  await page.mouse.click(button.x, button.y);
+  await page.locator("#notify-prompt").waitFor({ timeout: 15_000 });
+  const prompt = await page.locator("#notify-prompt").innerText();
+  assert.match(prompt, /想给你发通知/);
+  await page.locator('#notify-prompt [data-notify-answer="allow"]').click();
+  await mirrorElement(page, "notify-permission", { text: "granted" });
+  await page.waitForFunction(() => window.__notifications?.length === 1, undefined, {
+    timeout: 15_000,
+  });
+  const [note] = await page.evaluate(() =>
+    window.__notifications.map(({ title, body, tag }) => ({ title, body, tag })),
+  );
+  assert.equal(note.title, "任务完成");
+  assert.equal(note.body, "Claude 已回复");
+  assert.match(note.tag, /^mirror:http:\/\/.+:done$/);
+  await mirrorElement(page, "notify-shown", { text: "yes" });
+  await page.evaluate(() => {
+    const [shown] = window.__notifications;
+    const click = new Event("click", { cancelable: true });
+    shown.onclick?.(click);
+  });
+  await mirrorElement(page, "notify-clicked", { text: "yes" });
+  assert.equal(await page.evaluate(() => window.__notifications[0].closed), true);
+  console.log("A website notification reached this device, and its click reached the page.");
+}
+
 async function openDefaultBrowser(page) {
   await page.goto(origin);
   await page.locator('input[name="username"]').fill(username);
@@ -604,6 +690,7 @@ report();
   console.log("The address bar follows the page, and keeps what is being typed.");
 
   await checkForm(page, address, mirrored);
+  await checkNotifications(page, address);
   await checkMovedFrame(page, address);
   await checkNestedFramesRepeatedly(page, address);
   await checkPageSleep(page, address);
@@ -646,8 +733,12 @@ try {
   // camera and microphone. The server cannot resolve .local names, and when the runner's DNS also
   // fails to resolve the STUN server, WebRTC has no other path. (A --disable-features argument
   // would replace the features Playwright disables, not add to them.)
-  if (process.env.SMOKE_VIDEO === "1")
-    await context.grantPermissions(["camera", "microphone"], { origin });
+  // Notifications for checkNotifications, which records them instead of showing them.
+  await context.grantPermissions(
+    ["notifications", ...(process.env.SMOKE_VIDEO === "1" ? ["camera", "microphone"] : [])],
+    { origin },
+  );
+  await context.addInitScript(NOTIFICATION_RECORDER);
   await context.addInitScript(() => {
     // The first about:blank document has an opaque origin and no storage.
     try {
@@ -667,7 +758,9 @@ try {
     .waitFor({ timeout: 60_000 });
   await page.waitForFunction(() => document.querySelector("#urlbar input")?.value !== "");
   const address = page.locator("#urlbar input");
-  if (process.env.SMOKE_VIDEO === "1" || process.env.SMOKE_CANVAS === "1") {
+  if (process.env.SMOKE_NOTIFY === "1") {
+    await checkNotifications(page, address);
+  } else if (process.env.SMOKE_VIDEO === "1" || process.env.SMOKE_CANVAS === "1") {
     if (process.env.SMOKE_VIDEO === "1") await checkVideo(page, address);
     if (process.env.SMOKE_CANVAS === "1") await checkCanvas(page, address);
   } else {
