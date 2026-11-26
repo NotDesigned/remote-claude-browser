@@ -116,8 +116,10 @@ async function inside() {
   const confinement = await readFile("/proc/self/attr/current", "utf8").catch(() => "");
   if (confinement.startsWith("remote-claude-browser ")) {
     await mkdir("/tmp/proc-probe");
-    await assert.rejects(exec("mount", ["-t", "proc", "proc", "/tmp/proc-probe"]), /denied/i);
-    await assert.rejects(exec("mount", ["--bind", "/proc", "/tmp/proc-probe"]), /denied/i);
+    // mount(8) retries read-only after EACCES, and then reports that instead.
+    const refused = /permission denied|cannot mount \S+ read-only/i;
+    await assert.rejects(exec("mount", ["-t", "proc", "proc", "/tmp/proc-probe"]), refused);
+    await assert.rejects(exec("mount", ["--bind", "/proc", "/tmp/proc-probe"]), refused);
     console.log("AppArmor confines the server's mounts");
   } else console.log(`Not confined by the server's AppArmor profile (${confinement.trim()})`);
   await mkdir(`${profile}/uploads`, { recursive: true });
