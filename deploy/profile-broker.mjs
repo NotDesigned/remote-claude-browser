@@ -127,7 +127,8 @@ async function waitPort(host, port, child) {
       });
     });
     if (ready) return;
-    await new Promise((done) => setTimeout(done, 50));
+    // Mihomo listens some 20 ms after it starts; a coarser poll would add up to its own period.
+    await new Promise((done) => setTimeout(done, 10));
   }
   throw new Error("Mihomo startup timed out");
 }

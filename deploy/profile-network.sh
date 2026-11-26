@@ -14,20 +14,23 @@ browser_uid=${BROWSER_UID:-10001}
 
 case "$action" in
   start)
-    ip netns add "$name"
-    ip link add "$host_if" type veth peer name eth0 netns "$name"
-    ip addr add "$host_ip/30" dev "$host_if"
-    ip link set "$host_if" up
-    ip -n "$name" addr add "$peer_ip/30" dev eth0
-    ip -n "$name" link set lo up
-    ip -n "$name" link set eth0 up
-    ip -n "$name" route add default via "$host_ip"
-    # Root Mihomo uses eth0; browser sockets use its TUN, including interface-bound UDP.
-    ip -n "$name" link set eth0 addrgenmode none
-    ip -n "$name" -6 addr flush dev eth0
-    ip -6 addr add "$host_ip6/126" dev "$host_if" nodad
-    ip -n "$name" -6 addr add "$peer_ip6/126" dev eth0 nodad
-    ip -n "$name" -6 route add default via "$host_ip6"
+    # One ip process for each side instead of one per step.
+    printf '%s\n' \
+      "netns add $name" \
+      "link add $host_if type veth peer name eth0 netns $name" \
+      "address add $host_ip/30 dev $host_if" \
+      "address add $host_ip6/126 dev $host_if nodad" \
+      "link set $host_if up" | ip -batch -
+    # Root Mihomo uses eth0; browser sockets use its TUN, including interface-bound UDP. eth0 never
+    # gets a link-local address: address generation is off before it comes up.
+    printf '%s\n' \
+      'link set eth0 addrgenmode none' \
+      "address add $peer_ip/30 dev eth0" \
+      "address add $peer_ip6/126 dev eth0 nodad" \
+      'link set lo up' \
+      'link set eth0 up' \
+      "route add default via $host_ip" \
+      "route add default via $host_ip6" | ip -n "$name" -batch -
     # The namespace is new: each family's rules load whole, in one restore each and both at once,
     # instead of one process per rule (a new namespace's first ip6tables call alone takes ~35 ms).
     {
@@ -98,15 +101,25 @@ case "$action" in
       echo 'COMMIT'
     } | ip netns exec "$name" iptables-restore
     wait "$ipv6_rules"
-    iptables -t nat -A POSTROUTING -s "$subnet" ! -o "$host_if" -j MASQUERADE
-    iptables -I FORWARD 1 -i "$host_if" -s "$peer_ip" -j ACCEPT
-    iptables -I FORWARD 1 -o "$host_if" -d "$peer_ip" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-    ip6tables -t nat -A POSTROUTING -s "$subnet6" ! -o "$host_if" -j MASQUERADE
-    ip6tables -I FORWARD 1 -i "$host_if" -s "$peer_ip6" -j ACCEPT
-    ip6tables -I FORWARD 1 -o "$host_if" -d "$peer_ip6" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    # This profile's rules in the server's own namespace, added to what is there (--noflush): one
+    # restore per family, the same rules in the same order as one command each.
+    printf '%s\n' '*nat' \
+      "-A POSTROUTING -s $subnet6 ! -o $host_if -j MASQUERADE" \
+      'COMMIT' '*filter' \
+      "-I FORWARD 1 -i $host_if -s $peer_ip6 -j ACCEPT" \
+      "-I FORWARD 1 -o $host_if -d $peer_ip6 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT" \
+      'COMMIT' | ip6tables-restore --noflush --wait &
+    root_ipv6_rules=$!
+    printf '%s\n' '*nat' \
+      "-A POSTROUTING -s $subnet ! -o $host_if -j MASQUERADE" \
+      'COMMIT' '*filter' \
+      "-I FORWARD 1 -i $host_if -s $peer_ip -j ACCEPT" \
+      "-I FORWARD 1 -o $host_if -d $peer_ip -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT" \
+      "-I OUTPUT 1 -m owner --uid-owner $browser_uid -d $peer_ip -p tcp --dport 8780 -j ACCEPT" \
+      'COMMIT' | iptables-restore --noflush --wait
+    wait "$root_ipv6_rules"
     # Override the legacy whole-gateway Xray rule for this one internal proxy address.
     ip rule add priority 100 to "$peer_ip/32" lookup main
-    iptables -I OUTPUT 1 -m owner --uid-owner "$browser_uid" -d "$peer_ip" -p tcp --dport 8780 -j ACCEPT
     ;;
   route)
     # Mihomo accepts connections before it has created and raised its TUN; a route through a
