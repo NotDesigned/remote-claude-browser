@@ -90,8 +90,11 @@ describe("asset route policy boundary", () => {
     try {
       const first = await request(tokenA);
       expect(first.status).toBe(200);
+      // A response still being copied to the cache has no length: its end comes after the copy.
+      expect(first.headers.get("content-length")).toBeNull();
       expect(await first.text()).toContain("A-private");
       const cachedA = await request(tokenA);
+      expect(cachedA.headers.get("content-length")).not.toBeNull();
       expect(await cachedA.text()).toContain("A-private");
       expect(fetchAsset).toHaveBeenCalledTimes(1);
 

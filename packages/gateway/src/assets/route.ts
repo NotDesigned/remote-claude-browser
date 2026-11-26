@@ -163,7 +163,11 @@ export function registerAssetRoutes(app: FastifyInstance, deps: AssetRouteDeps):
       applyResponse(reply, response.statusCode, response.headers);
       if (range === undefined && response.statusCode === 200) {
         // The viewer gets bytes as they arrive; the disk copy is kept only if the body ends
-        // complete while its session is still current, and is removed otherwise.
+        // complete while its session is still current, and is removed otherwise. The response
+        // ends only once that copy is committed, so it is sent without a length: a reader that
+        // knew the length would take the response as done and reuse the connection while the
+        // server is still finishing it.
+        reply.removeHeader("content-length");
         return reply.send(
           pipeline(
             response.body,
