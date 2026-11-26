@@ -10,6 +10,32 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <title>远程 Claude</title>
+    <script>
+      // The first screen's requests start now, while the scripts download, and the API client
+      // takes them over (src/boot-requests.ts). Only a page that shows the picker lists profiles:
+      // the same choice as resumesClientSession and clientPageMode in src/client-session.ts.
+      (function () {
+        var query = new URLSearchParams(location.search);
+        if (query.has("fixture") || query.get("closed") === "1") return;
+        var picking = query.get("new") === "1";
+        if (!picking && !query.get("sid")) {
+          try {
+            var key = sessionStorage.getItem("mirror.client-session.key") || "";
+            picking = !/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(key);
+          } catch (error) {
+            picking = true;
+          }
+        }
+        var requests = {};
+        var get = function (path) {
+          requests[path] = fetch(path, { credentials: "same-origin", cache: "no-store" });
+          requests[path].catch(function () {});
+        };
+        get("/api/me");
+        if (picking) get("/api/accounts");
+        window.__mirrorBootRequests = requests;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

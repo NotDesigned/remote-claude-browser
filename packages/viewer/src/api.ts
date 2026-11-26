@@ -1,3 +1,5 @@
+import { takeBootRequest } from "./boot-requests";
+
 /** Same-origin workbench APIs share authentication and error handling. */
 export class ApiError extends Error {
   constructor(
@@ -77,12 +79,19 @@ export async function apiFetch(
   init: RequestInit = {},
   options: ApiOptions = {},
 ): Promise<Response> {
-  const response = await (options.fetcher ?? fetch)(path, {
-    ...init,
-    credentials: "same-origin",
-    cache: "no-store",
-    ...(options.signal ? { signal: options.signal } : {}),
-  });
+  const send = () =>
+    (options.fetcher ?? fetch)(path, {
+      ...init,
+      credentials: "same-origin",
+      cache: "no-store",
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+  // The page may have started this very request already; one that failed is sent again.
+  const early =
+    options.fetcher || options.signal || (init.method ?? "GET") !== "GET" || init.body != null
+      ? undefined
+      : takeBootRequest(path);
+  const response = early ? await early.catch(send) : await send();
   if (response.status === 401 && !options.allowUnauthorized) authExpired();
   return response;
 }
