@@ -91,6 +91,8 @@ export interface AccountPoolDeps {
   publish(sid: string, message: Down): void;
   /** A page started or stopped using the microphone, or sent sound. */
   onVoice(sid: string, tab: string, message: VoiceAgentMsg, account: VoiceTarget): void;
+  /** A page's website-notification message (see notify/relay.ts). */
+  onNotify?(sid: string, tab: string, message: object): void;
   report(message: string, error: unknown): void;
 }
 
@@ -187,6 +189,11 @@ export function createAccountPool(deps: AccountPoolDeps) {
       publishVoice(message, target) {
         const sid = pool.ownerOf(target);
         if (sid) deps.onVoice(sid, target, message, { browser, sessionTargets });
+      },
+      publishNotify(message, target) {
+        // Only the session whose window holds the page hears about its notifications.
+        const sid = pool.ownerOf(target);
+        if (sid && !deps.isClosing(sid)) deps.onNotify?.(sid, target, message);
       },
     });
     const downloadDir = join(dir, "downloads");
@@ -498,5 +505,14 @@ export function sendVoice(
   if (session)
     void callAgentBridge(account.browser, session, "voice", [value]).catch(() => {
       // The page navigated away, which ends its use of the microphone as well.
+    });
+}
+
+/** Delivers a website-notification message (NotifyAgentIn) to a page's agent. */
+export function sendNotify(account: VoiceTarget, tab: string, value: object): void {
+  const session = [...account.sessionTargets].find(([, target]) => target === tab)?.[0];
+  if (session)
+    void callAgentBridge(account.browser, session, "notify", [value]).catch(() => {
+      // The page navigated away; its next document says hello again.
     });
 }

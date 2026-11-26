@@ -45,6 +45,8 @@ export interface ViewerHubDeps {
   /** The viewer build identifier, read again for each connection. */
   build(): string | undefined;
   isStopping(): boolean;
+  /** Someone started or stopped looking at the session (a viewer connected or left). */
+  onPresence?(sid: string): void;
   report(message: string, error: unknown): void;
 }
 
@@ -227,6 +229,7 @@ export function createViewerHub(deps: ViewerHubDeps) {
       const currentStatus = deps.status(sid);
       viewer.send(currentStatus, encodeMsg(currentStatus));
       broadcastStatus();
+      deps.onPresence?.(sid);
       void runtime.tabs
         .tabsMessage()
         .then((message) => viewer.send(message, encodeMsg(message)))
@@ -246,6 +249,7 @@ export function createViewerHub(deps: ViewerHubDeps) {
         void stopPixels(runtime).catch((error) => report("disconnected pixel cleanup", error));
       }
       broadcastStatus();
+      deps.onPresence?.(sid);
     },
     async onUp(viewer, message, sid) {
       const id = viewerIds.get(viewer),
@@ -316,6 +320,14 @@ export function createViewerHub(deps: ViewerHubDeps) {
           roles.disconnect(id);
           viewers.delete(id);
         }
+      deps.onPresence?.(sid);
+    },
+    /** Brings a tab of the session to the front, as the tab strip does. */
+    async activateTab(sid: string, tab: string): Promise<void> {
+      const runtime = registry.get(sid);
+      if (!runtime || registry.isClosing(sid) || !runtime.browser.ownsTarget(tab)) return;
+      await stopPixels(runtime, tab);
+      await runtime.tabs.handle({ t: "nav", tab, action: "activate" });
     },
     /** A tab of the session went away. */
     forgetTab(sid: string, tab: string): void {

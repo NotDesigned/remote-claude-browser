@@ -440,7 +440,9 @@ export function installNotificationShim(
     () => away && permission === "granted",
   );
 
-  send({ op: "hello", origin });
+  // After the agent's own hello, which opens the document's stream at the gateway; still before
+  // any page script runs.
+  void NativePromise.resolve().then(() => send({ op: "hello", origin }));
 
   return {
     receive(value) {

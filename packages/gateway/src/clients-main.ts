@@ -27,8 +27,8 @@ import { createAssetCache } from "./assets/cache";
 import { createAssetFetcher } from "./assets/fetch";
 import { assetLimitsFromEnv } from "./assets/limits";
 import { registerAssetRoutes } from "./assets/route";
-import { ANY_SESSION_TAB } from "./assets/token";
-import { createAccountPool } from "./browser/account-pool";
+import { ANY_SESSION_TAB, sealAssetToken } from "./assets/token";
+import { createAccountPool, sendNotify } from "./browser/account-pool";
 import { configuredBrowserEngine } from "./browser/engine";
 import { evaluateInPage } from "./browser/evaluate";
 import { BROWSER_PLATFORMS, type BrowserPlatform } from "./browser/identity";
@@ -60,6 +60,8 @@ import { registerE2eRoutes } from "./routes/e2e-routes";
 import { createProfileActions, registerProfileRoutes } from "./routes/profile-routes";
 import { registerSessionRoutes, sessionRouteGuard } from "./routes/session-routes";
 import { createWorkspaceErrors } from "./routes/workspace-errors";
+import { createNotifyRelay } from "./notify/relay";
+import { registerNotifyRoutes } from "./notify/routes";
 import { registerUploadRoutes } from "./uploads";
 import { registerSecurityHeaders } from "./security-headers";
 import { gatewayHost, registerViewerStatic, trustedProxies, viewerBuildId } from "./serving";
@@ -342,7 +344,10 @@ export async function startClientGateway(
             !process.env.BROWSER_CDP_URL &&
             process.env.MIRROR_SCREEN_GRAB !== "0",
           onNavigated: captureCpaCallback,
-          onTabClosed: (sid, tab) => hub.forgetTab(sid, tab),
+          onTabClosed: (sid, tab) => {
+            hub.forgetTab(sid, tab);
+            notifications.forgetTab(sid, tab);
+          },
           report,
         },
         record,
@@ -354,7 +359,10 @@ export async function startClientGateway(
     },
     closeWindows: (sid, runtime) =>
       accounts.closeWorkspaceWindows(sid, clientSessions.profileOf(sid), runtime),
-    forget: (sid) => hub.forgetSession(sid),
+    forget: (sid) => {
+      hub.forgetSession(sid);
+      notifications.forgetSession(sid);
+    },
     onChange: () => hub.broadcastStatus(),
   });
   const accounts = createAccountPool({
@@ -372,7 +380,28 @@ export async function startClientGateway(
     themeOf: (sid) => registry.get(sid)?.theme.current() ?? "auto",
     publish: (sid, message) => hub.publish(sid, message),
     onVoice: (sid, tab, message, account) => hub.onVoice(sid, tab, message, account),
+    onNotify: (sid, tab, message) => notifications.onAgent(sid, tab, message),
     report,
+  });
+  /** Website notifications from the session's pages to its viewers' devices (notify/relay.ts). */
+  const notifications = createNotifyRelay({
+    sendAgent(sid, tab, value) {
+      const runtime = registry.get(sid);
+      if (runtime && runtime.account.pool.ownerOf(tab) === sid)
+        sendNotify(runtime.account, tab, value);
+    },
+    looking: (sid) => hub.onlineSessions().has(sid),
+    iconUrl(sid, url, documentOrigin) {
+      const key = registry.isClosing(sid) ? undefined : registry.get(sid)?.assetKey;
+      if (key === undefined) return undefined;
+      const token = sealAssetToken(
+        { url, sessionId: sid, tabId: ANY_SESSION_TAB, documentUrl: `${documentOrigin}/` },
+        key,
+      );
+      return `/s/${encodeURIComponent(sid)}/a/${token}`;
+    },
+    activate: (sid, tab) =>
+      void hub.activateTab(sid, tab).catch((error) => report("notification tab activation", error)),
   });
   /** CPA picks up its OAuth callback from the workspace's address bar. */
   function captureCpaCallback(
@@ -423,6 +452,7 @@ export async function startClientGateway(
     // Read for each connection: deploy-viewer.sh publishes a viewer without restarting this.
     build: () => viewerBuildId(),
     isStopping,
+    onPresence: (sid) => notifications.presenceChanged(sid),
     report,
   });
   const idleReaper = createIdleReaper({
@@ -550,6 +580,11 @@ export async function startClientGateway(
     preHandler: requireSession(),
     managerFor: (sid) => registry.get(sid)?.uploads,
   });
+  registerNotifyRoutes(app, {
+    relay: notifications,
+    preHandler: requireSession(),
+    authorized: (request, sid) => access.ownsSession(request, sid),
+  });
   const ctx: GatewayContext = {
     e2e,
     lock,
@@ -642,9 +677,13 @@ export async function startClientGateway(
   });
   // Revoked logins (logout, password/role/enabled change, deletion) close the user's
   // connections now; the periodic check below still catches logins that simply expire.
-  const stopRevocationWatch = userStore.onLoginsRevoked((userId) => hub.closeRevoked(userId));
+  const stopRevocationWatch = userStore.onLoginsRevoked((userId) => {
+    hub.closeRevoked(userId);
+    notifications.closeUnauthorized();
+  });
   const statusTimer = setInterval(() => {
     hub.closeUnauthorized();
+    notifications.closeUnauthorized();
     void resources
       .sample()
       .then(() => hub.broadcastStatus())
@@ -688,6 +727,7 @@ export async function startClientGateway(
     for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
     stopPromise = (async () => {
       await hub.close().catch(() => {});
+      notifications.close();
       await assetFetcher.close().catch((error) => report("asset shutdown failed", error));
       await app.close().catch(() => {});
       await oauthSync;

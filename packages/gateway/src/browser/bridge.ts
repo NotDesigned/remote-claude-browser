@@ -5,7 +5,7 @@ import { ISOLATED_RTC_BUNDLE } from "@mirror/agent";
 
 import type { BrowserHandle } from "./launch";
 
-export type AgentBridgeMethod = "command" | "node" | "rtc" | "voice";
+export type AgentBridgeMethod = "command" | "node" | "rtc" | "voice" | "notify";
 
 export interface AgentBridgeChannel {
   readonly bindingName: string;
@@ -162,6 +162,11 @@ export function isolatedAgentBridgeSource(channel: AgentBridgeChannel): string {
         voice(value) {
           nativeDispatchEvent.call(document, new NativeCustomEvent(inboundEventName, {
             detail: stringify({ method: "voice", args: [value] }),
+          }));
+        },
+        notify(value) {
+          nativeDispatchEvent.call(document, new NativeCustomEvent(inboundEventName, {
+            detail: stringify({ method: "notify", args: [value] }),
           }));
         },
     };

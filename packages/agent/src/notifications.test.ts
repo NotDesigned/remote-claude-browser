@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { installNotificationShim } from "./notifications";
 
 /** A page's window in its own realm, so the shim's Function.prototype patch stays inside it. */
-function fakePage() {
+async function fakePage() {
   const context = createContext({
     EventTarget,
     Event,
@@ -62,6 +62,7 @@ function fakePage() {
     (message) => void sent.push(message),
   );
   const run = <T>(code: string): T => runInContext(code, context) as T;
+  await new Promise((resolve) => setTimeout(resolve, 0));
   return {
     target,
     document,
@@ -78,7 +79,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("the page's Notification", () => {
   it("starts at default, says hello, and asks the viewer through the gateway", async () => {
-    const page = fakePage();
+    const page = await fakePage();
     expect(page.sent).toEqual([{ op: "hello", origin: "https://claude.ai" }]);
     expect(page.run("Notification.permission")).toBe("default");
     const answers: string[] = [];
@@ -98,7 +99,7 @@ describe("the page's Notification", () => {
   });
 
   it("reports an error and sends nothing without permission", async () => {
-    const page = fakePage();
+    const page = await fakePage();
     page.shim.receive({ permission: "denied", away: false });
     page.run(`
       globalThis.errors = 0;
@@ -111,7 +112,7 @@ describe("the page's Notification", () => {
   });
 
   it("sends a granted notification and fires the device's events on it", async () => {
-    const page = fakePage();
+    const page = await fakePage();
     page.shim.receive({ permission: "granted", away: false });
     page.run(`
       globalThis.events = [];
@@ -141,7 +142,7 @@ describe("the page's Notification", () => {
   });
 
   it("closes from the page, telling the gateway once", async () => {
-    const page = fakePage();
+    const page = await fakePage();
     page.shim.receive({ permission: "granted", away: false });
     page.run(`
       globalThis.closed = 0;
@@ -156,7 +157,7 @@ describe("the page's Notification", () => {
   });
 
   it("replaces an open notification with the same tag", async () => {
-    const page = fakePage();
+    const page = await fakePage();
     page.shim.receive({ permission: "granted", away: false });
     const registration = page.registration;
     await registration.showNotification("one", { tag: "t" });
@@ -171,12 +172,12 @@ describe("the page's Notification", () => {
   });
 
   it("refuses showNotification without permission, as Chromium does", async () => {
-    const page = fakePage();
+    const page = await fakePage();
     await expect(page.registration.showNotification("x")).rejects.toThrow(/permission/);
   });
 
-  it("looks like the browser's own to a quick inspection", () => {
-    const page = fakePage();
+  it("looks like the browser's own to a quick inspection", async () => {
+    const page = await fakePage();
     expect(page.run("Function.prototype.toString.call(Notification)")).toBe(
       "function Notification() { [native code] }",
     );
@@ -206,7 +207,7 @@ describe("the page's Notification", () => {
   });
 
   it("answers permissions.query with the viewer's state, and reports changes", async () => {
-    const page = fakePage();
+    const page = await fakePage();
     const status = await page.permissions.query({ name: "notifications" });
     expect(status.state).toBe("default");
     let changes = 0;
@@ -218,8 +219,8 @@ describe("the page's Notification", () => {
     expect(other.state).toBe("denied");
   });
 
-  it("hides the page while nobody looks, only once it may notify", () => {
-    const page = fakePage();
+  it("hides the page while nobody looks, only once it may notify", async () => {
+    const page = await fakePage();
     let changes = 0;
     page.document.addEventListener("visibilitychange", () => changes++);
     const hidden = () => page.run("document.hidden");

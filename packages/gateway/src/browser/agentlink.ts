@@ -36,6 +36,11 @@ export type VoiceAgentMsg = { audio: string } | { mic: boolean };
 
 export interface AgentLinkOptions {
   publishVoice?: (message: VoiceAgentMsg, targetId: string) => void;
+  /**
+   * A website-notification message from the page's current document (NotifyAgentOut, not yet
+   * validated: the relay checks every field).
+   */
+  publishNotify?: (message: object, targetId: string) => void;
   /** Relays private agent clipboard messages onto the frozen viewer Down lane. */
   publishClipboard?: (message: ClipboardDown, targetId: string) => void;
   /**
@@ -239,6 +244,19 @@ export function createAgentLink(browser: BrowserHandle, options: AgentLinkOption
     const voice = asVoiceAgentMsg(msg);
     if (voice !== null) {
       if (chunk.docId === state.docId) options.publishVoice?.(voice, state.target.targetId);
+      return;
+    }
+
+    if ((msg as unknown as { kind?: unknown }).kind === "notify") {
+      // Only the page's own top document: a same-process frame's agent has no notifications.
+      if (chunk.docId === state.docId && state.target.type === "page") {
+        const {
+          kind: _kind,
+          docId: _docId,
+          ...message
+        } = msg as unknown as Record<string, unknown>;
+        options.publishNotify?.(message, state.target.targetId);
+      }
       return;
     }
 
