@@ -706,7 +706,7 @@ try {
   await firstPage.getByRole("button", { name: "取消上传" }).click({ timeout: 4000 });
   await firstPage.locator("#upload-progress").waitFor({ state: "hidden" });
   await firstPage.locator("#upload-cancel").waitFor({ state: "hidden" });
-  for (const deadline = Date.now() + 10_000; canceledUploads.length === 0; ) {
+  for (const deadline = Date.now() + 10_000; canceledUploads.length === 0;) {
     assert(Date.now() < deadline, "the canceled upload was not aborted");
     await new Promise((done) => setTimeout(done, 100));
   }
@@ -875,8 +875,7 @@ try {
   await viewButton("dom").click();
   await firstPage.locator(".shell-view-notice").getByText("画面暂时不可用，请稍后再试").waitFor();
   for (const socket of wss.clients)
-    if (socket.readyState === 1)
-      socket.send(JSON.stringify({ t: "px-capacity", available: true }));
+    if (socket.readyState === 1) socket.send(JSON.stringify({ t: "px-capacity", available: true }));
   await firstPage.waitForFunction(
     () => document.querySelector('#shell-bar [data-view-mode="px"]')?.disabled === false,
   );
