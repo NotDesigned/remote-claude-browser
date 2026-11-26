@@ -296,8 +296,16 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
     activeTabId = tabId;
     scheduleTabsBroadcast();
     if (!changed) return;
-    // A viewer only takes a tab's snapshot once it knows that tab is active, and a page's own new
-    // window, or its closing, is news to it. Looking up favicons can wait for the broadcast above.
+    announceActive(state);
+  };
+
+  /**
+   * A viewer only takes a tab's snapshot once it knows that tab is active, and a page's own new
+   * window, or its closing, is news to it. Looking up favicons can wait for the debounced
+   * broadcast. A tab not attached yet has nothing to catch up on: its first snapshot is published
+   * as it arrives, since the tab is already active by then.
+   */
+  const announceActive = (state: TabState | undefined): void => {
     opts.publish({
       t: "tabs",
       tabs: order.flatMap((id) => {
@@ -305,12 +313,13 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
         return tab === undefined ? [] : [tabEntry(id, tab, tab.favicon)];
       }),
     });
-    publishCatchUp(state);
+    if (state !== undefined) publishCatchUp(state);
   };
 
   const remove = (tabId: string): { wasActive: boolean; neighbor?: string } => {
     const index = order.indexOf(tabId);
     const wasActive = activeTabId === tabId;
+    tabs.get(tabId)?.hub.dispose();
     tabs.delete(tabId);
     backgroundTabs.delete(tabId);
     targetInfo.delete(tabId);
@@ -340,7 +349,12 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
     }
     if (!background || !activeTabId) {
       await sendBrowser("Target.activateTarget", { targetId: result.targetId });
+      if (disposed) return result.targetId;
+      const changed = activeTabId !== result.targetId;
       activeTabId = result.targetId;
+      backgroundTabs.delete(result.targetId);
+      // As activate() does: viewers learn of the switch now, not after the debounced broadcast.
+      if (changed) announceActive(tabs.get(result.targetId));
     } else backgroundTabs.add(result.targetId);
     scheduleTabsBroadcast();
     return result.targetId;
@@ -373,7 +387,11 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
     if (disposed || target.type !== "page") return;
     const previous = tabs.get(target.targetId);
     if (previous?.target.sessionId === target.sessionId) return;
-    if (previous !== undefined) tabs.delete(target.targetId);
+    if (previous !== undefined) {
+      // The old hub's snapshot retries would otherwise reach the agent behind the new session.
+      previous.hub.dispose();
+      tabs.delete(target.targetId);
+    }
 
     const hub =
       opts.createHub?.(target) ??
@@ -465,6 +483,7 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
       broadcastVersion += 1;
       if (broadcastTimer !== undefined) clearTimeout(broadcastTimer);
       broadcastTimer = undefined;
+      for (const { hub } of tabs.values()) hub.dispose();
       tabs.clear();
       backgroundTabs.clear();
       targetInfo.clear();

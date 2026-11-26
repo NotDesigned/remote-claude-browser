@@ -757,6 +757,98 @@ describe("createTabLifecycle", () => {
     }
   });
 
+  it("stops the old hub's snapshot retries when a tab is attached again or removed", async () => {
+    vi.useFakeTimers();
+    const browser = new MockBrowser();
+    const streams = [new MessageQueue(), new MessageQueue(), new MessageQueue()];
+    let attachments = 0;
+    const commands: string[] = [];
+    let failing = true;
+    const lifecycle = createTabLifecycle({
+      browser,
+      assetTokenKey: Buffer.alloc(32, 8),
+      sessionId: "session",
+      agentLink: {
+        msgs: () => streams[attachments - 1]!,
+        sendCmd: async (targetId) => {
+          commands.push(targetId);
+          if (failing) throw new Error("target detached");
+          return { reqId: 1, ok: true };
+        },
+      },
+      publish: () => undefined,
+    });
+    try {
+      attachments = 1;
+      browser.attach({ targetId: "tab", sessionId: "cdp-1", type: "page" });
+      streams[0]!.push(hello(1));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(commands).toEqual(["tab"]);
+      const oldHub = lifecycle.hubFor("tab")!;
+
+      // The same target comes back under a new session, whose agent answers.
+      failing = false;
+      attachments = 2;
+      browser.attach({ targetId: "tab", sessionId: "cdp-2", type: "page" });
+      expect(lifecycle.hubFor("tab")).not.toBe(oldHub);
+      expect(oldHub.isDisposed).toBe(true);
+      commands.length = 0;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(commands).toEqual([]);
+
+      // A removed tab's hub stops as well.
+      failing = true;
+      streams[1]!.push(hello(2));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(commands).toEqual(["tab"]);
+      const second = lifecycle.hubFor("tab")!;
+      browser.attach({ targetId: "other", sessionId: "cdp-other", type: "page" });
+      browser.detach({ targetId: "tab", sessionId: "cdp-2", type: "page" });
+      expect(second.isDisposed).toBe(true);
+      commands.length = 0;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(commands).toEqual([]);
+    } finally {
+      lifecycle.dispose();
+    }
+  });
+
+  it("tells viewers at once when a new tab becomes active, as activating one does", async () => {
+    const browser = new MockBrowser();
+    browser.autoAttachCreatedTarget = true;
+    const published: Down[] = [];
+    const lifecycle = createTabLifecycle({
+      browser,
+      agentLink: {
+        msgs: () => new MessageQueue(),
+        sendCmd: async () => ({ reqId: 1, ok: true }),
+      },
+      sessionId: "session",
+      assetTokenKey: Buffer.alloc(32, 13),
+      publish: (message) => published.push(message),
+      debounceMs: 60_000,
+    });
+    browser.attach({ targetId: "old-tab", sessionId: "cdp-old", type: "page" });
+
+    await lifecycle.handle({ t: "nav", tab: "old-tab", action: "newtab" });
+    const tabsMessages = published.filter((message) => message.t === "tabs");
+    expect(tabsMessages).toHaveLength(1);
+    const [announced] = tabsMessages;
+    if (announced?.t === "tabs")
+      expect(announced.tabs.find((tab) => tab.active)?.id).toBe("created-tab");
+    expect(
+      published.some((message) => message.t === "resync" && message.tab === "created-tab"),
+    ).toBe(true);
+
+    published.length = 0;
+    await lifecycle.handle({ t: "nav", tab: "created-tab", action: "close" });
+    const afterClose = published.filter((message) => message.t === "tabs");
+    expect(afterClose).toHaveLength(1);
+    if (afterClose[0]?.t === "tabs")
+      expect(afterClose[0].tabs.find((tab) => tab.active)?.id).toBe("old-tab");
+    lifecycle.dispose();
+  });
+
   it("reactively creates a tab when detaching the final page leaves none", async () => {
     const browser = new MockBrowser();
     browser.autoAttachCreatedTarget = true;

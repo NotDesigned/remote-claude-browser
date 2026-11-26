@@ -115,6 +115,7 @@ export class TabHub {
   private snapshotSeq = 0;
   private nextMeta: eventWithTime | null = null;
   private pendingFullSnapshot: eventWithTime | null = null;
+  private disposed = false;
 
   constructor(opts: TabHubOpts) {
     assertLimit("maxDeltaEvents", opts.maxDeltaEvents);
@@ -282,6 +283,23 @@ export class TabHub {
     this.clearSnapshotRequest();
   }
 
+  /**
+   * The tab is gone, or its target was attached again under a new hub. Its timers stop and it
+   * never asks a page for a snapshot again: the agent behind a reattached target is the new
+   * hub's, and a retry from here would give that page unrequested snapshots and new epochs.
+   */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.clearSnapshotRetry(true);
+    this.clearSnapshotRequest();
+    this.needSnapshotListeners.clear();
+  }
+
+  get isDisposed(): boolean {
+    return this.disposed;
+  }
+
   /** Someone is using the page, even if it has nothing to report yet. */
   noteInput(at = this.now()): void {
     if (!Number.isFinite(at)) throw new RangeError("input timestamp must be finite");
@@ -290,6 +308,7 @@ export class TabHub {
 
   /** Force a fresh snapshot for a semantic cause such as viewport geometry change. */
   requestSnapshot(reason: SnapshotReason): void {
+    if (this.disposed) return;
     if (this.snapshotRequested) {
       if (reason !== this.pendingSnapshotReason) {
         this.queuedSnapshotReason = strongerReason(this.queuedSnapshotReason, reason);
@@ -366,6 +385,7 @@ export class TabHub {
   }
 
   private failSnapshotRequest(attempt: number): void {
+    if (this.disposed) return;
     if (!this.snapshotRequested || attempt !== this.snapshotRequestAttempt) return;
     const reason = this.pendingSnapshotReason;
     this.clearSnapshotRequest();
@@ -389,7 +409,8 @@ export class TabHub {
 
     this.snapshotRetryTimer = setTimeout(() => {
       this.snapshotRetryTimer = undefined;
-      if (!this.hasDocument || this.docId !== docId || this.epoch !== epoch) return;
+      if (this.disposed || !this.hasDocument || this.docId !== docId || this.epoch !== epoch)
+        return;
       if (this.snapshotRequested) return;
       this.requestSnapshot(reason);
     }, delayMs);

@@ -423,6 +423,33 @@ describe("TabHub", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("stops retrying, and never asks for a snapshot again, once disposed", async () => {
+    vi.useFakeTimers();
+    const hub = new TabHub({
+      sessionId: "s1",
+      tabId: "disposed-retry",
+      snapshotRequestTimeoutMs: 1_000,
+      snapshotRetryMs: 50,
+      snapshotRetryMaxMs: 100,
+    });
+    const attempts: string[] = [];
+    hub.onNeedSnapshot((reason) => {
+      attempts.push(reason);
+      return Promise.reject(new Error("target detached"));
+    });
+    hub.ingest(hello(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(attempts).toEqual(["nav"]);
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    hub.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+    hub.requestSnapshot("resync");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(attempts).toEqual(["nav"]);
+    expect(hub.isDisposed).toBe(true);
+  });
+
   it("applies the rewrite stage before storing and measuring every rrweb event", () => {
     const seen: Array<{ type: EventType; sessionId: string; tabId: string }> = [];
     const rewrite: RewriteStage = (event, context) => {
