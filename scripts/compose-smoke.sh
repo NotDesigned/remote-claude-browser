@@ -120,6 +120,7 @@ in_server test -s /app/viewer/index.html
 in_server ip addr add "$SMOKE_PROXY_IP/32" dev lo
 proxy_started=true
 in_server node -e 'const fs = require("node:fs"); fs.writeFileSync("/tmp/compose-fixture.mjs", fs.readFileSync(0));' < scripts/compose-fixture.mjs
+in_server node -e 'const fs = require("node:fs"); fs.writeFileSync("/tmp/prosemirror-composer.js", fs.readFileSync(0));' < scripts/fixtures/prosemirror-composer.js
 "${compose[@]}" --project-name "$project" exec -d server node /tmp/compose-fixture.mjs "$SMOKE_PROXY_IP" "$SMOKE_PROXY_PORT" 18080
 
 # Bind the fixture's proxy before opening a real authenticated browser workspace.

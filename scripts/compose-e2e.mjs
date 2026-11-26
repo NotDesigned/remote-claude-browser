@@ -524,6 +524,120 @@ async function checkComposerFocus(page, address, label) {
   console.log(`${label}: focus stays in a composer the page re-mounts, and no key is lost.`);
 }
 
+/**
+ * The same with a real ProseMirror composer, which clears itself in place after sending and
+ * rewrites what is typed ("--" into "—", **text** into bold). Several messages go out in a row,
+ * typing on straight after each send: each must reach the page exactly once, as the page made it,
+ * none may bring the one before back, and the field sync must never fail (「输入未同步」, which
+ * also drops Enter). A phone types as a soft keyboard does, with text input and no key events,
+ * and both commit a pinyin composition.
+ */
+const PROSEMIRROR_PAGE = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ProseMirror composer</title>
+<style>body{margin:0;font:16px sans-serif}#bar{position:fixed;bottom:0;left:0;right:0;padding:8px;background:#eee}
+.ProseMirror{min-height:40px;border:1px solid #888;padding:6px;background:#fff;white-space:pre-wrap}
+.ProseMirror p{margin:0}.is-empty::before{content:attr(data-placeholder);color:#999;float:left;height:0}
+#thread{padding:8px 8px 120px}</style>
+<div id="thread"></div><div id="bar"></div>
+<script src="/prosemirror-composer.js"></script>
+<script>
+const thread = document.getElementById("thread");
+window.sentMessages = [];
+PMComposer.mount(document.getElementById("bar"), {
+  onSend(text) {
+    window.sentMessages.push(text);
+    const msg = document.createElement("p");
+    msg.className = "sent";
+    msg.textContent = text;
+    thread.append(msg);
+    const reply = document.createElement("p");
+    thread.append(reply);
+    let words = 0;
+    const timer = setInterval(() => {
+      reply.append(" word" + words);
+      if (++words > 40) clearInterval(timer);
+    }, 30);
+  },
+});
+document.getElementById("composer").focus();
+</script>`;
+
+async function checkProseMirrorComposer(page, address, label, { softKeyboard = false } = {}) {
+  await address.fill(fixturePage(PROSEMIRROR_PAGE));
+  await address.press("Enter");
+  const mirrored = page.frameLocator("#mirror-host .mirror-stage:not([data-parked]) iframe");
+  await mirrored.locator("#composer").waitFor({ timeout: 60_000 });
+  await page.waitForFunction(
+    () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
+    undefined,
+    { timeout: 60_000 },
+  );
+  await mirrored.locator("#composer").click();
+  await page.waitForTimeout(500);
+  await page.evaluate(() => {
+    const seen = (window.__syncFailed = []);
+    const timer = setInterval(() => {
+      if (document.body.textContent?.includes("输入未同步")) seen.push(Date.now());
+    }, 50);
+    window.__stopSyncWatch = () => clearInterval(timer);
+  });
+  const cdp = await page.context().newCDPSession(page);
+  const type = async (text) => {
+    if (!softKeyboard) return page.keyboard.type(text, { delay: 40 });
+    // A soft keyboard: each character arrives as text input, with no key event.
+    for (const character of text) {
+      await page.keyboard.insertText(character);
+      await page.waitForTimeout(40);
+    }
+  };
+  const compose = async (pinyin, text) => {
+    for (let length = 1; length <= pinyin.length; length++) {
+      const preedit = pinyin.slice(0, length);
+      await cdp.send("Input.imeSetComposition", {
+        text: preedit,
+        selectionStart: preedit.length,
+        selectionEnd: preedit.length,
+      });
+      await page.waitForTimeout(40);
+    }
+    await cdp.send("Input.insertText", { text });
+  };
+  const rounds = [
+    { parts: ["first message goes out once"], expected: "first message goes out once" },
+    { parts: ["second -- with a dash"], expected: "second — with a dash" },
+    { parts: ["**bold** then more"], expected: "bold then more" },
+    { parts: ["pinyin ", ["nihao", "你好"], " done"], expected: "pinyin 你好 done" },
+    { parts: ["fifth straight after"], expected: "fifth straight after" },
+  ];
+  const expected = [];
+  for (const [index, round] of rounds.entries()) {
+    for (const part of round.parts)
+      await (typeof part === "string" ? type(part) : compose(part[0], part[1]));
+    await page.waitForTimeout(index % 2 ? 60 : 600);
+    await page.keyboard.press("Enter");
+    expected.push(round.expected);
+    // Straight on, as someone does who has more to say while the reply streams.
+    await page.waitForTimeout(index % 2 ? 30 : 250);
+  }
+  await page.waitForTimeout(4_000);
+  const sent = await mirrored.locator("p.sent").allTextContents();
+  const failed = await page.evaluate(() => {
+    window.__stopSyncWatch();
+    return window.__syncFailed.length;
+  });
+  const composer = await mirrored.locator("#composer").textContent();
+  await cdp.detach();
+  assert.deepEqual(
+    sent,
+    expected,
+    `${label}: messages did not reach the ProseMirror page as typed`,
+  );
+  assert.equal(failed, 0, `${label}: the field sync failed (输入未同步) while typing`);
+  assert.equal(composer, "", `${label}: the composer here still shows text after the last send`);
+  console.log(
+    `${label}: a real ProseMirror composer sends each message once, keeps its input rules and stays in sync.`,
+  );
+}
+
 const CANVAS_CHILD = `<!doctype html><meta charset="utf-8"><body style="margin:0"><canvas id="painted" width="160" height="90"></canvas><script>
 const paint = document.getElementById("painted").getContext("2d");
 let red = true;
@@ -786,6 +900,7 @@ report();
 
   await checkForm(page, address, mirrored);
   await checkComposerFocus(page, address, "Desktop");
+  await checkProseMirrorComposer(page, address, "Desktop");
   await checkNotifications(page, address);
   await checkMovedFrame(page, address);
   await checkNestedFramesRepeatedly(page, address);
@@ -814,6 +929,9 @@ async function checkPhoneComposer(browser) {
     .locator('#urlbar button[aria-label="Reload"]:not([disabled])')
     .waitFor({ timeout: 60_000 });
   await checkComposerFocus(phone, phone.locator("#urlbar input"), "Phone");
+  await checkProseMirrorComposer(phone, phone.locator("#urlbar input"), "Phone", {
+    softKeyboard: true,
+  });
   await context.close();
 }
 

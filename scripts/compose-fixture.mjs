@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 
 // geoDelay (milliseconds, optional) stands for a real exit lookup's round trips through a node.
 const [listen, proxyPort, webPort, geoDelay = "0"] = process.argv.slice(2);
+/** The real ProseMirror composer (scripts/fixtures), copied in beside this script. */
+const COMPOSER_SCRIPT = "/tmp/prosemirror-composer.js";
 writeFileSync(
   "/tmp/smoke-exit.json",
   JSON.stringify({
@@ -26,6 +28,10 @@ const server = createServer({ maxHeaderSize: 128 * 1024 }, (request, reply) => {
         }),
       );
     }, Number(geoDelay));
+  } else if (url.pathname === "/prosemirror-composer.js" && existsSync(COMPOSER_SCRIPT)) {
+    reply
+      .writeHead(200, { "content-type": "text/javascript; charset=utf-8" })
+      .end(readFileSync(COMPOSER_SCRIPT));
   } else if (url.pathname === "/cookies/set") {
     reply.writeHead(302, { "set-cookie": "mirror=first; Path=/", location: "/cookies" }).end();
   } else if (url.pathname === "/cookies") {
