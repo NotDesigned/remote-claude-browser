@@ -30,7 +30,7 @@ COMPOSE_FILE=compose.yml:compose.runtime.yml ./scripts/bootstrap.sh
 echo 'COMPOSE_FILE=compose.yml:compose.runtime.yml' >> .env
 ```
 
-`scripts/install-apparmor.sh` 把 `deploy/apparmor/remote-claude-browser` 装进 `/etc/apparmor.d/` 并加载，重启后仍然有效。它是 Docker 默认的配置文件加上三项：允许挂载（每个浏览器配置的网络和文件系统要用）、允许创建用户命名空间、允许本配置文件内的进程互发信号。没有加载它时，Docker 使用 AppArmor 的宿主机上服务端容器启动不了。
+`scripts/install-apparmor.sh` 把 `deploy/apparmor/remote-claude-browser` 装进 `/etc/apparmor.d/` 并加载，重启后仍然有效。它是 Docker 默认的配置文件加上三项：允许 `ip netns` 和浏览器文件系统用到的那几种挂载，只能挂到 `/run/netns/` 和 `/run/remote-browser/` 下各个浏览器的根目录（以及用这个目录盖住容器的顶层目录），不允许把 `/proc`、`/sys` 挂到别处；允许创建用户命名空间；允许本配置文件内的进程互发信号。没有加载它时，Docker 使用 AppArmor 的宿主机上服务端容器启动不了。
 
 `scripts/bootstrap.sh` 在没有 `.env` 时生成一个（随机的初始管理员密码和 `MIRROR_AUTH_SECRET`），启动服务，等健康检查通过后打印访问地址和密码；已有 `.env` 时不改动它。初始管理员的用户名是 `admin`，要改的话在第一次启动前设置 `MIRROR_ADMIN_USERNAME`。
 
@@ -50,7 +50,7 @@ docker compose up -d
 docker compose ps
 ```
 
-不想在服务器上构建镜像时，改用预构建的镜像。四个镜像都要指定，版本标签和 `git checkout` 的版本一致（下面以 `v0.5.0` 为例），不要用会随时变化的 `latest`：
+不想在服务器上构建镜像时，改用预构建的镜像。四个镜像都要指定，版本标签和 `git checkout` 的版本一致（下面以 `v0.5.0` 为例），不要用会随时变化的 `latest`。每个版本发布时带三个标签：`v0.5.0` 和 `0.5.0` 指同一个镜像，`0.5` 跟随这个系列最新的补丁版本；`latest` 只跟随通过 CI 的 `main`，打版本标签不会移动它：
 
 ```bash
 SERVER_IMAGE=ghcr.io/notdesigned/remote-claude-browser-server:v0.5.0
@@ -170,10 +170,10 @@ EGRESS_PROXY='vless://uuid@proxy.example.com:443?security=reality&sni=...&pbk=..
 
 - 每个实例有自己的 Docker 内部网络 `remote-browser-<实例 ID>-net`，网络里只有这个实例和 `cpa-broker`，实例之间互相访问不到。子网从 `CPA_INSTANCE_SUBNETS`（默认 `10.254.0.0/16`）里分 `/28`，和宿主机已有的网络冲突时修改它。
 - 实例不对外发布端口，唯一的出口是 `runtime-egress:8781`：`cpa-broker` 把它转给服务端经认证的代理，再经各个凭据绑定的节点出网。服务端和 `cpa-broker` 之间是 `CPA_RUNTIME_NETWORK` 这个内部网络。
-- 实例容器不属于 Compose 项目，`docker compose down`、`--remove-orphans` 不会删除它们，`docker compose ps` 也看不到它们，用 `docker ps --filter label=dev.remote-browser.cpa-managed=true` 列出。
+- 实例容器不属于 Compose 项目，`docker compose down`、`--remove-orphans` 不会删除它们，`docker compose ps` 也看不到它们。每个实例的容器、网络和卷都带标签 `dev.remote-browser.cpa-deployment=<CPA_RUNTIME_NETWORK 的值>`，用 `docker ps -a --filter label=dev.remote-browser.cpa-deployment=remote-browser-cpa-runtime` 列出本部署的实例（改过 `CPA_RUNTIME_NETWORK` 时换成它的值）；同一台 Docker 主机上别的部署的实例不在其中。
 - `cpa-broker` 启动时，以及每次启动实例前，核对实例容器的镜像和模板；有变化就保留三个数据卷，重建容器，原来在运行的继续运行。所以升级后实例自动换上新的 CPA 镜像，不用手动处理。
 - CPA 镜像固定为 CLIProxyAPI 8.0.68，镜像摘要写在 `deploy/Dockerfile.cpa`；原生管理面板的 HTML 版本写在 `deploy/fetch-cpa-panel.mjs`，构建镜像时核对 SHA-256，打开页面时不下载。
-- 每个实例有三个数据卷：`remote-browser-<实例 ID>-config`、`-auth`、`-static`，可以用 `docker volume ls --filter label=dev.remote-browser.cpa-instance` 列出。停止实例保留这些卷；删除用户会删除他的私有实例和卷。
+- 每个实例有三个数据卷：`remote-browser-<实例 ID>-config`、`-auth`、`-static`。停止实例保留这些卷；删除用户会删除他的私有实例和卷。较早创建的卷没有部署标签（Docker 不能给已有的卷加标签），`cpa-broker` 按实例 ID 认领它们：实例 ID 由网关随机生成、记在自己的数据库里，别的部署只有拿到这份数据库的副本才会用到同一个 ID。
 - 入口只需转发整个站点（见[公网入口](#公网入口)），不必对外发布 CPA 的端口或 Docker socket。
 
 使用者的操作见[使用 · CPA](usage.md#cpa)。从旧的独立 CPA 迁移见 [CHANGELOG](../CHANGELOG.md)。
@@ -272,17 +272,26 @@ docker compose build --build-arg DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu
 先停服再备份，避免数据库和浏览器资料来自不同时间点。CPA 实例不属于 Compose 项目，`docker compose stop` 不会停止它们，要单独停。CPA 卷和工作台数据要一起备份，只有其中一部分恢复不了原来的实例。在 `<安装目录>` 里执行：
 
 ```bash
-cpa=$(docker ps -q --filter label=dev.remote-browser.cpa-managed=true)
+deployment=remote-browser-cpa-runtime   # CPA_RUNTIME_NETWORK 的值
+mine="label=dev.remote-browser.cpa-deployment=$deployment"
+helper=node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
+cpa=$(docker ps -q --filter "$mine")
+# 本部署的实例 ID：来自它的容器，以及带部署标签的卷（没有部署标签的旧卷靠容器找到）
+ids=$( { docker ps -a --filter "$mine" --format '{{.Label "dev.remote-browser.cpa-instance"}}'
+         docker volume ls --filter "$mine" --format '{{.Label "dev.remote-browser.cpa-instance"}}'; } | sort -u)
 docker compose stop
 [ -z "$cpa" ] || docker stop $cpa
 mkdir -p backup
 archive() {   # 卷名 归档名
-  docker run --rm -v "$1":/volume:ro -v "$PWD/backup":/backup debian:bookworm-slim \
+  docker run --rm -v "$1":/volume:ro -v "$PWD/backup":/backup "$helper" \
     tar --numeric-owner -czf "/backup/$2.tar.gz" -C /volume .
 }
 archive remote-claude-browser_data data
-for volume in $(docker volume ls -q --filter label=dev.remote-browser.cpa-managed=true); do
-  archive "$volume" "$volume"
+for id in $ids; do
+  for kind in config auth static; do
+    volume="remote-browser-$id-$kind"
+    ! docker volume inspect "$volume" >/dev/null 2>&1 || archive "$volume" "$volume"
+  done
 done
 # 只在使用 compose.https.yml 时
 archive remote-claude-browser_caddy-data caddy-data
@@ -292,11 +301,11 @@ docker compose start
 
 实际卷名用 `docker volume ls` 核对，改过项目名时相应调整。
 
-还原时也先按上面的方法停服，一起还原 `data` 卷和 CPA 卷。`cpa-broker` 只接受带有它的标签的卷，所以 CPA 卷要先带标签创建，再解包：
+还原时也先按上面的方法停服（同样设置 `deployment` 和 `helper`），一起还原 `data` 卷和 CPA 卷。`cpa-broker` 只接受带有它的标签的卷，所以 CPA 卷要先带标签创建，再解包：
 
 ```bash
 restore() {   # 卷名 归档名
-  docker run --rm -v "$1":/volume -v "$PWD/backup":/backup:ro debian:bookworm-slim \
+  docker run --rm -v "$1":/volume -v "$PWD/backup":/backup:ro "$helper" \
     tar --numeric-owner -xzpf "/backup/$2.tar.gz" -C /volume
 }
 restore remote-claude-browser_data data
@@ -305,7 +314,8 @@ for archive in backup/remote-browser-cpa-*.tar.gz; do
   id=${volume#remote-browser-}
   id=${id%-*}
   docker volume create --label dev.remote-browser.cpa-managed=true \
-    --label "dev.remote-browser.cpa-instance=$id" "$volume"
+    --label "dev.remote-browser.cpa-instance=$id" \
+    --label "dev.remote-browser.cpa-deployment=$deployment" "$volume"
   restore "$volume" "$volume"
 done
 docker compose up -d
@@ -340,4 +350,4 @@ docker compose up -d
 ## 撤销访问和清除数据
 
 - 撤销一个用户的访问：在「管理后台」停用或删除他，见[管理](admin.md#停用和删除用户)。修改 `.env` 不会改变已有用户的密码，轮换 `MIRROR_AUTH_SECRET` 也不会撤销用户的登录。
-- 清除全部数据：`docker compose down --volumes`，再删除 `cpa-broker` 创建的 CPA 容器、卷和网络（分别用 `docker ps -a`、`docker volume ls`、`docker network ls` 加 `--filter label=dev.remote-browser.cpa-managed=true` 列出）。这个操作不可恢复。
+- 清除全部数据：先按[备份](#备份)里的方法算出本部署的 `ids`，再执行 `docker compose down --volumes`，然后删除 `cpa-broker` 创建的 CPA 容器和网络（`docker ps -a`、`docker network ls` 加 `--filter label=dev.remote-browser.cpa-deployment=<CPA_RUNTIME_NETWORK 的值>` 列出），以及每个 ID 的三个卷 `remote-browser-<实例 ID>-config`、`-auth`、`-static`。不要按 `dev.remote-browser.cpa-managed` 筛选：同一台 Docker 主机上别的部署的实例也带这个标签。这个操作不可恢复。
