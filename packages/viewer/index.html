@@ -4,6 +4,11 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" type="image/svg+xml" href="/src/icon.svg" />
+    <!-- Behind the sign-in, so the manifest is fetched with its cookie. A home-screen web app is
+         what lets iPhone and iPad show website notifications (docs/usage.md 「网页通知」). -->
+    <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
     <title>远程 Claude</title>
   </head>
   <body>

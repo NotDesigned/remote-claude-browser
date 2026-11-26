@@ -23,6 +23,8 @@ import {
 } from "./remote-clock";
 import type { ViewMode } from "./client-session";
 import type { ConnectionStatus } from "./connection-status";
+import { NotificationMenuSection } from "./notifications/notify-ui";
+import type { NotificationsControl } from "./notifications/use-notifications";
 
 export type { StatusTone } from "./connection-status";
 export type ThemePreference = "auto" | "light" | "dark";
@@ -57,6 +59,8 @@ export interface ShellBarProps {
   onReconnect?: () => void;
   workspace?: WorkspaceMenuProps;
   onMenuOpen?(): void;
+  /** 「网页通知」, while a session runs. */
+  notifications?: NotificationsControl;
 }
 
 const VIEWS: { mode: ViewMode; label: string; title: string }[] = [
@@ -321,6 +325,7 @@ export function ShellBar(props: ShellBarProps) {
               ))}
             </div>
           </div>
+          {props.notifications && <NotificationMenuSection control={props.notifications} />}
           {props.workspace && <WorkspaceAccount {...props.workspace} />}
         </div>
       )}

@@ -1,0 +1,83 @@
+/* 「网页通知」: the ⋯ menu's setting and a page's request (notify-ui.tsx). */
+.shell-notify-summary {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+#shell-notify-setting[data-notify-tone="blocked"] .shell-notify-summary {
+  color: var(--warn-ink);
+}
+.shell-notify-reset {
+  align-self: flex-start;
+  padding: 2px 0;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+#notify-prompt {
+  position: fixed;
+  z-index: 60;
+  top: calc(var(--shellbar-height, 44px) + 8px);
+  right: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  max-width: min(420px, calc(100vw - 24px));
+  padding: 10px 12px;
+  color: var(--ink);
+  background: var(--surface, #fff);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 10px);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 16%);
+  font-size: 14px;
+  line-height: 1.45;
+}
+#notify-prompt p {
+  display: flex;
+  flex: 1 1 200px;
+  flex-direction: column;
+  margin: 0;
+}
+#notify-prompt p span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.notify-prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.notify-prompt-actions button {
+  min-height: 32px;
+  padding: 0 12px;
+  color: var(--ink);
+  background: var(--surface, #fff);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 8px);
+  font: inherit;
+  cursor: pointer;
+}
+.notify-prompt-actions .notify-prompt-allow {
+  color: var(--on-accent, #fff);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.notify-prompt-actions .notify-prompt-close {
+  padding: 0 8px;
+  color: var(--muted);
+  border-color: transparent;
+  background: none;
+}
+@media (max-width: 760px) {
+  #notify-prompt {
+    right: 8px;
+    left: 8px;
+    max-width: none;
+  }
+}

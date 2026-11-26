@@ -24,6 +24,8 @@ import { useTheme } from "./app/use-theme";
 import { useCpaBrowserAuthorization, useEntryLinks, useWorkspaceUser } from "./app/use-workspace";
 import { viewStorage } from "./app/view-storage";
 import { WorkspacePanels } from "./app/workspace-panels";
+import { NotificationPrompts } from "./notifications/notify-ui";
+import { useNotifications } from "./notifications/use-notifications";
 import "@rrweb/replay/dist/style.css";
 import "./app.css";
 import "./shell.css";
@@ -102,6 +104,11 @@ export function App() {
     onFailed: () => dispatchPanels({ type: "open", panel: "network", networkTab: "cpa" }),
   });
   const browserAuthorization = cpaAuthorization.authorization;
+  // Website notifications, remembered per browser profile on this device.
+  const notifications = useNotifications(
+    fixturePath === null ? readySid : null,
+    accountList?.current ?? null,
+  );
 
   const pixelMode = pixelModeOf(runtime.state);
   const activeChrome = activeTab === null ? null : (chromeByTab[activeTab] ?? null);
@@ -153,6 +160,7 @@ export function App() {
         onLinkTarget={setLinkTarget}
         workspace={workspace}
         onMenuOpen={refreshUser}
+        notifications={notifications.state ? notifications : undefined}
         pxQuality={pxQuality}
         onPxQuality={(quality) => {
           setPxQuality(quality);
@@ -239,6 +247,7 @@ export function App() {
               }
         }
       />
+      <NotificationPrompts control={notifications} />
       <main
         id="mirror-host"
         data-input-ready={runtime.state.inputReady ? "true" : "false"}
