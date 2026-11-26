@@ -278,8 +278,16 @@ export async function startProfileBroker({
     const dir = join(runtimeRoot, info.name);
     await mkdir(dir, { recursive: true, mode: 0o700 });
     let child;
+    const phases = {};
+    let phaseStart = performance.now();
+    const phase = (name) => {
+      const now = performance.now();
+      phases[name] = Math.round((now - phaseStart) * 10) / 10;
+      phaseStart = now;
+    };
     try {
       if (!local) await network("start", info);
+      phase("netns");
       const config = createConfig(node, {
         tun: !local,
         listenAddress: info.peerIp,
@@ -325,7 +333,9 @@ export async function startProfileBroker({
       }
       child = spawn(command, args, { detached: true, stdio: "ignore" });
       await waitPort(info.peerIp, port, child);
+      phase("mihomo");
       if (!local) await network("route", info);
+      phase("route");
       if (stopping || desired.get(id) !== target) throw new Error("Egress start cancelled");
       if (child.exitCode !== null || child.signalCode !== null)
         throw new Error("Mihomo exited during startup");
@@ -348,6 +358,8 @@ export async function startProfileBroker({
         forwardingBy: Date.now() + 5000,
         proxyUrl: `http://${info.peerIp}:${port}`,
         externalProxyUrl: `http://${token}:x@${proxyHost}:${proxyPort}`,
+        // How long this start took, for the first browser start that uses it.
+        phases,
       };
       networks.set(id, result);
       tokens.set(token, result);
@@ -456,7 +468,19 @@ export async function startProfileBroker({
           code: "BROWSER_ENGINE_MISSING",
         });
       });
+    let phaseStart = performance.now();
+    const phases = {};
+    const phase = (name) => {
+      const now = performance.now();
+      phases[name] = Math.round((now - phaseStart) * 10) / 10;
+      phaseStart = now;
+    };
     const egress = await ensureNetwork(`browser-${id}`, body.node);
+    phase("egress");
+    if (egress.phases) {
+      Object.assign(phases, egress.phases);
+      egress.phases = undefined;
+    }
     let exitMetadata;
     try {
       exitMetadata = await metadataForNetwork(egress);
@@ -464,6 +488,7 @@ export async function startProfileBroker({
       await removeNetwork(egress.id);
       throw error;
     }
+    phase("exit");
     const cdpPath = join(runtimeRoot, `${egress.info.name}.cdp`);
     const child = spawn(
       "ip",
@@ -534,7 +559,8 @@ export async function startProfileBroker({
         throw new Error("Browser start cancelled");
       browsers.set(id, item);
       child.once("exit", () => void closeBrowser(id));
-      return { socketPath: cdpPath, proxyUrl: egress.proxyUrl, ...exitMetadata };
+      phase("spawn");
+      return { socketPath: cdpPath, proxyUrl: egress.proxyUrl, ...exitMetadata, phases };
     } catch (error) {
       server.close();
       await closeChromium(child);

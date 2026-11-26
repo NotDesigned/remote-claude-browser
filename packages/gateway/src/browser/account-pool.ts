@@ -16,6 +16,7 @@ import type { ExitMetadata } from "../egress/timezone";
 import { ClientSessionError } from "../session/clients";
 import { DEFAULT_PROFILE, type createProfileStore } from "../session/profiles";
 import type { TargetRef } from "../types";
+import { timed } from "../timing";
 import { createAgentLink, type VoiceAgentMsg } from "./agentlink";
 import { callAgentBridge } from "./bridge";
 import { launchBrokerBrowser } from "./broker";
@@ -263,7 +264,7 @@ export function createAccountPool(deps: AccountPoolDeps) {
         const identity = profiles.identity(id);
         const display =
           !external && process.env.CHROME_HEADFUL === "1"
-            ? await createAccountDisplay()
+            ? await timed("display", createAccountDisplay)
             : undefined;
         let browser: BrowserHandle | undefined;
         let proxyUrl: string | undefined;
@@ -299,7 +300,7 @@ export function createAccountPool(deps: AccountPoolDeps) {
               browser: opened,
               proxyUrl: endpoint,
               ...metadata
-            } = await launchBrokerBrowser(id, node, launchOptions);
+            } = await timed("broker", () => launchBrokerBrowser(id, node, launchOptions));
             browser = opened;
             proxyUrl = endpoint;
             exit = metadata;
@@ -313,7 +314,9 @@ export function createAccountPool(deps: AccountPoolDeps) {
                   env: { ...launchOptions.env, TZ: exit.timeZone },
                 });
           }
-          const account = await buildAccount(id, dir, browser, identity, exit, display);
+          const account = await timed("account", () =>
+            buildAccount(id, dir, browser!, identity, exit, display),
+          );
           account.proxyUrl = proxyUrl;
           await profiles.setExitMetadata(id, exit);
           accounts.set(id, account);

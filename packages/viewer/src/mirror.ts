@@ -343,6 +343,8 @@ export function createMirror(opts: MirrorOpts): Mirror {
   };
 
   const rebuild = (message: Snapshot) => {
+    // scripts/perf-load.mjs reads these from the page's performance timeline.
+    const rebuildStart = performance.now();
     cancelEditablePatch();
     endTabSwitch();
     if (message.reason === "nav" || (state !== null && state.tab !== message.tab)) {
@@ -396,6 +398,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
     state = built.live;
     state.detachInteraction = opts.attachInteraction?.(message.tab, state.replayer) ?? (() => {});
     commitSnapshot(state, message);
+    performance.measure("mirror-rebuild", { start: rebuildStart, detail: message.tab });
   };
 
   const applyDelta = (message: Delta) => {

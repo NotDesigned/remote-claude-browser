@@ -24,6 +24,7 @@ import type { createPixelCapacity } from "../px-capacity";
 import { grabEncoderForDisplay, jpegGrabForDisplay } from "../px-video";
 import { createRtcSignalRelay } from "../rtcsig";
 import type { AgentLink, TargetRef } from "../types";
+import { timed } from "../timing";
 import { createUploadManager } from "../uploads";
 import { ClientSessionError, type ClientRecord } from "./clients";
 import type { ClientSessions, RuntimeStart } from "./runtime-registry";
@@ -86,7 +87,7 @@ export async function createClientRuntime(
       "CLIENT_RESOURCES",
       "内存较紧张，请等待离线会话自动回收后重试",
     );
-  const account = await deps.openAccount(deps.sessions.profileOf(sid));
+  const account = await timed("profile", () => deps.openAccount(deps.sessions.profileOf(sid)));
   const assetKey = randomBytes(32);
   const { pool, agent, themeCopies, browser, frameOwners } = account;
   const scoped = pool.scope(sid),
@@ -313,7 +314,7 @@ export async function createClientRuntime(
       for (const url of urls.length
         ? urls
         : [process.env.MIRROR_START_URL ?? "https://claude.ai/"]) {
-        await tabs.handle({ t: "nav", tab: "", action: "newtab", url });
+        await timed("tab", () => tabs.handle({ t: "nav", tab: "", action: "newtab", url }));
         restored.push(tabs.activeTabId!);
       }
       const active = sleeping && restored[sleeping.active];

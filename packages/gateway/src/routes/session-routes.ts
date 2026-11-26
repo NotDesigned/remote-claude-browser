@@ -3,6 +3,7 @@
  * a CPA or remote-cc sign-in in it, the status bar's numbers, and the health check.
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { performance } from "node:perf_hooks";
 import { isClaudeTheme } from "../claude/theme";
 import { profileForbidden, type SessionAccess } from "../auth/session-access";
 import { isPhoneRequest } from "../browser/phone-identity";
@@ -11,6 +12,7 @@ import type { registerRemoteCcRoutes } from "../remote-cc/routes";
 import type { ClientRuntime } from "../session/client-runtime";
 import { ClientSessionError } from "../session/clients";
 import { DEFAULT_PROFILE } from "../session/profiles";
+import { Timing, withTiming } from "../timing";
 import type { GatewayContext } from "./context";
 import type { ProfileActions } from "./profile-routes";
 
@@ -55,71 +57,78 @@ export function registerSessionRoutes(
   app.post<{ Body: { clientKey?: unknown; sid?: unknown; account?: unknown } }>(
     "/api/client/session",
     { config: workspace.config },
-    async (request) => {
+    async (request, reply) => {
       const owner = workspace.owner(request, 401, "请重新输入访问密码");
-      return await lock.run(async () => {
-        const user = requireLiveOwner(request.raw, owner);
-        const chosen = request.body?.account;
-        if (
-          chosen !== undefined &&
-          (typeof chosen !== "string" ||
-            !accountStore.has(chosen) ||
-            !access.ownsProfile(user.id, chosen))
-        )
-          throw profileForbidden();
-        let previous = clientSessions.findExisting(
-          owner,
-          request.body?.clientKey,
-          request.body?.sid,
-        );
-        if (previous && (await registry.expireSleepingLocked(previous))) previous = undefined;
-        const existing = previous !== undefined;
-        if (
-          !existing &&
-          user.maxSessions != null &&
-          clientSessions.all().filter((record) => userIdForOwner(record.owner) === user.id)
-            .length >= user.maxSessions
-        )
-          throw new ClientSessionError(
-            409,
-            "USER_SESSION_LIMIT",
-            `已达到会话上限（${user.maxSessions} 个），请先结束不再使用的会话`,
+      const timing = new Timing();
+      const queued = performance.now();
+      const result = await withTiming(timing, () =>
+        lock.run(async () => {
+          timing.add("queue", performance.now() - queued);
+          const user = requireLiveOwner(request.raw, owner);
+          const chosen = request.body?.account;
+          if (
+            chosen !== undefined &&
+            (typeof chosen !== "string" ||
+              !accountStore.has(chosen) ||
+              !access.ownsProfile(user.id, chosen))
+          )
+            throw profileForbidden();
+          let previous = clientSessions.findExisting(
+            owner,
+            request.body?.clientKey,
+            request.body?.sid,
           );
-        const profileId =
-          previous && access.ownsProfile(user.id, previous.profile ?? DEFAULT_PROFILE)
-            ? (previous.profile ?? DEFAULT_PROFILE)
-            : typeof chosen === "string"
-              ? chosen
-              : await profiles.defaultFor(user);
-        accounts.requireBrowserExit(profileId);
-        const record = await clientSessions.acquire(
-          owner,
-          request.body?.clientKey,
-          request.body?.sid,
-          isPhoneRequest(request.headers["user-agent"]),
-        );
-        try {
-          if (!existing || !access.ownsProfile(user.id, clientSessions.profileOf(record.sid))) {
-            if (registry.has(record.sid))
-              throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "浏览器不属于当前用户");
-            await clientSessions.setProfile(owner, record.sid, profileId);
+          if (previous && (await registry.expireSleepingLocked(previous))) previous = undefined;
+          const existing = previous !== undefined;
+          if (
+            !existing &&
+            user.maxSessions != null &&
+            clientSessions.all().filter((record) => userIdForOwner(record.owner) === user.id)
+              .length >= user.maxSessions
+          )
+            throw new ClientSessionError(
+              409,
+              "USER_SESSION_LIMIT",
+              `已达到会话上限（${user.maxSessions} 个），请先结束不再使用的会话`,
+            );
+          const profileId =
+            previous && access.ownsProfile(user.id, previous.profile ?? DEFAULT_PROFILE)
+              ? (previous.profile ?? DEFAULT_PROFILE)
+              : typeof chosen === "string"
+                ? chosen
+                : await profiles.defaultFor(user);
+          accounts.requireBrowserExit(profileId);
+          const record = await clientSessions.acquire(
+            owner,
+            request.body?.clientKey,
+            request.body?.sid,
+            isPhoneRequest(request.headers["user-agent"]),
+          );
+          try {
+            if (!existing || !access.ownsProfile(user.id, clientSessions.profileOf(record.sid))) {
+              if (registry.has(record.sid))
+                throw new ClientSessionError(403, "CLIENT_FORBIDDEN", "浏览器不属于当前用户");
+              await clientSessions.setProfile(owner, record.sid, profileId);
+            }
+            idleReaper.touch(record.sid);
+            hub.broadcastStatus();
+            await registry.ensureLocked(record.sid);
+            return {
+              ...clientSessions.describe(record.sid),
+              account: clientSessions.profileOf(record.sid),
+              sharedAccount: true,
+            };
+          } catch (error) {
+            if (!existing)
+              await registry
+                .releaseLocked(owner, record.sid)
+                .catch((cleanupError) => report("new workspace rollback failed", cleanupError));
+            throw error;
           }
-          idleReaper.touch(record.sid);
-          hub.broadcastStatus();
-          await registry.ensureLocked(record.sid);
-          return {
-            ...clientSessions.describe(record.sid),
-            account: clientSessions.profileOf(record.sid),
-            sharedAccount: true,
-          };
-        } catch (error) {
-          if (!existing)
-            await registry
-              .releaseLocked(owner, record.sid)
-              .catch((cleanupError) => report("new workspace rollback failed", cleanupError));
-          throw error;
-        }
-      });
+        }),
+      );
+      reply.header("server-timing", timing.header());
+      return result;
     },
   );
   /** Moves a session to another profile. Its windows close; the viewer reconnects to new ones. */
