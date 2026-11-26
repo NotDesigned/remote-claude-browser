@@ -217,7 +217,7 @@ export function registerProfileRoutes(
         return { user, id, proxyId: record.proxyId, account: accounts.get(id) };
       });
       const health = snapshot.account
-        ? await networkRuntime.checkBrowser(snapshot.id)
+        ? await ctx.exitChecks.run(snapshot.user.id, () => networkRuntime.checkBrowser(snapshot.id))
         : await ctx.checkProxy(snapshot.user, snapshot.proxyId);
       return await lock.run(() => {
         requireLiveOwner(request.raw, owner);

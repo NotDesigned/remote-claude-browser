@@ -69,9 +69,26 @@ const fields: Record<MihomoProxyType, readonly string[]> = {
 const common = new Set(["name", "type", "server", "port", "ip-version"]);
 
 /** Subscription globals are never imported: no remote rules, listeners, scripts or providers. */
+/** A subscription or share link the person supplied is not usable; the message says why. */
+export class SubscriptionFormatError extends Error {}
+
+/** Anything else that goes wrong while reading supplied text is still about that text. */
+function asFormatError<T>(parse: () => T): T {
+  try {
+    return parse();
+  } catch (error) {
+    if (error instanceof SubscriptionFormatError) throw error;
+    throw new SubscriptionFormatError("代理节点格式无效");
+  }
+}
+
 export function parseSubscription(content: string): MihomoProxy[] {
+  return asFormatError(() => parseSubscriptionText(content));
+}
+
+function parseSubscriptionText(content: string): MihomoProxy[] {
   let text = content.trim();
-  if (!text) throw new Error("代理源内容不能为空");
+  if (!text) throw new SubscriptionFormatError("代理源内容不能为空");
   if (/^[A-Za-z0-9+/_=\s-]+$/.test(text)) {
     const decoded = Buffer.from(text.replace(/\s/g, ""), "base64url").toString("utf8").trim();
     if (decoded.includes("://")) text = decoded;
@@ -85,23 +102,26 @@ export function parseSubscription(content: string): MihomoProxy[] {
   try {
     data = parse(text, { maxAliasCount: 0 });
   } catch {
-    throw new Error("订阅格式错误；请提供 Mihomo YAML/JSON 或代理分享链接");
+    throw new SubscriptionFormatError("订阅格式错误；请提供 Mihomo YAML/JSON 或代理分享链接");
   }
   const nodes = Array.isArray(data) ? data : data?.proxies;
-  if (!Array.isArray(nodes) || nodes.length === 0) throw new Error("订阅需要包含 proxies 节点列表");
+  if (!Array.isArray(nodes) || nodes.length === 0)
+    throw new SubscriptionFormatError("订阅需要包含 proxies 节点列表");
   return nodes.map(validateProxy);
 }
 
 export function parseProxyShareLink(text: string): MihomoProxy {
-  return validateProxy(parseShareLink(text.trim()));
+  return asFormatError(() => validateProxy(parseShareLink(text.trim())));
 }
 
 export function validateProxy(value: unknown): MihomoProxy {
   if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("代理节点必须是对象");
+    throw new SubscriptionFormatError("代理节点必须是对象");
   const node = value as Record<string, unknown>;
   if (typeof node.type !== "string" || !Object.hasOwn(fields, node.type))
-    throw new Error("不支持的代理类型；支持 socks5、http、ss、vmess、vless、trojan、hysteria2");
+    throw new SubscriptionFormatError(
+      "不支持的代理类型；支持 socks5、http、ss、vmess、vless、trojan、hysteria2",
+    );
   const type = node.type as MihomoProxyType;
   if (
     typeof node.server !== "string" ||
@@ -110,19 +130,20 @@ export function validateProxy(value: unknown): MihomoProxy {
     Number(node.port) < 1 ||
     Number(node.port) > 65535
   )
-    throw new Error("代理节点需要有效的服务器和端口");
-  if (typeof node.name !== "string" || !node.name.trim()) throw new Error("代理节点需要名称");
+    throw new SubscriptionFormatError("代理节点需要有效的服务器和端口");
+  if (typeof node.name !== "string" || !node.name.trim())
+    throw new SubscriptionFormatError("代理节点需要名称");
   for (const key of Object.keys(node))
     if (!common.has(key) && !fields[type].includes(key))
-      throw new Error(`代理类型 ${type} 不支持参数 ${key}`);
+      throw new SubscriptionFormatError(`代理类型 ${type} 不支持参数 ${key}`);
   if (["vmess", "vless"].includes(type) && typeof node.uuid !== "string")
-    throw new Error(`${type} 节点需要 UUID`);
+    throw new SubscriptionFormatError(`${type} 节点需要 UUID`);
   if (["ss", "trojan", "hysteria2"].includes(type) && typeof node.password !== "string")
-    throw new Error(`${type} 节点需要密码`);
+    throw new SubscriptionFormatError(`${type} 节点需要密码`);
   if (type === "ss" && typeof node.cipher !== "string")
-    throw new Error("Shadowsocks 节点需要 cipher");
+    throw new SubscriptionFormatError("Shadowsocks 节点需要 cipher");
   if (node.network !== undefined && !["tcp", "ws", "grpc", "xhttp"].includes(String(node.network)))
-    throw new Error("只支持 tcp、ws、grpc、xhttp 传输");
+    throw new SubscriptionFormatError("只支持 tcp、ws、grpc、xhttp 传输");
   // Nested transport options are data only. File paths and outbound chains are intentionally absent.
   for (const [key, allowed] of Object.entries({
     "ws-opts": ["path", "headers", "max-early-data", "early-data-header-name"],
@@ -143,9 +164,9 @@ export function validateProxy(value: unknown): MihomoProxy {
     if (node[key] === undefined) continue;
     const options = node[key];
     if (!options || typeof options !== "object" || Array.isArray(options))
-      throw new Error(`${key} 必须是对象`);
+      throw new SubscriptionFormatError(`${key} 必须是对象`);
     for (const field of Object.keys(options))
-      if (!allowed.includes(field)) throw new Error(`${key} 不支持参数 ${field}`);
+      if (!allowed.includes(field)) throw new SubscriptionFormatError(`${key} 不支持参数 ${field}`);
   }
   return structuredClone(node) as MihomoProxy;
 }
@@ -156,10 +177,12 @@ function parseShareLink(text: string): Record<string, unknown> {
     try {
       v = JSON.parse(Buffer.from(text.slice(8), "base64url").toString("utf8"));
     } catch {
-      throw new Error("VMess 分享链接需要有效的 base64 JSON");
+      throw new SubscriptionFormatError("VMess 分享链接需要有效的 base64 JSON");
     }
-    if (v.type && v.type !== "none") throw new Error("VMess 分享链接不支持伪装头");
-    if (v.net && !["tcp", "ws", "grpc"].includes(v.net)) throw new Error("不支持的 VMess 传输");
+    if (v.type && v.type !== "none")
+      throw new SubscriptionFormatError("VMess 分享链接不支持伪装头");
+    if (v.net && !["tcp", "ws", "grpc"].includes(v.net))
+      throw new SubscriptionFormatError("不支持的 VMess 传输");
     const result: Record<string, unknown> = {
       name: v.ps || "VMess",
       type: "vmess",
@@ -190,7 +213,7 @@ function parseShareLink(text: string): Record<string, unknown> {
     const uri = new URL(
       `ss://${body.includes("@") ? body : Buffer.from(body, "base64url").toString("utf8")}`,
     );
-    if (uri.search) throw new Error("Shadowsocks 插件参数暂不支持");
+    if (uri.search) throw new SubscriptionFormatError("Shadowsocks 插件参数暂不支持");
     const credentials = uri.password
       ? `${decodeURIComponent(uri.username)}:${decodeURIComponent(uri.password)}`
       : Buffer.from(uri.username, "base64url").toString("utf8");
@@ -223,7 +246,7 @@ function parseShareLink(text: string): Record<string, unknown> {
     ),
   };
   if (["socks", "socks5", "http", "https"].includes(type)) {
-    if (uri.search) throw new Error("SOCKS/HTTP 分享链接不支持查询参数");
+    if (uri.search) throw new SubscriptionFormatError("SOCKS/HTTP 分享链接不支持查询参数");
     return {
       ...base,
       type: type.startsWith("socks") ? "socks5" : "http",
@@ -255,7 +278,8 @@ function parseShareLink(text: string): Record<string, unknown> {
     "insecure",
     "allowInsecure",
   ]);
-  for (const key of p.keys()) if (!supported.has(key)) throw new Error(`分享链接不支持参数 ${key}`);
+  for (const key of p.keys())
+    if (!supported.has(key)) throw new SubscriptionFormatError(`分享链接不支持参数 ${key}`);
   if (["hy2", "hysteria2"].includes(type))
     return {
       ...base,
@@ -265,7 +289,8 @@ function parseShareLink(text: string): Record<string, unknown> {
       ...(p.get("obfs") ? { obfs: p.get("obfs"), "obfs-password": p.get("obfs-password") } : {}),
       ...(p.get("insecure") === "1" ? { "skip-cert-verify": true } : {}),
     };
-  if (!["vless", "trojan"].includes(type)) throw new Error("不支持的代理分享链接");
+  if (!["vless", "trojan"].includes(type))
+    throw new SubscriptionFormatError("不支持的代理分享链接");
   const result: Record<string, unknown> = {
     ...base,
     type,
@@ -275,7 +300,8 @@ function parseShareLink(text: string): Record<string, unknown> {
       : { password: decodeURIComponent(uri.username) }),
   };
   const security = p.get("security") || (type === "trojan" ? "tls" : "none");
-  if (!["none", "tls", "reality"].includes(security)) throw new Error("不支持的传输加密");
+  if (!["none", "tls", "reality"].includes(security))
+    throw new SubscriptionFormatError("不支持的传输加密");
   if (security !== "none" && type !== "trojan") result.tls = true;
   const servername = p.get("sni") || p.get("peer");
   if (servername) result[type === "trojan" ? "sni" : "servername"] = servername;

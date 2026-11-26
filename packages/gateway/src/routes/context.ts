@@ -11,6 +11,7 @@ import type { BrowserPlatform } from "../browser/identity";
 import type { createCpaRuntime } from "../cpa/runtime";
 import type { CpaStore } from "../cpa/store";
 import type { ProxyCatalog } from "../egress/catalog";
+import type { ExitCheckLimiter } from "../egress/probe-limit";
 import type { createRuntimeClient } from "../egress/runtime-client";
 import type { ScopedExits } from "../egress/scoped-exits";
 import type { ExitHealth } from "../egress/timezone";
@@ -51,6 +52,8 @@ export interface GatewayContext {
   profileSystem(id: string): { platform: BrowserPlatform; browserEngine: string };
   /** Checks a node's exit through a throwaway process. */
   checkProxy(user: FrontendUser, nodeId: string): Promise<ExitHealth>;
+  /** Bounds the exit checks running at once, per user and in all. */
+  exitChecks: ExitCheckLimiter;
   /** The guard of a route that serves one workspace (`:sid`). */
   requireSession(): preHandlerAsyncHookHandler;
   status(sid?: string): ServerStatusMsg;

@@ -61,8 +61,8 @@ export function createViewerHub(deps: ViewerHubDeps) {
   const { registry, access, pixelCapacity, report } = deps;
   const viewerIds = new WeakMap<ViewerConn, string>();
   const viewers = new Map<string, Connection>();
-  /** Tabs whose page is using its microphone, for a viewer that connects while it does. */
-  const micTabs = new Set<string>();
+  /** Tabs whose page is using its microphone (and their session), for a viewer that connects. */
+  const micTabs = new Map<string, string>();
   let nextViewer = 1;
   const hasViewer = (sid: string) =>
     [...viewers.values()].some((connection) => connection.sid === sid);
@@ -300,7 +300,7 @@ export function createViewerHub(deps: ViewerHubDeps) {
         publish(sid, { t: "audio", tab, pcm: message.audio });
         return;
       }
-      if (message.mic) micTabs.add(tab);
+      if (message.mic) micTabs.set(tab, sid);
       else micTabs.delete(tab);
       publish(sid, { t: "mic", tab, on: message.mic });
       // With nobody connected there is no device to ask, so the page should not wait for one.
@@ -308,12 +308,22 @@ export function createViewerHub(deps: ViewerHubDeps) {
     },
     /** Ends the session's connections; with `ended`, they are told it is over for good. */
     disconnectSession(sid: string, ended: boolean): void {
+      // Its windows are about to close; a new runtime's pages announce their microphone again.
+      for (const [tab, owner] of micTabs) if (owner === sid) micTabs.delete(tab);
       ws.closeSession(sid, ended ? SESSION_ENDED_CODE : undefined);
       for (const [id, connection] of viewers)
         if (connection.sid === sid) {
           roles.disconnect(id);
           viewers.delete(id);
         }
+    },
+    /** A tab of the session went away. */
+    forgetTab(sid: string, tab: string): void {
+      if (micTabs.get(tab) === sid) micTabs.delete(tab);
+    },
+    /** Tabs remembered as using their microphone (tests). */
+    get micTabCount(): number {
+      return micTabs.size;
     },
     /** The session ended for good: forget its connection ordering. */
     forgetSession: (sid: string) => ws.forgetSession(sid),

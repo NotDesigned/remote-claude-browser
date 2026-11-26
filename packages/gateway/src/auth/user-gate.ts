@@ -1,6 +1,7 @@
 /** Persisted service logins; a remembered device alone never grants another user's browser. */
 import type { FastifyInstance, FastifyReply, preHandlerAsyncHookHandler } from "fastify";
 import type { IncomingMessage } from "node:http";
+import { createAttemptLimiter, MAX_PENDING_LOGINS } from "./attempt-limiter";
 import { readCookie } from "./cookies";
 import { renderGatePage } from "./gate-page";
 import { isOwnOrigin } from "./origin";
@@ -10,16 +11,7 @@ import { USER_SESSION_TTL_MS, UserStoreError, type FrontendUser, type UserStore 
 
 export const USER_COOKIE = "__Host-mirror-user";
 const FORM_TYPE = "application/x-www-form-urlencoded";
-const MAX_ATTEMPTS = 10000;
-/** One password check in flight per client IP, and a bound on scrypt work across all clients. */
-export const MAX_PENDING_LOGINS = 16;
-const RESET_MS = 15 * 60_000;
-interface Attempt {
-  failures: number;
-  until: number;
-  at: number;
-  pending: boolean;
-}
+export { MAX_PENDING_LOGINS };
 
 export function userSessionToken(request: IncomingMessage): string | undefined {
   return readCookie(request, USER_COOKIE);
@@ -49,9 +41,8 @@ export function createUserGate(options: {
   oidc?: Oidc;
   now?: () => number;
 }) {
-  const now = options.now ?? Date.now;
-  const attempts = new Map<string, Attempt>();
-  let pendingLogins = 0;
+  /** Shared by every password check (sign-in, password change), keyed by IP and by user. */
+  const attempts = createAttemptLimiter({ now: options.now });
   const currentUser = (request: IncomingMessage) =>
     options.store.session(userSessionToken(request));
   // A request without Origin is not a browser's cross-site form or fetch. Otherwise the Origin
@@ -130,6 +121,7 @@ export function createUserGate(options: {
   return {
     currentUser,
     preHandler,
+    attempts,
     /** Whether the request carries a live service login. */
     isSignedIn: (request: IncomingMessage) => currentUser(request) !== null,
     authorizeUpgrade: (request: IncomingMessage) => currentUser(request) !== null,
@@ -146,48 +138,24 @@ export function createUserGate(options: {
         "/gate",
         { bodyLimit: 8192 },
         async (request, reply) => {
-          const at = now();
-          const previous = attempts.get(request.ip);
-          if (
-            (previous && (previous.pending || previous.until > at)) ||
-            pendingLogins >= MAX_PENDING_LOGINS
-          ) {
+          const attempt = attempts.begin([request.ip]);
+          if (!attempt) {
             reply.header("retry-after", "2");
             return page(reply, 429, "尝试次数较多，请稍后再试。");
           }
-          if (attempts.size >= MAX_ATTEMPTS) {
-            for (const [ip, value] of attempts)
-              if (!value.pending && at - value.at > RESET_MS) attempts.delete(ip);
-            for (const [ip, value] of attempts) {
-              if (attempts.size < MAX_ATTEMPTS) break;
-              if (!value.pending) attempts.delete(ip);
-            }
-          }
-          const attempt: Attempt = {
-            failures: previous && at - previous.at < RESET_MS ? previous.failures : 0,
-            until: 0,
-            at,
-            pending: true,
-          };
-          attempts.set(request.ip, attempt);
-          pendingLogins++;
+          let user: FrontendUser | null;
           try {
-            const user = await options.store.authenticate(
-              request.body?.username,
-              request.body?.password,
-            );
-            if (!user) {
-              attempt.failures++;
-              attempt.until =
-                now() + Math.min(30_000, 500 * 2 ** Math.min(attempt.failures - 1, 16));
-              return page(reply, 401, "用户名或密码不正确。");
-            }
-            attempts.delete(request.ip);
-            return signedIn(request.raw, reply, user);
-          } finally {
-            attempt.pending = false;
-            pendingLogins--;
+            user = await options.store.authenticate(request.body?.username, request.body?.password);
+          } catch (error) {
+            attempt.release();
+            throw error;
           }
+          if (!user) {
+            attempt.fail();
+            return page(reply, 401, "用户名或密码不正确。");
+          }
+          attempt.succeed();
+          return signedIn(request.raw, reply, user);
         },
       );
       const oidc = options.oidc;

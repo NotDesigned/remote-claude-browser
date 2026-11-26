@@ -59,6 +59,10 @@ export type InputMsg = Extract<
 export type InputRelay = ((viewerId: string, msg: InputMsg) => Promise<boolean>) & {
   /** Discard queued and resolving inputs belonging to a dead renderer. */
   resetTab(tabId: string): void;
+  /** The tab is gone: drop everything kept for it, after discarding its inputs. */
+  forgetTab(tabId: string): void;
+  /** Tabs with any state kept (tests). */
+  trackedTabs(): number;
   /** Test-mode instrumentation; production callers need not expose it. */
   rectFallbacksFor(tabId: string): number;
   /**
@@ -79,6 +83,8 @@ export function valueFailureReason(error: unknown): string {
 }
 
 const FAILURE_REPORT_INTERVAL_MS = 60_000;
+const RECT_CACHE_MS = 120;
+const RECT_CACHE_SWEEP = 256;
 const lastFailureReports = new Map<string, number>();
 
 /** Input goes wrong quietly otherwise. These hold ids and error text, never what was typed. */
@@ -192,6 +198,21 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     presses.delete(tabId);
     touchPositions.delete(tabId);
   };
+  relay.forgetTab = (tabId) => {
+    relay.resetTab(tabId);
+    // Inputs still resolving compare their generation; with none kept they find no session for
+    // the closed tab and stop there.
+    generations.delete(tabId);
+    rectFallbacks.delete(tabId);
+    failedValues.delete(tabId);
+  };
+  relay.trackedTabs = () =>
+    new Set([
+      ...generations.keys(),
+      ...rectFallbacks.keys(),
+      ...failedValues.keys(),
+      ...[...rectCache.keys()].map((key) => key.slice(0, key.lastIndexOf(":"))),
+    ]).size;
   relay.rectFallbacksFor = (tabId) => rectFallbacks.get(tabId) ?? 0;
   relay.valueStatusMessages = () =>
     [...failedValues].map(([tab, reason]) => ({ t: "input-status", tab, failed: true, reason }));
@@ -408,7 +429,12 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
   ): Promise<ResolvedRect> {
     const cacheKey = `${tabId}:${nodeId}`;
     const cached = rectCache.get(cacheKey);
-    if (cacheable && cached !== undefined && Date.now() - cached.at < 120) return cached.value;
+    if (cacheable && cached !== undefined && Date.now() - cached.at < RECT_CACHE_MS)
+      return cached.value;
+    // Entries are only good for a moment; once there are many, the stale ones go.
+    if (rectCache.size > RECT_CACHE_SWEEP)
+      for (const [key, entry] of rectCache)
+        if (Date.now() - entry.at >= RECT_CACHE_MS) rectCache.delete(key);
     const direct = await withTimeout(
       deps.agentLink.sendCmd(tabId, { cmd: "rect", nodeId }),
       rectTimeoutMs,

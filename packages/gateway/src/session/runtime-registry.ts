@@ -100,25 +100,41 @@ export function createSessionRuntimeRegistry<R extends RegisteredRuntime>(
    * The one way a session's browser goes away: mark it closing (so nothing new reaches it), close
    * its windows, do what the caller needs while it is still closing, then forget its runtime and
    * tell every other session the new totals.
+   *
+   * Its viewers are cut off and its windows closed even when the caller's `beforeStop` fails (that
+   * failure is rethrown afterwards). When closing the windows fails and the caller does not take
+   * the failure (`onStopError`), the runtime stays registered: its windows may still be open, so
+   * the next start reuses it instead of opening a second set on the same scope, and the idle reaper
+   * or shutdown tries to close it again.
    */
   async function teardown(sid: string, options: TeardownOptions = {}): Promise<void> {
     closing.add(sid);
+    let stopped = false;
     try {
-      await options.beforeStop?.();
+      let beforeStopFailure: { error: unknown } | undefined;
+      try {
+        await options.beforeStop?.();
+      } catch (error) {
+        beforeStopFailure = { error };
+      }
       try {
         await stopRuntime(sid, options.ended === true);
       } catch (error) {
         if (!options.onStopError) throw error;
         options.onStopError(error);
       }
+      stopped = true;
+      if (beforeStopFailure) throw beforeStopFailure.error;
       if (options.release !== undefined) {
         await deps.sessions.release(options.release, sid);
         deps.forget(sid);
       }
       await options.afterStop?.();
     } finally {
-      runtimes.delete(sid);
-      pending.delete(sid);
+      if (stopped) {
+        runtimes.delete(sid);
+        pending.delete(sid);
+      }
       closing.delete(sid);
       deps.onChange();
     }

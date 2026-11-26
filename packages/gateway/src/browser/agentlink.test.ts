@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { TargetRef } from "../types";
 import { agentBridgeChannel } from "./bridge";
-import { createAgentLink } from "./agentlink";
+import { createAgentLink, MAX_TRACKED_DOCUMENTS, remember } from "./agentlink";
 import type { BrowserHandle, BrowserTargetInfo, FlatSessionEventMap } from "./launch";
 
 type BindingCallback = (
@@ -285,6 +285,30 @@ describe("createAgentLink", () => {
     browser.emit(77, 0, hello(77, false), 101);
     browser.emit(77, 9, rrweb(77, "frame"), 101);
     expect(lost).toHaveBeenCalledOnce();
+  });
+
+  it("keeps following the page's own document while many frame documents come and go", () => {
+    const target: TargetRef = { targetId: "page-1", sessionId: "session-1", type: "page" };
+    const browser = new MockBrowser(target);
+    const link = createAgentLink(browser);
+    const lost = vi.fn();
+    link.onStreamLoss?.(lost);
+
+    browser.emit(10, 0, hello(10), 100);
+    for (let doc = 1000; doc < 1000 + MAX_TRACKED_DOCUMENTS * 2; doc++)
+      browser.emit(doc, 0, hello(doc, false), doc);
+    // Message 1 of the page's document never arrived.
+    browser.emit(10, 2, rrweb(10, "c"), 100);
+    expect(lost).toHaveBeenCalledExactlyOnceWith("page-1");
+  });
+
+  it("remembers a bounded number of recent values, keeping the one asked to", () => {
+    const seen = new Set<number>();
+    for (let value = 0; value < 1000; value++) remember(seen, value, 10, 0);
+    expect(seen.size).toBe(10);
+    expect(seen.has(0)).toBe(true);
+    expect(seen.has(999)).toBe(true);
+    expect(seen.has(500)).toBe(false);
   });
 
   it("reports a chunked message that never completed as stream loss", () => {

@@ -28,14 +28,16 @@ async function fixture() {
   const app = Fastify();
   registerErrorHandler(app);
   apps.push(app);
-  const gate = createUserGate({ store });
+  let time = 1_000_000;
+  const gate = createUserGate({ store, now: () => time });
+  const lifecycle = createLifecycleLock();
   const onPasswordChanged = vi.fn();
   const stopSession = vi.fn((owner: string, sid: string) => sessions.release(owner, sid));
   app.addHook("preHandler", gate.preHandler);
   registerAccountRoutes(app, {
     store,
     sessions,
-    lifecycle: createLifecycleLock(),
+    lifecycle,
     currentUser: gate.currentUser,
     currentOwner: () => `${user.id}/device-one`,
     userIdForOwner: (owner) => owner.split("/")[0],
@@ -43,6 +45,7 @@ async function fixture() {
     onlineSessions: () => new Set([local.sid]),
     stopSession,
     onPasswordChanged,
+    attempts: gate.attempts,
   });
   return {
     app,
@@ -55,6 +58,8 @@ async function fixture() {
     cookie,
     stopSession,
     onPasswordChanged,
+    lifecycle,
+    advance: (ms: number) => (time += ms),
   };
 }
 
@@ -99,7 +104,7 @@ it("lists and ends the user's sessions across devices without exposing another u
 });
 
 it("requires the current password and revokes all personal logins after a password change", async () => {
-  const { app, store, user, cookie, onPasswordChanged } = await fixture();
+  const { app, store, user, cookie, onPasswordChanged, advance } = await fixture();
   const secondLogin = store.issueSession(user.id);
   const adminLogin = store.issueSession(store.bootstrapAdmin.id);
   const change = (currentPassword: string, password: string) =>
@@ -112,6 +117,7 @@ it("requires the current password and revokes all personal logins after a passwo
   const wrong = await change("wrong-password", "replacement-password");
   expect(wrong.statusCode).toBe(400);
   expect(wrong.json()).toEqual({ error: "当前密码不正确", code: "CURRENT_PASSWORD" });
+  advance(1000);
   expect((await change("alice-password", "short")).statusCode).toBe(400);
   expect(store.session(secondLogin.token)?.id).toBe(user.id);
   expect(onPasswordChanged).not.toHaveBeenCalled();
@@ -138,4 +144,34 @@ it("rejects anonymous and disabled users without ending a session", async () => 
     ).statusCode,
   ).toBe(401);
   expect(stopSession).not.toHaveBeenCalled();
+});
+
+it("limits password checks per user and IP, and checks outside the lifecycle lock", async () => {
+  const { app, cookie, lifecycle, advance, onPasswordChanged } = await fixture();
+  const change = (currentPassword: string) =>
+    app.inject({
+      method: "POST",
+      url: "/api/me/password",
+      headers: { cookie },
+      payload: { currentPassword, password: "replacement-password" },
+    });
+  // Another lifecycle step holds the lock throughout; a wrong password is still answered.
+  let releaseLock!: () => void;
+  const held = lifecycle.run(() => new Promise<void>((resolve) => (releaseLock = resolve)));
+  expect((await change("wrong-password")).statusCode).toBe(400);
+  const busy = await change("wrong-password");
+  expect(busy.statusCode).toBe(429);
+  expect(busy.json()).toMatchObject({ code: "TOO_MANY_ATTEMPTS" });
+  advance(600);
+  expect((await change("wrong-password")).statusCode).toBe(400);
+  expect((await change("alice-password")).statusCode).toBe(429);
+  advance(1100);
+  // The right password waits only for the update itself.
+  const pending = change("alice-password");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(onPasswordChanged).not.toHaveBeenCalled();
+  releaseLock();
+  await held;
+  expect((await pending).statusCode).toBe(204);
+  expect(onPasswordChanged).toHaveBeenCalledOnce();
 });

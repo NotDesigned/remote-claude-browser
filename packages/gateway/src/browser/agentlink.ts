@@ -148,7 +148,22 @@ function asVoiceAgentMsg(msg: AgentMsg): VoiceAgentMsg | null {
 }
 
 /** Documents per target whose message numbering is followed (same-process frames each have one). */
-const MAX_TRACKED_DOCUMENTS = 64;
+export const MAX_TRACKED_DOCUMENTS = 64;
+/**
+ * Documents (and execution contexts) per target remembered as seen. A long-lived tab goes through
+ * one per navigation; only recent ones can still send a delayed hello.
+ */
+export const MAX_SEEN_DOCUMENTS = 256;
+
+/** Adds value as the newest member, dropping the oldest past `max` (but never `keep`). */
+export function remember<T>(set: Set<T>, value: T, max: number, keep?: T): void {
+  set.delete(value);
+  set.add(value);
+  for (const oldest of set) {
+    if (set.size <= max) break;
+    if (oldest !== keep && oldest !== value) set.delete(oldest);
+  }
+}
 
 export function createAgentLink(browser: BrowserHandle, options: AgentLinkOptions = {}): AgentLink {
   const statesByTarget = new Map<string, TargetState>();
@@ -175,9 +190,11 @@ export function createAgentLink(browser: BrowserHandle, options: AgentLinkOption
     const expected = state.nextMsgIds.get(docId);
     if (expected === undefined) {
       state.nextMsgIds.set(docId, msgId + 1);
-      if (state.nextMsgIds.size > MAX_TRACKED_DOCUMENTS) {
-        const oldest = state.nextMsgIds.keys().next().value!;
-        state.nextMsgIds.delete(oldest);
+      // The oldest goes first, but never the page's current document: losing its numbering would
+      // hide the next lost message on the stream that matters.
+      for (const oldest of state.nextMsgIds.keys()) {
+        if (state.nextMsgIds.size <= MAX_TRACKED_DOCUMENTS) break;
+        if (oldest !== state.docId && oldest !== docId) state.nextMsgIds.delete(oldest);
       }
       return;
     }
@@ -234,7 +251,7 @@ export function createAgentLink(browser: BrowserHandle, options: AgentLinkOption
       // document epoch so every replacement bridge is acquired exactly once.
       const cleanupKey = `${event.executionContextId}:${msg.docId}`;
       if (!state.cleanedDocuments.has(cleanupKey)) {
-        state.cleanedDocuments.add(cleanupKey);
+        remember(state.cleanedDocuments, cleanupKey, MAX_SEEN_DOCUMENTS);
         const acquired = acquireAgentBridge(
           browser,
           state.target.sessionId,
@@ -264,7 +281,7 @@ export function createAgentLink(browser: BrowserHandle, options: AgentLinkOption
       if (navigated) rejectPending(state, navigationError(state.target.targetId));
       if (!navigated && state.docId === msg.docId) return;
       state.docId = msg.docId;
-      state.seenDocIds.add(msg.docId);
+      remember(state.seenDocIds, msg.docId, MAX_SEEN_DOCUMENTS);
       state.stream.push(msg);
       return;
     }

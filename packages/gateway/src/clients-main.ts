@@ -25,6 +25,7 @@ import { createUserGate } from "./auth/user-gate";
 import { createUserStore, type FrontendUser } from "./auth/users";
 import { createAssetCache } from "./assets/cache";
 import { createAssetFetcher } from "./assets/fetch";
+import { assetLimitsFromEnv } from "./assets/limits";
 import { registerAssetRoutes } from "./assets/route";
 import { ANY_SESSION_TAB } from "./assets/token";
 import { createAccountPool } from "./browser/account-pool";
@@ -42,6 +43,7 @@ import { registerDownloadRoutes } from "./downloads";
 import { createProxyCatalog, ProxyCatalogError } from "./egress/catalog";
 import { registerProxyRoutes } from "./egress/routes";
 import { createRuntimeClient } from "./egress/runtime-client";
+import { createExitCheckLimiter } from "./egress/probe-limit";
 import { createScopedExits, egressScope } from "./egress/scoped-exits";
 import { registerErrorHandler } from "./http-errors";
 import { createMailboxService, registerMailboxRoutes, RESEND_WEBHOOK_PATH } from "./mail/mailboxes";
@@ -50,7 +52,7 @@ import { createResourceSampler } from "./monitor/resources";
 import { createServerStatus } from "./monitor/server-status";
 import { createPixelCapacity } from "./px-capacity";
 import { registerRemoteCcRoutes, REMOTE_CC_TOKEN_PATH } from "./remote-cc/routes";
-import { createRemoteCcStore } from "./remote-cc/store";
+import { createRemoteCcStore, RemoteCcError } from "./remote-cc/store";
 import { createRemoteCcBrowser } from "./remote-cc/workspace-browser";
 import { registerAdminRoutes } from "./routes/admin-routes";
 import type { GatewayContext } from "./routes/context";
@@ -162,23 +164,27 @@ export async function startClientGateway(
       await cpaRuntime?.restoreBindings(ids, ownerOfInstance);
     },
   });
+  /** Each check of a node starts its own probe egress; these are bounded per user and in all. */
+  const exitChecks = createExitCheckLimiter();
   const checkProxy = async (user: FrontendUser, id: string) => {
     const node = proxyCatalog.getNodeConfig(user, id);
-    const probeId = `probe-${randomBytes(16).toString("hex")}`;
-    try {
+    return exitChecks.run(user.id, async () => {
+      const probeId = `probe-${randomBytes(16).toString("hex")}`;
       try {
-        await networkRuntime.startEgress(probeId, node);
-        return await networkRuntime.checkEgress(probeId);
-      } finally {
-        await networkRuntime.stopEgress(probeId);
+        try {
+          await networkRuntime.startEgress(probeId, node);
+          return await networkRuntime.checkEgress(probeId);
+        } finally {
+          await networkRuntime.stopEgress(probeId);
+        }
+      } catch {
+        return {
+          status: "error" as const,
+          checkedAt: Date.now(),
+          error: "出口检测失败，请检查节点后重试",
+        };
       }
-    } catch {
-      return {
-        status: "error" as const,
-        checkedAt: Date.now(),
-        error: "出口检测失败，请检查节点后重试",
-      };
-    }
+    });
   };
   const cpaStore = process.env.CPA_BROKER_SOCKET
     ? await createCpaStore({
@@ -336,6 +342,7 @@ export async function startClientGateway(
             !process.env.BROWSER_CDP_URL &&
             process.env.MIRROR_SCREEN_GRAB !== "0",
           onNavigated: captureCpaCallback,
+          onTabClosed: (sid, tab) => hub.forgetTab(sid, tab),
           report,
         },
         record,
@@ -494,7 +501,12 @@ export async function startClientGateway(
     publicOrigin: (request) =>
       process.env.MIRROR_PUBLIC_ORIGIN?.replace(/\/+$/, "") ||
       `${request.headers["x-forwarded-proto"] === "http" ? "http" : "https"}://${request.headers.host}`,
-    checkExit: (user, nodeId) => checkProxy(user, nodeId),
+    checkExit: (user, nodeId) =>
+      checkProxy(user, nodeId).catch((error: unknown) => {
+        if (error instanceof ProxyCatalogError && error.statusCode === 429)
+          throw new RemoteCcError(429, "REMOTE_CC_EXIT_BUSY", error.message);
+        throw error;
+      }),
     saveExit: (profileId, metadata) => accountStore.setExitMetadata(profileId, metadata),
     browser: createRemoteCcBrowser({ registry, onlineSessions: () => hub.onlineSessions() }),
     currentUser,
@@ -513,12 +525,16 @@ export async function startClientGateway(
   });
   await registerViewerStatic(app);
   const requireSession = () => sessionRouteGuard(access);
+  const assetLimits = assetLimitsFromEnv();
   registerAssetRoutes(app, {
     serverKey: randomBytes(32),
     serverKeyForSession: (sid) =>
       registry.isClosing(sid) ? undefined : registry.get(sid)?.assetKey,
-    cache: createAssetCache(join(profile, "asset-cache")),
+    cache: createAssetCache(join(profile, "asset-cache"), undefined, {
+      maxEntryBytes: assetLimits.maxBytes,
+    }),
     fetcher: assetFetcher,
+    limits: assetLimits,
     lookup: process.env.MIRROR_RUNTIME_SOCKET
       ? (hostname, ref) =>
           networkRuntime.resolveBrowser(clientSessions.profileOf(ref.sessionId), hostname)
@@ -561,6 +577,7 @@ export async function startClientGateway(
     requirePlatform,
     profileSystem,
     checkProxy,
+    exitChecks,
     requireSession,
     status,
     isStopping,
@@ -571,6 +588,7 @@ export async function startClientGateway(
   registerProfileRoutes(app, ctx, profiles);
   registerAdminRoutes(app, ctx, profiles);
   registerAccountRoutes(app, {
+    attempts: gate.attempts,
     store: userStore,
     sessions: clientSessions,
     lifecycle: lock,

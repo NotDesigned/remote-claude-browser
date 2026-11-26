@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createAssetCache } from "./cache";
@@ -20,11 +20,11 @@ describe("asset disk cache", () => {
     const first = await cache.put("first", Readable.from(["same bytes"]), metadata);
     const second = await cache.put("second", Readable.from(["same ", "bytes"]), metadata);
 
-    expect(first.digest).toBe(createHash("sha256").update("same bytes").digest("hex"));
-    expect(second.digest).toBe(first.digest);
-    expect(second.path).toBe(first.path);
+    expect(first!.digest).toBe(createHash("sha256").update("same bytes").digest("hex"));
+    expect(second!.digest).toBe(first!.digest);
+    expect(second!.path).toBe(first!.path);
     expect(cache.stats()).toMatchObject({ blobs: 1, bytes: 10 });
-    expect(await readFile(second.path, "utf8")).toBe("same bytes");
+    expect(await readFile(second!.path, "utf8")).toBe("same bytes");
   });
 
   it("evicts the least-recently-used blob while retaining a touched entry", async () => {
@@ -40,15 +40,82 @@ describe("asset disk cache", () => {
     expect(cache.stats()).toMatchObject({ blobs: 2, bytes: 6 });
   });
 
-  it("streams an oversized body from disk without exceeding the cache ceiling", async () => {
-    const cache = createAssetCache(await tempDir(), 3);
-    const stored = await cache.put("large", Readable.from(["larger"]), metadata);
+  it("passes an oversized body through without keeping it or leaving a temporary file", async () => {
+    const dir = await tempDir();
+    const cache = createAssetCache(dir, 3);
+    const tee = cache.tee("large", metadata);
+    const passed = readStream(tee);
+    tee.end("larger");
 
+    expect(await passed).toBe("larger");
+    expect(await cache.put("also-large", Readable.from(["larger"]), metadata)).toBeUndefined();
     expect(cache.stats()).toMatchObject({ blobs: 0, bytes: 0 });
-    expect(await readStream(stored.createReadStream())).toBe("larger");
     expect(await cache.get("large")).toBeUndefined();
+    expect(await tempFiles(dir)).toEqual([]);
+  });
+
+  it("stops writing a body at the entry limit, before the rest reaches the disk", async () => {
+    const dir = await tempDir();
+    const cache = createAssetCache(dir, 1024, { maxEntryBytes: 4 });
+    const tee = cache.tee("big", metadata);
+    const passed = readStream(tee);
+    tee.write("abc");
+    await expect.poll(() => tempFiles(dir)).toHaveLength(1);
+    tee.write("defgh");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await tempFiles(dir)).toEqual([]);
+    tee.end("ij");
+    expect(await passed).toBe("abcdefghij");
+    expect(await cache.get("big")).toBeUndefined();
+  });
+
+  it("removes the temporary file when the reader goes away before the end", async () => {
+    const dir = await tempDir();
+    const cache = createAssetCache(dir, 1024);
+    const upstream = new PassThrough();
+    const tee = cache.tee("partial", metadata);
+    upstream.pipe(tee);
+    tee.resume();
+    upstream.write("first part");
+    await expect.poll(() => tempFiles(dir)).toHaveLength(1);
+    tee.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await tempFiles(dir)).toEqual([]);
+    expect(await cache.get("partial")).toBeUndefined();
+  });
+
+  it("discards a complete body whose session ended while it streamed", async () => {
+    const dir = await tempDir();
+    const cache = createAssetCache(dir, 1024);
+    let current = true;
+    const tee = cache.tee("ended", metadata, { commit: () => current });
+    const passed = readStream(tee);
+    tee.write("bytes");
+    current = false;
+    tee.end();
+    expect(await passed).toBe("bytes");
+    expect(await cache.get("ended")).toBeUndefined();
+    expect(cache.stats()).toMatchObject({ blobs: 0, keys: 0 });
+    expect(await tempFiles(dir)).toEqual([]);
+  });
+
+  it("forgets the least recently used keys past its key limit, and their unshared blobs", async () => {
+    const cache = createAssetCache(await tempDir(), 1024, { maxKeys: 2 });
+    await cache.put("a", Readable.from(["shared"]), metadata);
+    await cache.put("b", Readable.from(["own"]), metadata);
+    expect(await cache.get("a")).toBeDefined(); // b is now the oldest
+    await cache.put("c", Readable.from(["shared"]), metadata);
+
+    expect(await cache.get("b")).toBeUndefined();
+    expect(await cache.get("a")).toBeDefined();
+    expect(await cache.get("c")).toBeDefined();
+    expect(cache.stats()).toMatchObject({ keys: 2, blobs: 1, bytes: 6 });
   });
 });
+
+async function tempFiles(dir: string): Promise<string[]> {
+  return readdir(join(dir, "tmp"));
+}
 
 async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "mirror-asset-cache-test-"));

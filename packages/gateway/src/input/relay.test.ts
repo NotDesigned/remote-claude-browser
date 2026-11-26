@@ -313,6 +313,19 @@ describe("InputRelay", () => {
     expect(await h.relay("driver", pointer("move"))).toBe(true);
     expect(h.cdp).toHaveLength(1);
   });
+  it("forgets everything kept for a closed tab", async () => {
+    const h = harness();
+    for (let index = 0; index < 50; index++) {
+      const tab = `closed-${index}`;
+      expect(await h.relay("driver", { ...pointer("move"), tab, buttons: 0 })).toBe(true);
+      h.relay.resetTab(tab);
+    }
+    expect(h.relay.trackedTabs()).toBe(50);
+    for (let index = 0; index < 50; index++) h.relay.forgetTab(`closed-${index}`);
+    expect(h.relay.trackedTabs()).toBe(0);
+    // A tab that is still open keeps working.
+    expect(await h.relay("driver", pointer("move"))).toBe(true);
+  });
   it("releases a click where its press landed and preserves their wire order", async () => {
     let releaseFirstRect!: () => void;
     const firstRectReady = new Promise<void>((resolve) => (releaseFirstRect = resolve));

@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { messageAnswer, type ErrorStyle } from "../http-errors";
 import { ClientSessionError, type createClientSessions } from "../session/clients";
 import type { createLifecycleLock } from "../session/lifecycle-lock";
+import type { AttemptLimiter } from "./attempt-limiter";
 import { UserStoreError, type FrontendUser, type UserStore } from "./users";
 
 /** Account routes answer `{ error: message, code }`; anything else is Fastify's default 500. */
@@ -24,6 +25,8 @@ export function registerAccountRoutes(
     onlineSessions(): ReadonlySet<string>;
     stopSession(owner: string, sid: string): Promise<void>;
     onPasswordChanged(userId: string): void;
+    /** The sign-in page's limiter: a password change is a password check like any other. */
+    attempts: AttemptLimiter;
     /** Single sign-on, when configured: shown on the account page for linking. */
     oidc?: { label: string; issuer: string };
   },
@@ -54,13 +57,33 @@ export function registerAccountRoutes(
     "/api/me/password",
     { bodyLimit: 4096, config },
     async (request, reply) => {
+      const user = userFor(request.raw);
+      if (request.body?.password === undefined)
+        throw new UserStoreError(400, "USER_PASSWORD", "请输入新密码");
+      // The check runs outside the lifecycle lock, so a slow or repeated one holds up nobody
+      // else's sessions, and under the same per-IP and per-user limits as signing in.
+      const attempt = options.attempts.begin([request.ip, `user:${user.id}`]);
+      if (!attempt) {
+        reply.header("retry-after", "2");
+        throw new UserStoreError(429, "TOO_MANY_ATTEMPTS", "尝试次数较多，请稍后再试");
+      }
+      let verified: FrontendUser | null;
+      try {
+        verified = await options.store.authenticate(user.username, request.body?.currentPassword);
+      } catch (error) {
+        attempt.release();
+        throw error;
+      }
+      if (verified?.id !== user.id) {
+        attempt.fail();
+        throw new UserStoreError(400, "CURRENT_PASSWORD", "当前密码不正确");
+      }
+      attempt.succeed();
       await options.lifecycle.run(async () => {
-        const user = userFor(request.raw);
-        if (!(await options.store.authenticate(user.username, request.body?.currentPassword)))
-          throw new UserStoreError(400, "CURRENT_PASSWORD", "当前密码不正确");
-        if (request.body?.password === undefined)
-          throw new UserStoreError(400, "USER_PASSWORD", "请输入新密码");
-        await options.store.updateUser(user.id, { password: request.body.password });
+        // Still the same signed-in user: a logout or reset during the check ends this request.
+        if (userFor(request.raw).id !== user.id)
+          throw new UserStoreError(401, "LOGIN_REQUIRED", "请重新登录");
+        await options.store.updateUser(user.id, { password: request.body?.password });
         options.onPasswordChanged(user.id);
       });
       return reply.code(204).send();

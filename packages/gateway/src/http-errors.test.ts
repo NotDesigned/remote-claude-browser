@@ -46,6 +46,15 @@ function fixture() {
   app.get("/plain", async () => {
     throw new TypedFailure(409, "TAKEN", "已被占用");
   });
+  app.get("/internal", async () => {
+    throw new Error("ENOENT: no such file or directory, open '/srv/data/secret/file'");
+  });
+  app.get("/upstream", async () => {
+    throw new TypedFailure(502, "UPSTREAM", "upstream said: internal token abc");
+  });
+  app.get("/unavailable", async () => {
+    throw new TypedFailure(503, "DOWN", "database at 10.0.0.5 refused");
+  });
   app.post(
     "/body",
     {
@@ -87,6 +96,40 @@ describe("the gateway error handler", () => {
       error: "Conflict",
       message: "已被占用",
     });
+  });
+
+  it("answers an unexpected failure without its message, and logs it", async () => {
+    const reported: unknown[] = [];
+    const app = Fastify();
+    apps.push(app);
+    registerErrorHandler(app, (_message, error) => reported.push(error));
+    app.get("/internal", async () => {
+      throw new Error("ENOENT: no such file or directory, open '/srv/data/secret/file'");
+    });
+    const response = await app.inject({ url: "/internal" });
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({
+      error: "服务器内部错误，请稍后重试",
+      code: "INTERNAL_ERROR",
+    });
+    expect(response.body).not.toContain("secret");
+    expect(reported).toHaveLength(1);
+  });
+
+  it("answers an unstyled 5xx generically, keeping 503 as unavailable", async () => {
+    const app = fixture();
+    const upstream = await app.inject({ url: "/upstream" });
+    expect(upstream.statusCode).toBe(500);
+    expect(upstream.body).not.toContain("token");
+    const unavailable = await app.inject({ url: "/unavailable" });
+    expect(unavailable.statusCode).toBe(503);
+    expect(unavailable.json()).toEqual({
+      error: "服务暂时不可用，请稍后重试",
+      code: "SERVICE_UNAVAILABLE",
+    });
+    const internal = await app.inject({ url: "/internal" });
+    expect(internal.statusCode).toBe(500);
+    expect(internal.body).not.toContain("/srv");
   });
 
   it("leaves Fastify's own body errors to Fastify, even on a styled route", async () => {

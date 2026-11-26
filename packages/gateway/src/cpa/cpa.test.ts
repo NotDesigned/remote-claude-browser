@@ -14,6 +14,7 @@ import type { ExitHealth as CpaExitHealth } from "../egress/timezone";
 import type { CpaDriver, CpaRequest } from "./broker-client";
 import { cpaInferencePath, registerCpaInferenceRoutes, registerCpaRoutes } from "./routes";
 import { registerCpaManagementRoutes } from "./management";
+import { ASSET_CONTENT_SECURITY_POLICY } from "../assets/route";
 
 const alice: FrontendUser = {
   id: "alice",
@@ -1062,6 +1063,43 @@ it("opens instance-scoped native management using workbench authorization withou
     expect(files.headers.vary).toBe("Accept-Encoding");
     expect(JSON.parse(gunzipSync(files.rawPayload).toString())).toEqual(listing);
     expect((await get(root + "/containers/json")).statusCode).toBe(404);
+    const forwarded = calls.length;
+    for (const sneaky of [
+      "/v8/management/../../containers/json",
+      "/v8/management/%2e%2e/%2e%2e/containers/json",
+      "/v8/management/..%2f..%2fcontainers/json",
+      "/v0/management%2F..%2F..%2Fcontainers/json",
+    ])
+      expect((await get(root + sneaky)).statusCode, sneaky).toBe(404);
+    expect(calls).toHaveLength(forwarded);
+    await get(root + "/v8/management/a/./b/../config?x=1");
+    expect(calls.at(-1)?.input.path).toBe("/v8/management/a/config?x=1");
+
+    setUpstream(
+      () =>
+        Object.assign(Readable.from(["<script>alert(document.cookie)</script>"]), {
+          statusCode: 200,
+          headers: { "content-type": "text/html", "content-disposition": "inline" },
+        }) as unknown as IncomingMessage,
+    );
+    const html = await get(root + "/v8/management/logs");
+    expect(html.headers["content-type"]).toBe("text/plain; charset=utf-8");
+    expect(html.headers["content-disposition"]).toBeUndefined();
+    expect(html.headers["content-security-policy"]).toBe(ASSET_CONTENT_SECURITY_POLICY);
+    expect(html.headers["x-content-type-options"]).toBe("nosniff");
+    setUpstream(
+      () =>
+        Object.assign(Readable.from(["{}"]), {
+          statusCode: 200,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "content-disposition": 'attachment; filename="claude.json"',
+          },
+        }) as unknown as IncomingMessage,
+    );
+    const download = await get(root + "/v8/management/auth-files/download?name=claude.json");
+    expect(download.headers["content-type"]).toBe("application/json; charset=utf-8");
+    expect(download.headers["content-disposition"]).toBe('attachment; filename="claude.json"');
     store.setDesiredState(own.id, "stopped");
     expect((await get(root + "/management.html")).statusCode).toBe(409);
   } finally {

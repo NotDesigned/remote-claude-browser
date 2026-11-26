@@ -320,7 +320,9 @@ async function fetchDirect(
   return {
     statusCode: positiveStatus(response.statusCode, 502),
     headers: normalizeHeaders(response.headers),
-    body: Readable.from(response.body),
+    // undici's body is already a Readable; destroying it (the viewer left, a limit) aborts the
+    // request at once, where a wrapper would wait for the next chunk first.
+    body: response.body instanceof Readable ? response.body : Readable.from(response.body),
     lane: "direct",
   };
 }

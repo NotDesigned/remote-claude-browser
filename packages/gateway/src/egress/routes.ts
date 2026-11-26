@@ -3,6 +3,7 @@ import type { IncomingMessage } from "node:http";
 import type { FrontendUser } from "../auth/users";
 import { messageAnswer, type ErrorStyle } from "../http-errors";
 import type { ExitHealth } from "./timezone";
+import { SubscriptionFormatError } from "./subscription";
 import {
   ProxyCatalogError,
   type ProxyCatalog,
@@ -10,17 +11,16 @@ import {
   type ProxySourceUpdate,
 } from "./catalog";
 
-/** Proxy routes answer `{ error: message, code }`; anything else is a source the catalog refused. */
+/**
+ * Proxy routes answer `{ error: message, code }`. Unusable subscription text is the person's to
+ * fix; anything else is left to the gateway's generic answer, which does not repeat its message.
+ */
 export const proxyErrors: ErrorStyle = (error) =>
   error instanceof ProxyCatalogError
     ? messageAnswer(error)
-    : {
-        status: 400,
-        body: {
-          error: error instanceof Error ? error.message : "代理源操作失败",
-          code: "PROXY_SOURCE_INVALID",
-        },
-      };
+    : error instanceof SubscriptionFormatError
+      ? { status: 400, body: { error: error.message, code: "PROXY_SOURCE_INVALID" } }
+      : undefined;
 
 export function registerProxyRoutes(
   app: FastifyInstance,

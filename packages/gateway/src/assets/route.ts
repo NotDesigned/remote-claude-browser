@@ -18,11 +18,19 @@ import type {
   preHandlerHookHandler,
 } from "fastify";
 
+import { pipeline, type Readable } from "node:stream";
+
 import type { AssetCache, CachedAsset } from "./cache";
 import type { AssetFetcher, AssetFetchResponse } from "./fetch";
 import { openAssetToken, type AssetRef } from "./token";
 import { rewriteFetchedStylesheet } from "./stylesheet";
 import { normalizeAssetHeaders } from "./headers";
+import {
+  createAssetLimiter,
+  declaredLength,
+  DEFAULT_ASSET_LIMITS,
+  type AssetLimits,
+} from "./limits";
 import { SECURITY_HEADERS } from "../security-headers";
 import {
   defaultTargetLookup,
@@ -50,16 +58,33 @@ export interface AssetRouteDeps {
   preHandler?: AssetPreHandler;
   /** Test/deployment seam; all returned addresses are checked before fetching. */
   lookup?: (hostname: string, ref: AssetRef) => Promise<readonly ResolvedAddress[]>;
+  /**
+   * Bounds on each upstream body (default DEFAULT_ASSET_LIMITS). A Range response, which only
+   * streams through, is bounded by the idle timeout alone, since media plays from open ranges.
+   */
+  limits?: Partial<AssetLimits>;
 }
+
+const ignoreStreamEnd = () => undefined;
 
 export function registerAssetRoutes(app: FastifyInstance, deps: AssetRouteDeps): void {
   const preHandler: AssetPreHandler = deps.preHandler ?? (async () => undefined);
+  const limits: AssetLimits = { ...DEFAULT_ASSET_LIMITS, ...deps.limits };
+  const rangeLimits: AssetLimits = {
+    maxBytes: Infinity,
+    timeoutMs: Infinity,
+    idleTimeoutMs: limits.idleTimeoutMs,
+  };
 
   app.get<{ Params: AssetRouteParams }>(
     // A wildcard preserves the public /:token shape while avoiding Fastify's 100-byte named
     // parameter ceiling; AES-GCM tokens are intentionally longer than that.
     "/s/:sid/a/*",
-    { preHandler },
+    // A body that fails before its first byte (a limit, the upstream) has no headers out yet.
+    {
+      preHandler,
+      config: { errors: () => ({ status: 502, body: { error: "Asset fetch failed" } }) },
+    },
     async (request, reply) => {
       const serverKey = deps.serverKeyForSession
         ? deps.serverKeyForSession(request.params.sid)
@@ -112,6 +137,19 @@ export function registerAssetRoutes(app: FastifyInstance, deps: AssetRouteDeps):
           response.body.destroy();
           return reply.code(404).send({ error: "Asset session not found" });
         }
+        const declared = declaredLength(response.headers);
+        if (range === undefined && declared !== undefined && declared > limits.maxBytes) {
+          response.body.destroy();
+          return reply.code(502).send({ error: "Asset is too large" });
+        }
+        // From here on the body is bounded in size and time. Destroying any later stage (the
+        // viewer going away, a limit, the session ending) aborts the upstream fetch as well.
+        const bounded: Readable = pipeline(
+          response.body,
+          createAssetLimiter(range === undefined ? limits : rangeLimits),
+          ignoreStreamEnd,
+        );
+        response = { ...response, body: bounded };
         if (range === undefined)
           response = await rewriteFetchedStylesheet(response, ref, serverKey);
         if (!stillCurrent()) {
@@ -122,20 +160,22 @@ export function registerAssetRoutes(app: FastifyInstance, deps: AssetRouteDeps):
         return reply.code(502).send({ error: "Asset fetch failed" });
       }
 
-      if (range === undefined && response.statusCode === 200) {
-        try {
-          const stored = await deps.cache.put(cacheKey, response.body, {
-            statusCode: response.statusCode,
-            headers: response.headers,
-          });
-          if (!stillCurrent()) return reply.code(404).send({ error: "Asset session not found" });
-          return sendCached(reply, stored);
-        } catch {
-          return reply.code(502).send({ error: "Asset stream failed" });
-        }
-      }
-
       applyResponse(reply, response.statusCode, response.headers);
+      if (range === undefined && response.statusCode === 200) {
+        // The viewer gets bytes as they arrive; the disk copy is kept only if the body ends
+        // complete while its session is still current, and is removed otherwise.
+        return reply.send(
+          pipeline(
+            response.body,
+            deps.cache.tee(
+              cacheKey,
+              { statusCode: response.statusCode, headers: response.headers },
+              { commit: stillCurrent },
+            ),
+            ignoreStreamEnd,
+          ),
+        );
+      }
       return reply.send(response.body);
     },
   );

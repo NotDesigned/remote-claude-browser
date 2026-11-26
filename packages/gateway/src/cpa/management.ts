@@ -4,6 +4,9 @@ import type { FastifyInstance } from "fastify";
 import type { IncomingMessage } from "node:http";
 import type { FrontendUser } from "../auth/users";
 import { codeAnswer, type ErrorStyle } from "../http-errors";
+import { ASSET_CONTENT_SECURITY_POLICY } from "../assets/route";
+import { SECURITY_HEADERS } from "../security-headers";
+import { cpaManagementPath } from "./routes";
 import { CpaError } from "./store";
 import type { CpaRuntime } from "./runtime";
 
@@ -32,6 +35,36 @@ function panelBridge(prefix: string, scope: string) {
     observer.observe(document.documentElement,{childList:true,subtree:true});
   })();</script>`;
 }
+
+const MANAGE_PREFIX = /^\/api\/cpa\/instances\/[^/?#]+\/manage(\/.*)$/;
+
+/** Types the panel reads as data keep their type; markup and script become plain text. */
+export function managementContentType(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const essence = value.split(";", 1)[0]!.trim().toLowerCase();
+  if (essence === "") return undefined;
+  if (MANAGEMENT_CONTENT_TYPES.has(essence) || essence.endsWith("+json")) return value;
+  return essence.startsWith("text/") ||
+    essence.endsWith("+xml") ||
+    essence.endsWith("/xml") ||
+    essence.includes("javascript") ||
+    essence.includes("ecmascript")
+    ? "text/plain; charset=utf-8"
+    : "application/octet-stream";
+}
+
+const MANAGEMENT_CONTENT_TYPES = new Set([
+  "application/json",
+  "application/x-ndjson",
+  "text/plain",
+  "text/event-stream",
+  "text/csv",
+  "application/octet-stream",
+  "application/zip",
+  "application/gzip",
+  "application/x-yaml",
+  "application/yaml",
+]);
 
 /** The CPA panel answers `{ error: code, message }`; anything else is the panel unavailable. */
 export const cpaManagementErrors: ErrorStyle = (error) =>
@@ -96,10 +129,11 @@ export function registerCpaManagementRoutes(
       config,
       async handler(request, reply) {
         const user = userFor(request.raw);
-        const path = "/" + request.params["*"];
-        if (!/^\/v(8|0)\/management\//.test(path))
-          throw new CpaError(404, "CPA_ROUTE", "没有这个管理接口");
-        const query = request.raw.url?.split("?")[1];
+        // Forward exactly the path that was checked: taken from the raw URL, dot segments
+        // resolved, and refused when it hides a separator or a dot behind percent-encoding.
+        const rest = MANAGE_PREFIX.exec(request.raw.url ?? "")?.[1];
+        const path = rest === undefined ? undefined : cpaManagementPath(rest);
+        if (path === undefined) throw new CpaError(404, "CPA_ROUTE", "没有这个管理接口");
         const headers = { ...request.headers };
         for (const name of [
           "host",
@@ -112,15 +146,13 @@ export function registerCpaManagementRoutes(
           delete headers[name];
         const response = await options.runtime.managementRequest(user, request.params.id, {
           method: request.method,
-          path: path + (query ? "?" + query : ""),
+          path,
           headers,
           body: request.body,
         });
         reply.code(response.statusCode ?? 502).header("cache-control", "no-store");
         for (const name of [
-          "content-type",
           "content-encoding",
-          "content-disposition",
           "vary",
           "x-cpa-version",
           "x-cpa-build-date",
@@ -129,6 +161,15 @@ export function registerCpaManagementRoutes(
           "x-server-build-date",
         ])
           if (response.headers[name] !== undefined) reply.header(name, response.headers[name]);
+        // These answers are data for the panel's scripts, served on the gateway's origin: never
+        // a document or script of their own, and a download only ever as an attachment.
+        const type = managementContentType(response.headers["content-type"]);
+        if (type !== undefined) reply.header("content-type", type);
+        const disposition = response.headers["content-disposition"];
+        if (typeof disposition === "string" && /^\s*attachment\s*(;|$)/i.test(disposition))
+          reply.header("content-disposition", disposition);
+        for (const [name, value] of Object.entries(SECURITY_HEADERS)) reply.header(name, value);
+        reply.header("content-security-policy", ASSET_CONTENT_SECURITY_POLICY);
         return reply.send(response);
       },
     });

@@ -161,6 +161,15 @@ const HOP_HEADERS = new Set([
  * server that decodes before routing would see a different path than the one checked here.
  */
 export function cpaInferencePath(raw: string): string | undefined {
+  return cpaUpstreamPath(raw, /^\/v1\//);
+}
+
+/** The same rule for the native management API, which lives under /v0/management/ and /v8/management/. */
+export function cpaManagementPath(raw: string): string | undefined {
+  return cpaUpstreamPath(raw, /^\/v[08]\/management\//);
+}
+
+function cpaUpstreamPath(raw: string, allowed: RegExp): string | undefined {
   if (!raw.startsWith("/") || raw.startsWith("//") || raw.includes("\\")) return undefined;
   let url: URL;
   try {
@@ -169,7 +178,7 @@ export function cpaInferencePath(raw: string): string | undefined {
     return undefined;
   }
   if (url.origin !== "http://cpa.invalid") return undefined;
-  if (/%(2f|5c|2e)/i.test(url.pathname) || !url.pathname.startsWith("/v1/")) return undefined;
+  if (/%(2f|5c|2e)/i.test(url.pathname) || !allowed.test(url.pathname)) return undefined;
   return url.pathname + url.search;
 }
 

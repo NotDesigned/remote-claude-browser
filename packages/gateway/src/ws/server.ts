@@ -32,6 +32,14 @@ export const KEEPALIVE_MS = 30_000;
 const KEEPALIVE_MISSES = 2;
 /** Retired connection keys remembered per session. */
 export const MAX_RETIRED_KEYS_PER_SESSION = 256;
+/**
+ * The largest viewer message the gateway reads, after decompression (ws checks the inflated size
+ * as it inflates). Viewer messages are input: the largest are a pasted text or a whole field value
+ * (`text`, `value`, `clip`), and microphone frames of a few kilobytes. Files go over HTTP.
+ */
+export const VIEWER_MAX_PAYLOAD = 8 * 1024 * 1024;
+/** Past this many delta send times, the ones old enough to make no difference are dropped. */
+const DELTA_SEND_TIMES_SWEEP = 256;
 
 export interface DeltaChaosOptions {
   /** Probability per (delta message, viewer). Production never supplies this option. */
@@ -148,7 +156,7 @@ export class Fanout {
     // A change after a quiet moment goes out at once; only a burst waits to travel together.
     const sinceLastSend = Date.now() - (this.lastDeltaSentAt.get(key) ?? 0);
     if (this.sendFirstAtOnce && sinceLastSend >= this.batchMs) {
-      this.lastDeltaSentAt.set(key, Date.now());
+      this.noteDeltaSent(key);
       this.broadcastNow(sessionId, msg);
       return;
     }
@@ -189,8 +197,35 @@ export class Fanout {
     if (pending === undefined) return;
     clearTimeout(pending.timer);
     this.pending.delete(key);
-    this.lastDeltaSentAt.set(key, Date.now());
+    this.noteDeltaSent(key);
     this.broadcastNow(pending.sessionId, pending.msg);
+  }
+
+  /**
+   * A send time older than the batch window means the same as none, so those are dropped once
+   * there are many: the map then holds only tabs that sent within the last window.
+   */
+  private noteDeltaSent(key: string): void {
+    const now = Date.now();
+    this.lastDeltaSentAt.delete(key);
+    this.lastDeltaSentAt.set(key, now);
+    if (this.lastDeltaSentAt.size <= DELTA_SEND_TIMES_SWEEP) return;
+    for (const [other, at] of this.lastDeltaSentAt) {
+      if (now - at < this.batchMs) break;
+      this.lastDeltaSentAt.delete(other);
+    }
+  }
+
+  /** Forget a session's batching state (its pending deltas are sent first). */
+  forgetSession(sessionId: string): void {
+    this.flushScope(sessionId);
+    for (const key of this.lastDeltaSentAt.keys())
+      if ((JSON.parse(key) as [string, string])[0] === sessionId) this.lastDeltaSentAt.delete(key);
+  }
+
+  /** How many tabs have a remembered delta send time (diagnostics and tests). */
+  get trackedDeltaTabs(): number {
+    return this.lastDeltaSentAt.size;
   }
 
   private broadcastNow(sessionId: string, msg: Down): void {
@@ -290,7 +325,11 @@ export function createWsServer(opts: WsServerOpts): WsServer {
   }
   const oneWayDelayMs = simulatedRttMs / 2;
   const fanout = new Fanout(opts.batchMs, opts.deltaChaos, opts.sendFirstDeltaAtOnce ?? true);
-  const webSocketServer = new WebSocketServer({ noServer: true, perMessageDeflate: true });
+  const webSocketServer = new WebSocketServer({
+    noServer: true,
+    perMessageDeflate: true,
+    maxPayload: VIEWER_MAX_PAYLOAD,
+  });
   const authorizedSessions = new WeakMap<IncomingMessage, string>();
   const viewerSessions = new WeakMap<ViewerConn, string>();
   const viewerSockets = new Map<ViewerConn, WebSocket>();
@@ -575,6 +614,7 @@ export function createWsServer(opts: WsServerOpts): WsServer {
       latestUpgrade.delete(sessionId);
       activeKeys.delete(sessionId);
       retiredKeys.delete(sessionId);
+      fanout.forgetSession(sessionId);
       return true;
     },
     close: async () => {

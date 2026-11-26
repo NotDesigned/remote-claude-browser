@@ -17,6 +17,7 @@ import {
   type ErrorAnswer,
   type ErrorStyle,
 } from "../http-errors";
+import { mailboxErrors } from "../mail/mailboxes";
 import { RemoteCcError } from "../remote-cc/store";
 import { ClientSessionError } from "../session/clients";
 
@@ -53,11 +54,11 @@ export function createWorkspaceErrors(deps: WorkspaceErrorDeps) {
   };
   const errors: ErrorStyle = (error, request) => answer(error, request, false);
   const exitErrors: ErrorStyle = (error, request) => answer(error, request, true);
-  /** Mailbox errors keep Fastify's answer, as on the user's own mailbox routes. */
+  /** Mailbox errors keep the answer of the user's own mailbox routes. */
   const adminMailboxErrors: ErrorStyle = (error, request) =>
     error instanceof ClientSessionError || error instanceof UserStoreError
       ? sessionAnswer(error, request)
-      : undefined;
+      : mailboxErrors(error, request);
   return {
     config: { errors },
     exitConfig: { errors: exitErrors },

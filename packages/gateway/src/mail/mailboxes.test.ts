@@ -5,7 +5,13 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import Fastify from "fastify";
 import { expect, it, vi } from "vitest";
-import { createMailboxService, registerMailboxRoutes, RESEND_WEBHOOK_PATH } from "./mailboxes";
+import { registerErrorHandler } from "../http-errors";
+import {
+  createMailboxService,
+  MAX_ADDRESSES_PER_USER,
+  registerMailboxRoutes,
+  RESEND_WEBHOOK_PATH,
+} from "./mailboxes";
 
 const signingKey = Buffer.from("mailboxes-test-svix-key");
 const now = 1_789_000_000_000;
@@ -270,5 +276,70 @@ it("routes messages to existing addresses and deletes them while Resend is disab
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+it("caps the addresses a user creates or claims, but not an administrator's assignment", async () => {
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ id: "sent-test" }));
+  const store = await createMailboxService({
+    file: ":memory:",
+    ...provider,
+    verificationFrom: "verify@mail.example.com",
+    fetcher,
+  });
+  const app = Fastify();
+  registerErrorHandler(app, () => undefined);
+  registerMailboxRoutes(app, store, () => "owner");
+  try {
+    for (let index = 0; index < MAX_ADDRESSES_PER_USER; index++) store.createAddress("owner");
+    const refused = await app.inject({ method: "POST", url: mailboxPath, payload: {} });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().message).toContain(String(MAX_ADDRESSES_PER_USER));
+    expect(() => store.createAddress("owner", "", "spare")).toThrow("最多");
+    await expect(store.startClaim("owner", "someone@mail.example.com")).rejects.toThrow("最多");
+    expect(fetcher).not.toHaveBeenCalled();
+    store.assignAddress("owner", "assigned@mail.example.com");
+    expect(store.listAddresses("owner")).toHaveLength(MAX_ADDRESSES_PER_USER + 1);
+  } finally {
+    await app.close();
+    store.close();
+  }
+});
+
+it("leaves no pending claim when the code could not be sent, and says so to the person", async () => {
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockResolvedValue(new Response("upstream detail", { status: 500 }));
+  let time = now;
+  const store = await createMailboxService({
+    file: ":memory:",
+    ...provider,
+    verificationFrom: "verify@mail.example.com",
+    now: () => time,
+    fetcher,
+  });
+  const app = Fastify();
+  registerErrorHandler(app, () => undefined);
+  registerMailboxRoutes(app, store, () => "owner");
+  const begin = (address: string) =>
+    app.inject({ method: "POST", url: `${mailboxPath}/claims`, payload: { address } });
+  try {
+    const failed = await begin("first@mail.example.com");
+    expect(failed.statusCode).toBe(502);
+    expect(failed.json().message).toBe("暂时无法发送验证码，请稍后重试");
+    expect(failed.body).not.toContain("upstream detail");
+    expect(store.pendingClaim("owner")).toBeUndefined();
+
+    fetcher.mockResolvedValue(Response.json({ id: "sent" }));
+    expect((await begin("first@mail.example.com")).statusCode).toBe(200);
+    expect(store.pendingClaim("owner")).toBe("first@mail.example.com");
+    time += 2 * 60_000;
+    fetcher.mockResolvedValue(new Response("down", { status: 503 }));
+    expect((await begin("second@mail.example.com")).statusCode).toBe(502);
+    // The earlier claim, whose code did arrive, is still the one pending.
+    expect(store.pendingClaim("owner")).toBe("first@mail.example.com");
+  } finally {
+    await app.close();
+    store.close();
   }
 });

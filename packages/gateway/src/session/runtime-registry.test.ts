@@ -194,18 +194,51 @@ describe("session runtime registry", () => {
     await teardown;
   });
 
-  it("forgets the runtime and broadcasts even when closing the windows fails", async () => {
-    const { registry, acquire, events } = await fixture({
-      closeWindows: async () => {
-        throw new Error("window stuck");
+  it("keeps a runtime whose windows failed to close, so the next start reuses it", async () => {
+    let stuck = true;
+    const { registry, acquire, events, starts } = await fixture({
+      async closeWindows(sid, runtime) {
+        events.push(`close ${sid}`);
+        if (stuck) throw new Error("window stuck");
+        await runtime?.stop();
       },
     });
     const record = await acquire();
-    await registry.ensure(record.sid);
+    const runtime = await registry.ensure(record.sid);
     await expect(registry.teardown(record.sid)).rejects.toThrow("window stuck");
-    expect(registry.has(record.sid)).toBe(false);
+    expect(registry.get(record.sid)).toBe(runtime);
+    expect(registry.isStarted(record.sid)).toBe(true);
     expect(registry.isClosing(record.sid)).toBe(false);
     expect(events.at(-1)).toBe("change");
+
+    // No second browser on the same scope while the first one may still have windows open.
+    expect(await registry.ensure(record.sid)).toBe(runtime);
+    expect(starts).toHaveLength(1);
+
+    stuck = false;
+    await registry.teardown(record.sid);
+    expect(registry.has(record.sid)).toBe(false);
+    expect(runtime.stop).toHaveBeenCalledOnce();
+  });
+
+  it("still cuts the viewers off and closes the windows when the caller's first step fails", async () => {
+    const { registry, acquire, events } = await fixture();
+    const record = await acquire();
+    await registry.ensure(record.sid);
+    const afterStop = vi.fn(async () => {});
+    await expect(
+      registry.teardown(record.sid, {
+        beforeStop: async () => {
+          throw new Error("tabs unavailable");
+        },
+        afterStop,
+      }),
+    ).rejects.toThrow("tabs unavailable");
+    expect(events).toContain(`disconnect ${record.sid} closing=true`);
+    expect(events).toContain(`close ${record.sid} closing=true`);
+    expect(registry.has(record.sid)).toBe(false);
+    expect(registry.isStarted(record.sid)).toBe(false);
+    expect(afterStop).not.toHaveBeenCalled();
   });
 
   it("goes on to release the record after a reported stop failure", async () => {

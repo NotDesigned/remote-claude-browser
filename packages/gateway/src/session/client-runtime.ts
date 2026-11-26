@@ -67,6 +67,8 @@ export interface ClientRuntimeDeps {
   displayGrabbable: boolean;
   /** A top-level page of the workspace committed a navigation. */
   onNavigated(account: Account, sid: string, message: { tab: string; url: string }): void;
+  /** A tab of the workspace went away (closed, or its target detached). */
+  onTabClosed?(sid: string, tab: string): void;
   report(message: string, error: unknown): void;
 }
 
@@ -159,6 +161,12 @@ export async function createClientRuntime(
       return (await pixelWindow?.pointer({ ...message, vx: x * zoom, vy: y * zoom })) ?? false;
     },
     viewportFor: (tab) => viewport.viewportFor(tab),
+  });
+  // What the input relay keeps per tab goes with the tab.
+  scoped.onDetached((target) => {
+    if (target.type !== "page" || targets.has(target.targetId)) return;
+    input.forgetTab(target.targetId);
+    deps.onTabClosed?.(sid, target.targetId);
   });
   scoped.onSessionEvent("Page.frameNavigated", (sessionId, event) => {
     if (event.frame.parentId !== undefined) return;
@@ -275,8 +283,12 @@ export async function createClientRuntime(
       navigation.dispose();
       viewport.dispose();
       tabs.dispose();
-      await scoped.close();
-      await rm(uploadDir, { recursive: true, force: true });
+      try {
+        await scoped.close();
+      } finally {
+        // Received files go even when a window refused to close.
+        await rm(uploadDir, { recursive: true, force: true });
+      }
     },
   };
   if (process.env.MIRROR_DISABLE_RTC !== "1")

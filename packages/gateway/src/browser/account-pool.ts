@@ -147,15 +147,17 @@ export function createAccountPool(deps: AccountPoolDeps) {
       },
       onLoginState: login.observe,
     });
+    const sessionFrames = createSessionFrames(frameOwners);
     browser.onAttached((target) => sessionTargets.set(target.sessionId, target.targetId));
     browser.onDetached((target) => {
       if (sessionTargets.get(target.sessionId) === target.targetId)
         sessionTargets.delete(target.sessionId);
+      sessionFrames.detached(target.sessionId);
     });
     browser.onSessionEvent("Page.frameNavigated", (session, event) => {
       const target = sessionTargets.get(session),
         owner = target ? pool.ownerOf(target) : undefined;
-      if (owner) frameOwners.set(event.frame.id, owner);
+      if (owner) sessionFrames.navigated(session, event.frame, owner);
     });
     const preparePhoneTarget = createPhoneTargetPreparer({
       send: browser.send,
@@ -441,6 +443,52 @@ export function createAccountPool(deps: AccountPoolDeps) {
 }
 
 /** Sends a microphone state or sound to the page showing `tab`, if it still does. */
+/** Frames a CDP session reported, kept only as long as they can exist. */
+export const MAX_FRAMES_PER_SESSION = 1024;
+
+/**
+ * Keeps `frameOwners` to the frames that can still exist: a page's main frame committing a new
+ * document takes every frame of the old one with it, a detached session takes all of its frames,
+ * and a page that keeps creating frames without navigating keeps only its most recent ones.
+ */
+export function createSessionFrames(frameOwners: Map<string, string>) {
+  const bySession = new Map<string, Set<string>>();
+  /** A frame swapped into another process is reported by both sessions; the other keeps it. */
+  const drop = (frame: string) => {
+    for (const frames of bySession.values()) if (frames.has(frame)) return;
+    frameOwners.delete(frame);
+  };
+  return {
+    navigated(session: string, frame: { id: string; parentId?: string }, owner: string): void {
+      let frames = bySession.get(session);
+      if (!frames) bySession.set(session, (frames = new Set()));
+      const gone: string[] = [];
+      if (frame.parentId === undefined)
+        for (const other of frames) if (other !== frame.id) gone.push(other);
+      frames.delete(frame.id);
+      frames.add(frame.id);
+      for (const oldest of frames) {
+        if (frames.size - gone.length <= MAX_FRAMES_PER_SESSION) break;
+        if (!gone.includes(oldest)) gone.push(oldest);
+      }
+      for (const other of gone) {
+        frames.delete(other);
+        drop(other);
+      }
+      frameOwners.set(frame.id, owner);
+    },
+    detached(session: string): void {
+      const frames = bySession.get(session);
+      bySession.delete(session);
+      for (const frame of frames ?? []) drop(frame);
+    },
+    /** Sessions with frames kept (tests). */
+    get sessions(): number {
+      return bySession.size;
+    },
+  };
+}
+
 export function sendVoice(
   account: VoiceTarget,
   tab: string,

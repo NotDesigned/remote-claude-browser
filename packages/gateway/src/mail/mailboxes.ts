@@ -3,7 +3,9 @@ import { chmod, mkdir, open } from "node:fs/promises";
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { STATUS_CODES } from "node:http";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { ErrorStyle } from "../http-errors";
 import { createResendReceiving, MailboxError } from "./resend";
 
 export const RESEND_WEBHOOK_PATH = "/api/webhooks/resend";
@@ -11,6 +13,8 @@ const MAILBOX_PATH = "/api/me/mailboxes";
 const CLAIM_PATH = `${MAILBOX_PATH}/claims`;
 const CLAIM_VALID_MS = 10 * 60_000;
 const CLAIM_RESEND_MS = 60_000;
+/** Addresses a user may hold through their own creating and claiming; admin assignment is exempt. */
+export const MAX_ADDRESSES_PER_USER = 20;
 const addressWords = `
   acorn alder almond amber anchor apple arbor aster autumn bamboo basil bay beach beech berry
   birch bloom blossom blue breeze briar brook brush butter candle canyon cape caramel cedar
@@ -194,6 +198,21 @@ export async function createMailboxService(options: {
     "UPDATE mailbox_claims SET attempts = attempts + 1 WHERE user_id = ?",
   );
   const deleteClaim = db.prepare("DELETE FROM mailbox_claims WHERE user_id = ?");
+  const restoreClaim = db.prepare(`
+    INSERT OR REPLACE INTO mailbox_claims (user_id, address, code_hash, sent_at, attempts)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  const countAddresses = db.prepare(
+    "SELECT COUNT(*) AS count FROM mailbox_addresses WHERE user_id = ?",
+  );
+  const requireRoom = (userId: string) => {
+    const { count } = countAddresses.get(userId) as { count: number };
+    if (count >= MAX_ADDRESSES_PER_USER)
+      throw new MailboxError(
+        409,
+        `每个用户最多 ${MAX_ADDRESSES_PER_USER} 个收件地址，请先删除不再使用的地址`,
+      );
+  };
 
   const requireReceiving = () => {
     if (!receiving) throw new MailboxError(503, "收件箱尚未启用");
@@ -255,18 +274,34 @@ export async function createMailboxService(options: {
       const address = configuredAddress(value);
       if (unavailableAddress.get(address, address))
         throw new MailboxError(409, "这个收件地址已被分配或停用");
+      requireRoom(userId);
       const sentAt = now();
       const previous = claimFor(userId);
       if (previous && sentAt - previous.sentAt < CLAIM_RESEND_MS)
         throw new MailboxError(429, "请在 1 分钟后重新发送验证码");
       const code = randomInt(100_000_000).toString().padStart(8, "0");
+      // Saved first so that a second request within the minute is refused, and put back as it
+      // was if the code never went out: a claim nobody received must not show as pending.
       setClaim.run(userId, address, claimHash(key, userId, address, code).toString("hex"), sentAt);
-      await send({
-        from: sender,
-        to: address,
-        subject: "收件箱绑定验证码",
-        text: `你的收件箱绑定验证码为 ${code}，10 分钟内有效。`,
-      });
+      try {
+        await send({
+          from: sender,
+          to: address,
+          subject: "收件箱绑定验证码",
+          text: `你的收件箱绑定验证码为 ${code}，10 分钟内有效。`,
+        });
+      } catch (error) {
+        if (previous)
+          restoreClaim.run(
+            userId,
+            previous.address,
+            previous.codeHash,
+            previous.sentAt,
+            previous.attempts,
+          );
+        else deleteClaim.run(userId);
+        throw error;
+      }
       return address;
     },
     confirmClaim(userId, requestedAddress, value) {
@@ -283,6 +318,7 @@ export async function createMailboxService(options: {
       }
       db.exec("BEGIN IMMEDIATE");
       try {
+        requireRoom(userId);
         const assigned = assignAvailable(userId, address, "");
         deleteClaim.run(userId);
         db.exec("COMMIT");
@@ -299,6 +335,7 @@ export async function createMailboxService(options: {
       if (!configuredDomains.includes(domain))
         throw new MailboxError(400, "请选择已启用的收件域名");
       const name = mailboxLabel(label);
+      requireRoom(userId);
       if (localPart !== undefined) {
         const part = typeof localPart === "string" ? localPart.trim().toLowerCase() : "";
         if (!/^[a-z0-9](?:[a-z0-9-]{0,56}[a-z0-9])?$/.test(part))
@@ -358,6 +395,22 @@ export async function createMailboxService(options: {
   };
 }
 
+/**
+ * Mailbox routes answer a MailboxError the way Fastify answers one, `{ statusCode, error, message }`
+ * (the page shows `message`), whatever its status; anything else gets the gateway's generic answer.
+ */
+export const mailboxErrors: ErrorStyle = (error) =>
+  error instanceof MailboxError
+    ? {
+        status: error.statusCode,
+        body: {
+          statusCode: error.statusCode,
+          error: STATUS_CODES[error.statusCode] ?? "Error",
+          message: error.message,
+        },
+      }
+    : undefined;
+
 export function registerMailboxRoutes(
   app: FastifyInstance,
   service: MailboxService,
@@ -374,7 +427,8 @@ export function registerMailboxRoutes(
     if (!service.getAddress(userId, addressId)) throw new MailboxError(404, "没有这个收件地址");
   };
 
-  app.get(MAILBOX_PATH, async (request, reply) => {
+  const config = { errors: mailboxErrors };
+  app.get(MAILBOX_PATH, { config }, async (request, reply) => {
     const userId = userIdFor(request, reply);
     return {
       enabled: service.enabled,
@@ -386,7 +440,7 @@ export function registerMailboxRoutes(
   });
   app.post<{ Body: { label?: unknown; localPart?: unknown; domain?: unknown } | null }>(
     MAILBOX_PATH,
-    { bodyLimit: 4096 },
+    { bodyLimit: 4096, config },
     async (request, reply) => {
       const address = service.createAddress(
         userIdFor(request, reply),
@@ -399,7 +453,7 @@ export function registerMailboxRoutes(
   );
   app.post<{ Body: { address?: unknown } | null }>(
     CLAIM_PATH,
-    { bodyLimit: 1024 },
+    { bodyLimit: 1024, config },
     async (request, reply) => {
       const address = await service.startClaim(userIdFor(request, reply), request.body?.address);
       return { address };
@@ -407,7 +461,7 @@ export function registerMailboxRoutes(
   );
   app.post<{ Body: { address?: unknown; code?: unknown } | null }>(
     `${CLAIM_PATH}/confirm`,
-    { bodyLimit: 1024 },
+    { bodyLimit: 1024, config },
     async (request, reply) => {
       const address = service.confirmClaim(
         userIdFor(request, reply),
@@ -419,6 +473,7 @@ export function registerMailboxRoutes(
   );
   app.delete<{ Params: { addressId: string } }>(
     `${MAILBOX_PATH}/:addressId`,
+    { config },
     async (request, reply) => {
       service.deleteAddress(userIdFor(request, reply), request.params.addressId);
       return reply.code(204).send();
@@ -426,6 +481,7 @@ export function registerMailboxRoutes(
   );
   app.get<{ Params: { addressId: string } }>(
     `${MAILBOX_PATH}/:addressId/messages`,
+    { config },
     async (request, reply) => {
       const userId = userIdFor(request, reply);
       const { addressId } = request.params;
@@ -435,6 +491,7 @@ export function registerMailboxRoutes(
   );
   app.get<{ Params: { addressId: string; messageId: string } }>(
     `${MAILBOX_PATH}/:addressId/messages/:messageId`,
+    { config },
     async (request, reply) => {
       const userId = userIdFor(request, reply);
       const { addressId, messageId } = request.params;
@@ -452,7 +509,7 @@ export function registerMailboxRoutes(
         { parseAs: "buffer" },
         (_request, body, done) => done(null, body),
       );
-      webhook.post<{ Body: Buffer }>(RESEND_WEBHOOK_PATH, async (request) => {
+      webhook.post<{ Body: Buffer }>(RESEND_WEBHOOK_PATH, { config }, async (request) => {
         if (!Buffer.isBuffer(request.body)) throw new MailboxError(400, "邮件通知格式无效");
         service.receive(request.body, request.headers);
         return {};
