@@ -14,7 +14,10 @@
  *
  * Either way, someone typing whose field the page took away (a chat composer mounted anew after
  * sending) is followed to the field the page focuses instead, at once: their keyboard was open
- * already, and what they type next must not go nowhere.
+ * already, and what they type next must not go nowhere. When the page put a field just like it in
+ * its place in the same change, focus goes there before anything else can happen: a phone's soft
+ * keyboard, which closes once nothing is focused, stays open, and no key lands on the page body
+ * while the remote focus report is on its way.
  */
 import type { RemoteFocus } from "@mirror/protocol";
 import { deepActiveElement, isTextEditable } from "./keys";
@@ -108,6 +111,43 @@ export function createFocusFollower(options: FocusFollowOptions): FocusFollower 
     return active === null || !isTextEditable(active);
   };
 
+  /** The one field in `doc` that stands where `gone` stood: same kind, id and labels. */
+  const replacementOf = (gone: Element, doc: Document): HTMLElement | null => {
+    const same = (name: string, field: Element) =>
+      field.getAttribute(name) === gone.getAttribute(name);
+    let found: HTMLElement | null = null;
+    for (const field of doc.querySelectorAll?.("input, textarea, [contenteditable]") ?? []) {
+      if (field === gone || !field.isConnected || !isTextEditable(field)) continue;
+      // The editing host, not an element inside it.
+      if ((field.parentElement as HTMLElement | null)?.isContentEditable === true) continue;
+      if (
+        field.tagName !== gone.tagName ||
+        !["id", "role", "aria-label", "placeholder", "data-placeholder"].every((name) =>
+          same(name, field),
+        )
+      )
+        continue;
+      if (found !== null) return null;
+      found = field as HTMLElement;
+    }
+    return found;
+  };
+  /** The focused field was just removed while someone typed in it: take the one put in its place. */
+  const replaceRemoved = (gone: Element, doc: Document) => {
+    if (gone.isConnected || now() - typedAt > STRANDED_TYPING_MS || pointerHeld) return;
+    if (hiddenHasFocus()) return;
+    const active = deepActiveElement(options.rootDoc);
+    if (active !== null && isTextEditable(active)) return;
+    const field = replacementOf(gone, doc);
+    if (field === null) return;
+    field.focus({ preventScroll: true });
+    if (field.isContentEditable) {
+      const selection = doc.getSelection?.();
+      selection?.selectAllChildren(field);
+      selection?.collapseToEnd();
+    }
+  };
+
   const moveTo = (focus: RemoteFocus): boolean => {
     const field = mirrorField(focus);
     if (field !== null) {
@@ -173,6 +213,13 @@ export function createFocusFollower(options: FocusFollowOptions): FocusFollower 
         const target = event.target;
         if (isElement(target) && isTextEditable(target)) typedAt = now();
       };
+      // A removed field blurs while the replay applies the page's change; what the change adds
+      // in its place is there once that change is applied, which is before the next task.
+      const lost = (event: FocusEvent) => {
+        const target = event.target;
+        if (!isElement(target) || !isTextEditable(target) || event.relatedTarget !== null) return;
+        queueMicrotask(() => replaceRemoved(target, doc));
+      };
       doc.addEventListener("compositionstart", start, true);
       doc.addEventListener("compositionend", end, true);
       doc.addEventListener("pointerdown", down, true);
@@ -181,6 +228,7 @@ export function createFocusFollower(options: FocusFollowOptions): FocusFollower 
       doc.addEventListener("pointermove", move, true);
       doc.addEventListener("keydown", typed, true);
       doc.addEventListener("beforeinput", typed, true);
+      doc.addEventListener("focusout", lost, true);
       return () => {
         docs.delete(doc);
         doc.removeEventListener("compositionstart", start, true);
@@ -191,6 +239,7 @@ export function createFocusFollower(options: FocusFollowOptions): FocusFollower 
         doc.removeEventListener("pointermove", move, true);
         doc.removeEventListener("keydown", typed, true);
         doc.removeEventListener("beforeinput", typed, true);
+        doc.removeEventListener("focusout", lost, true);
       };
     },
   };

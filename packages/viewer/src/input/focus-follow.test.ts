@@ -26,8 +26,9 @@ class FakeElement {
   get ownerDocument() {
     return this.doc;
   }
-  getAttribute() {
-    return null;
+  readonly attributes = new Map<string, string>();
+  getAttribute(name: string) {
+    return this.attributes.get(name) ?? null;
   }
   closest() {
     return null;
@@ -38,7 +39,17 @@ class FakeDocument {
   readonly listeners = new Map<string, Set<Listener>>();
   activeElement: FakeElement | null = null;
   focused = true;
-  selection = { isCollapsed: true, rangeCount: 0, anchorNode: null as unknown };
+  selection = {
+    isCollapsed: true,
+    rangeCount: 0,
+    anchorNode: null as unknown,
+    selectAllChildren: vi.fn(),
+    collapseToEnd: vi.fn(),
+  };
+  fields: FakeElement[] = [];
+  querySelectorAll() {
+    return this.fields;
+  }
   hasFocus() {
     return this.focused;
   }
@@ -118,9 +129,9 @@ describe("focus following", () => {
     doc.fire("pointerdown", {});
     follower.remoteFocus({ id: 5, editable: true });
     doc.fire("pointerup", {});
-    doc.selection = { isCollapsed: false, rangeCount: 1, anchorNode: null };
+    doc.selection = { ...doc.selection, isCollapsed: false, rangeCount: 1, anchorNode: null };
     follower.remoteFocus({ id: 5, editable: true });
-    doc.selection = { isCollapsed: true, rangeCount: 0, anchorNode: null };
+    doc.selection = { ...doc.selection, isCollapsed: true, rangeCount: 0, anchorNode: null };
     doc.focused = false;
     follower.remoteFocus({ id: 5, editable: true });
     expect(field.focus).not.toHaveBeenCalled();
@@ -191,6 +202,45 @@ describe("focus following", () => {
       doc.fire("pointerup", {});
       follower.remoteFocus({ id: 5, editable: true });
       expect(field.focus).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("when the page replaces the field someone is typing in, in one change", () => {
+    /** A composer being typed in, removed with a new one just like it put in its place. */
+    function replaced(followsByItself: boolean, label = "Write your prompt") {
+      const ctx = setup(followsByItself);
+      const make = (aria: string) => {
+        const editor = new FakeElement("DIV", ctx.doc);
+        editor.isContentEditable = true;
+        editor.attributes.set("id", "composer");
+        editor.attributes.set("aria-label", aria);
+        return editor;
+      };
+      const old = make("Write your prompt");
+      const next = make(label);
+      ctx.doc.fields = [old, next];
+      old.focus();
+      ctx.doc.fire("keydown", { target: old });
+      old.isConnected = false;
+      ctx.doc.activeElement = ctx.body;
+      ctx.doc.fire("focusout", { target: old, relatedTarget: null });
+      return { ...ctx, next };
+    }
+
+    it("focuses the new one at once, with the caret at its end, also on a phone", async () => {
+      for (const followsByItself of [true, false]) {
+        const { doc, next } = replaced(followsByItself);
+        await Promise.resolve();
+        expect(next.focus).toHaveBeenCalledWith({ preventScroll: true });
+        expect(doc.activeElement).toBe(next);
+        expect(doc.selection.collapseToEnd).toHaveBeenCalled();
+      }
+    });
+
+    it("leaves a field that does not look the same alone", async () => {
+      const { next } = replaced(true, "Search");
+      await Promise.resolve();
+      expect(next.focus).not.toHaveBeenCalled();
     });
   });
 
