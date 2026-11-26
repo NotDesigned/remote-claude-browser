@@ -109,15 +109,15 @@ describe("notification feed routes", () => {
     expect(stream.headers["content-type"]).toMatch(/^text\/event-stream/);
     expect(stream.headers["cache-control"]).toBe("no-store");
     await until(() => feeds.length === 1);
-    expect(feeds[0].sid).toBe("mine");
-    feeds[0].feed.send({ t: "notify-close", id: "n1" });
+    expect(feeds[0]!.sid).toBe("mine");
+    feeds[0]!.feed.send({ t: "notify-close", id: "n1" });
     await until(() => stream.messages.length === 1);
     expect(stream.messages).toEqual([{ t: "notify-close", id: "n1" }]);
     await until(() => (stream.raw.match(/^:\n/gm) ?? []).length >= 1);
     expect(stream.raw).toMatch(/^:\n/m);
     stream.abort();
-    await until(() => feeds[0].forgotten);
-    expect(feeds[0].forgotten).toBe(true);
+    await until(() => feeds[0]!.forgotten);
+    expect(feeds[0]!.forgotten).toBe(true);
   });
 
   it("ends the stream when the relay closes the feed", async () => {
@@ -125,11 +125,11 @@ describe("notification feed routes", () => {
     const stream = openStream(port, "mine");
     await stream.ready;
     await until(() => feeds.length === 1);
-    expect(feeds[0].feed.authorized()).toBe(true);
-    feeds[0].feed.close();
+    expect(feeds[0]!.feed.authorized()).toBe(true);
+    feeds[0]!.feed.close();
     await until(() => stream.ended);
     expect(stream.ended).toBe(true);
-    expect(feeds[0].forgotten).toBe(true);
+    expect(feeds[0]!.forgotten).toBe(true);
   });
 
   it("refuses another client's session", async () => {

@@ -188,6 +188,30 @@ describe("createAgentLink", () => {
     expect(publishClipboard).toHaveBeenCalledWith({ t: "clip", text: "server copy" }, "page-1");
   });
 
+  it("relays the current document's notification messages once its bridge is ready", async () => {
+    const target: TargetRef = { targetId: "page-1", sessionId: "session-1", type: "page" };
+    const browser = new MockBrowser(target);
+    const publishNotify = vi.fn();
+    createAgentLink(browser, { publishNotify });
+    const notify = (docId: number, op: string) =>
+      ({ kind: "notify", docId, op, origin: "https://claude.ai" }) as unknown as AgentMsg;
+
+    browser.emit(10, 0, hello(10), 100);
+    browser.emit(10, 1, notify(10, "hello"), 100);
+    browser.emit(10, 2, notify(10, "ask"), 100);
+    // A frame's agent shares the page session but has no say about notifications.
+    browser.emit(99, 0, hello(99, false), 101);
+    browser.emit(99, 1, notify(99, "hello"), 101);
+    // Not before the bridge that the answer goes through exists.
+    expect(publishNotify).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(publishNotify).toHaveBeenCalledTimes(2));
+    expect(publishNotify.mock.calls).toEqual([
+      [{ op: "hello", origin: "https://claude.ai" }, "page-1"],
+      [{ op: "ask", origin: "https://claude.ai" }, "page-1"],
+    ]);
+    expect(agentBridgeChannel(browser, target.sessionId)?.objectId).toBe("bridge-100");
+  });
+
   it("drops iframe about:blank hellos so commands survive the cross-site child lifecycle", async () => {
     const target: TargetRef = { targetId: "child-1", sessionId: "session-1", type: "iframe" };
     const browser = new MockBrowser(target);

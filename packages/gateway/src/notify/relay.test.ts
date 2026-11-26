@@ -264,7 +264,7 @@ describe("notification relay", () => {
     const { relay, feed } = setup();
     const feeds = Array.from({ length: MAX_FEEDS + 1 }, () => feed());
     for (const each of feeds) relay.addFeed("s1", each);
-    expect(feeds[0].closed).toBe(true);
+    expect(feeds[0]!.closed).toBe(true);
     expect(relay.inspect("s1")?.feeds).toBe(MAX_FEEDS);
     const revoked = feed(false);
     relay.addFeed("s2", revoked);

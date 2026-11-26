@@ -255,7 +255,15 @@ export function createAgentLink(browser: BrowserHandle, options: AgentLinkOption
           docId: _docId,
           ...message
         } = msg as unknown as Record<string, unknown>;
-        options.publishNotify?.(message, state.target.targetId);
+        // Its answers go through the document's bridge, which its hello has only begun to
+        // acquire; in order, since every message waits on the same promise.
+        const docId = chunk.docId;
+        void (state.bridgeReady ?? Promise.resolve()).then(
+          () => {
+            if (state.docId === docId) options.publishNotify?.(message, state.target.targetId);
+          },
+          () => undefined,
+        );
       }
       return;
     }
