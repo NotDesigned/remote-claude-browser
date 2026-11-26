@@ -422,15 +422,11 @@ describe("session-scoped WebSocket upgrades", () => {
     })[0]!;
 
     own.viewer.sendCatchUp(hub.joinPayload());
-    expect(own.socket.messages.map((message) => message.t)).toEqual([
-      "resync",
-      "snapshot",
-      "delta",
-    ]);
+    expect(own.socket.messages.map((message) => message.t)).toEqual(["resync", "snapshot"]);
     expect(other.socket.messages).toEqual([]);
     // The live broadcast of that same delta reaches the other viewer, not this one again.
     fanout.publishToSession("a", live);
-    expect(own.socket.messages).toHaveLength(3);
+    expect(own.socket.messages).toHaveLength(2);
     expect(other.socket.messages).toEqual([live]);
     hub.invalidateDocument();
   });

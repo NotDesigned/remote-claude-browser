@@ -208,8 +208,8 @@ export class TabHub {
   }
 
   /**
-   * Viewer join / resync — same code path (D4): [resync, snapshot(Meta+FullSnapshot@epoch),
-   * one delta with the whole buffer]; caller then feeds the live tail.
+   * Viewer join / resync — same code path (D4): [resync, snapshot(Meta+FullSnapshot@epoch and
+   * then the whole delta buffer; seq is its last event)]; caller then feeds the live tail.
    */
   /**
    * True when a reconnecting viewer that has applied everything before `nextSeq` in `epoch` can
@@ -234,24 +234,17 @@ export class TabHub {
     if (this.historyDropped && !this.snapshotRequested) this.requestSnapshot("resync");
     if (this.meta === null || this.snapshot === null) return payload;
 
+    // The buffered deltas travel inside the snapshot, and seq names the last event it covers. The
+    // viewer casts a snapshot's events in one task: sent apart, the page as it was at the snapshot
+    // (often another page of a single-page app) would be painted before the deltas caught it up.
     payload.push({
       t: "snapshot",
       tab: this.tabId,
       epoch: this.epoch,
-      seq: this.snapshotSeq,
-      data: [this.meta, this.snapshot],
+      seq: this.snapshotSeq + this.deltas.length,
+      data: [this.meta, this.snapshot, ...this.deltas],
       reason: "resync",
     });
-    if (this.deltas.length > 0) {
-      payload.push({
-        t: "delta",
-        tab: this.tabId,
-        epoch: this.epoch,
-        // A batched delta is a contiguous range; seq identifies its first event.
-        seq: this.snapshotSeq + 1,
-        data: [...this.deltas],
-      });
-    }
     return payload;
   }
 

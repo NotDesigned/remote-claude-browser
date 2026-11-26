@@ -164,9 +164,10 @@ describe("P0-FANOUT", () => {
     expect(slow.isStalled).toBe(false);
     expect(fastSocket.take()).toMatchObject([{ t: "delta", seq: 3 }]);
     const recovery = slowSocket.take();
-    expect(recovery.map((msg) => msg.t)).toEqual(["resync", "snapshot", "delta"]);
-    expect(recovery[2]).toMatchObject({ t: "delta", seq: 2 });
-    if (recovery[2]?.t === "delta") expect(recovery[2].data).toHaveLength(2);
+    expect(recovery.map((msg) => msg.t)).toEqual(["resync", "snapshot"]);
+    // Meta, FullSnapshot and the two buffered deltas, through seq 3.
+    expect(recovery[1]).toMatchObject({ t: "snapshot", seq: 3 });
+    if (recovery[1]?.t === "snapshot") expect(recovery[1].data).toHaveLength(4);
 
     // The original batch timer was canceled by recovery; no overlapping tail arrives later.
     vi.advanceTimersByTime(30);
@@ -193,8 +194,8 @@ describe("P0-FANOUT", () => {
 
     expect(existingSocket.take()).toMatchObject([{ t: "delta", seq: 2 }]);
     const joined = joiningSocket.take();
-    expect(joined.map((msg) => msg.t)).toEqual(["resync", "snapshot", "delta"]);
-    expect(joined[2]).toMatchObject({ t: "delta", seq: 2 });
+    expect(joined.map((msg) => msg.t)).toEqual(["resync", "snapshot"]);
+    expect(joined[1]).toMatchObject({ t: "snapshot", seq: 2 });
     vi.advanceTimersByTime(30);
     expect(joiningSocket.sent).toEqual([]);
     fanout.close();

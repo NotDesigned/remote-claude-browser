@@ -213,9 +213,17 @@ export function createAssetCache(
       const discard = (): Promise<void> => {
         if (done) return removed;
         done = true;
-        output?.destroy();
+        const stream = output;
         output = undefined;
-        if (created) removed = rm(tempPath, { force: true }).catch(() => undefined);
+        if (!created) return removed;
+        // The file is opened asynchronously: remove it only once the stream has closed, or the
+        // open could land after the removal and leave the file behind.
+        const closed =
+          stream && !stream.closed
+            ? new Promise<void>((resolve) => stream.once("close", () => resolve()))
+            : Promise.resolve();
+        stream?.destroy();
+        removed = closed.then(() => rm(tempPath, { force: true })).catch(() => undefined);
         return removed;
       };
       const open = async (): Promise<WriteStream | undefined> => {

@@ -67,21 +67,17 @@ function assertJoinInvariant(hub: TabHub): void {
   const snapshot = payload[1];
   expect(snapshot?.t).toBe("snapshot");
   if (snapshot?.t !== "snapshot") return;
-  expect(snapshot.data.map((event) => event.type)).toEqual([
+  // Meta and FullSnapshot, then every buffered delta, in one message that the viewer casts in one
+  // task; seq names the last event it covers.
+  expect(payload).toHaveLength(2);
+  expect(snapshot.data.slice(0, 2).map((event) => event.type)).toEqual([
     EventType.Meta,
     EventType.FullSnapshot,
   ]);
-
-  const batched = payload[2];
-  if (batched === undefined) {
-    expect(hub.seq).toBe(snapshot.seq);
-    return;
-  }
-  expect(batched.t).toBe("delta");
-  if (batched.t !== "delta") return;
-  expect(batched.epoch).toBe(snapshot.epoch);
-  expect(batched.seq).toBe(snapshot.seq + 1);
-  expect(hub.seq).toBe(batched.seq + batched.data.length - 1);
+  expect(
+    snapshot.data.slice(2).every((event) => event.type === EventType.IncrementalSnapshot),
+  ).toBe(true);
+  expect(hub.seq).toBe(snapshot.seq);
 }
 
 describe("TabHub viewport across navigation", () => {
@@ -152,9 +148,9 @@ describe("TabHub", () => {
     });
 
     const joined = hub.joinPayload();
-    expect(joined).toHaveLength(3);
-    expect(joined[2]).toMatchObject({ t: "delta", epoch: 1, seq: 2 });
-    if (joined[2]?.t === "delta") expect(joined[2].data).toHaveLength(2);
+    expect(joined).toHaveLength(2);
+    expect(joined[1]).toMatchObject({ t: "snapshot", epoch: 1, seq: 3 });
+    if (joined[1]?.t === "snapshot") expect(joined[1].data).toHaveLength(4);
     assertJoinInvariant(hub);
   });
 

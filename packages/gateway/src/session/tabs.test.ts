@@ -560,9 +560,12 @@ describe("createTabLifecycle", () => {
     expect(published.some((message) => message.t === "snapshot" && message.tab === "tab-2")).toBe(
       true,
     );
-    expect(published.some((message) => message.t === "delta" && message.tab === "tab-2")).toBe(
-      true,
-    );
+    // Its buffered deltas travel inside that snapshot.
+    expect(
+      published.some(
+        (message) => message.t === "snapshot" && message.tab === "tab-2" && message.data.length > 2,
+      ),
+    ).toBe(true);
     lifecycle.dispose();
   });
 

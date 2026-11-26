@@ -669,7 +669,12 @@ describe("createScreencast", () => {
     expect(domIndex).toBeGreaterThanOrEqual(0);
     expect(fastMessages.slice(domIndex + 1).some((message) => message.t === "resync")).toBe(true);
     expect(fastMessages.slice(domIndex + 1).some((message) => message.t === "snapshot")).toBe(true);
-    expect(fastMessages.slice(domIndex + 1).some((message) => message.t === "delta")).toBe(true);
+    // The buffered deltas travel inside that snapshot.
+    expect(
+      fastMessages
+        .slice(domIndex + 1)
+        .some((message) => message.t === "snapshot" && message.data.length > 2),
+    ).toBe(true);
 
     // A frame already in flight when stop completes is still acknowledged and not forwarded.
     browser.frame("cdp-1", frame(103, "late-jpeg"));
