@@ -8,7 +8,8 @@
  *
  * Replay can rebuild a frame's document in place while a wheel over it is still being checked: the
  * rebuild drops the scroll the wheel started, and these listeners with it. Such a wheel, with no
- * scroll seen in the document since, is forwarded then; otherwise it would reach neither side.
+ * scroll of its own seen in the document since, is forwarded then; otherwise it would reach neither
+ * side.
  */
 import type { TabId } from "@mirror/protocol";
 import { isElement, pointerPosition, resolvePointerTarget, type SendInput } from "./pointer";
@@ -45,8 +46,12 @@ export function attachWheelCapture(options: WheelCaptureOptions): () => void {
       else setTimeout(callback, 16);
     });
   let active = true;
-  /** Wheels still being checked, and whether the document has scrolled since each. */
-  const checking = new Set<{ forward: () => void; scrolled: boolean }>();
+  /** Wheels still being checked, and whether the document has scrolled for each since. */
+  const checking = new Set<{
+    forward: () => void;
+    scrolled: boolean;
+    follows: (target: EventTarget | null) => boolean;
+  }>();
 
   const onWheel = (event: WheelEvent) => {
     if (!event.isTrusted) return;
@@ -77,7 +82,26 @@ export function attachWheelCapture(options: WheelCaptureOptions): () => void {
       return;
     }
 
-    const wheel = { forward, scrolled: false };
+    // Only a scroll of what the wheel could move, in its direction, is the wheel's. Replay putting a
+    // rebuilt element back where it was scrolled fires the same event, and is not.
+    const follows = (target: EventTarget | null) =>
+      candidates.some((candidate) => {
+        const element = candidate.target === options.doc.defaultView ? null : candidate.target;
+        const scrolled =
+          element === null
+            ? target === options.doc ||
+              target === options.doc.defaultView ||
+              target === options.doc.documentElement ||
+              target === options.doc.scrollingElement
+            : target === element;
+        if (!scrolled) return false;
+        const next = scrollPosition(candidate.target, options.doc);
+        return (
+          movedWith(next.x - candidate.x, event.deltaX, movementEpsilonPx) ||
+          movedWith(next.y - candidate.y, event.deltaY, movementEpsilonPx)
+        );
+      });
+    const wheel = { forward, scrolled: false, follows };
     checking.add(wheel);
     const startedAt = now();
     const verifyConsumed = () => {
@@ -99,8 +123,8 @@ export function attachWheelCapture(options: WheelCaptureOptions): () => void {
     };
     afterEvent(verifyConsumed);
   };
-  const onScroll = () => {
-    for (const wheel of checking) wheel.scrolled = true;
+  const onScroll = (event: Event) => {
+    for (const wheel of checking) if (!wheel.scrolled) wheel.scrolled = wheel.follows(event.target);
   };
 
   options.doc.addEventListener("wheel", onWheel, { capture: true, passive: false });
@@ -169,6 +193,11 @@ function canConsume(element: Element, style: CSSStyleDeclaration, dx: number, dy
 
 function canMove(position: number, maximum: number, delta: number): boolean {
   return delta < 0 ? position > 0 : delta > 0 ? position < maximum : false;
+}
+
+/** Moved by more than `epsilon`, the way `delta` points. */
+function movedWith(moved: number, delta: number, epsilon: number): boolean {
+  return delta < 0 ? moved < -epsilon : delta > 0 ? moved > epsilon : false;
 }
 
 function axisScrollable(overflow: string): boolean {

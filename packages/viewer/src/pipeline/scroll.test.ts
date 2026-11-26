@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { EventType, IncrementalSource, type eventWithTime, type Up } from "@mirror/protocol";
-import { createScrollFilter } from "./scroll";
+import { createScrollFilter, watchReplayScrollRestores } from "./scroll";
 
 function scrollEvent(id: number, x: number, y: number): eventWithTime {
   return {
@@ -187,6 +187,85 @@ describe("P1 local-first scroll", () => {
 
     expect(sent).toEqual([]);
     expect(snapped).toEqual([{ x: 0, y: 100 }]);
+    filter.reset();
+  });
+});
+
+describe("scrolls replay makes itself", () => {
+  it("does not hold back the person's scrolls after a server scroll to where the page already is", () => {
+    let now = 1_000;
+    const sent: Up[] = [];
+    const filter = createScrollFilter({
+      send: (message) => sent.push(message),
+      now: () => now,
+      position: (nodeId) => (nodeId === 8 ? { x: 0, y: 300 } : null),
+    });
+    // Replay applying this moves nothing, so no native scroll event will mark its arrival.
+    filter(scrollEvent(8, 0, 300), { tab: "T1", nowMs: now });
+
+    now = 1_300;
+    filter.localScroll("T1", 8, 0, 420);
+    expect(sent).toEqual([{ t: "scroll", tab: "T1", nodeId: 8, x: 0, y: 420 }]);
+    filter.reset();
+  });
+
+  it("still waits for a server scroll that has somewhere to go", () => {
+    let now = 1_000;
+    const sent: Up[] = [];
+    const filter = createScrollFilter({
+      send: (message) => sent.push(message),
+      now: () => now,
+      position: () => ({ x: 0, y: 0 }),
+    });
+    filter(scrollEvent(8, 0, 300), { tab: "T1", nowMs: now });
+    now = 1_050;
+    filter.localScroll("T1", 8, 0, 120);
+    expect(sent).toEqual([]);
+    filter.reset();
+  });
+
+  it("does not send upstream where replay put a rebuilt frame's document back", async () => {
+    let now = 1_000;
+    const sent: Up[] = [];
+    const filter = createScrollFilter({ send: (message) => sent.push(message), now: () => now });
+    const handlers = new Map<string, (payload: unknown) => void>();
+    const view = { scrollX: 0, scrollY: 800 };
+    const root = { nodeType: 1, tagName: "HTML" } as unknown as HTMLElement;
+    const frameDoc = {
+      documentElement: root,
+      body: null,
+      scrollingElement: root,
+      defaultView: view,
+    };
+    Object.assign(root, { ownerDocument: frameDoc });
+    const replayer = {
+      iframe: { contentDocument: {} },
+      getMirror: () => ({ getId: (node: unknown) => (node === root ? 41 : -1) }),
+      on: (event: string, handler: (payload: unknown) => void) => handlers.set(event, handler),
+      off: (event: string) => handlers.delete(event),
+    };
+    const unwatch = watchReplayScrollRestores(
+      replayer as unknown as Parameters<typeof watchReplayScrollRestores>[0],
+      filter,
+    );
+
+    // The frame's document is rebuilt while the page is at 800, and replay writes the 0 it has.
+    handlers.get("scroll-restore")?.(root);
+    view.scrollY = 0;
+    await Promise.resolve();
+    now = 1_016;
+    filter.localScroll("T1", 41, 0, 0);
+    expect(sent).toEqual([]);
+
+    // Unchanged positions fire no event, and are not waited for.
+    handlers.get("scroll-restore")?.(root);
+    await Promise.resolve();
+    now = 1_400;
+    filter.localScroll("T1", 41, 0, 260);
+    expect(sent).toEqual([{ t: "scroll", tab: "T1", nodeId: 41, x: 0, y: 260 }]);
+
+    unwatch();
+    expect(handlers.size).toBe(0);
     filter.reset();
   });
 });

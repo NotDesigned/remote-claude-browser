@@ -14,6 +14,7 @@ import {
   type TabId,
   type Up,
 } from "@mirror/protocol";
+import type { Replayer } from "@rrweb/replay";
 import { isElement } from "../input/pointer";
 import type { PipelineCtx, Stage } from "./index";
 
@@ -51,6 +52,11 @@ const SERVER_SCROLL_TAIL_MS = 200;
 
 export interface ScrollFilter extends Stage {
   localScroll(tab: TabId, nodeId: number, x: number, y: number): void;
+  /**
+   * Replay itself moved this scroller (putting a rebuilt document back where the page has it): the
+   * native scroll event on its way is not the person's.
+   */
+  expectReplayScroll(nodeId: number, x: number, y: number): void;
   registerDocumentScroll(
     eventNodeId: number,
     nodeId: number,
@@ -66,6 +72,8 @@ export interface ScrollFilterOptions {
   suppressMs?: number;
   setTimer?: typeof setTimeout;
   clearTimer?: typeof clearTimeout;
+  /** Where a scroller of the page in view is now, if known. */
+  position?(nodeId: number): { x: number; y: number } | null;
 }
 
 export function createScrollFilter(options: ScrollFilterOptions): ScrollFilter {
@@ -86,7 +94,22 @@ export function createScrollFilter(options: ScrollFilterOptions): ScrollFilter {
   >();
   const pendingServerSnaps = new Map<number, PendingServerSnap>();
 
+  const near = (a: { x: number; y: number }, x: number, y: number) =>
+    Math.abs(a.x - x) <= SCROLL_MATCH_EPSILON_PX && Math.abs(a.y - y) <= SCROLL_MATCH_EPSILON_PX;
+
   const expectServerScroll = (nodeId: number, x: number, y: number, timestamp: number) => {
+    // Already there: replay moves nothing, so no scroll event comes to mark the arrival, and
+    // waiting for one would take the person's own scrolls for replay's for the next two seconds.
+    const current = options.position?.(nodeId) ?? null;
+    if (current !== null && near(current, x, y)) {
+      expectedServer.set(nodeId, {
+        x,
+        y,
+        expiresAt: timestamp + SERVER_SCROLL_TAIL_MS,
+        arrived: true,
+      });
+      return;
+    }
     expectedServer.set(nodeId, { x, y, expiresAt: timestamp + 2_000 });
   };
 
@@ -167,9 +190,7 @@ export function createScrollFilter(options: ScrollFilterOptions): ScrollFilter {
   filter.localScroll = (tab, nodeId, x, y) => {
     const expected = expectedServer.get(nodeId);
     if (expected !== undefined) {
-      const nearTarget =
-        Math.abs(expected.x - x) <= SCROLL_MATCH_EPSILON_PX &&
-        Math.abs(expected.y - y) <= SCROLL_MATCH_EPSILON_PX;
+      const nearTarget = near(expected, x, y);
       // Once replay has arrived, a scroll away from the target is the person's.
       if (expected.expiresAt >= now() && (nearTarget || expected.arrived !== true)) {
         if (nearTarget && expected.arrived !== true) {
@@ -211,6 +232,11 @@ export function createScrollFilter(options: ScrollFilterOptions): ScrollFilter {
         Math.max(0, throttleMs - elapsed),
       );
     }
+  };
+
+  filter.expectReplayScroll = (nodeId, x, y) => {
+    // The position is already written, and its scroll event is still to come.
+    expectedServer.set(nodeId, { x, y, expiresAt: now() + 2_000 });
   };
 
   filter.registerDocumentScroll = (eventNodeId, nodeId, reconcile) => {
@@ -310,4 +336,78 @@ export function resolveScrollTarget(
     element = element.parentElement;
   }
   return null;
+}
+
+/** A scroller of a replayed page, as the wire names it, and how far it is scrolled. */
+function replayScroller(
+  replayer: Pick<Replayer, "iframe" | "getMirror">,
+  node: Node,
+): { nodeId: number; read(): { x: number; y: number } } | null {
+  if (!isElement(node)) return null;
+  const doc = node.ownerDocument;
+  if (node === doc.documentElement || node === doc.body || node === doc.scrollingElement) {
+    const view = doc.defaultView;
+    if (view === null || doc.documentElement === null) return null;
+    const nodeId =
+      doc === replayer.iframe.contentDocument ? 0 : replayer.getMirror().getId(doc.documentElement);
+    if (nodeId < 0) return null;
+    return { nodeId, read: () => ({ x: view.scrollX, y: view.scrollY }) };
+  }
+  const nodeId = replayer.getMirror().getId(node);
+  if (nodeId < 0) return null;
+  return { nodeId, read: () => ({ x: node.scrollLeft, y: node.scrollTop }) };
+}
+
+/** How far a scroller of the replayed page (wire node id; 0 is its window) is scrolled. */
+export function replayScrollPosition(
+  replayer: Pick<Replayer, "iframe" | "getMirror"> | null,
+  nodeId: number,
+): { x: number; y: number } | null {
+  if (replayer === null) return null;
+  try {
+    if (nodeId === 0) {
+      const view = replayer.iframe.contentWindow;
+      return view === null ? null : { x: view.scrollX, y: view.scrollY };
+    }
+    const node = replayer.getMirror().getNode(nodeId);
+    return node === null ? null : (replayScroller(replayer, node)?.read() ?? null);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Replay puts each element of a document it builds back where the page has it scrolled (rebuild,
+ * and the patched attachment of a frame's document). The browser reports that with the same scroll
+ * event as the person's scrolling; sent upstream, it would scroll the page back to where it was,
+ * after a wheel the person had just forwarded. The patched replay announces each such element
+ * before writing it ("scroll-restore"), and the position it ends up at is expected, not sent.
+ */
+export function watchReplayScrollRestores(
+  replayer: Pick<Replayer, "iframe" | "getMirror" | "on" | "off">,
+  filter: Pick<ScrollFilter, "expectReplayScroll">,
+): () => void {
+  const onRestore = (payload: unknown) => {
+    try {
+      const scroller = replayScroller(replayer, payload as Node);
+      if (scroller === null) return;
+      const before = scroller.read();
+      // Written right after the announcement, in the same task.
+      queueMicrotask(() => {
+        try {
+          const after = scroller.read();
+          if (after.x !== before.x || after.y !== before.y)
+            filter.expectReplayScroll(scroller.nodeId, after.x, after.y);
+        } catch {
+          // A document gone in between has nothing to report.
+        }
+      });
+    } catch {
+      // Never let this break the replay that announced it.
+    }
+  };
+  replayer.on("scroll-restore", onRestore);
+  return () => {
+    replayer.off("scroll-restore", onRestore);
+  };
 }

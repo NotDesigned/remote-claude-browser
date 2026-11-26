@@ -88,6 +88,8 @@ export interface MirrorOpts {
   restoreHooks?: RebuildRestoreHooks;
   /** Phase-1 listeners live inside this Replayer's iframe and must be renewed on rebuild. */
   attachInteraction?(tab: TabId, replayer: Replayer): () => void;
+  /** Sees each Replayer from before its snapshot is cast until it is destroyed. */
+  watchReplayer?(tab: TabId, replayer: Replayer): () => void;
   onSnapshotApplied?(snapshot: Snapshot): void;
   /** Report the buffer actually installed in this Replayer, rather than a future target. */
   onBufferApplied?(bufferMs: number): void;
@@ -317,6 +319,9 @@ export function createMirror(opts: MirrorOpts): Mirror {
         pendingRestore = point;
       },
       onBufferApplied: opts.onBufferApplied,
+      ...(opts.watchReplayer === undefined
+        ? {}
+        : { watchReplayer: (replayer: Replayer) => opts.watchReplayer!(message.tab, replayer) }),
     });
     if (!built.ok) {
       renderStatus("Mirror recovery requested…");

@@ -1284,6 +1284,32 @@ describe("P1 input capture", () => {
     expect(sent).toEqual([]);
   });
 
+  it("still forwards a rebuilt wheel when only replay scrolled the document since", () => {
+    const doc = new FakeDocument();
+    const scroller = new FakeElement(10);
+    scroller.overflowY = "auto";
+    scroller.scrollHeight = 500;
+    scroller.scrollTop = 200;
+    const other = new FakeElement(11);
+    const sent: Up[] = [];
+    const detach = attachWheelCapture({
+      doc: doc as unknown as Document,
+      tab: "T1",
+      getNodeId: (node) => (node as unknown as FakeElement).nodeId,
+      send: (message) => sent.push(message),
+      afterEvent: () => {},
+    });
+
+    doc.fire("wheel", mouse(scroller, { deltaX: 0, deltaY: 80 }));
+    // Replay puts elements back where the page has them: against the wheel, or elsewhere.
+    scroller.scrollTop = 0;
+    doc.fire("scroll", { target: scroller });
+    other.scrollTop = 300;
+    doc.fire("scroll", { target: other });
+    detach();
+    expect(sent).toMatchObject([{ t: "ptr", kind: "wheel", nodeId: 10, dy: 80 }]);
+  });
+
   it("treats an ordinary overflow-visible document viewport as locally scrollable", () => {
     const doc = new FakeDocument();
     const root = new FakeElement(1);

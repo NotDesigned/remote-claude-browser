@@ -67,6 +67,8 @@ export interface LiveState {
   mount: HTMLDivElement;
   detachInteraction: () => void;
   detachMediaRestore: () => void;
+  /** Ends what watchReplayer started for this generation. */
+  detachReplayWatch: () => void;
   rtc: LiveRtc | null;
   /** Paints sampled canvas pictures; the replayer itself is never handed canvas commands. */
   canvas: CanvasCompositor;
@@ -191,6 +193,7 @@ export function destroyLive(rtcOptions: MirrorRtcOptions | undefined, live: Live
   disposeRtc(rtcOptions, live.tab, rtc);
   live.detachInteraction();
   live.detachMediaRestore();
+  live.detachReplayWatch();
   try {
     live.replayer.destroy();
   } catch {
@@ -242,6 +245,11 @@ export interface BuildLiveOptions {
   /** The restore point was never applied (the build failed first). */
   onRestoreUnused(restorePoint: RebuildRestorePoint): void;
   onBufferApplied?(bufferMs: number): void;
+  /**
+   * Called with the Replayer before it casts anything, for listeners that must see the snapshot
+   * being built; what it returns is called when the generation ends.
+   */
+  watchReplayer?(replayer: Replayer): () => void;
 }
 
 export type BuildResult =
@@ -258,6 +266,7 @@ export function buildLive(options: BuildLiveOptions): BuildResult {
   let rtc: LiveRtc | null = null;
   let cancelRestore = () => {};
   let mediaRestore: ReturnType<typeof armLiveMediaRestore> | null = null;
+  let unwatch = () => {};
   try {
     // Sampled canvases have their own compositor. Never send canvas commands to rrweb.
     for (const event of message.data) {
@@ -330,6 +339,7 @@ export function buildLive(options: BuildLiveOptions): BuildResult {
       options.onRestoreUnused,
     );
     mediaRestore = armLiveMediaRestore(replayer);
+    unwatch = options.watchReplayer?.(replayer) ?? (() => {});
 
     const sandboxTokens = Array.from(replayer.iframe.sandbox);
     if (
@@ -359,6 +369,7 @@ export function buildLive(options: BuildLiveOptions): BuildResult {
   } catch (cause) {
     cancelRestore();
     mediaRestore?.detach();
+    unwatch();
     disposeRtc(options.rtc, message.tab, rtc);
     rtc = null;
     try {
@@ -383,6 +394,7 @@ export function buildLive(options: BuildLiveOptions): BuildResult {
     mount,
     detachInteraction: () => {},
     detachMediaRestore: mediaRestore.detach,
+    detachReplayWatch: unwatch,
     rtc: builtRtc,
     canvas: createCanvasCompositor(
       { getReplayer: () => built },

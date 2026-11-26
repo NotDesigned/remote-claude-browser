@@ -25,7 +25,11 @@ import type { VoiceLink } from "../media/voice";
 import { createMirror, type Mirror } from "../mirror";
 import { EventPipeline } from "../pipeline";
 import { createEchoFilter } from "../pipeline/echo";
-import { createScrollFilter } from "../pipeline/scroll";
+import {
+  createScrollFilter,
+  replayScrollPosition,
+  watchReplayScrollRestores,
+} from "../pipeline/scroll";
 import { createPresentation } from "../presentation";
 import { createRebuildRestoreHooks } from "../rebuild-restore";
 import { createResyncController, RESYNC_WINDOW_MS } from "../resync";
@@ -210,6 +214,7 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     send(message) {
       if (presentation.canInput(message.tab, "dom")) socket?.send(message);
     },
+    position: (nodeId) => replayScrollPosition(mirror.getReplayer(), nodeId),
   });
   // Pasted images become attachments of the remote page: stage the files, then open the
   // remote attachment input. Its `filepick` (also published over the socket) pairs with them.
@@ -311,6 +316,7 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     requestResync(tab, reason) {
       resync.request(tab, reason);
     },
+    watchReplayer: (_tab, replayer) => watchReplayScrollRestores(replayer, scroll),
     attachInteraction(tab, replayer) {
       // A press inside the mirror happens in its frame, out of the page's listeners' sight.
       const frame = replayer.iframe.contentWindow;
