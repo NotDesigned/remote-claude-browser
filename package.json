@@ -42,6 +42,7 @@
     "test:rtc-media": "bash scripts/limited-run.sh bash -c 'tsx scripts/rtc-media-acceptance.ts'",
     "test:pixel-ui": "bash scripts/limited-run.sh node scripts/pixel-smoke.mjs",
     "test:mobile-input": "bash scripts/limited-run.sh tsx scripts/mobile-input-smoke.mts",
+    "test:composer-input": "bash scripts/limited-run.sh tsx scripts/composer-input-smoke.mts",
     "probe:oopif": "bash scripts/limited-run.sh tsx scripts/probe-oopif.ts",
     "smoke:compose": "bash scripts/limited-run.sh bash -c 'bash scripts/compose-smoke.sh'",
     "smoke:browser-filesystem": "bash scripts/limited-run.sh node scripts/browser-filesystem-smoke.mjs",

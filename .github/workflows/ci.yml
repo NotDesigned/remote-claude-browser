@@ -81,10 +81,11 @@ jobs:
         run: pnpm run probe:oopif
       - name: Test that nested frames send their documents once
         run: node packages/agent/test/frames.acceptance.mjs
-      - name: Test picture mode and touch input
+      - name: Test picture mode, touch input and a ProseMirror composer
         run: |
           pnpm run test:pixel-ui
           pnpm run test:mobile-input
+          pnpm run test:composer-input
       - name: Test video and sound over WebRTC
         run: |
           sudo apt-get update -qq

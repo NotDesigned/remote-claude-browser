@@ -565,7 +565,8 @@ async function checkProseMirrorComposer(page, address, label, { softKeyboard = f
   await address.fill(fixturePage(PROSEMIRROR_PAGE));
   await address.press("Enter");
   const mirrored = page.frameLocator("#mirror-host .mirror-stage:not([data-parked]) iframe");
-  await mirrored.locator("#composer").waitFor({ timeout: 60_000 });
+  // The composer of the page before has the same id: wait for this page's own.
+  await mirrored.locator("#composer.ProseMirror").waitFor({ timeout: 60_000 });
   await page.waitForFunction(
     () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
     undefined,
