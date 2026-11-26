@@ -577,6 +577,87 @@ describe("F5 native local typing echo", () => {
     echo.reset();
   });
 
+  it("shows the page removing the editor itself, even while typing, and what it puts there", () => {
+    let time = 0;
+    const reconcile = vi.fn();
+    const field = new FakeContenteditable();
+    const echo = createEchoFilter({
+      now: () => time,
+      onContenteditableReconcile: reconcile,
+      nodeFor: field.nodeFor,
+    });
+    const focus = {
+      element: field as unknown as HTMLElement,
+      nodeId: 20,
+      subtreeNodeIds: new Set([20, 21]),
+    };
+    echo.setFocused(focus);
+    echo.input(focus);
+    // Enter sent the message: the page replaces the composer with a new one, mid echo window.
+    time = 50;
+    const replaced = {
+      type: EventType.IncrementalSnapshot,
+      timestamp: 1,
+      data: {
+        source: IncrementalSource.Mutation,
+        texts: [{ id: 21, value: "late echo" }],
+        attributes: [],
+        removes: [{ parentId: 10, id: 20 }],
+        adds: [
+          {
+            parentId: 10,
+            nextId: null,
+            node: { id: 40, type: 2, tagName: "div", attributes: {}, childNodes: [] },
+          },
+        ],
+      },
+    } as eventWithTime;
+    expect(echo(replaced, { tab: "T1", nowMs: time })).toBe(replaced);
+    // Its typing state went with it: nothing of it is held back or reconciled later.
+    expect(echo.typingWithin(1_000)).toBe(false);
+    const later = mutationEvent([{ id: 21, value: "x" }]);
+    expect(echo(later, { tab: "T1", nowMs: 60 })).toBe(later);
+    expect(reconcile).not.toHaveBeenCalled();
+  });
+
+  it("asks for a reconcile again after an editor patched in place settled the last one", () => {
+    let time = 0;
+    const reconcile = vi.fn(() => true);
+    const field = new FakeContenteditable();
+    const echo = createEchoFilter({
+      now: () => time,
+      onContenteditableReconcile: reconcile,
+      nodeFor: field.nodeFor,
+    });
+    const focus = {
+      element: field as unknown as HTMLElement,
+      nodeId: 20,
+      subtreeNodeIds: new Set([20]),
+    };
+    echo.input(focus);
+    expect(echo.typingWithin(400)).toBe(true);
+    const diverge = () => {
+      echo(
+        mutationEvent(
+          [],
+          [{ parentId: 20, nextId: null, node: { id: 31, type: 3, textContent: "x" } }],
+        ),
+        { nowMs: time } as never,
+      );
+      time += 3_000;
+      echo(mutationEvent([{ id: 31, value: "xy" }]), { nowMs: time } as never);
+    };
+    time = 100;
+    diverge();
+    expect(reconcile).toHaveBeenCalledOnce();
+    expect(echo.typingWithin(400)).toBe(false);
+    // Latched until answered; a patch in place answers it without a rebuild's reset.
+    echo.settled();
+    echo.input(focus);
+    diverge();
+    expect(reconcile).toHaveBeenCalledTimes(2);
+  });
+
   it("asks for nothing when the page and this replay both emptied the editor", () => {
     let time = 0;
     const timers = manualTimers();

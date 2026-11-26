@@ -67,6 +67,13 @@ export interface EchoFilter extends Stage {
   input(focus: EditableFocus): void;
   keyDown(event: KeyboardEvent, focus: EditableFocus | null): void;
   getFocused(): EditableFocus | null;
+  /** True when a field was typed into less than `ms` ago. */
+  typingWithin(ms: number): boolean;
+  /**
+   * The focused editor was brought back in step with the page in place (editable-patch.ts): what
+   * held the two apart is settled, and the next divergence asks for a reconcile again.
+   */
+  settled(): void;
   reset(): void;
   restoreHook: RebuildRestoreHook<EchoRestoreState>;
 }
@@ -197,6 +204,13 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       return null;
     }
     if (data.source === IncrementalSource.Mutation) {
+      // The page removed an editing host itself (a chat composer mounted anew after sending):
+      // that is not an echo of typing. Kept here, the old editor would keep focus and take keys
+      // the page has nowhere to put, so its removal, and anything it adds in its place, show.
+      for (const mutation of data.removes) {
+        const state = nodes.get(mutation.id);
+        if (state !== undefined && state.subtreeNodeIds !== undefined) clearState(mutation.id);
+      }
       // Suppression lasts only the echo window after local typing, focus or not: past it, the
       // page's own changes to the editor must show.
       const active: EditingState[] = [];
@@ -350,6 +364,20 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
   };
 
   filter.getFocused = () => focused;
+  filter.typingWithin = (ms) => {
+    const at = now();
+    for (const state of nodes.values()) if (at - state.lastKeyTs < ms) return true;
+    return false;
+  };
+  filter.settled = () => {
+    for (const state of nodes.values()) state.suppressed = undefined;
+    unmapped.clear();
+    passedTexts.clear();
+    reconcileRequested = false;
+    if (reconcileRetry !== null) cancel(reconcileRetry);
+    reconcileRetry = null;
+    reconcileRetries = 0;
+  };
   filter.reset = () => {
     for (const nodeId of [...nodes.keys()]) clearState(nodeId);
     focused = null;

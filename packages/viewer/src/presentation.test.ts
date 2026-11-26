@@ -38,6 +38,7 @@ function fixture(entryTab: string | null = null) {
   const mirror = {
     handle: vi.fn(),
     recover: vi.fn(),
+    reconcileEditable: vi.fn(),
     connectionLost: vi.fn(),
     connectionRestored: vi.fn(),
     resumeCursor: vi.fn<Mirror["resumeCursor"]>(() => ({ tab: "a", epoch: 2, nextSeq: 4 })),
