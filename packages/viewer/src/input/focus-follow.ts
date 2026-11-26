@@ -19,7 +19,7 @@
  * keyboard, which closes once nothing is focused, stays open, and no key lands on the page body
  * while the remote focus report is on its way.
  */
-import type { RemoteFocus } from "@mirror/protocol";
+import { editableText, type RemoteFocus } from "@mirror/protocol";
 import { deepActiveElement, isTextEditable } from "./keys";
 import { isElement } from "./pointer";
 
@@ -132,6 +132,12 @@ export function createFocusFollower(options: FocusFollowOptions): FocusFollower 
     }
     return found;
   };
+  /** Each field's text when Enter was last pressed in it: what a page that sends on Enter sent. */
+  const textAtEnter = new WeakMap<Element, string>();
+  const textOf = (field: Element) =>
+    (field as HTMLElement).isContentEditable
+      ? editableText(field as HTMLElement)
+      : ((field as HTMLInputElement).value ?? "");
   /** The focused field was just removed while someone typed in it: take the one put in its place. */
   const replaceRemoved = (gone: Element, doc: Document) => {
     if (gone.isConnected || now() - typedAt > STRANDED_TYPING_MS || pointerHeld) return;
@@ -146,6 +152,15 @@ export function createFocusFollower(options: FocusFollowOptions): FocusFollower 
       selection?.selectAllChildren(field);
       selection?.collapseToEnd();
     }
+    // Keys typed after sending, before the page's new field reached this replay, went into the
+    // old one, and the gateway typed them into the page's new field. They go on in this one too,
+    // or its next edit would send its text without them and take them off the page again.
+    const sent = textAtEnter.get(gone);
+    if (sent === undefined || textOf(field).trim() !== "") return;
+    const typedSince = textOf(gone);
+    if (!typedSince.startsWith(sent)) return;
+    const carried = typedSince.slice(sent.length);
+    if (carried !== "") doc.execCommand?.("insertText", false, carried);
   };
 
   const moveTo = (focus: RemoteFocus): boolean => {
@@ -211,7 +226,15 @@ export function createFocusFollower(options: FocusFollowOptions): FocusFollower 
       };
       const typed = (event: Event) => {
         const target = event.target;
-        if (isElement(target) && isTextEditable(target)) typedAt = now();
+        if (!isElement(target) || !isTextEditable(target)) return;
+        typedAt = now();
+        const key = event as KeyboardEvent;
+        if (key.type !== "keydown" || key.key !== "Enter" || key.shiftKey || key.isComposing)
+          return;
+        let host: Element = target;
+        while ((host.parentElement as HTMLElement | null)?.isContentEditable === true)
+          host = host.parentElement!;
+        textAtEnter.set(host, textOf(host));
       };
       // A removed field blurs while the replay applies the page's change; what the change adds
       // in its place is there once that change is applied, which is before the next task.

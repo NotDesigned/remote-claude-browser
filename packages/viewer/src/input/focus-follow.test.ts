@@ -237,6 +237,30 @@ describe("focus following", () => {
       }
     });
 
+    it("carries keys typed after sending into the new field, which the page also got", async () => {
+      const ctx = setup(true);
+      const make = () => {
+        const editor = new FakeElement("TEXTAREA", ctx.doc);
+        editor.attributes.set("id", "composer");
+        return editor;
+      };
+      const old = make();
+      const next = make();
+      ctx.doc.fields = [old, next];
+      old.focus();
+      old.value = "sent text";
+      ctx.doc.fire("keydown", { type: "keydown", key: "Enter", target: old });
+      old.value = "sent textab";
+      old.isConnected = false;
+      ctx.doc.activeElement = ctx.body;
+      const execCommand = vi.fn();
+      (ctx.doc as unknown as { execCommand: unknown }).execCommand = execCommand;
+      ctx.doc.fire("focusout", { target: old, relatedTarget: null });
+      await Promise.resolve();
+      expect(ctx.doc.activeElement).toBe(next);
+      expect(execCommand).toHaveBeenCalledWith("insertText", false, "ab");
+    });
+
     it("leaves a field that does not look the same alone", async () => {
       const { next } = replaced(true, "Search");
       await Promise.resolve();

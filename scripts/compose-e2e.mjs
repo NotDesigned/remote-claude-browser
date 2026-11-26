@@ -429,6 +429,101 @@ async function checkForm(page, address, mirrored) {
   console.log("A Markdown download keeps its Chinese name and its content.");
 }
 
+/**
+ * A chat composer like claude.ai's: a contenteditable that Enter sends from, after which the page
+ * mounts a new one in its place and focuses it, while a reply streams in. Typing on straight after
+ * each send, focus must stay in the composer (in the replay's frame too) and every message must
+ * reach the page as typed, with no key lost or doubled.
+ */
+const COMPOSER_PAGE = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Composer</title>
+<style>body{margin:0;font:16px sans-serif}#bar{position:fixed;bottom:0;left:0;right:0;padding:8px;background:#eee}
+.composer{min-height:40px;border:1px solid #888;padding:6px;background:#fff}#thread{padding:8px 8px 120px}</style>
+<div id="thread"></div><div id="bar"></div>
+<script>
+const thread = document.getElementById("thread");
+const sent = [];
+const mount = () => {
+  const editor = document.createElement("div");
+  editor.id = "composer";
+  editor.className = "composer";
+  editor.contentEditable = "true";
+  editor.setAttribute("role", "textbox");
+  editor.setAttribute("aria-label", "Write your prompt");
+  editor.innerHTML = "<p><br></p>";
+  editor.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey) return;
+    event.preventDefault();
+    sent.push(editor.textContent);
+    const msg = document.createElement("p");
+    msg.className = "sent";
+    msg.textContent = editor.textContent;
+    thread.append(msg);
+    document.getElementById("bar").replaceChildren(mount());
+    document.getElementById("composer").focus();
+    const reply = document.createElement("p");
+    thread.append(reply);
+    let words = 0;
+    const timer = setInterval(() => {
+      reply.append(" word" + words);
+      if (++words > 60) clearInterval(timer);
+    }, 30);
+  });
+  return editor;
+};
+document.getElementById("bar").append(mount());
+window.sentMessages = sent;
+</script>`;
+
+async function checkComposerFocus(page, address, label) {
+  await address.fill(fixturePage(COMPOSER_PAGE));
+  await address.press("Enter");
+  const mirrored = page.frameLocator("#mirror-host .mirror-stage:not([data-parked]) iframe");
+  await mirrored.locator("#composer").waitFor({ timeout: 60_000 });
+  await page.waitForFunction(
+    () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
+    undefined,
+    { timeout: 60_000 },
+  );
+  await mirrored.locator("#composer").click();
+  await page.waitForTimeout(500);
+  // Each animation frame: where the keys would go, and whether the replay's frame was replaced.
+  await page.evaluate(() => {
+    const trail = (window.__composerFocus = { lost: [], frames: new Set() });
+    const sample = () => {
+      const frame = document.querySelector("#mirror-host .mirror-stage:not([data-parked]) iframe");
+      if (frame) trail.frames.add(frame);
+      const inner = frame?.contentDocument?.activeElement;
+      const ok = document.activeElement === frame && inner?.id === "composer";
+      if (!ok)
+        trail.lost.push(
+          `${document.activeElement?.tagName}/${inner?.tagName ?? "-"}#${inner?.id ?? ""}`,
+        );
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+  const expected = [];
+  for (let round = 0; round < 4; round++) {
+    const text = `message ${round} goes out whole ${"x".repeat(round + 1)}`;
+    await page.keyboard.type(text, { delay: 40 });
+    await page.waitForTimeout(round % 2 ? 60 : 700);
+    await page.keyboard.press("Enter");
+    expected.push(text);
+    // Straight on, as someone does who has more to say while the reply streams.
+    await page.waitForTimeout(round % 2 ? 30 : 250);
+  }
+  await page.waitForTimeout(4_000);
+  const sentTexts = await mirrored.locator("p.sent").allTextContents();
+  const { lost, frames } = await page.evaluate(() => ({
+    lost: window.__composerFocus.lost.slice(0, 5),
+    frames: window.__composerFocus.frames.size,
+  }));
+  assert.deepEqual(sentTexts, expected, `${label}: messages did not reach the page as typed`);
+  assert.deepEqual(lost, [], `${label}: focus left the composer while typing`);
+  assert.equal(frames, 1, `${label}: the mirror was rebuilt while typing`);
+  console.log(`${label}: focus stays in a composer the page re-mounts, and no key is lost.`);
+}
+
 const CANVAS_CHILD = `<!doctype html><meta charset="utf-8"><body style="margin:0"><canvas id="painted" width="160" height="90"></canvas><script>
 const paint = document.getElementById("painted").getContext("2d");
 let red = true;
@@ -690,11 +785,36 @@ report();
   console.log("The address bar follows the page, and keeps what is being typed.");
 
   await checkForm(page, address, mirrored);
+  await checkComposerFocus(page, address, "Desktop");
   await checkNotifications(page, address);
   await checkMovedFrame(page, address);
   await checkNestedFramesRepeatedly(page, address);
   await checkPageSleep(page, address);
   await checkAccounts(page);
+}
+
+/** The composer check on a phone, whose soft keyboard closes once nothing is focused. */
+async function checkPhoneComposer(browser) {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 760 },
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    userAgent:
+      "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+  });
+  await context.addInitScript(() => {
+    try {
+      localStorage.setItem("mirror.view-mode", "dom");
+    } catch {}
+  });
+  const phone = await context.newPage();
+  await openDefaultBrowser(phone);
+  await phone
+    .locator('#urlbar button[aria-label="Reload"]:not([disabled])')
+    .waitFor({ timeout: 60_000 });
+  await checkComposerFocus(phone, phone.locator("#urlbar input"), "Phone");
+  await context.close();
 }
 
 async function checkPicture(browser) {
@@ -765,6 +885,7 @@ try {
     if (process.env.SMOKE_CANVAS === "1") await checkCanvas(page, address);
   } else {
     await checkWorkspace(page, address);
+    await checkPhoneComposer(browser);
     await checkPicture(browser);
   }
 } finally {
