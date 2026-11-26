@@ -408,6 +408,9 @@ export function createWsServer(opts: WsServerOpts): WsServer {
   };
 
   webSocketServer.on("connection", (socket: WebSocket, request: IncomingMessage) => {
+    // A protocol error (an oversized or malformed frame) closes the socket with its own code; an
+    // "error" nobody listens to would instead throw and take the whole gateway down.
+    socket.on("error", () => undefined);
     const sessionId = authorizedSessions.get(request);
     if (sessionId === undefined) {
       socket.close(1008, "session required");
@@ -544,6 +547,9 @@ export function createWsServer(opts: WsServerOpts): WsServer {
     socket: Duplex,
     head: Buffer,
   ): Promise<void> => {
+    // The HTTP server no longer watches an upgraded socket, and authorization below is
+    // asynchronous: a client that resets meanwhile must not throw out of the process.
+    socket.on("error", () => socket.destroy());
     const requestPath = new URL(request.url ?? "/", "http://gateway.invalid").pathname;
     if (requestPath !== path) {
       rejectUpgrade(socket, "404 Not Found");
