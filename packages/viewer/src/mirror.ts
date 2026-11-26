@@ -52,6 +52,11 @@ const TAB_SWITCH_WAIT_MS = 1_500;
  * with none cached asks the page itself, which normally answers well within this.
  */
 export const RECONNECT_SNAPSHOT_WAIT_MS = 5_000;
+/**
+ * How long a snapshot asked for, or announced, may take before it is asked for again: the request
+ * can be lost (a socket that was connecting), and so can the gateway's answer.
+ */
+export const SNAPSHOT_OVERDUE_MS = 10_000;
 
 type Snapshot = Extract<Down, { t: "snapshot" }>;
 type Delta = Extract<Down, { t: "delta" }>;
@@ -118,6 +123,8 @@ export function createMirror(opts: MirrorOpts): Mirror {
   let switchTimer: ReturnType<typeof setTimeout> | null = null;
   /** Asks for a snapshot if a reconnect's join payload brought none. */
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Asks again for a snapshot that is pending for too long. */
+  let overdueTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingRestore: RebuildRestorePoint | null = null;
   let viewerId: string | null = null;
   let isDriver = true;
@@ -234,10 +241,31 @@ export function createMirror(opts: MirrorOpts): Mirror {
     }, TAB_SWITCH_WAIT_MS);
   };
 
+  const clearOverdueTimer = () => {
+    if (overdueTimer !== null) clearTimeout(overdueTimer);
+    overdueTimer = null;
+  };
+
+  const armOverdueTimer = () => {
+    clearOverdueTimer();
+    overdueTimer = setTimeout(() => {
+      overdueTimer = null;
+      const tab = sync.activeTab;
+      if (!sync.snapshotPending || tab === null) return;
+      // Still pending: the request or its answer was lost. Without this the page would wait, inert
+      // and ignoring every delta, until the connection itself was lost.
+      opts.requestResync(tab, "snapshot overdue");
+      armOverdueTimer();
+    }, SNAPSHOT_OVERDUE_MS);
+  };
+
   const setSnapshotPending = (pending: boolean) => {
+    const was = sync.snapshotPending;
     sync.snapshotPending = pending;
     if (pending) opts.container.dataset.resyncPending = "true";
     else delete opts.container.dataset.resyncPending;
+    if (!pending) clearOverdueTimer();
+    else if (!was) armOverdueTimer();
   };
 
   const awaitSnapshot = (tab: TabId) => {
@@ -391,9 +419,21 @@ export function createMirror(opts: MirrorOpts): Mirror {
           break;
         case "resync":
           switch (resyncDecision(sync, state, msg.tab)) {
-            case "catch-up-answered":
+            case "catch-up-answered": {
               sync.catchUp = catchUpAnswered(sync.catchUp);
+              // A hub with no snapshot cached answers with the resync alone, and its snapshot
+              // follows when the page sends one. The page stays inert until a snapshot confirms
+              // it: if none comes, ask for one rather than leave it so.
+              clearSwitchTimer();
+              const tab = msg.tab;
+              switchTimer = setTimeout(() => {
+                switchTimer = null;
+                if (sync.catchUp !== "answered" || sync.activeTab !== tab) return;
+                sync.catchUp = null;
+                requestFreshSnapshot(tab, "catch-up without snapshot");
+              }, RECONNECT_SNAPSHOT_WAIT_MS);
               break;
+            }
             case "await-snapshot":
               sync.activeTab = msg.tab;
               awaitSnapshot(msg.tab);
@@ -440,6 +480,11 @@ export function createMirror(opts: MirrorOpts): Mirror {
       const tab = sync.activeTab;
       if (tab === null) return;
       if (resumed) {
+        // A request made while the socket was connecting was lost with it.
+        if (sync.snapshotPending) {
+          opts.requestResync(tab, "ws reconnect");
+          return;
+        }
         if (state?.tab === tab && !state.needsSnapshot) return;
         // Resumed by a gateway that sends no snapshot, but this page cannot continue.
         requestFreshSnapshot(tab, "ws reconnect");
@@ -513,6 +558,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
     keepTabs: (tabs) => parked.keep(tabs),
     teardown() {
       clearReconnectTimer();
+      clearOverdueTimer();
       endTabSwitch();
       parked.dropAll();
       pendingRestore = null;

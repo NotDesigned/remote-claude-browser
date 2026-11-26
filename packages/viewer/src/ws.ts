@@ -44,7 +44,8 @@ function rememberSheet(hash: string, text: string): void {
 }
 
 export interface GatewaySocket {
-  send(msg: Up): void;
+  /** False when the message could not be sent: the socket is connecting, closed or gone. */
+  send(msg: Up): boolean;
   close(): void;
   /** The page is on screen again: find out now whether the connection is still alive. */
   probe(): void;
@@ -333,8 +334,9 @@ export function connectGateway(
 
   return {
     send(msg) {
-      if (disposed) return;
-      if (socket?.readyState === OPEN) socket.send(encodeMsg(msg));
+      if (disposed || socket?.readyState !== OPEN) return false;
+      socket.send(encodeMsg(msg));
+      return true;
     },
     probe() {
       if (disposed || !visible || socket?.readyState === CONNECTING) return;

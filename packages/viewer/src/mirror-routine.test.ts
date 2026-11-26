@@ -150,7 +150,7 @@ const fakeRrweb = vi.hoisted(() => {
 
 vi.mock("@rrweb/replay", () => ({ Replayer: fakeRrweb.FakeReplayer }));
 
-import { createMirror, RECONNECT_SNAPSHOT_WAIT_MS } from "./mirror";
+import { createMirror, RECONNECT_SNAPSHOT_WAIT_MS, SNAPSHOT_OVERDUE_MS } from "./mirror";
 import { EventPipeline } from "./pipeline";
 import { RebuildRestoreHooks } from "./rebuild-restore";
 import { REPLAY_CURSOR_PASSTHROUGH_RULE } from "./replay-cursor";
@@ -414,6 +414,23 @@ describe("D10 recovery triggers", () => {
       expect(replayers()[0]?.added).toHaveLength(4);
       vi.advanceTimersByTime(5_000);
       expect(requestResync).not.toHaveBeenCalled();
+      mirror.teardown();
+    });
+
+    it("asks for a snapshot when the gateway's answer brings none", () => {
+      const { container, mirror, requestResync, open } = tabs();
+      open("T1");
+      open("T2");
+      mirror.selectTab("T1");
+      // A hub with no snapshot cached answers with the resync alone.
+      mirror.handle({ t: "resync", tab: "T1" });
+      expect(mirror.getReplayer()).toBe(replayers()[0]);
+      vi.advanceTimersByTime(RECONNECT_SNAPSHOT_WAIT_MS);
+      expect(requestResync).toHaveBeenCalledWith("T1", "catch-up without snapshot");
+
+      mirror.handle({ t: "snapshot", tab: "T1", epoch: 2, seq: 1, data: [full(3000)] });
+      expect(container.dataset.resyncPending).toBeUndefined();
+      expect(mirror.resumeCursor()).toEqual({ tab: "T1", epoch: 2, nextSeq: 2 });
       mirror.teardown();
     });
 
@@ -882,6 +899,47 @@ describe("D10 recovery triggers", () => {
     vi.advanceTimersByTime(RECONNECT_SNAPSHOT_WAIT_MS);
     expect(requests).toEqual(["ws reconnect"]);
     vi.useRealTimers();
+  });
+
+  it("asks again for a snapshot that does not come", () => {
+    vi.useFakeTimers();
+    fakeRrweb.FakeReplayer.instances.length = 0;
+    const requests: string[] = [];
+    const mirror = createMirror({
+      container: new FakeElement(new FakeDocument()) as unknown as HTMLElement,
+      pipeline: new EventPipeline(),
+      requestResync: (_tab, reason) => requests.push(reason),
+    });
+    mirror.handle({ t: "snapshot", tab: "T1", epoch: 1, seq: 1, data: [full(1_000)] });
+    mirror.handle({ t: "delta", tab: "T1", epoch: 1, seq: 5, data: [delta(1_001)] });
+    expect(requests).toEqual(["seq gap: expected 2, got 5"]);
+    // The request was lost: without another the page would wait for good.
+    vi.advanceTimersByTime(SNAPSHOT_OVERDUE_MS);
+    expect(requests).toEqual(["seq gap: expected 2, got 5", "snapshot overdue"]);
+    vi.advanceTimersByTime(SNAPSHOT_OVERDUE_MS);
+    expect(requests).toHaveLength(3);
+
+    mirror.handle({ t: "snapshot", tab: "T1", epoch: 1, seq: 9, data: [full(2_000)] });
+    vi.advanceTimersByTime(SNAPSHOT_OVERDUE_MS * 3);
+    expect(requests).toHaveLength(3);
+    mirror.teardown();
+    vi.useRealTimers();
+  });
+
+  it("asks again, once connected, for a snapshot asked for while connecting", () => {
+    fakeRrweb.FakeReplayer.instances.length = 0;
+    const requests: string[] = [];
+    const mirror = createMirror({
+      container: new FakeElement(new FakeDocument()) as unknown as HTMLElement,
+      pipeline: new EventPipeline(),
+      requestResync: (_tab, reason) => requests.push(reason),
+    });
+    mirror.handle({ t: "snapshot", tab: "T1", epoch: 1, seq: 1, data: [full(1_000)] });
+    mirror.connectionLost();
+    mirror.recover("echo reconcile");
+    mirror.connectionRestored(true);
+    expect(requests).toEqual(["echo reconcile", "ws reconnect"]);
+    mirror.teardown();
   });
 
   it("rebuilds once, from the join payload, after a reconnect that did not resume", () => {

@@ -284,7 +284,7 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
   const clock = createServerClock({ bufferMs: DEFAULT_LIVE_BUFFER_MS });
   const resync = createResyncController({
     windowMs: configuredResyncWindowMs(),
-    send: (message) => socket?.send(message),
+    send: (message) => socket?.send(message) ?? false,
     onStateChange(state) {
       if (disposed) return;
       dispatch({ type: "resync", state });

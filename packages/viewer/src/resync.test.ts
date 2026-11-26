@@ -35,6 +35,29 @@ describe("P2-RESYNC controller", () => {
     controller.dispose();
   });
 
+  it("keeps a request the socket could not send, and sends it once it can", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    let open = false;
+    const sent: string[] = [];
+    const controller = createResyncController({
+      send: (message) => {
+        if (!open) return false;
+        sent.push(message.reason);
+        return true;
+      },
+    });
+
+    expect(controller.request("A", "gap")).toBe(true);
+    expect(controller.getState("A")).toMatchObject({ pending: true, totalResyncs: 0 });
+    expect(controller.request("A", "another gap")).toBe(false);
+    open = true;
+    vi.advanceTimersByTime(1_000);
+    expect(sent).toEqual(["gap"]);
+    expect(controller.getState("A")).toMatchObject({ pending: false, totalResyncs: 1 });
+    controller.dispose();
+  });
+
   it("automatically sends a rate-limited request when the rolling window has room", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

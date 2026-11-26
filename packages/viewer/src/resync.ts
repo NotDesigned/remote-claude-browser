@@ -11,6 +11,8 @@ export const RESYNC_WINDOW_MS = 30_000;
 export const MAX_RESYNCS_PER_WINDOW = 3;
 export const RESYNC_BACKOFF_BASE_MS = 250;
 export const RESYNC_BACKOFF_MAX_MS = 5_000;
+/** How soon a request the socket could not send (it was connecting) is tried again. */
+export const RESYNC_UNSENT_RETRY_MS = 1_000;
 
 export interface ResyncTabState {
   tab: TabId;
@@ -25,7 +27,8 @@ export interface ResyncTabState {
 }
 
 export interface ResyncControllerOptions {
-  send(message: Extract<Up, { t: "resync-req" }>): void;
+  /** Returns false when the message could not be sent; it is then tried again shortly. */
+  send(message: Extract<Up, { t: "resync-req" }>): unknown;
   onStateChange?(state: ResyncTabState): void;
   now?: () => number;
   setTimer?: typeof setTimeout;
@@ -123,13 +126,17 @@ export function createResyncController(options: ResyncControllerOptions): Resync
       wait(tab, state, state.sentAt[0]! + windowMs - now());
       return;
     }
+    // A socket that is connecting drops what it is given; the request stays pending until sent.
+    if (options.send({ t: "resync-req", tab, reason }) === false) {
+      wait(tab, state, RESYNC_UNSENT_RETRY_MS);
+      return;
+    }
     state.pendingReason = null;
     state.storm = false;
     state.sentAt.push(now());
     state.totalResyncs += 1;
     state.backoffMs = 0;
     notify(tab, state);
-    options.send({ t: "resync-req", tab, reason });
   };
 
   return {
