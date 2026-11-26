@@ -17,11 +17,19 @@ export interface NotificationsControl {
   resetSites(): void;
 }
 
+/** This page's id on its notification feed and policy: one say per open workbench. */
+function newDeviceId(): string {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 /** `sid` while a session runs (null otherwise); `profile` names whose settings apply. */
 export function useNotifications(sid: string | null, profile: string | null): NotificationsControl {
   const [state, setState] = useState<NotifyState | null>(null);
   const controller = useRef<NotifyController | null>(null);
   const key = profile === null ? null : notifyStorageKey(profile);
+  const device = useRef<string | null>(null);
 
   useEffect(() => {
     if (sid === null || key === null) {
@@ -29,8 +37,10 @@ export function useNotifications(sid: string | null, profile: string | null): No
       return;
     }
     const storage = viewStorage();
+    device.current ??= newDeviceId();
     const live = createNotifyController({
       sid,
+      device: device.current,
       env: browserNotifyEnv(),
       settings: loadNotifySettings(storage, key),
       save: (settings) => saveNotifySettings(storage, key, settings),

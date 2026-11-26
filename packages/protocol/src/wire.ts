@@ -324,6 +324,8 @@ export type Up =
       t: "notify-permission";
       state: NotifyPermission;
       origins: Record<string, "granted" | "denied">;
+      /** The page's own random id, also on its feed (`?device=`): one say per open workbench. */
+      device?: string;
     }
   /** What happened to a notification this device was given. */
   | { t: "notify-event"; id: string; type: NotifyEventType }

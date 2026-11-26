@@ -11,15 +11,20 @@ afterEach(async () => {
 });
 
 async function setup() {
-  const feeds: Array<{ sid: string; feed: NotifyFeed; forgotten: boolean }> = [];
+  const feeds: Array<{
+    sid: string;
+    feed: NotifyFeed;
+    device: string | undefined;
+    forgotten: boolean;
+  }> = [];
   const viewer: Array<{ sid: string; message: Up }> = [];
   let authorized = true;
   const app = Fastify();
   apps.push(app);
   registerNotifyRoutes(app, {
     relay: {
-      addFeed(sid, feed) {
-        const entry = { sid, feed, forgotten: false };
+      addFeed(sid, feed, device) {
+        const entry = { sid, feed, device, forgotten: false };
         feeds.push(entry);
         return () => {
           entry.forgotten = true;
@@ -48,7 +53,7 @@ async function setup() {
 }
 
 /** Opens the event stream and collects its data lines. */
-function openStream(port: number, sid: string) {
+function openStream(port: number, sid: string, query = "") {
   const messages: Down[] = [];
   let raw = "";
   let status = 0;
@@ -56,21 +61,24 @@ function openStream(port: number, sid: string) {
   let ended = false;
   let abort = () => undefined as void;
   const ready = new Promise<void>((resolve) => {
-    const req = httpRequest({ host: "127.0.0.1", port, path: `/s/${sid}/notify` }, (response) => {
-      status = response.statusCode ?? 0;
-      headers = response.headers;
-      response.setEncoding("utf8");
-      response.on("data", (chunk: string) => {
-        raw += chunk;
-        for (const line of chunk.split("\n"))
-          if (line.startsWith("data: ")) messages.push(JSON.parse(line.slice(6)) as Down);
-        resolve();
-      });
-      response.on("end", () => {
-        ended = true;
-        resolve();
-      });
-    });
+    const req = httpRequest(
+      { host: "127.0.0.1", port, path: `/s/${sid}/notify${query}` },
+      (response) => {
+        status = response.statusCode ?? 0;
+        headers = response.headers;
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          raw += chunk;
+          for (const line of chunk.split("\n"))
+            if (line.startsWith("data: ")) messages.push(JSON.parse(line.slice(6)) as Down);
+          resolve();
+        });
+        response.on("end", () => {
+          ended = true;
+          resolve();
+        });
+      },
+    );
     req.on("error", () => resolve());
     req.end();
     abort = () => void req.destroy();
@@ -103,13 +111,14 @@ const until = async (check: () => boolean) => {
 describe("notification feed routes", () => {
   it("streams the session's notifications as server-sent events with heartbeats", async () => {
     const { port, feeds } = await setup();
-    const stream = openStream(port, "mine");
+    const stream = openStream(port, "mine", "?device=laptop-0001");
     await stream.ready;
     expect(stream.status).toBe(200);
     expect(stream.headers["content-type"]).toMatch(/^text\/event-stream/);
     expect(stream.headers["cache-control"]).toBe("no-store");
     await until(() => feeds.length === 1);
     expect(feeds[0]!.sid).toBe("mine");
+    expect(feeds[0]!.device).toBe("laptop-0001");
     feeds[0]!.feed.send({ t: "notify-close", id: "n1" });
     await until(() => stream.messages.length === 1);
     expect(stream.messages).toEqual([{ t: "notify-close", id: "n1" }]);

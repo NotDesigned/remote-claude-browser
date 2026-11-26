@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ASK_TIMEOUT_MS,
   createNotifyRelay,
+  MAX_DEVICES,
   MAX_FEEDS,
   MAX_PENDING_ASKS,
   NOTIFY_BURST,
@@ -283,6 +284,55 @@ describe("notification relay", () => {
     setLooking(false);
     relay.presenceChanged("s1");
     expect(agent.pop()?.value).toEqual({ permission: "default", away: true });
+  });
+
+  it("merges the policies of several open workbenches and forgets one whose feed is gone", () => {
+    const { relay, agent, feed, timers } = setup();
+    relay.onAgent("s1", "T1", { op: "hello", origin: "https://claude.ai" });
+    agent.length = 0;
+    const forgetLaptop = relay.addFeed("s1", feed(), "laptop-0001");
+    relay.addFeed("s1", feed(), "phone-00001");
+    relay.onViewer("s1", { ...granted, device: "laptop-0001" });
+    expect(agent.pop()?.value).toEqual({ permission: "granted", away: true });
+    // The phone has not been asked: the laptop still speaks for the person.
+    relay.onViewer("s1", {
+      t: "notify-permission",
+      state: "default",
+      origins: {},
+      device: "phone-00001",
+    });
+    expect(agent.pop()?.value).toEqual({ permission: "granted", away: true });
+    expect(relay.inspect("s1")?.policies).toBe(2);
+    // The laptop's workbench closes; a reconnect within the grace keeps its say.
+    forgetLaptop();
+    const back = relay.addFeed("s1", feed(), "laptop-0001");
+    expect(timers.size).toBe(0);
+    back();
+    expect(timers.size).toBe(1);
+    agent.length = 0;
+    for (const fire of [...timers.values()]) fire();
+    expect(relay.inspect("s1")?.policy("laptop-0001")).toBeNull();
+    expect(agent.pop()?.value).toEqual({ permission: "default", away: true });
+  });
+
+  it("keeps a bounded number of device policies and ignores malformed device ids", () => {
+    const { relay } = setup();
+    for (let index = 0; index < MAX_DEVICES + 3; index += 1)
+      relay.onViewer("s1", { ...granted, device: `device-${String(index).padStart(4, "0")}` });
+    expect(relay.inspect("s1")?.policies).toBe(MAX_DEVICES);
+    relay.onViewer("s1", { ...granted, device: "bad id!" });
+    expect(relay.inspect("s1")?.policy()).not.toBeNull();
+  });
+
+  it("drops a device's say at once when its login no longer holds", () => {
+    const { relay, agent, feed } = setup();
+    relay.onAgent("s1", "T1", { op: "hello", origin: "https://claude.ai" });
+    relay.addFeed("s1", feed(false), "revoked-001");
+    relay.onViewer("s1", { ...granted, device: "revoked-001" });
+    agent.length = 0;
+    relay.closeUnauthorized();
+    expect(agent.pop()?.value).toEqual({ permission: "default", away: true });
+    expect(relay.inspect("s1")?.policies).toBe(0);
   });
 
   it("ignores malformed agent and viewer messages", () => {

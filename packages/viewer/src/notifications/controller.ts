@@ -79,6 +79,8 @@ const CLOSED = 2;
 
 export interface NotifyControllerOptions {
   sid: string;
+  /** This workbench's random id (NOTIFY_DEVICE_PATTERN), on its feed and its policy. */
+  device?: string;
   env: NotifyEnv;
   settings: NotifySettings;
   save(settings: NotifySettings): void;
@@ -90,6 +92,9 @@ export type NotifyController = ReturnType<typeof createNotifyController>;
 export function createNotifyController(options: NotifyControllerOptions) {
   const { env, sid } = options;
   const path = `/s/${encodeURIComponent(sid)}/notify`;
+  const workbench = options.device;
+  const feedPath =
+    workbench === undefined ? path : `${path}?device=${encodeURIComponent(workbench)}`;
   let settings = options.settings;
   let device = env.permission();
   let asks: NotifyAsk[] = [];
@@ -103,7 +108,12 @@ export function createNotifyController(options: NotifyControllerOptions) {
   const post = (message: Up): Promise<unknown> => env.post(path, message).catch(() => undefined);
   const report = (): Promise<unknown> => {
     const policy = devicePolicy(settings, device);
-    return policy === null ? Promise.resolve() : post({ t: "notify-permission", ...policy });
+    if (policy === null) return Promise.resolve();
+    return post(
+      workbench === undefined
+        ? { t: "notify-permission", ...policy }
+        : { t: "notify-permission", ...policy, device: workbench },
+    );
   };
   const event = (id: string, type: NotifyEventType) => void post({ t: "notify-event", id, type });
   /** Re-reads the browser's permission, which the person may have changed in its settings. */
@@ -196,7 +206,7 @@ export function createNotifyController(options: NotifyControllerOptions) {
 
   function open() {
     if (disposed) return;
-    const source = env.openFeed(path);
+    const source = env.openFeed(feedPath);
     feed = source;
     // Every (re)connection: the gateway may have restarted and forgotten this device's policy.
     source.onopen = () => {

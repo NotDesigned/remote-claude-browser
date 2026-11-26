@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { effectiveNotifyPermission, notifyOrigin, readNotifyPolicy } from "./notify";
+import {
+  effectiveNotifyPermission,
+  mergedNotifyPermission,
+  notifyOrigin,
+  readNotifyPolicy,
+} from "./notify";
 import { decodeDown, decodeUp, encodeMsg, type Down, type Up } from "./wire";
 
 describe("notification permission", () => {
@@ -80,5 +85,17 @@ describe("notification messages", () => {
       { t: "notify-answer", id: "a1", state: "denied" },
     ];
     for (const message of up) expect(decodeUp(encodeMsg(message))).toEqual(message);
+  });
+});
+
+describe("several devices", () => {
+  it("grant when any device can show, deny only when all refuse", () => {
+    const granted = { state: "granted", origins: { "https://claude.ai": "granted" } } as const;
+    const phone = { state: "default", origins: {} } as const;
+    const off = { state: "denied", origins: {} } as const;
+    expect(mergedNotifyPermission([], "https://claude.ai")).toBe("default");
+    expect(mergedNotifyPermission([phone, granted], "https://claude.ai")).toBe("granted");
+    expect(mergedNotifyPermission([phone, off], "https://claude.ai")).toBe("default");
+    expect(mergedNotifyPermission([off, off], "https://claude.ai")).toBe("denied");
   });
 });

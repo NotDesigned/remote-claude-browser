@@ -12,10 +12,16 @@
  * Viewers receive these on a notification feed (routes.ts), which stays open while the workbench
  * is in the background, when the WebSocket does not. Every feed of the session gets every
  * notification; the device's own tag (origin and the page's tag) replaces an earlier one.
+ *
+ * Each open workbench names itself with a random device id, on its feed and its policy. A page's
+ * permission merges them (mergedNotifyPermission): granted when any device can show its
+ * notifications, denied only when all refuse. A device's policy is forgotten once its feed has
+ * been gone for DEVICE_GRACE_MS, so a closed workbench stops speaking for the person.
  */
 import {
-  effectiveNotifyPermission,
+  mergedNotifyPermission,
   notifyOrigin,
+  NOTIFY_DEVICE_PATTERN,
   readNotifyPolicy,
   NOTIFY_MAX_BODY,
   NOTIFY_MAX_ICON_DATA,
@@ -42,6 +48,12 @@ export const MAX_PENDING_ASKS = 8;
 export const ASK_TIMEOUT_MS = 10 * 60_000;
 /** Notification feeds per session; a new one past this closes the oldest. */
 export const MAX_FEEDS = 4;
+/** Device policies per session; the least recently reported are forgotten past this. */
+export const MAX_DEVICES = 8;
+/** A device's policy outlives its feed this long, for a reconnect to pick it up again. */
+export const DEVICE_GRACE_MS = 60_000;
+/** The key of a policy from a viewer that sent no device id. */
+const ANY_DEVICE = "";
 
 export interface NotifyFeed {
   send(message: Down): void;
@@ -81,8 +93,12 @@ interface Ask {
 }
 
 interface SessionState {
-  policy: NotifyPolicy | null;
-  feeds: Set<NotifyFeed>;
+  /** Device id -> its latest policy, oldest report first. */
+  policies: Map<string, NotifyPolicy>;
+  /** Feed -> the device id it was opened with. */
+  feeds: Map<NotifyFeed, string>;
+  /** Devices whose last feed went away: forgotten when the timer fires. */
+  leaving: Map<string, unknown>;
   /** Documents that said hello: tab -> origin. */
   tabs: Map<string, string>;
   shown: Map<string, Shown>;
@@ -121,8 +137,9 @@ export function createNotifyRelay(deps: NotifyRelayDeps) {
     let state = sessions.get(sid);
     if (state === undefined) {
       state = {
-        policy: null,
-        feeds: new Set(),
+        policies: new Map(),
+        feeds: new Map(),
+        leaving: new Map(),
         tabs: new Map(),
         shown: new Map(),
         asks: new Map(),
@@ -134,10 +151,10 @@ export function createNotifyRelay(deps: NotifyRelayDeps) {
     return state;
   };
   const toFeeds = (state: SessionState, message: Down) => {
-    for (const feed of state.feeds) feed.send(message);
+    for (const feed of state.feeds.keys()) feed.send(message);
   };
   const permissionFor = (state: SessionState, origin: string): NotifyPermission =>
-    effectiveNotifyPermission(state.policy, origin);
+    mergedNotifyPermission(state.policies.values(), origin);
   const tellTab = (sid: string, state: SessionState, tab: string) => {
     const origin = state.tabs.get(tab);
     if (origin === undefined) return;
@@ -150,6 +167,37 @@ export function createNotifyRelay(deps: NotifyRelayDeps) {
     const state = sessions.get(sid);
     if (state === undefined) return;
     for (const tab of state.tabs.keys()) tellTab(sid, state, tab);
+  };
+  const deviceOf = (value: unknown): string =>
+    typeof value === "string" && NOTIFY_DEVICE_PATTERN.test(value) ? value : ANY_DEVICE;
+  /** Asks whose site is now decided get their answer. */
+  const settleAsks = (sid: string, state: SessionState) => {
+    for (const [id, ask] of state.asks) {
+      const permission = permissionFor(state, ask.origin);
+      if (permission !== "default") endAsk(sid, state, id, permission);
+    }
+  };
+  const forgetDevice = (sid: string, state: SessionState, device: string) => {
+    const timer = state.leaving.get(device);
+    if (timer !== undefined) clearTimer(timer);
+    state.leaving.delete(device);
+    if (state.policies.delete(device)) {
+      tellTabs(sid);
+      settleAsks(sid, state);
+    }
+  };
+  const feedGone = (sid: string, state: SessionState, feed: NotifyFeed) => {
+    const device = state.feeds.get(feed);
+    if (!state.feeds.delete(feed) || device === undefined) return;
+    if (device === ANY_DEVICE || [...state.feeds.values()].includes(device)) return;
+    if (state.leaving.has(device)) return;
+    state.leaving.set(
+      device,
+      setTimer(() => {
+        state.leaving.delete(device);
+        if (![...state.feeds.values()].includes(device)) forgetDevice(sid, state, device);
+      }, DEVICE_GRACE_MS),
+    );
   };
   const takeToken = (state: SessionState): boolean => {
     const at = now();
@@ -279,13 +327,16 @@ export function createNotifyRelay(deps: NotifyRelayDeps) {
         const policy = readNotifyPolicy(message);
         if (policy === null) return;
         const state = stateOf(sid);
-        state.policy = policy;
+        const device = deviceOf(message.device);
+        state.policies.delete(device);
+        state.policies.set(device, policy);
+        for (const oldest of [...state.policies.keys()]) {
+          if (state.policies.size <= MAX_DEVICES) break;
+          state.policies.delete(oldest);
+        }
         tellTabs(sid);
         // Requests whose site the person has now decided about.
-        for (const [id, ask] of state.asks) {
-          const permission = permissionFor(state, ask.origin);
-          if (permission !== "default") endAsk(sid, state, id, permission);
-        }
+        settleAsks(sid, state);
         return;
       }
       const state = sessions.get(sid);
@@ -313,20 +364,24 @@ export function createNotifyRelay(deps: NotifyRelayDeps) {
       }
     },
 
-    /** A viewer's feed for the session; returns how to forget it. */
-    addFeed(sid: string, feed: NotifyFeed): () => void {
+    /** A viewer's feed for the session, from the workbench `device` names; returns how to forget it. */
+    addFeed(sid: string, feed: NotifyFeed, device?: string): () => void {
       const state = stateOf(sid);
-      state.feeds.add(feed);
-      for (const oldest of [...state.feeds]) {
+      const id = deviceOf(device);
+      const leaving = state.leaving.get(id);
+      if (leaving !== undefined) {
+        clearTimer(leaving);
+        state.leaving.delete(id);
+      }
+      state.feeds.set(feed, id);
+      for (const oldest of [...state.feeds.keys()]) {
         if (state.feeds.size <= MAX_FEEDS) break;
-        state.feeds.delete(oldest);
+        feedGone(sid, state, oldest);
         oldest.close();
       }
-      for (const [id, ask] of state.asks)
-        feed.send({ t: "notify-ask", id, tab: ask.tab, origin: ask.origin });
-      return () => {
-        state.feeds.delete(feed);
-      };
+      for (const [askId, ask] of state.asks)
+        feed.send({ t: "notify-ask", id: askId, tab: ask.tab, origin: ask.origin });
+      return () => feedGone(sid, state, feed);
     },
 
     /** Someone started or stopped looking at the session. */
@@ -349,16 +404,21 @@ export function createNotifyRelay(deps: NotifyRelayDeps) {
       if (state === undefined) return;
       sessions.delete(sid);
       for (const ask of state.asks.values()) clearTimer(ask.timer);
-      for (const feed of state.feeds) feed.close();
+      for (const timer of state.leaving.values()) clearTimer(timer);
+      for (const feed of [...state.feeds.keys()]) feed.close();
     },
 
     /** Ends feeds whose login no longer holds. */
     closeUnauthorized(): void {
-      for (const state of sessions.values())
-        for (const feed of [...state.feeds])
+      for (const [sid, state] of sessions)
+        for (const [feed] of [...state.feeds])
           if (!feed.authorized()) {
+            // Its say goes at once: the login that gave it no longer holds.
+            const device = state.feeds.get(feed)!;
             state.feeds.delete(feed);
             feed.close();
+            if (device !== ANY_DEVICE && ![...state.feeds.values()].includes(device))
+              forgetDevice(sid, state, device);
           }
     },
 
@@ -374,7 +434,8 @@ export function createNotifyRelay(deps: NotifyRelayDeps) {
             feeds: state.feeds.size,
             shown: state.shown.size,
             asks: state.asks.size,
-            policy: state.policy,
+            policies: state.policies.size,
+            policy: (device: string = ANY_DEVICE) => state.policies.get(device) ?? null,
           }
         : undefined;
     },

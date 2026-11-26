@@ -1,7 +1,8 @@
 /**
- * The notification feed: GET /s/:sid/notify is a server-sent event stream of the session's
- * notification messages (notify, notify-close, notify-ask, notify-ask-end), and POST to the same
- * path takes the viewer's three (notify-permission, notify-event, notify-answer).
+ * The notification feed: GET /s/:sid/notify?device=<id> is a server-sent event stream of the
+ * session's notification messages (notify, notify-close, notify-ask, notify-ask-end), and POST to
+ * the same path takes the viewer's three (notify-permission, notify-event, notify-answer). The
+ * device id names the workbench, so the relay can tell its policy from another device's.
  *
  * It is separate from the WebSocket because a workbench in the background closes that, which is
  * exactly when a notification matters. The stream carries nothing else and costs a heartbeat.
@@ -35,7 +36,7 @@ export function registerNotifyRoutes(app: FastifyInstance, options: NotifyRouteO
     for (const end of [...ends]) end();
   });
 
-  app.get<{ Params: { sid: string } }>(
+  app.get<{ Params: { sid: string }; Querystring: { device?: unknown } }>(
     "/s/:sid/notify",
     { preHandler: options.preHandler },
     async (request, reply) => {
@@ -65,13 +66,18 @@ export function registerNotifyRoutes(app: FastifyInstance, options: NotifyRouteO
         response.end();
       };
       ends.add(end);
-      const forget = options.relay.addFeed(sid, {
-        send(message) {
-          if (!ended) response.write(`data: ${encodeMsg(message)}\n\n`);
+      const device = typeof request.query.device === "string" ? request.query.device : undefined;
+      const forget = options.relay.addFeed(
+        sid,
+        {
+          send(message) {
+            if (!ended) response.write(`data: ${encodeMsg(message)}\n\n`);
+          },
+          close: end,
+          authorized: () => options.authorized(request.raw, sid),
         },
-        close: end,
-        authorized: () => options.authorized(request.raw, sid),
-      });
+        device,
+      );
       request.raw.on("close", end);
       response.on("error", end);
     },

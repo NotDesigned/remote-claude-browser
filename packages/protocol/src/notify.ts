@@ -33,6 +33,9 @@ export const NOTIFY_MAX_ICON_URL = 4096;
 /** Remembered sites per profile on a device. */
 export const NOTIFY_MAX_ORIGINS = 64;
 
+/** A workbench page's random id for its notification feed and policy. */
+export const NOTIFY_DEVICE_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+
 /** The page's permission for `origin` under a viewer's policy (none yet: "default"). */
 export function effectiveNotifyPermission(
   policy: NotifyPolicy | null | undefined,
@@ -44,6 +47,25 @@ export function effectiveNotifyPermission(
   if (decision === "denied") return "denied";
   // A site allowed earlier still needs this device's own permission before it can be shown.
   return decision === "granted" && policy.state === "granted" ? "granted" : "default";
+}
+
+/**
+ * The page's permission for `origin` with several devices open: granted when any of them can show
+ * its notifications, denied only when every one of them refuses, otherwise default.
+ */
+export function mergedNotifyPermission(
+  policies: Iterable<NotifyPolicy>,
+  origin: string,
+): NotifyPermission {
+  let some = false;
+  let undecided = false;
+  for (const policy of policies) {
+    some = true;
+    const permission = effectiveNotifyPermission(policy, origin);
+    if (permission === "granted") return "granted";
+    if (permission === "default") undecided = true;
+  }
+  return !some || undecided ? "default" : "denied";
 }
 
 /** An http(s) origin as `scheme://host[:port]`, or null for anything else. */

@@ -17,6 +17,7 @@ function setup(
     grant?: NotificationPermission;
     pageWorks?: boolean;
     settings?: NotifySettings;
+    device?: string;
   } = {},
 ) {
   let permission: DevicePermission = options.permission ?? "granted";
@@ -30,6 +31,7 @@ function setup(
   const worker: Array<{ title: string; options: NotifyShowOptions }> = [];
   const workerClosed: string[] = [];
   const feeds: Array<FeedSource & { readyState: number; closed: boolean }> = [];
+  const feedUrls: string[] = [];
   const timers: Array<() => void> = [];
   let focused = 0;
   let requested = 0;
@@ -51,7 +53,8 @@ function setup(
     showWorker: async (title, showOptions) => void worker.push({ title, options: showOptions }),
     closeWorker: (id) => void workerClosed.push(id),
     focus: () => void focused++,
-    openFeed() {
+    openFeed(url) {
+      feedUrls.push(url);
       const feed = {
         onopen: null,
         onmessage: null,
@@ -72,6 +75,7 @@ function setup(
   };
   const controller = createNotifyController({
     sid: "s1",
+    ...(options.device === undefined ? {} : { device: options.device }),
     env,
     settings: options.settings ?? { enabled: true, origins: {} },
     save: (settings) => void saved.push(settings),
@@ -80,6 +84,7 @@ function setup(
   const deliver = (message: Down) => feeds.at(-1)!.onmessage!({ data: JSON.stringify(message) });
   return {
     controller,
+    feedUrls,
     posted,
     page,
     worker,
@@ -117,6 +122,19 @@ describe("notification controller", () => {
     expect(posted).toEqual([
       { t: "notify-permission", state: "granted", origins: claude },
       { t: "notify-permission", state: "granted", origins: claude },
+    ]);
+  });
+
+  it("names its workbench on the feed and in its policy", async () => {
+    const { feeds, feedUrls, posted } = setup({
+      settings: { enabled: true, origins: claude },
+      device: "laptop-0001",
+    });
+    expect(feedUrls).toEqual(["/s/s1/notify?device=laptop-0001"]);
+    feeds[0]!.onopen!();
+    await flush();
+    expect(posted).toEqual([
+      { t: "notify-permission", state: "granted", origins: claude, device: "laptop-0001" },
     ]);
   });
 
