@@ -11,7 +11,9 @@ import { join } from "node:path";
 
 export type BrowserEngine = "chromium" | "aliasmode";
 /** Linux is kept only for reading old records. New profiles and API choices use Windows or Mac. */
-export const BROWSER_PLATFORMS = ["windows", "macos"] as const;
+// The first is the default for new profiles. Exits are almost always Linux servers, whose TCP
+// fingerprint (TTL 64, timestamps) a Mac shares and Windows (TTL 128) does not.
+export const BROWSER_PLATFORMS = ["macos", "windows"] as const;
 export type BrowserPlatform = (typeof BROWSER_PLATFORMS)[number] | "linux";
 
 export interface BrowserIdentity {

@@ -638,8 +638,8 @@ describe("multi-user management routes", () => {
     const { app, paths } = await fixture();
     const admin = await login(app);
     expect((await api(app, admin, "GET", "/api/accounts")).json()).toMatchObject({
-      platforms: ["windows", "macos"],
-      defaultPlatform: "windows",
+      platforms: ["macos", "windows"],
+      defaultPlatform: "macos",
       accounts: [expect.objectContaining({ platform: "windows", browserEngine: "chromium" })],
     });
     const made = [];
@@ -650,7 +650,7 @@ describe("multi-user management routes", () => {
       });
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        platform: platform ?? "windows",
+        platform: platform ?? "macos",
         browserEngine: "aliasmode",
       });
       expect(response.json()).not.toHaveProperty("identity");
@@ -744,7 +744,7 @@ describe("multi-user management routes", () => {
         executablePath: "/usr/local/lib/aliasmode/chrome",
         args: expect.arrayContaining([
           `--fingerprint=${identity.fingerprint.seed}`,
-          "--fingerprint-platform=windows",
+          "--fingerprint-platform=macos",
           `--fingerprint-screen-width=${identity.screen.width}`,
         ]),
       }),

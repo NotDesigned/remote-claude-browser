@@ -40,6 +40,8 @@ const PLATFORM_LABELS: Record<BrowserPlatform, string> = {
   macos: "Mac",
   linux: "Linux（不推荐）",
 };
+/** Exits are almost always Linux servers: their TCP fingerprint (TTL 64) matches a Mac's. */
+const RECOMMENDED_PLATFORM: BrowserPlatform = "macos";
 
 export function rememberedAccount(): string | null {
   try {
@@ -322,8 +324,8 @@ export function ProfilePicker(props: {
   const [creationProxies, setCreationProxies] = useState<ProxyChoice[] | null>(null);
   const [creationProxyId, setCreationProxyId] = useState("");
   const [platforms, setPlatforms] = useState<BrowserPlatform[]>([]);
-  const [defaultPlatform, setDefaultPlatform] = useState<BrowserPlatform>("windows");
-  const [creationPlatform, setCreationPlatform] = useState<BrowserPlatform>("windows");
+  const [defaultPlatform, setDefaultPlatform] = useState<BrowserPlatform>("macos");
+  const [creationPlatform, setCreationPlatform] = useState<BrowserPlatform>("macos");
   const [proxyRefresh, setProxyRefresh] = useState(0);
   const [creationProgress, setCreationProgress] = useState("");
   const [proxyEditor, setProxyEditor] = useState<{
@@ -728,10 +730,14 @@ export function ProfilePicker(props: {
                 {platforms.map((platform) => (
                   <option key={platform} value={platform}>
                     {PLATFORM_LABELS[platform]}
+                    {platform === RECOMMENDED_PLATFORM ? "（推荐）" : ""}
                   </option>
                 ))}
               </select>
-              <p>决定网站看到的操作系统。同一配置的所有会话使用相同身份。</p>
+              <p>
+                决定网站看到的操作系统。同一配置的所有会话使用相同身份。网络出口通常是 Linux
+                服务器，TCP 指纹和 Mac 一致，出口不是 Windows 电脑时选 Mac 更不容易被识别。
+              </p>
               <div>
                 <button type="submit" disabled={busy}>
                   {busy ? "保存中…" : "保存系统"}
@@ -922,10 +928,20 @@ export function ProfilePicker(props: {
                     {platforms.map((platform) => (
                       <option key={platform} value={platform}>
                         {PLATFORM_LABELS[platform]}
-                        {platform === defaultPlatform ? "（默认）" : ""}
+                        {platform === RECOMMENDED_PLATFORM
+                          ? "（推荐）"
+                          : platform === defaultPlatform
+                            ? "（默认）"
+                            : ""}
                       </option>
                     ))}
                   </select>
+                  {creationPlatform === "windows" && platforms.includes(RECOMMENDED_PLATFORM) && (
+                    <p class="profile-create-help">
+                      网络出口通常是 Linux 服务器，网站从连接本身（TCP 指纹）能看出它不是
+                      Windows。出口不是 Windows 电脑时，选 Mac 更不容易被识别。
+                    </p>
+                  )}
                   <label for="profile-create-proxy">网络出口</label>
                   <select
                     id="profile-create-proxy"

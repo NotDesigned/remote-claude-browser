@@ -44,8 +44,8 @@ const proxies = [
 const proxyChanges = [];
 const platformChanges = [];
 const platformCapabilities = {
-  platforms: ["windows", "macos", "linux"],
-  defaultPlatform: "windows",
+  platforms: ["macos", "windows", "linux"],
+  defaultPlatform: "macos",
 };
 const creations = [];
 const proxyChecks = [];
@@ -421,8 +421,8 @@ async function checkPlatformSelection(page, touch = false) {
     await open();
     assert.equal(await select.inputValue(), "windows");
     assert.deepEqual(await select.locator("option").allTextContents(), [
+      "Mac（推荐）",
       "Windows",
-      "Mac",
       "Linux（不推荐）",
     ]);
     if (touch) {
@@ -750,8 +750,18 @@ try {
   await page.getByRole("button", { name: "新建浏览器配置" }).click();
   await page.getByLabel("浏览器配置名称").fill("新工作");
   const createdPlatform = page.getByLabel("系统身份", { exact: true });
-  assert.equal(await createdPlatform.inputValue(), "windows");
+  assert.equal(await createdPlatform.inputValue(), "macos");
+  assert.equal(
+    (await createdPlatform.locator("option").allTextContents())[0],
+    "Mac（推荐）",
+    "new profiles default to the recommended Mac",
+  );
+  const windowsHint = page.getByText("网站从连接本身（TCP", { exact: false });
+  assert.equal(await windowsHint.count(), 0);
+  await createdPlatform.selectOption("windows");
+  await windowsHint.waitFor();
   await createdPlatform.selectOption("macos");
+  await windowsHint.waitFor({ state: "detached" });
   const createSubmit = page.getByRole("button", { name: "检查并打开", exact: true });
   assert.equal(await createSubmit.isDisabled(), true);
   await page.getByRole("button", { name: "导入节点或订阅", exact: true }).click();
@@ -989,7 +999,7 @@ try {
   await phone.getByRole("button", { name: "新建浏览器配置", exact: true }).tap();
   await phone.getByLabel("浏览器配置名称").fill("手机新配置");
   const phonePlatform = phone.getByLabel("系统身份", { exact: true });
-  assert.equal(await phonePlatform.inputValue(), "windows");
+  assert.equal(await phonePlatform.inputValue(), "macos");
   await phonePlatform.selectOption({ label: "Linux（不推荐）" });
   assert.equal(await phonePlatform.inputValue(), "linux");
   const inputLayout = await phone.getByLabel("浏览器配置名称").evaluate((input) => ({

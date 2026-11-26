@@ -100,6 +100,8 @@ Remote Claude Browser（RCB）的工作台在服务器上为你运行真实的 C
 
 只有部署者安装了 AliasMode 内核时才能选「Mac」，否则只有「Windows」。手机连接时只调整视口和触摸，不改变系统身份。
 
+新建配置默认选「Mac」，也是推荐的身份。网站除了看浏览器报告的系统，还会看 TCP 连接本身的特征：TCP 连接是网络出口那台机器建立的，出口通常是 Linux 服务器，它的 TCP 特征（初始 TTL 64 等）和 Mac 一致，和 Windows（初始 TTL 128）不一致。所以出口不是一台 Windows 电脑时，选「Windows」更容易被检测网站识别出经过了代理；浏览器和系统身份都改变不了这一层。
+
 ## CPA
 
 CPA 实例把 Claude 授权接成兼容 OpenAI 和 Anthropic 的 API，用调用 Key 访问。CPA 授权和浏览器里的网站登录互相独立：浏览器的 Cookie 不会变成 CPA 授权。
