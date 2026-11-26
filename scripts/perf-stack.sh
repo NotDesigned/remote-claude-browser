@@ -70,6 +70,11 @@ until [[ $(curl --fail --silent "$direct/healthz" 2>/dev/null || true) == *'"bro
 done
 in_server ip addr add "$SMOKE_PROXY_IP/32" dev lo 2>/dev/null || true
 in_server node -e 'const fs = require("node:fs"); fs.writeFileSync("/tmp/compose-fixture.mjs", fs.readFileSync(0));' <scripts/compose-fixture.mjs
+if [[ -n ${PERF_PM_BUNDLE:-} ]]; then
+  # A ProseMirror bundle (window.PMComposer.mount) that the `pmreal` chat page loads.
+  in_server mkdir -p /tmp/fixture-assets
+  in_server sh -c 'cat >/tmp/fixture-assets/pm.js' <"$PERF_PM_BUNDLE"
+fi
 in_server pkill -f compose-fixture.mjs 2>/dev/null || true
 "${compose[@]}" --project-name "$project" exec -d server node /tmp/compose-fixture.mjs "$SMOKE_PROXY_IP" "$SMOKE_PROXY_PORT" 18080
 sleep 1

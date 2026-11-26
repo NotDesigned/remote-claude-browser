@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 
 const [listen, proxyPort, webPort] = process.argv.slice(2);
@@ -36,6 +36,15 @@ const server = createServer({ maxHeaderSize: 128 * 1024 }, (request, reply) => {
     reply
       .writeHead(200, { "content-type": "text/html; charset=utf-8" })
       .end(`<!doctype html><meta charset="utf-8"><pre id="cookies">${text}</pre>`);
+  } else if (url.pathname.startsWith("/asset/")) {
+    // Scripts a test copied in, such as an editor bundle too large for a data address.
+    const name = url.pathname.slice("/asset/".length);
+    let body = null;
+    try {
+      if (/^[\w.-]+\.js$/.test(name)) body = readFileSync(`/tmp/fixture-assets/${name}`);
+    } catch {}
+    if (body === null) reply.writeHead(404).end();
+    else reply.writeHead(200, { "content-type": "text/javascript; charset=utf-8" }).end(body);
   } else {
     const html = Buffer.from(url.searchParams.get("html") ?? "", "base64url");
     reply.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(html);

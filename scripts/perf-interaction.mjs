@@ -189,8 +189,35 @@ const onKey = (event) => {
   said();
   $("stream").click();
 };
-$("composer").addEventListener("input", onInput);
-$("composer").addEventListener("keydown", onKey);
+if (location.hash.includes("pmreal")) {
+  // The real ProseMirror (scripts/perf-stack.sh copies PERF_PM_BUNDLE in): "--" becomes a dash by
+  // an input rule, Enter sends and clears the editor, or with #remount mounts a new one.
+  const place = document.createElement("div");
+  place.id = "composer-place";
+  place.style.flex = "1";
+  $("composer").replaceWith(place);
+  const script = document.createElement("script");
+  script.src = "/asset/pm.js";
+  script.onload = () => {
+    const composer = PMComposer.mount(place, {
+      remount: location.hash.includes("remount"),
+      onSend: (text) => {
+        const msg = document.createElement("div");
+        msg.className = "msg me";
+        msg.textContent = text;
+        $("thread").append(msg);
+        composer.clear();
+        said();
+        $("stream").click();
+      },
+    });
+    new MutationObserver(said).observe(place, { subtree: true, childList: true, characterData: true });
+  };
+  document.head.append(script);
+} else {
+  $("composer").addEventListener("input", onInput);
+  $("composer").addEventListener("keydown", onKey);
+}
 let clicks = 0;
 $("press").addEventListener("click", () => stamp("clicks", ++clicks));
 addEventListener("scroll", () => stamp("scrolled", Math.round(scrollY)), { passive: true });
@@ -505,10 +532,12 @@ async function typingLatency(viewer, { label = "typing", keys = 30, gapMs = 150 
  */
 async function focusKeeping(
   viewer,
-  { label = "focus", rounds = 4, delay = 45, rule = false } = {},
+  { label = "focus", rounds = 4, delay = 45, rule = false, real = false, remount = false } = {},
 ) {
-  await openChat(viewer, `#pm${rule ? "&rule" : ""}&stream=4`);
+  const mode = real ? `pmreal${remount ? "&remount" : ""}` : "pm";
+  await openChat(viewer, `#${mode}${rule ? "&rule" : ""}&stream=4`);
   await focusComposer(viewer);
+  const stagesBefore = (await perfState(viewer.page)).stages;
   const since = Date.now();
   const expected = [];
   for (let round = 0; round < rounds; round++) {
@@ -528,7 +557,7 @@ async function focusKeeping(
     },
     { selector: MIRROR_FRAME, count: rounds },
   );
-  const { focus, rebuilds, status } = await perfState(viewer.page);
+  const { focus, rebuilds, status, stages } = await perfState(viewer.page);
   const trail = focus.filter((f) => f.at >= since);
   const before = focus.filter((f) => f.at < since).at(-1);
   if (before) trail.unshift({ ...before, at: since });
@@ -546,6 +575,8 @@ async function focusKeeping(
     focusTrail: trail.map((f) => `${f.at - since}:${f.where}`),
     status: status.filter((s) => s.at >= since).map((s) => `${s.at - since}:${s.text}`),
     rebuilds,
+    // A replaced iframe takes the focused field with it: a phone's keyboard closes.
+    stagesReplaced: stages - stagesBefore,
   });
 }
 
@@ -974,6 +1005,13 @@ async function longSession(viewer, { label = "long", minutes = 5 } = {}) {
 
 // ---------------------------------------------------------------------------------------------
 
+/** The real ProseMirror composer: plain typing, a new editor after each send, an input rule. */
+const PM_VARIANTS = [
+  { label: "focus-pm", real: true },
+  { label: "focus-pm-remount", real: true, remount: true },
+  { label: "focus-pm-rule", real: true, rule: true },
+];
+
 const all = [
   "typing",
   "burst",
@@ -1005,6 +1043,19 @@ try {
           await focusKeeping(desk);
           await openChat(desk);
           break;
+        case "focus-pm":
+          for (const variant of PM_VARIANTS) await focusKeeping(desk, { ...variant, rounds: 6 });
+          await openChat(desk);
+          break;
+        case "phone-focus-pm": {
+          await desk.context.close();
+          const phone = await openViewer({ phone: true });
+          for (const variant of PM_VARIANTS)
+            await focusKeeping(phone, { ...variant, label: `phone-${variant.label}`, rounds: 6 });
+          await phone.context.close();
+          wanted.length = 0;
+          break;
+        }
         case "focus-rule":
           await focusKeeping(desk, { label: "focus-rule", rule: true });
           await openChat(desk);

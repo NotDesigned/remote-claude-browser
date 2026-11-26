@@ -178,14 +178,16 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     },
     storage: sessionStorageOrNull(),
   });
+  /** Text typed this recently may not have reached the page yet. */
+  const EDITABLE_TYPING_MS = 400;
   const echo = createEchoFilter({
-    // Through the mirror and its rate limit, like any recovery. The reason asks the gateway to
-    // answer this page alone from its cached state, not every viewer from a new page snapshot.
+    // The reason asks the gateway to answer this page alone from its cached state, not every
+    // viewer from a new page snapshot; the mirror takes only the focused editor from it.
     onContenteditableReconcile: () => {
       const tab = presentation.activeTab();
       if (tab === null || !presentation.canInput(tab, "dom") || mirror.getActiveTab() !== tab)
         return false;
-      mirror.recover(LOCAL_RESYNC_REASON);
+      mirror.reconcileEditable(LOCAL_RESYNC_REASON);
       return true;
     },
     nodeFor: (id) => mirror.getReplayer()?.getMirror().getNode(id) ?? null,
@@ -318,6 +320,10 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     requestResync(tab, reason) {
       resync.request(tab, reason);
     },
+    // The gateway spaces these out itself, and they rebuild nothing.
+    requestCatchUp: (tab, reason) => socket?.send({ t: "resync-req", tab, reason }) ?? false,
+    editableBusy: () => echo.typingWithin(EDITABLE_TYPING_MS),
+    onEditablePatched: () => echo.settled(),
     watchReplayer: (_tab, replayer) => watchReplayScrollRestores(replayer, scroll),
     attachInteraction(tab, replayer) {
       // A press inside the mirror happens in its frame, out of the page's listeners' sight.

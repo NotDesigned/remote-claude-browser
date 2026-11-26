@@ -26,6 +26,8 @@ import {
   type RebuildRestorePoint,
 } from "./rebuild-restore";
 import { createParkedPages } from "./mirror-parking";
+import { patchEditable } from "./editable-patch";
+import { deepActiveElement } from "./input/keys";
 import {
   buildLive,
   destroyLive as destroyGeneration,
@@ -58,6 +60,13 @@ export const RECONNECT_SNAPSHOT_WAIT_MS = 5_000;
  * can be lost (a socket that was connecting), and so can the gateway's answer.
  */
 export const SNAPSHOT_OVERDUE_MS = 10_000;
+/** How long an editor's catch-up may take before the page is rebuilt instead. */
+export const EDITABLE_PATCH_WAIT_MS = 5_000;
+/** While the person is still typing, the editor is caught up this much later, this many times. */
+export const EDITABLE_PATCH_RETRY_MS = 700;
+const EDITABLE_PATCH_RETRIES = 8;
+/** The replay's own marker: the live replay has applied everything the catch-up covers. */
+const EDITABLE_PATCH_MARK = "mirror:editable-patch";
 
 type Snapshot = Extract<Down, { t: "snapshot" }>;
 type Delta = Extract<Down, { t: "delta" }>;
@@ -65,6 +74,12 @@ type Delta = Extract<Down, { t: "delta" }>;
 export interface Mirror {
   handle(msg: Down): void;
   recover(reason: string): void;
+  /**
+   * The focused editor of the replay went apart from the page's: bring just that editor back in
+   * step (editable-patch.ts), keeping focus, caret and keyboard. Without a focused editor, or when
+   * that cannot be done, the page is recovered as `recover` does.
+   */
+  reconcileEditable(reason: string): void;
   connectionLost(): void;
   /** `resumed`: the gateway continued this replay from its cursor, so no snapshot is needed. */
   connectionRestored(resumed?: boolean): void;
@@ -97,6 +112,15 @@ export interface MirrorOpts {
   /** Sees each Replayer from before its snapshot is cast until it is destroyed. */
   watchReplayer?(tab: TabId, replayer: Replayer): () => void;
   onSnapshotApplied?(snapshot: Snapshot): void;
+  /**
+   * Asks the gateway for this page alone to be caught up (an editor's catch-up); false when it
+   * could not be sent. Without it, requestResync is used.
+   */
+  requestCatchUp?(tab: TabId, reason: string): boolean;
+  /** The person typed so recently that the editor's text is still on its way to the page. */
+  editableBusy?(): boolean;
+  /** An editor was brought back in step in place: what held it apart is settled. */
+  onEditablePatched?(): void;
   /** Report the buffer actually installed in this Replayer, rather than a future target. */
   onBufferApplied?(bufferMs: number): void;
   /** WebRTC is created and destroyed with each Replayer generation. */
@@ -127,6 +151,15 @@ export function createMirror(opts: MirrorOpts): Mirror {
   /** Asks again for a snapshot that is pending for too long. */
   let overdueTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingRestore: RebuildRestorePoint | null = null;
+  /** An editor waiting for its catch-up (reconcileEditable). */
+  let editablePatch: {
+    tab: TabId;
+    nodeId: number;
+    reason: string;
+    timer: ReturnType<typeof setTimeout>;
+    retries: number;
+  } | null = null;
+  let editablePatchMarks = 0;
   let viewerId: string | null = null;
   let isDriver = true;
   let viewportLimit: Extract<Down, { t: "hello" }>["viewportLimit"];
@@ -310,6 +343,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
   };
 
   const rebuild = (message: Snapshot) => {
+    cancelEditablePatch();
     endTabSwitch();
     if (message.reason === "nav" || (state !== null && state.tab !== message.tab)) {
       pendingRestore = null;
@@ -387,6 +421,107 @@ export function createMirror(opts: MirrorOpts): Mirror {
     }
   };
 
+  const cancelEditablePatch = () => {
+    if (editablePatch !== null) clearTimeout(editablePatch.timer);
+    editablePatch = null;
+  };
+
+  /** The editing host around the replay's focused element, with its rrweb id. */
+  const focusedEditor = (live: LiveState): { host: HTMLElement; nodeId: number } | null => {
+    const document = live.replayer.iframe.contentDocument;
+    let host = document === null ? null : (deepActiveElement(document) as HTMLElement | null);
+    if (host === null || host.isContentEditable !== true) return null;
+    while ((host.parentElement as HTMLElement | null)?.isContentEditable === true)
+      host = host.parentElement!;
+    const nodeId = live.replayer.getMirror().getId(host);
+    return nodeId < 0 ? null : { host, nodeId };
+  };
+
+  const reconcileEditable = (reason: string, retries = 0) => {
+    const live = state;
+    const tab = sync.activeTab;
+    const editor =
+      live === null ||
+      tab === null ||
+      live.tab !== tab ||
+      live.needsSnapshot ||
+      sync.snapshotPending ||
+      sync.catchUp !== null
+        ? null
+        : focusedEditor(live);
+    if (editor === null || tab === null) {
+      cancelEditablePatch();
+      if (sync.activeTab !== null) requestFreshSnapshot(sync.activeTab, reason);
+      return;
+    }
+    if (editablePatch !== null) return;
+    // Answered for this page alone, with the cached snapshot and the deltas since.
+    if (opts.requestCatchUp?.(tab, reason) === false) {
+      requestFreshSnapshot(tab, reason);
+      return;
+    }
+    if (opts.requestCatchUp === undefined) opts.requestResync(tab, reason);
+    editablePatch = {
+      tab,
+      nodeId: editor.nodeId,
+      reason,
+      retries,
+      timer: setTimeout(() => {
+        editablePatch = null;
+        requestFreshSnapshot(tab, `${reason}: no catch-up`);
+      }, EDITABLE_PATCH_WAIT_MS),
+    };
+  };
+
+  /**
+   * The catch-up for an editor: once the live replay has applied every event the catch-up covers,
+   * the editor's content is taken from it. The rest of the page is the same in both.
+   */
+  const applyEditablePatch = (message: Snapshot) => {
+    const live = state!;
+    const pending = editablePatch!;
+    cancelEditablePatch();
+    // The page in view has applied exactly what the catch-up covers, or it is not comparable.
+    if (message.seq !== live.nextSeq - 1) {
+      rebuild(message);
+      return;
+    }
+    const lastTs = message.data.at(-1)?.timestamp ?? 0;
+    const replayer = live.replayer;
+    const marker = {
+      type: EventType.Custom,
+      timestamp: lastTs,
+      data: { tag: EDITABLE_PATCH_MARK, payload: ++editablePatchMarks },
+    } as eventWithTime;
+    const mark = editablePatchMarks;
+    const onMark = (event: eventWithTime) => {
+      if (event.type !== EventType.Custom || event.data.payload !== mark) return;
+      replayer.off("custom-event", onMark as never);
+      if (state !== live || sync.activeTab !== pending.tab) return;
+      if (opts.editableBusy?.() === true) {
+        // Text typed since is not in the catch-up: taking it now would take those keys away.
+        if (pending.retries >= EDITABLE_PATCH_RETRIES) {
+          requestFreshSnapshot(pending.tab, pending.reason);
+          return;
+        }
+        setTimeout(() => {
+          if (state === live) reconcileEditable(pending.reason, pending.retries + 1);
+        }, EDITABLE_PATCH_RETRY_MS);
+        return;
+      }
+      const patched = patchEditable({
+        replayer,
+        nodeId: pending.nodeId,
+        events: message.data,
+        host: opts.container,
+      });
+      if (patched) opts.onEditablePatched?.();
+      else requestFreshSnapshot(pending.tab, `${pending.reason}: editor not patched`);
+    };
+    replayer.on("custom-event", onMark as never);
+    replayer.addEvent(marker);
+  };
+
   renderStatus("Waiting for a snapshot…");
 
   return {
@@ -405,6 +540,19 @@ export function createMirror(opts: MirrorOpts): Mirror {
           applyViewportLayout();
           break;
         case "snapshot":
+          if (editablePatch !== null && editablePatch.tab === msg.tab) {
+            if (
+              state?.tab === msg.tab &&
+              state.epoch === msg.epoch &&
+              !state.needsSnapshot &&
+              !sync.snapshotPending &&
+              sync.catchUp === null
+            ) {
+              applyEditablePatch(msg);
+              break;
+            }
+            cancelEditablePatch();
+          }
           switch (snapshotDecision(sync, state, msg)) {
             case "confirm":
               clearSwitchTimer();
@@ -420,6 +568,9 @@ export function createMirror(opts: MirrorOpts): Mirror {
           applyDelta(msg);
           break;
         case "resync":
+          // An editor's catch-up opens with this: the page in view stays as it is, usable.
+          if (editablePatch !== null && editablePatch.tab === msg.tab && state?.tab === msg.tab)
+            break;
           switch (resyncDecision(sync, state, msg.tab)) {
             case "catch-up-answered": {
               sync.catchUp = catchUpAnswered(sync.catchUp);
@@ -457,9 +608,12 @@ export function createMirror(opts: MirrorOpts): Mirror {
       }
     },
     recover(reason) {
+      cancelEditablePatch();
       if (sync.activeTab !== null) requestFreshSnapshot(sync.activeTab, reason);
     },
+    reconcileEditable: (reason) => reconcileEditable(reason),
     connectionLost() {
+      cancelEditablePatch();
       clearReconnectTimer();
       parked.dropAll();
       endTabSwitch();
@@ -506,6 +660,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
     },
     selectTab(tab) {
       if (tab === sync.activeTab) return;
+      cancelEditablePatch();
       sync.activeTab = tab;
       pendingRestore = null;
       setSnapshotPending(false);
@@ -559,6 +714,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
     refreshViewportLayout: applyViewportLayout,
     keepTabs: (tabs) => parked.keep(tabs),
     teardown() {
+      cancelEditablePatch();
       clearReconnectTimer();
       clearOverdueTimer();
       endTabSwitch();
