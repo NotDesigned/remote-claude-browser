@@ -13,11 +13,16 @@ export class ApiError extends Error {
 /** The page to sign in again on. */
 export const GATE_PATH = "/gate";
 
+/** The gate, asked to come back to this page (a path on this site) after signing in again. */
+export function gateUrl(location: { pathname: string; search: string }): string {
+  return `${GATE_PATH}?return=${encodeURIComponent(location.pathname + location.search)}`;
+}
+
 let redirecting = false;
 const goToGate = () => {
   if (redirecting || typeof window === "undefined") return;
   redirecting = true;
-  window.location.assign(GATE_PATH);
+  window.location.assign(gateUrl(window.location));
 };
 let authExpired: () => void = goToGate;
 

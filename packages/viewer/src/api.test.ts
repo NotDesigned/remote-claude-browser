@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, apiRequest, setAuthExpiredHandler } from "./api";
+import { ApiError, apiRequest, gateUrl, setAuthExpiredHandler } from "./api";
 
 const reply = (body: string | null, status: number, type?: string) =>
   vi.fn<typeof fetch>(
@@ -86,6 +86,14 @@ describe("apiRequest", () => {
         signal: controller.signal,
         body: '{"a":1}',
       }),
+    );
+  });
+});
+
+describe("gateUrl", () => {
+  it("asks the gate to come back to this page after signing in again", () => {
+    expect(gateUrl({ pathname: "/", search: "?sid=client-1" })).toBe(
+      "/gate?return=%2F%3Fsid%3Dclient-1",
     );
   });
 });

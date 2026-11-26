@@ -1,4 +1,5 @@
 /** The card over the page while there is no running session: starting, ending, ended, failed. */
+import { gateUrl } from "../api";
 import { clientReturnUrl } from "../client-session";
 import type { SessionState } from "./session-state";
 
@@ -31,12 +32,15 @@ export function ClientSessionOverlay({ session: state, onRetry }: ClientSessionO
       id="client-session-overlay"
       class="client-session-overlay"
       data-phase={phase}
-      role={phase === "error" || phase === "replaced" ? "alert" : "status"}
+      aria-labelledby="client-session-title"
     >
       <div class="client-session-card">
         <span class="session-eyebrow">独立浏览器</span>
-        <h1>{title(state)}</h1>
-        <p>{detail(state)}</p>
+        {/* Only what happened is announced, not the policy text and the buttons below it. */}
+        <div role={phase === "error" || phase === "replaced" ? "alert" : "status"}>
+          <h1 id="client-session-title">{title(state)}</h1>
+          <p>{detail(state)}</p>
+        </div>
         <p class="session-policy">
           不同用户的浏览器数据互相隔离。同一浏览器配置下的会话共享网站登录。离线约 60
           秒后释放远程窗口；返回时重新打开启动页，未发送草稿不保留。正在生成时暂缓释放。
@@ -77,7 +81,9 @@ export function ClientSessionOverlay({ session: state, onRetry }: ClientSessionO
               {endFailure ? "重试结束" : "重试"}
             </button>
           )}
-          {phase === "error" && error?.status === 401 && <a href="/gate">重新登录</a>}
+          {phase === "error" && error?.status === 401 && (
+            <a href={gateUrl(window.location)}>重新登录</a>
+          )}
           {phase === "error" &&
             !endFailure &&
             (picked !== null || error?.code === "EXIT_REQUIRED") && (

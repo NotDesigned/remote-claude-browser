@@ -4,7 +4,13 @@ import type { IncomingMessage } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderGatePage } from "./gate-page";
 import { SESSION_COOKIE } from "./middleware";
-import { createUserGate, MAX_PENDING_LOGINS, USER_COOKIE, userSessionToken } from "./user-gate";
+import {
+  createUserGate,
+  gateReturnPath,
+  MAX_PENDING_LOGINS,
+  USER_COOKIE,
+  userSessionToken,
+} from "./user-gate";
 import { createUserStore, USER_SESSION_TTL_MS, type FrontendUser, type UserStore } from "./users";
 import { registerSecurityHeaders } from "../security-headers";
 
@@ -119,6 +125,65 @@ describe("persisted front-end user gate", () => {
     const remembered = await app.inject({ url: "/gate", headers: { cookie } });
     expect(remembered.statusCode).toBe(302);
     expect(remembered.headers.location).toBe("/");
+  });
+
+  it("returns to the page whose sign-in expired, and only to a path on this site", async () => {
+    expect(gateReturnPath("/?sid=abc#x")).toBe("/?sid=abc");
+    expect(gateReturnPath("/s/one/page?q=1")).toBe("/s/one/page?q=1");
+    for (const value of [
+      "https://evil.example/",
+      "//evil.example/",
+      "/\\evil.example/",
+      "javascript:alert(1)",
+      "/gate",
+      "/gate/oidc/start",
+      "/logout",
+      "",
+      null,
+    ])
+      expect(gateReturnPath(value), String(value)).toBeUndefined();
+    expect(gateReturnPath("/a\nb")).toBeUndefined();
+    // Encoded line breaks stay encoded: nothing can split the Location header.
+    expect(gateReturnPath("/%0d%0aLocation: x")).toBe("/%0d%0aLocation:%20x");
+
+    const { app, login } = await fixture();
+    const page = await app.inject({ url: `/gate?return=${encodeURIComponent("/?sid=abc")}` });
+    expect(page.statusCode).toBe(200);
+    const kept = cookieHeaders(page.headers["set-cookie"])[0]!;
+    expect(kept).toMatch(
+      /^mirror-return=%2F%3Fsid%3Dabc; Path=\/gate; HttpOnly; Secure; SameSite=Lax/,
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: "/gate",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: PUBLIC_ORIGIN,
+        cookie: kept.split(";", 1)[0]!,
+      },
+      payload: new URLSearchParams({ username: "admin", password: PASSWORD }).toString(),
+    });
+    expect(response.headers.location).toBe("/?sid=abc");
+    expect(cookieHeaders(response.headers["set-cookie"]).join("\n")).toContain(
+      "mirror-return=; Path=/gate",
+    );
+    // A tampered cookie, or a return to another site, ends on the usual page.
+    const tampered = await app.inject({
+      method: "POST",
+      url: "/gate",
+      remoteAddress: "203.0.113.9",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: PUBLIC_ORIGIN,
+        cookie: `mirror-return=${encodeURIComponent("//evil.example/")}`,
+      },
+      payload: new URLSearchParams({ username: "admin", password: PASSWORD }).toString(),
+    });
+    expect(tampered.headers.location).toBe("/?new=1");
+    const offsite = await app.inject({ url: "/gate?return=https%3A%2F%2Fevil.example%2F" });
+    expect(offsite.headers["set-cookie"]).toBeUndefined();
+    const plain = await login(undefined, undefined, "203.0.113.10");
+    expect(plain.headers.location).toBe("/?new=1");
   });
 
   it("never reuses one user's identity for another user's login", async () => {

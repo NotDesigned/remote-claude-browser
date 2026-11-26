@@ -32,6 +32,34 @@ function remoteCcCode(request: IncomingMessage): string | undefined {
   return value !== undefined && REMOTE_CC_CODE.test(value) ? value : undefined;
 }
 
+/**
+ * Where to go after signing in again (/gate?return=, from a page whose sign-in expired): only a
+ * path on this site, never the gate itself. Anything else is ignored.
+ */
+const RETURN_COOKIE = "mirror-return";
+export function gateReturnPath(value: string | null | undefined): string | undefined {
+  if (!value || value.length > 2048 || !value.startsWith("/") || value.startsWith("//")) return;
+  if (/[\\\u0000-\u001f\u007f]/.test(value)) return;
+  let url: URL;
+  try {
+    url = new URL(value, "http://gate.invalid");
+  } catch {
+    return;
+  }
+  if (url.origin !== "http://gate.invalid") return;
+  if (/^\/(gate|logout)(\/|$)/.test(url.pathname)) return;
+  return url.pathname + url.search;
+}
+function returnPath(request: IncomingMessage): string | undefined {
+  const value = readCookie(request, RETURN_COOKIE);
+  if (!value) return;
+  try {
+    return gateReturnPath(decodeURIComponent(value));
+  } catch {
+    return;
+  }
+}
+
 export function createUserGate(options: {
   store: UserStore;
   publicOrigin?: string;
@@ -71,6 +99,7 @@ export function createUserGate(options: {
   ) => {
     const session = options.store.issueSession(user.id, ttlMs);
     const pending = remoteCcCode(request);
+    const back = returnPath(request);
     reply.header("set-cookie", [
       `${USER_COOKIE}=${session.token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(ttlMs / 1000)}`,
       ...(options.cookiesOnSuccess?.(request) ?? []),
@@ -78,11 +107,14 @@ export function createUserGate(options: {
       ...(pending
         ? [`${REMOTE_CC_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`]
         : []),
+      ...(readCookie(request, RETURN_COOKIE) !== undefined
+        ? [`${RETURN_COOKIE}=; Path=/gate; HttpOnly; Secure; SameSite=Lax; Max-Age=0`]
+        : []),
     ]);
     return reply
       .code(303)
       .header("cache-control", "no-store")
-      .header("location", pending ? `/?new=1&remote-cc=${pending}` : "/?new=1")
+      .header("location", pending ? `/?new=1&remote-cc=${pending}` : (back ?? "/?new=1"))
       .send();
   };
   const preHandler: preHandlerAsyncHookHandler = async (request, reply) => {
@@ -131,9 +163,23 @@ export function createUserGate(options: {
           const form = new URLSearchParams(String(body));
           done(null, { username: form.get("username"), password: form.get("password") });
         });
-      app.get("/gate", async (request, reply) =>
-        currentUser(request.raw) ? reply.code(302).header("location", "/").send() : page(reply),
-      );
+      app.get("/gate", async (request, reply) => {
+        const back = gateReturnPath(
+          new URL(request.raw.url ?? "/gate", "http://local").searchParams.get("return"),
+        );
+        if (currentUser(request.raw))
+          return reply
+            .code(302)
+            .header("location", back ?? "/")
+            .send();
+        // Kept for the sign-in that follows, by password or single sign-on (both under /gate).
+        if (back)
+          reply.header(
+            "set-cookie",
+            `${RETURN_COOKIE}=${encodeURIComponent(back)}; Path=/gate; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
+          );
+        return page(reply);
+      });
       app.post<{ Body: { username?: unknown; password?: unknown } }>(
         "/gate",
         { bodyLimit: 8192 },
