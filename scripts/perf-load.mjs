@@ -1,6 +1,7 @@
 /**
  * Measures how long the workbench takes to become usable, phase by phase, against a running server
- * (for example the stack scripts/compose-smoke.sh starts; PERF_LOAD=1 there runs this script).
+ * (for example a stack started from compose.yml and compose.runtime.yml, with scripts/compose-fixture.mjs
+ * serving the test pages and the exit lookup inside its server container).
  *
  *   PERF_ORIGIN=http://127.0.0.1:8080 PERF_USERNAME=… PERF_PASSWORD=… \
  *   PERF_FIXTURE_ORIGIN=http://203.0.113.21:18080 PERF_PROXY=socks5://203.0.113.21:1080 \
