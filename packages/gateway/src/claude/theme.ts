@@ -105,7 +105,12 @@ export interface ClaudeThemeDeps {
   send: CdpSend;
   pages(): TargetRef[];
   copies: ReturnType<typeof createThemeCopies>;
+  /** Where a page that took the setting but does not show it is reported. */
+  report?(message: string): void;
 }
+
+/** What a Claude page shows and which appearance-related storage keys it has (names only). */
+export const DESCRIBE_THEME_EXPRESSION = `(${onClaude}) ? { mode: document.documentElement.dataset.mode ?? null, keys: Object.keys(localStorage).filter((key) => /theme|mode|appear|dark/i.test(key)).slice(0, 20) } : undefined`;
 
 export function createClaudeTheme(deps: ClaudeThemeDeps) {
   const evaluate = async (target: TargetRef, expression: string): Promise<unknown> => {
@@ -134,6 +139,29 @@ export function createClaudeTheme(deps: ClaudeThemeDeps) {
       : deps.send(target.sessionId, "Emulation.setEmulatedMedia", {
           features: [{ name: "prefers-color-scheme", value: systemDark ? "dark" : "light" }],
         });
+  /**
+   * A Claude page took the setting but does not show it: log what the page has, so that a change
+   * on Claude's side (or a stuck page) can be told apart. Storage key names only, never values.
+   */
+  const reportIfNotShown = async (
+    theme: ClaudeTheme,
+    results: PromiseSettledResult<unknown>[],
+  ): Promise<void> => {
+    const pages = deps.pages();
+    const seen = await Promise.all(
+      pages.map((target) => evaluate(target, DESCRIBE_THEME_EXPRESSION).catch(() => undefined)),
+    );
+    const claude = seen.filter(
+      (page): page is { mode: unknown } => typeof page === "object" && page !== null,
+    );
+    if (claude.length === 0 || claude.some((page) => page.mode === theme)) return;
+    deps.report?.(
+      `Claude page did not show the ${theme} appearance: ${JSON.stringify({
+        pushed: results.map((result) => (result.status === "fulfilled" ? result.value : "failed")),
+        pages: claude,
+      })}`,
+    );
+  };
   return {
     /** A new page starts from the same device preference; its storage already has the setting. */
     applyMedia,
@@ -144,7 +172,11 @@ export function createClaudeTheme(deps: ClaudeThemeDeps) {
       systemDark = dark;
       wanted = theme;
       const results = await applyEverywhere(theme);
-      return results.some((result) => result.status === "fulfilled" && result.value === true);
+      const applied = results.some(
+        (result) => result.status === "fulfilled" && result.value === true,
+      );
+      if (applied && theme !== "auto") await reportIfNotShown(theme, results);
+      return applied;
     },
     /**
      * This client's mode, or null when this gateway has not been told it, as after a restart. Only

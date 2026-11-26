@@ -193,6 +193,7 @@ export async function createClientRuntime(
     copies: themeCopies,
     send: scoped.send,
     pages: () => [...targets.values()].filter((target) => target.type === "page"),
+    report: (message) => report("client theme not shown", new Error(message)),
   });
   scoped.onAttached((target) => {
     if (target.type === "page")
