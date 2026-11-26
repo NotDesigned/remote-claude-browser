@@ -236,6 +236,51 @@ describe("InputRelay", () => {
     expect(relay.valueStatusMessages()).toEqual([]);
     expect(statuses.at(-1)).toEqual({ tab: "tab-1", failed: false, reason: undefined });
   });
+  it("types text appended to an editor the page replaced into the field it focused", async () => {
+    const gone = async (): Promise<CmdRes> => ({ reqId: 1, ok: false, err: "node not found" });
+    const h = harness({ value: gone });
+    const typed: InputMsg = {
+      t: "value",
+      tab: "tab-1",
+      nodeId: 42,
+      value: "sent text and mo",
+      base: "sent text and m",
+      commit: false,
+    };
+    expect(await h.relay("driver", typed)).toBe(true);
+    expect(h.cdp).toEqual([
+      { sessionId: "session-1", method: "Input.insertText", params: { text: "o" } },
+    ]);
+    // Synced: Enter still sends.
+    const enter: InputMsg = {
+      t: "key",
+      tab: "tab-1",
+      kind: "down",
+      key: "Enter",
+      code: "Enter",
+      mods: 0,
+    };
+    expect(await h.relay("driver", enter)).toBe(true);
+
+    // The node gone during resolve too.
+    const lost = harness({ resolve: gone });
+    expect(await lost.relay("driver", { ...typed, value: "ab", base: "a" })).toBe(true);
+    expect(lost.cdp[0]).toMatchObject({ method: "Input.insertText", params: { text: "b" } });
+  });
+  it("leaves any other edit to a replaced editor as a failed sync", async () => {
+    const h = harness({ value: async () => ({ reqId: 1, ok: false, err: "node not found" }) });
+    const base: InputMsg = { t: "value", tab: "tab-1", nodeId: 42, value: "ac", commit: false };
+    // No base, a deletion, a change in the middle: nothing is typed anywhere.
+    expect(await h.relay("driver", base)).toBe(false);
+    expect(await h.relay("driver", { ...base, base: "abc" })).toBe(false);
+    expect(await h.relay("driver", { ...base, value: "axc", base: "abc" })).toBe(false);
+    // An editor that refused the text is not a replaced one.
+    const refused = harness({
+      value: async () => ({ reqId: 1, ok: false, err: "editable text does not match" }),
+    });
+    expect(await refused.relay("driver", { ...base, value: "abc", base: "ab" })).toBe(false);
+    expect([...h.cdp, ...refused.cdp]).toEqual([]);
+  });
   it("words failure reasons without page content", () => {
     expect(valueFailureReason(new Error("value command timed out"))).toBe("远端页面响应超时");
     expect(valueFailureReason("secret page text")).toBe("远端页面未接受这次输入");

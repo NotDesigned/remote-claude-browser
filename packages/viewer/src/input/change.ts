@@ -71,12 +71,23 @@ export function attachChangeCapture(options: ChangeCaptureOptions): {
   const onFocusIn = (event: FocusEvent) => capturePassword(event.target);
   capturePassword(options.doc.activeElement);
 
+  /** Each editing host's text as last sent: the base of its next edit. */
+  const sentEditables = new WeakMap<HTMLElement, string>();
   const sendEditable = (host: HTMLElement) => {
     const nodeId = options.getNodeId(host);
     if (nodeId < 0) return;
     const text = editableText(host);
     const value = text.trim() ? text : "";
-    options.send({ t: "value", tab: options.tab, nodeId, value, commit: false });
+    const base = sentEditables.get(host);
+    sentEditables.set(host, value);
+    options.send({
+      t: "value",
+      tab: options.tab,
+      nodeId,
+      value,
+      commit: false,
+      ...(base === undefined ? {} : { base }),
+    });
   };
   const composingNodes = new Set<number>();
   const composeFlushTimers = new Map<number, ReturnType<typeof setTimeout>>();

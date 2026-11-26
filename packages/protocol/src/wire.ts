@@ -283,6 +283,11 @@ export type Up =
       /** Preserve the local text-control selection when a value snapshot replaces selected text. */
       selectionStart?: number;
       selectionEnd?: number;
+      /**
+       * An editing host's text as this viewer last sent it, before this edit. When the page has
+       * replaced that editor, text the edit only appended is typed into the one it focused.
+       */
+      base?: string;
     }
   /** Composition in flight -> Input.imeSetComposition. */
   | { t: "ime"; tab: TabId; text: string; selStart: number; selEnd: number }

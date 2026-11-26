@@ -276,7 +276,13 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
           });
           return true;
         case "value": {
-          const resolved = await resolveNode(resolverDeps, msg.tab, msg.nodeId);
+          let resolved: Awaited<ReturnType<typeof resolveNode>>;
+          try {
+            resolved = await resolveNode(resolverDeps, msg.tab, msg.nodeId);
+          } catch (error) {
+            if (await typeIntoReplacement(sessionId, msg, error, valid)) return true;
+            throw error;
+          }
           if (!valid()) return false;
           const response = await deps.agentLink.sendCmd(
             resolved.targetId,
@@ -294,6 +300,8 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
             resolved.frameId,
           );
           if (!valid()) return false;
+          if (!response.ok && (await typeIntoReplacement(sessionId, msg, response.err, valid)))
+            return true;
           valueStatus(
             msg.tab,
             !response.ok,
@@ -334,6 +342,27 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
       // ephemeral; dropping that event is safer than turning a transient race into a WS failure.
       return false;
     }
+  }
+
+  /**
+   * Text typed into an editor the page has just replaced (a chat composer mounted anew after
+   * sending) names a node that is gone. When the edit only added text at the end of what the
+   * editor held, that text is typed where the page now has focus, as a key would be, instead of
+   * being lost. Anything else stays a failed sync.
+   */
+  async function typeIntoReplacement(
+    sessionId: string,
+    msg: Extract<InputMsg, { t: "value" }>,
+    error: unknown,
+    valid: () => boolean,
+  ): Promise<boolean> {
+    if (typeof msg.base !== "string" || !/not found|no longer|detached/i.test(String(error ?? "")))
+      return false;
+    const added = appendedText(msg.base, msg.value);
+    if (added === null || !valid()) return false;
+    await deps.send(sessionId, "Input.insertText", { text: added });
+    valueStatus(msg.tab, false);
+    return true;
   }
 
   async function dispatchPointer(
@@ -706,4 +735,10 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, what = "re
   return Promise.race([promise, timeout]).finally(() => {
     if (timer !== undefined) clearTimeout(timer);
   });
+}
+
+/** The text `value` adds at the end of `base`, or null when it changes anything else. */
+export function appendedText(base: string, value: string): string | null {
+  if (value.length <= base.length || !value.startsWith(base)) return null;
+  return value.slice(base.length);
 }

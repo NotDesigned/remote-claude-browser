@@ -148,6 +148,52 @@ describe("focus following", () => {
     expect(focusMirror).toHaveBeenCalledOnce();
   });
 
+  describe("when the page takes away the field someone is typing in", () => {
+    /** Typed in the field, which the page then replaced with a new one, focused remotely. */
+    function stranded(followsByItself: boolean) {
+      const ctx = setup(followsByItself);
+      ctx.field.focus();
+      ctx.doc.fire("keydown", { target: ctx.field });
+      ctx.field.isConnected = false;
+      ctx.doc.activeElement = ctx.body;
+      return ctx;
+    }
+
+    it("follows to the page's new field, also on a touch device", () => {
+      const { doc, field, follower } = stranded(false);
+      field.isConnected = true; // The new field: id 5 now names it.
+      field.focus.mockClear();
+      doc.activeElement = null;
+      follower.remoteFocus({ id: 5, editable: true });
+      expect(field.focus).toHaveBeenCalledOnce();
+    });
+
+    it("follows on a desktop even when the mirror lost its focus with the field", () => {
+      const { doc, field, follower } = stranded(true);
+      field.isConnected = true;
+      field.focus.mockClear();
+      doc.focused = false;
+      follower.remoteFocus({ id: 5, editable: true });
+      expect(field.focus).toHaveBeenCalledOnce();
+    });
+
+    it("gives a phone no hidden field for one the mirror does not show", () => {
+      const { hidden, follower } = stranded(false);
+      follower.remoteFocus({ id: 99, editable: true });
+      expect(hidden.focus).not.toHaveBeenCalled();
+    });
+
+    it("does not follow once the person pressed somewhere else", () => {
+      const { doc, field, follower } = stranded(false);
+      field.isConnected = true;
+      field.focus.mockClear();
+      doc.fire("pointerdown", {});
+      doc.fire("pointerup", {});
+      follower.remoteFocus({ id: 5, editable: true });
+      expect(field.focus).not.toHaveBeenCalled();
+    });
+  });
+
   it("detects desktops", () => {
     const view = (ua: string, coarse: boolean) =>
       ({

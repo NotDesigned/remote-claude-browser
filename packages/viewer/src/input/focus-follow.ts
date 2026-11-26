@@ -11,6 +11,10 @@
  * when the mirror has no such node (a field it does not show), a hidden textarea takes the keys
  * and the IME, and sends committed text. Touch devices are only followed when a key arrives:
  * focusing a field there would pop up the soft keyboard unasked.
+ *
+ * Either way, someone typing whose field the page took away (a chat composer mounted anew after
+ * sending) is followed to the field the page focuses instead, at once: their keyboard was open
+ * already, and what they type next must not go nowhere.
  */
 import type { RemoteFocus } from "@mirror/protocol";
 import { deepActiveElement, isTextEditable } from "./keys";
@@ -31,7 +35,11 @@ export interface FocusFollowOptions {
   followsByItself: boolean;
   /** Puts focus back into the mirror once the remote page has no field focused. */
   focusMirror(): void;
+  now?(): number;
 }
+
+/** Typing this recently, in a field the page then removed, is typing that goes on. */
+export const STRANDED_TYPING_MS = 5_000;
 
 export interface FocusFollower {
   remoteFocus(focus: RemoteFocus): void;
@@ -69,6 +77,8 @@ export function createFocusFollower(options: FocusFollowOptions): FocusFollower 
   let remote: RemoteFocus | null = null;
   let composing = false;
   let pointerHeld = false;
+  let typedAt = Number.NEGATIVE_INFINITY;
+  const now = options.now ?? Date.now;
   const docs = new Set<Document>();
 
   const mirrorField = (focus: RemoteFocus): Element | null => {
@@ -90,6 +100,13 @@ export function createFocusFollower(options: FocusFollowOptions): FocusFollower 
     return false;
   };
   const busy = () => composing || pointerHeld || selectingLocally();
+  /** Typing a moment ago, and no field here has focus any more: the page took it away. */
+  const stranded = () => {
+    if (now() - typedAt > STRANDED_TYPING_MS || pointerHeld) return false;
+    if (hiddenHasFocus()) return false;
+    const active = deepActiveElement(options.rootDoc);
+    return active === null || !isTextEditable(active);
+  };
 
   const moveTo = (focus: RemoteFocus): boolean => {
     const field = mirrorField(focus);
@@ -125,6 +142,11 @@ export function createFocusFollower(options: FocusFollowOptions): FocusFollower 
         }
         return;
       }
+      if (stranded()) {
+        // Only to a field the mirror shows: a phone must not get a hidden one instead.
+        if (mirrorField(focus) !== null || options.followsByItself) moveTo(focus);
+        return;
+      }
       if (!options.followsByItself || !ours || busy()) return;
       moveTo(focus);
     },
@@ -137,11 +159,19 @@ export function createFocusFollower(options: FocusFollowOptions): FocusFollower 
       docs.add(doc);
       const start = () => (composing = true);
       const end = () => (composing = false);
-      const down = () => (pointerHeld = true);
+      // A press elsewhere is where the person went: no longer typing.
+      const down = () => {
+        pointerHeld = true;
+        typedAt = Number.NEGATIVE_INFINITY;
+      };
       const up = () => (pointerHeld = false);
       // A release outside this document never reaches it; a move without a button tells.
       const move = (event: PointerEvent) => {
         if (event.buttons === 0) pointerHeld = false;
+      };
+      const typed = (event: Event) => {
+        const target = event.target;
+        if (isElement(target) && isTextEditable(target)) typedAt = now();
       };
       doc.addEventListener("compositionstart", start, true);
       doc.addEventListener("compositionend", end, true);
@@ -149,6 +179,8 @@ export function createFocusFollower(options: FocusFollowOptions): FocusFollower 
       doc.addEventListener("pointerup", up, true);
       doc.addEventListener("pointercancel", up, true);
       doc.addEventListener("pointermove", move, true);
+      doc.addEventListener("keydown", typed, true);
+      doc.addEventListener("beforeinput", typed, true);
       return () => {
         docs.delete(doc);
         doc.removeEventListener("compositionstart", start, true);
@@ -157,6 +189,8 @@ export function createFocusFollower(options: FocusFollowOptions): FocusFollower 
         doc.removeEventListener("pointerup", up, true);
         doc.removeEventListener("pointercancel", up, true);
         doc.removeEventListener("pointermove", move, true);
+        doc.removeEventListener("keydown", typed, true);
+        doc.removeEventListener("beforeinput", typed, true);
       };
     },
   };

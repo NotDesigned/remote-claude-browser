@@ -14,7 +14,7 @@ import {
 } from "@mirror/protocol";
 import type { ServerClock } from "./clock";
 import type { EventPipeline } from "./pipeline";
-import type { RebuildRestoreHooks, RebuildRestorePoint } from "./rebuild-restore";
+import type { RebuildRestoreHooks, RebuildRestorePoint, RestoreContext } from "./rebuild-restore";
 import { enforceReplayCursorPassthrough, REPLAY_CURSOR_PASSTHROUGH_RULE } from "./replay-cursor";
 import {
   createCanvasRtc,
@@ -27,7 +27,7 @@ import { closeReplayDocument } from "./replay-document";
 import { REPLAY_THUMBNAIL_RULES } from "./replay-thumbnails";
 import { createCanvasCompositor, type CanvasCompositor } from "./media/canvas";
 import { workingMarkReplay } from "./working-mark";
-import { remoteFocusReplay } from "./remote-focus";
+import { latestRemoteFocus, remoteFocusReplay } from "./remote-focus";
 
 const REPLAY_TEXT_FOCUS_RULE = `
   @media (forced-colors: none) {
@@ -203,29 +203,39 @@ export function destroyLive(rtcOptions: MirrorRtcOptions | undefined, live: Live
 }
 
 /**
- * Replays the interaction restore point once the snapshot's document exists. The returned cancel
- * hands back a point that was never applied.
+ * Replays the interaction restore point once the snapshot and the deltas it carries are cast: the
+ * document is then the page as it is now, in which the focused field may have been mounted anew.
+ * `cancel` hands back a point that was never applied.
  */
 function armRestore(
   restoreHooks: RebuildRestoreHooks,
   replayer: Replayer,
   restorePoint: RebuildRestorePoint | null,
-  hasFullSnapshot: boolean,
   unused: (restorePoint: RebuildRestorePoint) => void,
-): () => void {
-  if (restorePoint === null) return () => {};
+): { apply(): void; cancel(): void } {
+  if (restorePoint === null) return { apply: () => {}, cancel: () => {} };
   let restored = false;
-  const restore = () => {
-    if (restored) return;
-    restored = true;
-    replayer.off("fullsnapshot-rebuilded", restore);
-    restoreHooks.restore(replayer.iframe, restorePoint);
+  return {
+    apply() {
+      if (restored) return;
+      restored = true;
+      restoreHooks.restore(replayer.iframe, restorePoint, restoreContext(replayer));
+    },
+    cancel() {
+      if (!restored) unused(restorePoint);
+    },
   };
-  if (hasFullSnapshot) replayer.on("fullsnapshot-rebuilded", restore);
-  else restore();
-  return () => {
-    replayer.off("fullsnapshot-rebuilded", restore);
-    if (!restored) unused(restorePoint);
+}
+
+/** How the restore hooks find a node of this replay again. */
+export function restoreContext(replayer: Replayer): RestoreContext {
+  return {
+    getId: (node) => replayer.getMirror().getId(node),
+    getNode: (id) => replayer.getMirror().getNode(id) as Node | null,
+    remoteFocusId: () => {
+      const focus = latestRemoteFocus(replayer);
+      return focus?.editable ? focus.id : null;
+    },
   };
 }
 
@@ -264,7 +274,7 @@ export function buildLive(options: BuildLiveOptions): BuildResult {
   const initialCanvas: eventWithTime[] = [];
   let replayer: Replayer | null = null;
   let rtc: LiveRtc | null = null;
-  let cancelRestore = () => {};
+  let restore: ReturnType<typeof armRestore> = { apply: () => {}, cancel: () => {} };
   let mediaRestore: ReturnType<typeof armLiveMediaRestore> | null = null;
   let unwatch = () => {};
   try {
@@ -332,11 +342,10 @@ export function buildLive(options: BuildLiveOptions): BuildResult {
     // the page's doctype goes to the parser first so it keeps the page's standards mode.
     const iframe = replayer.iframe;
     replayer.on("fullsnapshot-rebuilded", () => closeReplayDocument(iframe.contentDocument));
-    cancelRestore = armRestore(
+    restore = armRestore(
       options.restoreHooks,
       replayer,
       options.restorePoint,
-      initialEvents.some((event) => event.type === EventType.FullSnapshot),
       options.onRestoreUnused,
     );
     mediaRestore = armLiveMediaRestore(replayer);
@@ -367,8 +376,9 @@ export function buildLive(options: BuildLiveOptions): BuildResult {
     replayer.startLive(clock.liveBaseline());
     options.onBufferApplied?.(clock.liveBufferMs());
     mediaRestore.restoreAfterStartLive();
+    restore.apply();
   } catch (cause) {
-    cancelRestore();
+    restore.cancel();
     mediaRestore?.detach();
     unwatch();
     disposeRtc(options.rtc, message.tab, rtc);
