@@ -19,6 +19,10 @@ services:
     networks:
       browser: {}
       cpa-runtime:
+        # Only for CPA instances created before per-instance networks, which still sit on this
+        # network until cpa-broker replaces them (it does so when it starts, see reconcile in
+        # deploy/cpa-broker.mjs). Remove the alias once every deployment has run a release with
+        # per-instance networks: then no instance reaches the server by this name.
         aliases: [runtime-egress]
     depends_on:
       cpa-broker:

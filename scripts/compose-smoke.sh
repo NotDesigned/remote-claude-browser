@@ -2,6 +2,10 @@
 # Builds the server image, starts it, and checks what the deployment promises: the browser runs
 # sandboxed as an unprivileged user, its firewall holds, and a page mirrors through a real login.
 # Set CHROME_PATH to also run the login with a local browser.
+#
+# `up --build` builds the server as SERVER_IMAGE, by default remote-claude-browser-server:local:
+# that overwrites the local tag a deployment on this host built (CI uses the result afterwards).
+# Set SERVER_IMAGE to another name to keep it. The CPA images get the project's name by default.
 set -euo pipefail
 
 # The deployment's own files. The overlay below only adds what a test needs: diagnostics, a short
@@ -56,12 +60,14 @@ in_server() {
 }
 
 cleanup() {
+  # Every step runs even when an earlier one fails.
+  set +e
   if [[ ${SMOKE_HOSTNET:-} == 1 && $proxy_started == true ]]; then
     in_server ip addr del "$SMOKE_PROXY_IP/32" dev lo >/dev/null 2>&1 || true
   fi
   # The broker's instances are not part of the Compose project; remove exactly the ones made here.
   for id in "${cpa_ids[@]}"; do
-    docker rm --force "remote-browser-$id" >/dev/null 2>&1 || true
+    docker rm --force "remote-browser-$id" "remote-browser-$id-init" >/dev/null 2>&1 || true
   done
   "${compose[@]}" --project-name "$project" down --volumes --remove-orphans >/dev/null 2>&1 || true
   for id in "${cpa_ids[@]}"; do
@@ -71,9 +77,9 @@ cleanup() {
   done
   # Images named after this project were built for it alone.
   for image in "$CPA_BROKER_IMAGE" "$CPA_BROKER_ENGINE_IMAGE"; do
-    [[ $image == "$project"-* ]] && docker image rm "$image" >/dev/null 2>&1
+    if [[ $image == "$project"-* ]]; then docker image rm "$image" >/dev/null 2>&1 || true; fi
   done
-  rm -- "$overlay"
+  rm -f -- "$overlay"
 }
 
 diagnose() {

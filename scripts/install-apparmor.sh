@@ -7,7 +7,16 @@ set -euo pipefail
 source=$(cd "$(dirname "$0")/.." && pwd)/deploy/apparmor/remote-claude-browser
 target=/etc/apparmor.d/remote-claude-browser
 
-if [[ $(docker info --format '{{json .SecurityOptions}}' 2>/dev/null) != *name=apparmor* ]]; then
+# Without access to the daemon its security options are unknown, which is not "no AppArmor".
+if ! options=$(docker info --format '{{json .SecurityOptions}}' 2>/dev/null); then
+  if [[ $EUID -ne 0 ]]; then
+    printf 'Cannot reach the Docker daemon as this user. Run this as root, for example: sudo %s\n' "$0" >&2
+  else
+    printf 'Cannot reach the Docker daemon. Start Docker and run this again.\n' >&2
+  fi
+  exit 1
+fi
+if [[ $options != *name=apparmor* ]]; then
   printf "This Docker daemon does not use AppArmor; the profile is not needed here.\n"
   exit 0
 fi

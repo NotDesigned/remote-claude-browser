@@ -14,10 +14,15 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 profiles=/sys/kernel/security/apparmor/profiles
-if [[ $(docker info --format '{{json .SecurityOptions}}' 2>/dev/null) == *name=apparmor* && -r $profiles ]] &&
-  ! grep -q '^remote-claude-browser (enforce)$' "$profiles"; then
-  printf 'Docker uses AppArmor here. Load the server profile first: sudo scripts/install-apparmor.sh\n' >&2
-  exit 1
+if [[ $(docker info --format '{{json .SecurityOptions}}' 2>/dev/null) == *name=apparmor* ]]; then
+  if [[ ! -r $profiles ]]; then
+    # Only root may read the list of loaded profiles.
+    printf 'Docker uses AppArmor here, and this user cannot check that the server profile is loaded.\n' >&2
+    printf 'If the server does not start, run: sudo scripts/install-apparmor.sh (or check with: sudo scripts/check-host.sh)\n' >&2
+  elif ! grep -q '^remote-claude-browser (enforce)$' "$profiles"; then
+    printf 'Docker uses AppArmor here. Load the server profile first: sudo scripts/install-apparmor.sh\n' >&2
+    exit 1
+  fi
 fi
 
 created_env=0
