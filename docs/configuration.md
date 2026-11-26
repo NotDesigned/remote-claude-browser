@@ -145,6 +145,7 @@
 | `MIRROR_FFMPEG`          | `ffmpeg`                          | 画面模式截取显示用的 ffmpeg 程序 |
 | `MIRROR_DIAGNOSTIC_STDERR` | 不设置                          | `1` 把 Chromium 的标准错误输出写进服务端日志，排查浏览器启动失败时用；日志会变多 |
 | `MIRROR_EXIT_LOOKUP_URL` | `https://ipwho.is/`               | 检查出口时，经节点查询出口地址和时区的服务。测试用来指向本地的替身，一般不用改 |
+| `MIRROR_ASSET_MAX_BYTES` | `67108864`（64 MB）               | 经代理的单个网页资源的字节上限，超过即中断且不写入磁盘缓存。见[部署 · 资源与超时](deployment.md#资源与超时) |
 
 `cpa-broker` 服务的 `environment` 里还有这些，一般不用改：
 
