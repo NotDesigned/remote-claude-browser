@@ -244,6 +244,28 @@ async function checkNestedFrames(page, address) {
   console.log("Scrolling and pressing reach the right place in nested frames.");
 }
 
+/**
+ * SMOKE_NESTED_RUNS=n repeats the nested-frames check n times, to measure how reliable it is; every
+ * run is counted, and the smoke fails if any did.
+ */
+async function checkNestedFramesRepeatedly(page, address) {
+  const runs = Number(process.env.SMOKE_NESTED_RUNS ?? 1);
+  if (!(Number.isSafeInteger(runs) && runs > 1)) return checkNestedFrames(page, address);
+  const failures = [];
+  for (let run = 1; run <= runs; run++) {
+    const started = Date.now();
+    try {
+      await checkNestedFrames(page, address);
+    } catch (error) {
+      failures.push(run);
+      console.log(`Nested frames run ${run} failed: ${error.message}`);
+    }
+    console.log(`Nested frames run ${run}/${runs} took ${Date.now() - started} ms`);
+  }
+  console.log(`Nested frames: ${runs - failures.length}/${runs} runs passed.`);
+  assert.deepEqual(failures, [], "Some nested-frames runs failed");
+}
+
 /** A session whose viewers are all hidden sleeps its pages, and wakes them when one shows again. */
 async function checkPageSleep(page, address) {
   const target = `${fixturePage("<!doctype html><h1>Session restore</h1>")}#background-restore`;
@@ -577,7 +599,7 @@ report();
 
   await checkForm(page, address, mirrored);
   await checkMovedFrame(page, address);
-  await checkNestedFrames(page, address);
+  await checkNestedFramesRepeatedly(page, address);
   await checkPageSleep(page, address);
   await checkAccounts(page);
 }
