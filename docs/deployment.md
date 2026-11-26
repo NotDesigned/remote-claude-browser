@@ -30,7 +30,7 @@ COMPOSE_FILE=compose.yml:compose.runtime.yml ./scripts/bootstrap.sh
 echo 'COMPOSE_FILE=compose.yml:compose.runtime.yml' >> .env
 ```
 
-`scripts/install-apparmor.sh` 把 `deploy/apparmor/remote-claude-browser` 装进 `/etc/apparmor.d/` 并加载，重启后仍然有效。它是 Docker 默认的配置文件加上三项：允许 `ip netns` 和浏览器文件系统用到的那几种挂载，只能挂到 `/run/netns/` 和 `/run/remote-browser/` 下各个浏览器的根目录（以及用这个目录盖住容器的顶层目录），不允许把 `/proc`、`/sys` 挂到别处；允许创建用户命名空间；允许本配置文件内的进程互发信号。没有加载它时，Docker 使用 AppArmor 的宿主机上服务端容器启动不了。
+`scripts/install-apparmor.sh` 把 `deploy/apparmor/remote-claude-browser` 装进 `/etc/apparmor.d/` 并加载，重启后仍然有效。它是 Docker 默认的配置文件加上三项：允许每个浏览器配置的网络命名空间和文件系统用到的那几种挂载，只能挂到存放网络命名空间的目录和 `/run/remote-browser/` 下各个浏览器的根目录（以及用这个目录盖住容器的顶层目录），不允许把 `/proc`、`/sys` 挂到别处；允许创建用户命名空间；允许本配置文件内的进程互发信号。没有加载它时，Docker 使用 AppArmor 的宿主机上服务端容器启动不了。
 
 `scripts/bootstrap.sh` 在没有 `.env` 时生成一个（随机的初始管理员密码和 `MIRROR_AUTH_SECRET`），启动服务，等健康检查通过后打印访问地址和密码；已有 `.env` 时不改动它。初始管理员的用户名是 `admin`，要改的话在第一次启动前设置 `MIRROR_ADMIN_USERNAME`。
 
