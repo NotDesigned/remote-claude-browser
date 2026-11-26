@@ -701,6 +701,10 @@ class DelayedViewerSocket implements ViewerSocket {
     // `ws` owns this counter; ViewerSocket keeps it writable only for the fan-out test double.
   }
 
+  close(code?: number, reason?: string): void {
+    this.socket.close(code, reason);
+  }
+
   send(data: string | Uint8Array, options?: { compress?: boolean; binary?: boolean }): void {
     delay(this.delayMs, () => {
       if (this.socket.readyState === this.socket.OPEN) this.socket.send(data, options ?? {});

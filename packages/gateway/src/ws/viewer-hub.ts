@@ -124,7 +124,7 @@ export function createViewerHub(deps: ViewerHubDeps) {
       // This viewer's typing echo went its own way; the stream itself is fine, so the cached
       // state answers it without making every viewer rebuild from a new page snapshot.
       if (message.reason === LOCAL_RESYNC_REASON && hub !== undefined && viewer !== undefined) {
-        viewer.sendCatchUp(hub.joinPayload());
+        viewer.requestCatchUp(message.tab, () => hub.joinPayload());
         return;
       }
       hub?.requestSnapshot("resync");

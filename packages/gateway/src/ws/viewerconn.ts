@@ -5,12 +5,28 @@
  * the viewer stalled (stop deltas/px); when it drains below RESUME_BYTES, send `resync` +
  * current snapshot. Check bufferedAmount BEFORE send, not after. Slow viewers cost O(1) memory
  * and never affect other viewers. The rule applies to px frames too (P2-PX): drop, never queue.
+ *
+ * Sound is only worth hearing now: it is dropped as soon as the socket has a backlog, long before
+ * the stall threshold. A viewer's own catch-up snapshots (typing echo recovery) are rate-limited
+ * per tab and wait for the socket to drain instead of piling more snapshots onto it. Messages that
+ * cannot be dropped still queue, so a viewer that stays stalled, or whose backlog passes a hard
+ * cap, is closed; it reconnects and starts again from a snapshot.
  */
 import { encodeWithInlineSheets, sheetsOf } from "../hub/snapshot-sheets";
 import { encodeMsg, type Down, type TabId } from "@mirror/protocol";
 
 export const STALL_BYTES = 8 * 1024 * 1024;
 export const RESUME_BYTES = 1 * 1024 * 1024;
+/** Sound waiting behind this much is already late: drop it. */
+export const AUDIO_DROP_BYTES = 256 * 1024;
+/** Backlog beyond which a viewer is closed at once. */
+export const HARD_CAP_BYTES = 64 * 1024 * 1024;
+/** A viewer stalled this long without draining is closed. */
+export const STALL_CLOSE_MS = 30_000;
+/** The shortest time between two of one viewer's own catch-ups for a tab. */
+export const CATCH_UP_INTERVAL_MS = 1_000;
+/** Close code for a viewer too slow to keep: "try again later". */
+export const SLOW_VIEWER_CLOSE_CODE = 1013;
 /** Unacknowledged pixel frames allowed per tab; newer frames replace a single waiting one. */
 export const PX_MAX_IN_FLIGHT = 2;
 /** Without acknowledgements (lost ack, old viewer) resume sending after this long. */
@@ -22,6 +38,7 @@ export interface ViewerSocket {
   bufferedAmount: number;
   /** Binary frames (pixels) are already compressed JPEG; `compress: false` skips deflate. */
   send(data: string | Uint8Array, options?: { compress?: boolean; binary?: boolean }): void;
+  close?(code?: number, reason?: string): void;
 }
 
 export interface ViewerConnOpts {
@@ -30,6 +47,8 @@ export interface ViewerConnOpts {
   now?: () => number;
   /** Stylesheet hashes this client already holds; undefined when it wants them inline. */
   knownSheets?: Iterable<string>;
+  catchUpIntervalMs?: number;
+  stallCloseMs?: number;
 }
 
 type PxMsg = Extract<Down, { t: "px" }>;
@@ -60,6 +79,14 @@ export class ViewerConn {
   private readonly pxFlows = new Map<TabId, PxFlow>();
   private readonly pxAckTimeoutMs: number;
   private readonly now: () => number;
+  private readonly catchUpIntervalMs: number;
+  private readonly stallCloseMs: number;
+  private stalledAt = 0;
+  private readonly lastCatchUpAt = new Map<TabId, number>();
+  private readonly pendingCatchUps = new Map<
+    TabId,
+    { payload: () => readonly Down[]; timer: NodeJS.Timeout }
+  >();
 
   constructor(
     readonly socket: ViewerSocket,
@@ -72,6 +99,8 @@ export class ViewerConn {
     }
     this.pxAckTimeoutMs = opts.pxAckTimeoutMs ?? PX_ACK_TIMEOUT_MS;
     this.now = opts.now ?? Date.now;
+    this.catchUpIntervalMs = opts.catchUpIntervalMs ?? CATCH_UP_INTERVAL_MS;
+    this.stallCloseMs = opts.stallCloseMs ?? STALL_CLOSE_MS;
     this.knownSheets = opts.knownSheets ? new Set(opts.knownSheets) : undefined;
   }
 
@@ -88,6 +117,9 @@ export class ViewerConn {
   send(msg: Down, serialized: Serialized): boolean {
     if (!this.isOpen()) return false;
     if (msg.t === "delta" && this.wasAlreadyReplayed(msg)) return false;
+    if (this.overHardCap()) return false;
+    if (msg.t === "audio" && (this.stalled || this.socket.bufferedAmount > AUDIO_DROP_BYTES))
+      return false;
 
     if (isDroppable(msg) && this.socket.bufferedAmount > STALL_BYTES) {
       this.markStalled();
@@ -133,6 +165,50 @@ export class ViewerConn {
     }
   }
 
+  /**
+   * This viewer's own catch-up for one tab, built when it is sent. Catch-ups closer together than
+   * the interval, or asked for while the socket still has a backlog, are coalesced into one that
+   * goes once both allow; a stalled viewer gets its whole join payload when it drains instead.
+   */
+  requestCatchUp(tab: TabId, payload: () => readonly Down[]): void {
+    if (!this.isOpen() || this.stalled) return;
+    if (this.socket.bufferedAmount > STALL_BYTES) {
+      this.markStalled();
+      return;
+    }
+    const pending = this.pendingCatchUps.get(tab);
+    if (pending !== undefined) {
+      pending.payload = payload;
+      return;
+    }
+    const wait = (this.lastCatchUpAt.get(tab) ?? Number.NEGATIVE_INFINITY) + this.catchUpIntervalMs;
+    const delay = Math.max(
+      wait - this.now(),
+      this.socket.bufferedAmount >= RESUME_BYTES ? this.drainPollMs : 0,
+    );
+    if (delay <= 0) {
+      this.lastCatchUpAt.set(tab, this.now());
+      this.sendCatchUp(payload());
+      return;
+    }
+    const timer = setTimeout(() => {
+      const current = this.pendingCatchUps.get(tab);
+      if (current?.timer !== timer) return;
+      this.pendingCatchUps.delete(tab);
+      if (!this.isOpen() || this.stalled) return;
+      if (this.socket.bufferedAmount >= RESUME_BYTES || this.now() < wait) {
+        this.requestCatchUp(tab, current.payload);
+        return;
+      }
+      // As for a join: the fan-out's pending batch goes first, so it is not sent twice.
+      this.beforeResync?.();
+      this.lastCatchUpAt.set(tab, this.now());
+      this.sendCatchUp(current.payload());
+    }, delay);
+    timer.unref?.();
+    this.pendingCatchUps.set(tab, { payload, timer });
+  }
+
   /** The viewer received a pixel frame for `tab`; release one slot and send the newest waiting. */
   ackPx(tab: TabId): void {
     const flow = this.pxFlows.get(tab);
@@ -144,6 +220,8 @@ export class ViewerConn {
   dispose(): void {
     this.disposed = true;
     for (const tab of [...this.pxFlows.keys()]) this.resetPx(tab);
+    for (const { timer } of this.pendingCatchUps.values()) clearTimeout(timer);
+    this.pendingCatchUps.clear();
     if (this.drainTimer !== null) clearTimeout(this.drainTimer);
     this.drainTimer = null;
   }
@@ -219,6 +297,7 @@ export class ViewerConn {
   private markStalled(): void {
     if (this.stalled) return;
     this.stalled = true;
+    this.stalledAt = this.now();
     this.scheduleDrainCheck();
   }
 
@@ -228,6 +307,11 @@ export class ViewerConn {
       this.drainTimer = null;
       if (!this.isOpen()) return;
       if (this.socket.bufferedAmount >= RESUME_BYTES) {
+        if (this.overHardCap()) return;
+        if (this.now() - this.stalledAt >= this.stallCloseMs) {
+          this.closeSlow("viewer stalled");
+          return;
+        }
         this.scheduleDrainCheck();
         return;
       }
@@ -239,6 +323,23 @@ export class ViewerConn {
       this.sendJoinPayload();
     }, this.drainPollMs);
     this.drainTimer.unref();
+  }
+
+  /** Closes a viewer whose backlog passed the hard cap; true when it did. */
+  private overHardCap(): boolean {
+    if (this.socket.bufferedAmount <= HARD_CAP_BYTES) return false;
+    this.closeSlow("viewer backlog too large");
+    return true;
+  }
+
+  private closeSlow(reason: string): void {
+    if (this.disposed) return;
+    this.dispose();
+    try {
+      this.socket.close?.(SLOW_VIEWER_CLOSE_CODE, reason);
+    } catch {
+      // Already closing.
+    }
   }
 
   private wasAlreadyReplayed(msg: Extract<Down, { t: "delta" }>): boolean {
