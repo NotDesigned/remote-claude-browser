@@ -31,6 +31,7 @@ import {
   destroyLive as destroyGeneration,
   disposeRtc as disposeLane,
   isCanvasMutation,
+  restoreContext,
   type LiveRtc,
   type LiveState,
   type MirrorRtcOptions,
@@ -159,7 +160,8 @@ export function createMirror(opts: MirrorOpts): Mirror {
   };
 
   const captureInteraction = (live: LiveState | null = state) => {
-    if (live !== null) pendingRestore = restoreHooks.capture(live.replayer.iframe);
+    if (live !== null)
+      pendingRestore = restoreHooks.capture(live.replayer.iframe, restoreContext(live.replayer));
   };
 
   /** Clears the visible surface, and only that: hidden pages have to stay where they are. */

@@ -140,14 +140,57 @@ pre{background:#f4f4f4;padding:8px;overflow:auto}
 #hud{position:fixed;top:0;left:0;background:#ffe;font:12px monospace;z-index:2}
 button{font-size:16px;min-width:64px;min-height:40px}
 </style>
-<div id="hud"><span id="echo">0@0</span> <span id="clicks">0@0</span> <span id="scrolled">0@0</span> <span id="tick">0@0</span></div>
+<div id="hud"><span id="echo">0@0</span> <span id="clicks">0@0</span> <span id="scrolled">0@0</span> <span id="tick">0@0</span> <span id="said"></span></div>
 <div id="thread">${thread}</div>
 <div id="bar"><div id="composer" contenteditable="true" role="textbox"><p><br></p></div>
 <button id="press">Press</button><button id="stream">Stream</button></div>
 <script>
 const $ = (id) => document.getElementById(id);
 const stamp = (id, value) => ($(id).textContent = value + "@" + Date.now());
-$("composer").addEventListener("input", () => stamp("echo", $("composer").textContent.length));
+// #pm in the address makes the composer behave like ProseMirror on claude.ai: input rules rewrite
+// what was typed, and sending clears it by mounting a new editor element that takes focus.
+const pm = () => location.hash.includes("pm");
+const said = () => {
+  $("said").textContent = $("composer").textContent;
+  stamp("echo", $("composer").textContent.length);
+};
+const caretToEnd = (editor) => {
+  const selection = getSelection();
+  selection.selectAllChildren(editor);
+  selection.collapseToEnd();
+};
+const onInput = () => {
+  const editor = $("composer");
+  if (location.hash.includes("rule") && editor.textContent.includes("--")) {
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode())
+      if (node.data.includes("--")) node.data = node.data.replaceAll("--", "\u2014");
+    caretToEnd(editor);
+  }
+  said();
+};
+const onKey = (event) => {
+  if (!pm() || event.key !== "Enter" || event.shiftKey) return;
+  event.preventDefault();
+  const old = $("composer");
+  const msg = document.createElement("div");
+  msg.className = "msg me";
+  msg.textContent = old.textContent;
+  $("thread").append(msg);
+  const editor = document.createElement("div");
+  editor.id = "composer";
+  editor.contentEditable = "true";
+  editor.setAttribute("role", "textbox");
+  editor.innerHTML = "<p><br></p>";
+  editor.addEventListener("input", onInput);
+  editor.addEventListener("keydown", onKey);
+  old.replaceWith(editor);
+  editor.focus();
+  said();
+  $("stream").click();
+};
+$("composer").addEventListener("input", onInput);
+$("composer").addEventListener("keydown", onKey);
 let clicks = 0;
 $("press").addEventListener("click", () => stamp("clicks", ++clicks));
 addEventListener("scroll", () => stamp("scrolled", Math.round(scrollY)), { passive: true });
@@ -188,6 +231,7 @@ function installRecorder() {
     rebuilds: 0,
     stages: 0,
     localScroll: [],
+    focus: [],
   };
   window.__perf = perf;
   try {
@@ -201,6 +245,7 @@ function installRecorder() {
   let lastFrame = null;
   let lastDoc = null;
   let lastScroll = null;
+  let lastFocus = null;
   const last = {};
   const frameTimes = [];
   const loop = (timestamp) => {
@@ -214,6 +259,7 @@ function installRecorder() {
     if (frame !== lastFrame) {
       lastFrame = frame;
       perf.stages++;
+      perf.focus.push({ at: now, where: "(new stage)" });
     }
     const doc = frame?.contentDocument ?? null;
     if (doc !== null && doc !== lastDoc && doc.getElementById("hud")) {
@@ -233,6 +279,15 @@ function installRecorder() {
         last.composer = composer;
         perf.seen.composer.push({ at: now, text: composer });
       }
+      let active = document.activeElement;
+      if (active === frame) active = doc.activeElement;
+      const where =
+        active === null || active === document.body
+          ? "none"
+          : active.isContentEditable || active.tagName === "TEXTAREA"
+            ? `edit:${active.id || active.tagName}`
+            : `${active.tagName}#${active.id}`;
+      if (where !== lastFocus) perf.focus.push({ at: now, where: (lastFocus = where) });
       const y = Math.round(doc.defaultView?.scrollY ?? 0);
       if (y !== lastScroll) {
         lastScroll = y;
@@ -341,12 +396,12 @@ const parseStamp = (text) => {
   return { value: Number(value), at: Number(at) };
 };
 /** For each value seen in a stamped element: when the remote page set it and when it showed. */
-async function stampTimes(page, id) {
+async function stampTimes(page, id, since = 0) {
   const { seen } = await perfState(page);
   const out = new Map();
   for (const entry of seen[id]) {
     const { value, at } = parseStamp(entry.text);
-    if (!out.has(value)) out.set(value, { remote: at, screen: entry.at });
+    if (at >= since && !out.has(value)) out.set(value, { remote: at, screen: entry.at });
   }
   return out;
 }
@@ -377,6 +432,7 @@ async function typingLatency(viewer, { label = "typing", keys = 30, gapMs = 150 
   await focusComposer(viewer);
   await clearComposer(viewer);
   const base = (await composerText(viewer.page))?.length ?? 0;
+  const startedAt = Date.now();
   const sent = [];
   const local = [];
   for (let i = 0; i < keys; i++) {
@@ -405,7 +461,7 @@ async function typingLatency(viewer, { label = "typing", keys = 30, gapMs = 150 
     await sleep(gapMs);
   }
   await sleep(2000);
-  const times = await stampTimes(viewer.page, "echo");
+  const times = await stampTimes(viewer.page, "echo", startedAt);
   const toRemote = [];
   const toScreen = [];
   const localEcho = [];
@@ -425,6 +481,57 @@ async function typingLatency(viewer, { label = "typing", keys = 30, gapMs = 150 
   });
 }
 
+/**
+ * Types into a ProseMirror-like composer while the page rewrites what was typed (which makes the
+ * mirror reconcile), sends (which mounts a new editor) and streams a reply: focus must stay in the
+ * composer throughout, and every message must reach the page as typed.
+ */
+async function focusKeeping(
+  viewer,
+  { label = "focus", rounds = 4, delay = 45, rule = false } = {},
+) {
+  await openChat(viewer, `#pm${rule ? "&rule" : ""}&stream=4`);
+  await focusComposer(viewer);
+  const since = Date.now();
+  const expected = [];
+  for (let round = 0; round < rounds; round++) {
+    const text = `round ${round} one ${rule ? "--" : "and"} two ${"x".repeat(round + 1)} three`;
+    await viewer.page.keyboard.type(text, { delay });
+    await sleep(round % 2 ? 50 : 900);
+    await viewer.page.keyboard.press("Enter");
+    expected.push(text.replaceAll("--", "\u2014"));
+    // Straight on, as someone does who has more to say while the reply streams.
+    await sleep(round % 2 ? 30 : 300);
+  }
+  await sleep(6000);
+  const sent = await viewer.page.evaluate(
+    ({ selector, count }) => {
+      const doc = document.querySelector(selector)?.contentDocument;
+      return [...(doc?.querySelectorAll(".msg.me") ?? [])].slice(-count).map((m) => m.textContent);
+    },
+    { selector: MIRROR_FRAME, count: rounds },
+  );
+  const { focus, rebuilds, status } = await perfState(viewer.page);
+  const trail = focus.filter((f) => f.at >= since);
+  const before = focus.filter((f) => f.at < since).at(-1);
+  if (before) trail.unshift({ ...before, at: since });
+  const lost = trail.filter((f) => !f.where.startsWith("edit:") && f.where !== "(new stage)");
+  record(label, {
+    messagesMatch: JSON.stringify(sent) === JSON.stringify(expected),
+    sent: JSON.stringify(sent) === JSON.stringify(expected) ? undefined : sent,
+    expected: JSON.stringify(sent) === JSON.stringify(expected) ? undefined : expected,
+    focusLosses: lost.length,
+    said: await viewer.page.evaluate(
+      (selector) =>
+        document.querySelector(selector)?.contentDocument?.getElementById("said")?.textContent,
+      MIRROR_FRAME,
+    ),
+    focusTrail: trail.map((f) => `${f.at - since}:${f.where}`),
+    status: status.filter((s) => s.at >= since).map((s) => `${s.at - since}:${s.text}`),
+    rebuilds,
+  });
+}
+
 async function burstTyping(
   viewer,
   {
@@ -441,7 +548,7 @@ async function burstTyping(
   const deadline = Date.now() + 15_000;
   let times;
   while (Date.now() < deadline) {
-    times = await stampTimes(viewer.page, "echo");
+    times = await stampTimes(viewer.page, "echo", start);
     if (times.has(text.length)) break;
     await sleep(100);
   }
@@ -876,6 +983,14 @@ try {
       switch (scenario) {
         case "typing":
           await typingLatency(desk);
+          break;
+        case "focus":
+          await focusKeeping(desk);
+          await openChat(desk);
+          break;
+        case "focus-rule":
+          await focusKeeping(desk, { label: "focus-rule", rule: true });
+          await openChat(desk);
           break;
         case "burst":
           await burstTyping(desk);

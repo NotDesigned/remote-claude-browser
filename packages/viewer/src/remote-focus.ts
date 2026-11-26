@@ -49,3 +49,8 @@ export function onRemoteFocus(replayer: Replayer, listener: Listener): () => voi
     if (listeners.get(replayer) === listener) listeners.delete(replayer);
   };
 }
+
+/** The newest report this Replayer applied, if any. */
+export function latestRemoteFocus(replayer: Replayer): RemoteFocus | null {
+  return latest.get(replayer) ?? null;
+}

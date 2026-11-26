@@ -481,7 +481,8 @@ export function createCommandHandler(
               kind: "cmdres",
               reqId: cmd.reqId,
               ok: false,
-              err: "node is not a value control",
+              // A field the page removed is gone, not some other kind of node.
+              err: node === null ? "node not found" : "node is not a value control",
             });
             return;
           }
