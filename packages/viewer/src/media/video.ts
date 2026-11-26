@@ -245,10 +245,23 @@ export function createVideoCompositor(options: VideoCompositorOptions = {}): Vid
       video.controls = false;
       // Assign the original stream, not a video-only copy: WebRTC timestamps keep audio/video synced.
       video.srcObject = stream;
-      play(video, onFailure);
+      let stopped = false;
+      // The page setting the element's src (a recording it plays once finished, say) reaches this
+      // element too: the new load interrupts the play with an AbortError. The stream still has
+      // priority over src and plays on, so play again rather than give the stream up.
+      let interrupted = 0;
+      const onPlayFailure = (error: unknown) => {
+        if (stopped) return;
+        if ((error as { name?: unknown } | null)?.name === "AbortError" && interrupted < 5) {
+          interrupted += 1;
+          play(video, onPlayFailure);
+          return;
+        }
+        onFailure(error);
+      };
+      play(video, onPlayFailure);
       // After the stream is in place, as assigning it interrupts any play already asked for.
       const stopSound = allowSoundAfterGesture(video, options.hasUserActivation);
-      let stopped = false;
       return () => {
         if (stopped) return;
         stopped = true;

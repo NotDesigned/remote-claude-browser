@@ -231,6 +231,7 @@ describe("viewer video tiers", () => {
     function streamed(
       hasUserActivation: () => boolean,
       playing: (video: { srcObject: unknown }) => Promise<void> = async () => undefined,
+      onFailure: (error: unknown) => void = () => undefined,
     ) {
       const listeners = new Map<string, Set<() => void>>();
       const document = {
@@ -260,7 +261,7 @@ describe("viewer video tiers", () => {
       const stop = compositor.startStream(
         video as unknown as HTMLVideoElement,
         stream as unknown as MediaStream,
-        () => undefined,
+        onFailure,
       );
       const press = () => {
         for (const listener of [...(listeners.get("pointerdown") ?? [])]) listener();
@@ -287,6 +288,33 @@ describe("viewer video tiers", () => {
       await Promise.resolve();
       await Promise.resolve();
       expect(video.muted).toBe(false);
+    });
+
+    it("plays again, and keeps the stream, when the page's new src interrupts the play", async () => {
+      let plays = 0;
+      const onFailure = vi.fn();
+      streamed(
+        () => false,
+        () =>
+          ++plays === 1
+            ? Promise.reject(new DOMException("interrupted by a new load", "AbortError"))
+            : Promise.resolve(),
+        onFailure,
+      );
+      await new Promise((resolve) => setTimeout(resolve));
+      expect(plays).toBe(2);
+      expect(onFailure).not.toHaveBeenCalled();
+    });
+
+    it("gives the stream up when its play fails for another reason", async () => {
+      const onFailure = vi.fn();
+      streamed(
+        () => false,
+        () => Promise.reject(new DOMException("unsupported", "NotSupportedError")),
+        onFailure,
+      );
+      await new Promise((resolve) => setTimeout(resolve));
+      expect(onFailure).toHaveBeenCalledOnce();
     });
 
     it("assigns the stream before any play, so nothing interrupts the play that has the sound", () => {
