@@ -30,6 +30,8 @@ interface ExpectedServerScroll {
   y: number;
   expiresAt: number;
   arrived?: boolean;
+  /** Where the scroller was last seen on its way there, if known. */
+  from?: { x: number; y: number };
 }
 
 interface DocumentScrollReconcile {
@@ -110,7 +112,12 @@ export function createScrollFilter(options: ScrollFilterOptions): ScrollFilter {
       });
       return;
     }
-    expectedServer.set(nodeId, { x, y, expiresAt: timestamp + 2_000 });
+    expectedServer.set(nodeId, {
+      x,
+      y,
+      expiresAt: timestamp + 2_000,
+      ...(current === null ? {} : { from: current }),
+    });
   };
 
   const snapAuthoritative = (nodeId: number, x: number, y: number, timestamp: number): boolean => {
@@ -191,8 +198,19 @@ export function createScrollFilter(options: ScrollFilterOptions): ScrollFilter {
     const expected = expectedServer.get(nodeId);
     if (expected !== undefined) {
       const nearTarget = near(expected, x, y);
+      // Replay only ever gets closer to its target. A target it cannot reach (the mirror's
+      // scroller is shorter) never marks an arrival, so on the way a scroll back away from it is
+      // the person's, rather than all of them for the next two seconds.
+      const distance = (position: { x: number; y: number }) =>
+        Math.abs(position.x - expected.x) + Math.abs(position.y - expected.y);
+      const backAway =
+        !nearTarget &&
+        expected.arrived !== true &&
+        expected.from !== undefined &&
+        distance({ x, y }) > distance(expected.from) + SCROLL_MATCH_EPSILON_PX;
+      if (!nearTarget && expected.arrived !== true) expected.from = { x, y };
       // Once replay has arrived, a scroll away from the target is the person's.
-      if (expected.expiresAt >= now() && (nearTarget || expected.arrived !== true)) {
+      if (expected.expiresAt >= now() && !backAway && (nearTarget || expected.arrived !== true)) {
         if (nearTarget && expected.arrived !== true) {
           expected.arrived = true;
           expected.expiresAt = Math.min(expected.expiresAt, now() + SERVER_SCROLL_TAIL_MS);

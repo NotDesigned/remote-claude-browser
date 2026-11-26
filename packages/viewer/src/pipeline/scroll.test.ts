@@ -224,6 +224,27 @@ describe("scrolls replay makes itself", () => {
     filter.reset();
   });
 
+  it("takes a scroll back from a target the mirror cannot reach as the person's", () => {
+    let now = 1_000;
+    const sent: Up[] = [];
+    const filter = createScrollFilter({
+      send: (message) => sent.push(message),
+      now: () => now,
+      position: () => ({ x: 0, y: 0 }),
+    });
+    // The mirror's scroller is shorter than the page's: replay stops at 4000, short of 5000.
+    filter(scrollEvent(8, 0, 5_000), { tab: "T1", nowMs: now });
+    now = 1_020;
+    filter.localScroll("T1", 8, 0, 2_500);
+    filter.localScroll("T1", 8, 0, 4_000);
+    expect(sent).toEqual([]);
+
+    now = 1_300;
+    filter.localScroll("T1", 8, 0, 3_800);
+    expect(sent).toEqual([{ t: "scroll", tab: "T1", nodeId: 8, x: 0, y: 3_800 }]);
+    filter.reset();
+  });
+
   it("does not send upstream where replay put a rebuilt frame's document back", async () => {
     let now = 1_000;
     const sent: Up[] = [];
