@@ -15,6 +15,10 @@ const hello: AgentMsg = {
   ts: 1,
 };
 
+/** No half of a surrogate pair on its own. */
+const wellFormed = (text: string) =>
+  !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text);
+
 describe("encodeChunks / parseChunk", () => {
   it("round-trips a single-chunk M2 message with its document id", () => {
     const json = JSON.stringify(hello);
@@ -42,6 +46,26 @@ describe("encodeChunks / parseChunk", () => {
       expect(p.idx).toBe(i);
       expect(p.total).toBe(chunks.length);
     });
+  });
+
+  it("never splits an emoji's surrogate pair between slices", () => {
+    // The pair would straddle the boundary: "ab" + high | low + "c".
+    const json = "ab\u{1F600}c";
+    const chunks = encodeChunks(1, 0, json, 3);
+    const slices = chunks.map((chunk) => parseChunk(chunk)!.slice);
+    expect(slices).toEqual(["ab", "\u{1F600}c"]);
+    for (const slice of slices) expect(wellFormed(slice)).toBe(true);
+    for (const chunk of chunks) expect(parseChunk(chunk)!.total).toBe(slices.length);
+    const reassembler = new ChunkReassembler();
+    let message: AgentMsg | null = null;
+    const payload = JSON.stringify({ ...hello, url: `https://a.example/${"😀".repeat(40)}` });
+    for (const chunk of encodeChunks(2, 0, payload, 7)) {
+      expect(wellFormed(parseChunk(chunk)!.slice)).toBe(true);
+      message = reassembler.add(chunk) ?? message;
+    }
+    expect(message).toEqual(JSON.parse(payload));
+    // A slice of one unit cannot shrink, and still round-trips.
+    expect(encodeChunks(1, 0, "\u{1F600}", 1).length).toBe(2);
   });
 
   it("tolerates '|' and newlines inside the slice", () => {

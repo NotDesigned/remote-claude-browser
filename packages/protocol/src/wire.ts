@@ -439,8 +439,9 @@ export function decodeResumeCursors(raw: string | null | undefined): ResumeCurso
 }
 
 /**
- * Binary pixel frames skip base64 (+33 %) and a pointless deflate pass over JPEG bytes:
- * [0x50 'P'][version 1][tab length u16][tab UTF-8][width u16][height u16][JPEG bytes].
+ * Binary video frames, for the same reason as pixel frames below:
+ * [0x56 'V'][version 1][tab length u16][tab UTF-8][width u16][height u16][seq u32]
+ * [flags u8: 1 keyframe, 2 repeat][encoded bytes].
  */
 const VID_BINARY_MAGIC = 0x56;
 const VID_BINARY_VERSION = 1;
@@ -486,6 +487,10 @@ export function decodeVidBinary(
   };
 }
 
+/**
+ * Binary pixel frames skip base64 (+33 %) and a pointless deflate pass over JPEG bytes:
+ * [0x50 'P'][version 1][tab length u16][tab UTF-8][width u16][height u16][JPEG bytes].
+ */
 const PX_BINARY_MAGIC = 0x50;
 const PX_BINARY_VERSION = 1;
 

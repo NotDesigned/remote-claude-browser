@@ -16,7 +16,8 @@
  *
  * NOTE: slices are measured in UTF-16 code units (JS string.length), which is what CDP binding
  * payload size is governed by after serialization; 256K code units keeps every framed payload
- * comfortably under CDP's limits. Slices may contain "|" — parseChunk only splits on the first
+ * comfortably under CDP's limits. A slice that would end inside a surrogate pair ends one unit
+ * early instead, so a message may take more slices than its length alone needs. Slices may contain "|" — parseChunk only splits on the first
  * five separators.
  */
 import type { AgentMsg } from "./agent";
@@ -42,14 +43,22 @@ export function encodeChunks(
     throw new RangeError("msgId must be a non-negative integer");
   if (!Number.isInteger(sliceChars) || sliceChars <= 0)
     throw new RangeError("sliceChars must be > 0");
-  const total = Math.max(1, Math.ceil(json.length / sliceChars));
-  const out: string[] = [];
-  for (let i = 0; i < total; i++) {
-    out.push(
-      `${CHUNK_PREFIX}|${docId}|${msgId}|${i}|${total}|${json.slice(i * sliceChars, (i + 1) * sliceChars)}`,
-    );
-  }
-  return out;
+  // A slice never ends between the two halves of a surrogate pair (an emoji, say): the binding
+  // carries each payload as UTF-8, where half a pair becomes U+FFFD and the message is corrupted.
+  const slices: string[] = [];
+  let start = 0;
+  do {
+    let end = Math.min(json.length, start + sliceChars);
+    if (end < json.length && end - start > 1 && isHighSurrogate(json.charCodeAt(end - 1))) end--;
+    slices.push(json.slice(start, end));
+    start = end;
+  } while (start < json.length);
+  const total = slices.length;
+  return slices.map((slice, i) => `${CHUNK_PREFIX}|${docId}|${msgId}|${i}|${total}|${slice}`);
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
 }
 
 export interface ParsedChunk {
