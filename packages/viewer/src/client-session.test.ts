@@ -131,7 +131,7 @@ describe("client session bootstrap", () => {
     ).rejects.toMatchObject({
       status: 409,
       code: "EXIT_REQUIRED",
-      message: "此浏览器配置尚未绑定出口节点，请返回选择配置并设置出口。",
+      message: "此浏览器配置还没有设置网络出口，请返回选择配置并设置出口。",
     });
     expect(fetcher).toHaveBeenCalledOnce();
   });

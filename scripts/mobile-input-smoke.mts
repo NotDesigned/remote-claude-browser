@@ -619,7 +619,7 @@ try {
     await local.locator("body").evaluate((el) => el.ownerDocument.defaultView!.scrollTo(0, 0));
     await settle();
     // A phone shows only the current view's button; tapping it switches to the other view.
-    await page.locator('[data-view-mode="dom"][aria-pressed="true"]').click();
+    await page.locator('[data-view-mode="dom"][data-current="true"]').click();
     await page.locator("#mirror-host canvas").waitFor();
     await controlWork;
     let canvasRect = (await page.locator("#mirror-host canvas").boundingBox())!;
@@ -657,7 +657,7 @@ try {
     );
   }
   if (!baseline) {
-    await page.locator('[data-view-mode="px"][aria-pressed="true"]').click();
+    await page.locator('[data-view-mode="px"][data-current="true"]').click();
     await page.waitForFunction(
       () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
     );

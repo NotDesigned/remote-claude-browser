@@ -123,9 +123,9 @@ export function useEntryLinks(
   user: FrontendUser | null,
   dispatchPanels: (action: PanelAction) => void,
 ) {
-  const [remoteCcLink] = useState(() => takeRemoteCcLink(window.location.href));
+  const [remoteCcLink, setRemoteCcLink] = useState(() => takeRemoteCcLink(window.location.href));
   const remoteCcLinkOpened = useRef(false);
-  const [accountLinked] = useState(
+  const [accountLinked, setAccountLinked] = useState(
     () => new URL(window.location.href).searchParams.get("account") === "linked",
   );
   const accountLinkedShown = useRef(false);
@@ -150,7 +150,15 @@ export function useEntryLinks(
     );
     dispatchPanels({ type: "open", panel: "account" });
   }, [user, accountLinked]);
-  return { remoteCcCode: remoteCcLink?.code || null, accountLinked };
+  return {
+    remoteCcCode: remoteCcLink?.code || null,
+    accountLinked,
+    /** The panel a link opened was closed: the link has been used, later opens start plain. */
+    consume(panel: "network" | "account") {
+      if (panel === "network" && remoteCcLink?.code) setRemoteCcLink(null);
+      if (panel === "account" && accountLinked) setAccountLinked(false);
+    },
+  };
 }
 
 export interface CpaBrowserAuthorizationOptions {

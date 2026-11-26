@@ -67,6 +67,19 @@ const VIEWS: { mode: ViewMode; label: string; title: string }[] = [
 /** Phones show one view button, the current one; a tap switches to the other view. */
 const COMPACT_VIEWS = "(max-width: 760px)";
 
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => !!window.matchMedia?.(query).matches);
+  useEffect(() => {
+    const list = window.matchMedia?.(query);
+    if (!list) return;
+    const update = () => setMatches(list.matches);
+    update();
+    list.addEventListener("change", update);
+    return () => list.removeEventListener("change", update);
+  }, [query]);
+  return matches;
+}
+
 type Popup = "menu" | "connection";
 
 export function ShellBar(props: ShellBarProps) {
@@ -76,6 +89,14 @@ export function ShellBar(props: ShellBarProps) {
   const connectionRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef<HTMLButtonElement>(null);
   const toggle = (popup: Popup) => setOpen((current) => (current === popup ? null : popup));
+  const compactViews = useMediaQuery(COMPACT_VIEWS);
+  // A phone's one view button tapped while the other view is unavailable says so briefly.
+  const [viewNotice, setViewNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (viewNotice === null) return;
+    const timer = setTimeout(() => setViewNotice(null), 2500);
+    return () => clearTimeout(timer);
+  }, [viewNotice]);
 
   useEffect(() => {
     if (open === "menu") props.onMenuOpen?.();
@@ -131,20 +152,33 @@ export function ShellBar(props: ShellBarProps) {
               key={view.mode}
               type="button"
               data-view-mode={view.mode}
+              data-current={current ? "true" : "false"}
               data-switch-blocked={current && otherBlocked ? "true" : undefined}
               title={current ? `${view.title}（手机上点按切换到${other.label}）` : view.title}
-              aria-pressed={current}
+              // On a phone the one button is an action, not one of two choices.
+              aria-pressed={compactViews ? undefined : current}
+              aria-label={
+                compactViews && current
+                  ? `切换到${other.label}${otherBlocked ? "（暂不可用）" : ""}`
+                  : undefined
+              }
               disabled={view.mode === "px" && !current && !props.pixelAvailable}
               onClick={() => {
                 if (!current) props.onViewMode(view.mode);
-                else if (!otherBlocked && window.matchMedia?.(COMPACT_VIEWS).matches)
-                  props.onViewMode(other.mode);
+                else if (!compactViews) return;
+                else if (otherBlocked) setViewNotice(`${other.label}暂时不可用，请稍后再试`);
+                else props.onViewMode(other.mode);
               }}
             >
               {view.label}
             </button>
           );
         })}
+        {viewNotice && (
+          <span class="shell-view-notice" role="status">
+            {viewNotice}
+          </span>
+        )}
       </div>
 
       <div class="shell-bar-tabs">{props.children}</div>
@@ -214,7 +248,16 @@ export function ShellBar(props: ShellBarProps) {
 
       {open === "menu" && (
         <div id="shell-menu" ref={menuRef} role="dialog" aria-label="菜单">
-          {props.workspace && <WorkspaceNav {...props.workspace} onDone={() => setOpen(null)} />}
+          {props.workspace && (
+            <WorkspaceNav
+              {...props.workspace}
+              onDone={() => {
+                setOpen(null);
+                // The panel it opens returns focus here when it closes.
+                toggleRef.current?.focus();
+              }}
+            />
+          )}
           <div class="shell-menu-section" role="group" aria-label="画面清晰度">
             <span>画面模式：越清晰，服务器负担越重</span>
             <div class="shell-menu-choices">

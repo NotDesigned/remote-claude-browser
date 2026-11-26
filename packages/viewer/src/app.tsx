@@ -56,7 +56,11 @@ export function App() {
     fixturePath,
     linkTarget,
     onEnded: () => finishSession(),
-    onReplaced: () => clientSessionControl.replaced(),
+    onReplaced: () => {
+      clientSessionControl.replaced();
+      // The in-session picker switches this session's profile, which is no longer this page's.
+      dispatchPanels({ type: "picker", open: false });
+    },
   });
   const { connection, activeTab, tabs, modeByTab, chromeByTab, frameRates } = runtime.state;
   const finishSession = () => {
@@ -115,7 +119,8 @@ export function App() {
   const navigateWorkspace = (destination: WorkspaceDestination) => {
     workspaceUser.setLogoutError(null);
     cpaAuthorization.setError(null);
-    if (destination === "profiles") cpaAuthorization.forget();
+    // A CPA authorization waiting for its browser is kept: 「浏览器配置」 shows the same picker,
+    // still asking for that choice, and its 返回 is what gives the authorization up.
     dispatchPanels({ type: "navigate", destination, pickerAvailable: clientPhase === "ready" });
     if (destination === "profiles" && clientPhase !== "ready" && clientPhase !== "picking")
       window.location.assign("/?new=1");
@@ -195,6 +200,7 @@ export function App() {
           browserProxyId={clientPhase === "ready" ? currentProfile?.proxyId : undefined}
           remoteCcCode={entry.remoteCcCode}
           accountLinked={entry.accountLinked}
+          onEntryLinkUsed={entry.consume}
           authorizationError={cpaAuthorization.error}
           onUserChanged={refreshUser}
           onSessionEnded={(sid) => {

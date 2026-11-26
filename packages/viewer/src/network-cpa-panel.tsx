@@ -263,7 +263,7 @@ export function CpaPanel({
                 {
                   ready: "已就绪",
                   empty: "尚未添加",
-                  "needs-binding": "需要绑定出口",
+                  "needs-binding": "需要设置出口",
                   unavailable: "不可用或已停用",
                   unknown: "未检查",
                 }[instance.authorization ?? "unknown"]
@@ -359,7 +359,7 @@ export function CpaPanel({
                       </div>
                       <p class="network-muted">
                         {credential.needsBinding
-                          ? "需要绑定出口，暂不可调用"
+                          ? "需要设置出口，暂不可调用"
                           : credential.disabled
                             ? "已停用"
                             : credential.unavailable
@@ -380,7 +380,7 @@ export function CpaPanel({
                           disabled={busy || instance.status !== "running"}
                           label={`凭据「${credential.name}」的代理`}
                           placeholder={
-                            credential.proxyId ? "当前节点不可用，请重新选择" : "请选择出口节点"
+                            credential.proxyId ? "当前节点不可用，请重新选择" : "请选择节点"
                           }
                           onChange={async (proxyId) => {
                             if (
@@ -460,7 +460,7 @@ export function CpaPanel({
                   value={selectedOAuthProxy}
                   disabled={busy || instance.status !== "running"}
                   label="授权使用的代理"
-                  placeholder="请选择代理节点"
+                  placeholder="请选择节点"
                   onChange={(proxyId) => {
                     setOAuthProxy(proxyId);
                     setOAuth(null);
@@ -469,7 +469,7 @@ export function CpaPanel({
                 <p class="network-muted">
                   {proxies.some((proxy) => proxy.id === browserProxyId)
                     ? "默认使用当前浏览器配置的出口，可单独更改。"
-                    : "请先选择授权使用的代理节点。"}
+                    : "请先选择授权使用的节点。"}
                 </p>
                 <div class="network-actions">
                   <button

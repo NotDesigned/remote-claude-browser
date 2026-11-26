@@ -622,7 +622,7 @@ export function ProfilePicker(props: {
         <div class="profile-tools">
           {props.onBack && (
             <button type="button" disabled={busy} onClick={props.onBack}>
-              {props.requiredProxyId ? "返回 API" : "返回会话"}
+              {props.requiredProxyId ? "返回 CPA 授权" : "返回会话"}
             </button>
           )}
           {props.workspace && (
@@ -795,7 +795,7 @@ export function ProfilePicker(props: {
                     <div
                       class="map-group"
                       role="group"
-                      aria-label={exit ? (members[0].proxyName ?? "节点已移除") : "待绑定出口"}
+                      aria-label={exit ? (members[0].proxyName ?? "节点已移除") : "未设置出口"}
                       key={exit ?? "unbound"}
                       data-bound={Boolean(exit)}
                       data-highlight={Boolean(exit && selection.exit === exit)}
@@ -870,7 +870,7 @@ export function ProfilePicker(props: {
                     <strong>{selected.name}</strong>
                     <span>
                       {PLATFORM_LABELS[selected.platform]} ·{" "}
-                      {selected.proxyName ?? (selected.proxyId ? "节点已移除" : "未绑定出口")}
+                      {selected.proxyName ?? (selected.proxyId ? "节点已移除" : "未设置出口")}
                     </span>
                     {selected.signedIn && selected.email && <span>{selected.email}</span>}
                     {selected.timeZone && <span>时区：{selected.timeZone}</span>}
@@ -938,7 +938,7 @@ export function ProfilePicker(props: {
                     }}
                   >
                     <option value="" disabled>
-                      {creationProxies === null ? "正在加载节点…" : "请选择出口节点"}
+                      {creationProxies === null ? "正在加载节点…" : "请选择节点"}
                     </option>
                     {creationProxies?.map((node) => (
                       <option key={node.id} value={node.id}>

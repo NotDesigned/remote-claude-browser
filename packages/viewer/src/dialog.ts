@@ -15,10 +15,17 @@ export function focusableIn(root: ParentNode): HTMLElement[] {
   );
 }
 
-/** Moves focus to `element`, or to the ⋯ trigger when it has left the page. */
+/**
+ * Moves focus to `element`, or to the ⋯ trigger when it has left the page. The page itself
+ * (body) counts as gone: it is where focus falls when the control that had it was removed, such
+ * as a ⋯ menu item that closed its menu and opened a panel.
+ */
 export function restoreFocus(element: Element | null): void {
   const target =
-    element instanceof HTMLElement && element.isConnected
+    element instanceof HTMLElement &&
+    element.isConnected &&
+    element !== document.body &&
+    element !== document.documentElement
       ? element
       : document.querySelector<HTMLElement>(FOCUS_FALLBACK);
   target?.focus();

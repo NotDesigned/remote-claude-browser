@@ -604,7 +604,7 @@ try {
       await legacyProxy.locator('option[value=""]').evaluate((option) => option.disabled),
       true,
     );
-    assert.equal(await legacyProxy.locator('option[value=""]').textContent(), "请选择出口节点");
+    assert.equal(await legacyProxy.locator('option[value=""]').textContent(), "请选择节点");
     assert.equal(
       await panel.getByRole("button", { name: "启用凭据", exact: true }).isDisabled(),
       true,

@@ -841,7 +841,7 @@ try {
   });
   await resumeFailure.goto(origin + "/?sid=client-1");
   await resumeFailure
-    .getByText("此浏览器配置尚未绑定出口节点，请返回选择配置并设置出口。", { exact: true })
+    .getByText("此浏览器配置还没有设置网络出口，请返回选择配置并设置出口。", { exact: true })
     .waitFor();
   await resumeFailure.getByRole("link", { name: "重新选择配置并设置出口", exact: true }).click();
   await resumeFailure.getByRole("heading", { name: "选择浏览器配置" }).waitFor();

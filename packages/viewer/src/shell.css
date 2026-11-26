@@ -21,6 +21,8 @@
   --focus: #a35c3f;
   /* Borders that must read on any surface: cards, dashed placeholders, secondary buttons. */
   --line-strong: rgb(31 30 29 / 24%);
+  /* Dashed borders (placeholders such as 新建浏览器配置): a dash shows less ink than a line. */
+  --line-dashed: rgb(31 30 29 / 34%);
   --accent-hover: #b4532f;
   --on-accent: #ffffff;
   --font-sans:
@@ -53,6 +55,7 @@
   --bad: #ef8a80;
   --focus: #d48c6d;
   --line-strong: rgb(222 220 209 / 26%);
+  --line-dashed: rgb(222 220 209 / 46%);
   --accent-hover: #e48a6c;
   --on-accent: #1f1e1d;
 }
@@ -204,6 +207,25 @@ body {
 .shell-views button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+.shell-views {
+  position: relative;
+}
+/* Below the view button, briefly: the other view cannot be shown now. */
+.shell-view-notice {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  white-space: nowrap;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 14%);
+  pointer-events: none;
 }
 
 /* The remote browser's time */
@@ -647,10 +669,10 @@ body {
     border: 0;
     background: transparent;
   }
-  .shell-views button[aria-pressed="false"] {
+  .shell-views button[data-current="false"] {
     display: none;
   }
-  .shell-views button[aria-pressed="true"] {
+  .shell-views button[data-current="true"] {
     display: inline-flex;
     align-items: center;
     gap: 3px;
@@ -660,7 +682,7 @@ body {
     background: var(--surface);
     box-shadow: none;
   }
-  .shell-views button[aria-pressed="true"]::after {
+  .shell-views button[data-current="true"]::after {
     content: "⇄";
     color: var(--muted);
     font-size: 12px;

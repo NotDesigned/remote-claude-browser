@@ -169,7 +169,7 @@ async function requestApi(
       : response.status === 403
         ? "当前设备无权使用这个会话，请重新登录或返回自己的会话。"
         : response.status === 409 && code === "EXIT_REQUIRED"
-          ? "此浏览器配置尚未绑定出口节点，请返回选择配置并设置出口。"
+          ? "此浏览器配置还没有设置网络出口，请返回选择配置并设置出口。"
           : response.status === 503 && (code === "CLIENT_RESOURCES" || code === "PROFILE_RESOURCES")
             ? "服务器内存不足，请等待离线会话自动回收后重试。"
             : response.status === 503

@@ -5,6 +5,7 @@ import { MailboxPanel } from "../mailbox-panel";
 import type { CpaBrowserAuthorization } from "../network-api";
 import { NetworkPanel } from "../network-panel";
 import type { FrontendUser } from "../users";
+import { useEffect, useRef } from "preact/hooks";
 import type { PanelAction, PanelState } from "./panels";
 
 export interface WorkspacePanelsProps {
@@ -19,6 +20,8 @@ export interface WorkspacePanelsProps {
   remoteCcCode: string | null;
   /** Back from linking single sign-on. */
   accountLinked: boolean;
+  /** A panel opened by an entry link was closed: its code or notice is not shown again. */
+  onEntryLinkUsed(panel: "network" | "account"): void;
   authorizationError: string | null;
   onUserChanged(): void;
   /** A session was ended from the account panel. */
@@ -35,11 +38,21 @@ export function WorkspacePanels({
   browserProxyId,
   remoteCcCode,
   accountLinked,
+  onEntryLinkUsed,
   authorizationError,
   onUserChanged,
   onSessionEnded,
   onChooseBrowser,
 }: WorkspacePanelsProps) {
+  // However a panel an entry link opened goes away (closed, or replaced by another), the link
+  // has been used: its notice or code does not come back the next time the panel opens.
+  const shown = useRef(panels.open);
+  useEffect(() => {
+    const previous = shown.current;
+    shown.current = panels.open;
+    if (previous !== panels.open && (previous === "account" || previous === "network"))
+      onEntryLinkUsed(previous);
+  }, [panels.open]);
   return (
     <>
       {panels.open === "admin" && user.role === "admin" && (

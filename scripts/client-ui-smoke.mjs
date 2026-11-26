@@ -25,6 +25,7 @@ const checks = {};
 const layouts = {};
 const pageErrors = [];
 const uploadedFiles = [];
+const canceledUploads = [];
 const waitForUploads = async (count) => {
   for (const deadline = Date.now() + 10_000; uploadedFiles.length < count;) {
     assert(Date.now() < deadline, `expected ${count} uploaded files, got ${uploadedFiles.length}`);
@@ -217,11 +218,16 @@ const server = createServer(async (request, response) => {
         assert.equal(request.method, "POST");
         const chunks = [];
         for await (const chunk of request) chunks.push(chunk);
-        uploadedFiles.push({
-          sid,
-          name: decodeURIComponent(request.headers["x-mirror-file-name"]),
-          text: Buffer.concat(chunks).toString("utf8"),
-        });
+        const name = decodeURIComponent(request.headers["x-mirror-file-name"]);
+        // A slow upload, which the page offers to cancel; a canceled one is never stored.
+        if (name.startsWith("慢")) {
+          await new Promise((done) => setTimeout(done, 6000));
+          if (response.destroyed || request.socket.destroyed) {
+            canceledUploads.push(name);
+            return;
+          }
+        }
+        uploadedFiles.push({ sid, name, text: Buffer.concat(chunks).toString("utf8") });
         response.writeHead(204).end();
         return;
       }
@@ -662,7 +668,7 @@ try {
   assert.equal(uploadedFiles.at(-2).name, "DOM附件一.txt");
   assert.equal(uploadedFiles.at(-1).text, "附件二");
   await viewButton("px").click();
-  await firstPage.locator('#shell-bar [data-view-mode="px"][aria-pressed="true"]').waitFor();
+  await firstPage.locator('#shell-bar [data-view-mode="px"][data-current="true"]').waitFor();
   await firstPage.evaluate(() =>
     fetch("/s/client-1/uploads/prepare", {
       method: "POST",
@@ -680,8 +686,34 @@ try {
   await waitForUploads(uploadsBeforePx + 1);
   await firstPage.locator("#upload-panel").waitFor({ state: "hidden" });
   assert.equal(uploadedFiles.at(-1).text, "图像模式中文附件");
+  // A quick upload shows only the bar; one that takes a while offers 取消上传, which stops it.
+  await firstPage.evaluate(() =>
+    fetch("/s/client-1/uploads/prepare", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tab: "fixture-client-1" }),
+    }),
+  );
+  await pickerReady(firstPage);
+  const uploadsBeforeCancel = uploadedFiles.length;
+  await firstPage.locator("#local-file-picker").setInputFiles({
+    name: "慢附件.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("取消"),
+  });
+  await firstPage.locator("#upload-progress").waitFor();
+  assert.equal(await firstPage.locator("#upload-cancel").count(), 0, "no cancel at once");
+  await firstPage.getByRole("button", { name: "取消上传" }).click({ timeout: 4000 });
+  await firstPage.locator("#upload-progress").waitFor({ state: "hidden" });
+  await firstPage.locator("#upload-cancel").waitFor({ state: "hidden" });
+  for (const deadline = Date.now() + 10_000; canceledUploads.length === 0; ) {
+    assert(Date.now() < deadline, "the canceled upload was not aborted");
+    await new Promise((done) => setTimeout(done, 100));
+  }
+  assert.equal(uploadedFiles.length, uploadsBeforeCancel);
+  checks.slowUploadCanBeCanceled = true;
   await viewButton("dom").click();
-  await firstPage.locator('#shell-bar [data-view-mode="dom"][aria-pressed="true"]').waitFor();
+  await firstPage.locator('#shell-bar [data-view-mode="dom"][data-current="true"]').waitFor();
   checks.domAndPixelAttachmentUploads = true;
   checks.refreshReusesSession = true;
   checks.actualModeNavigation = true;
@@ -824,12 +856,30 @@ try {
 
   await captureHeader(firstPage, "desktop", { width: 1360, height: 900 });
   await captureHeader(firstPage, "mobile", { width: 375, height: 812 });
-  // On a phone the one visible view button switches to the other view.
+  // On a phone the one visible view button switches to the other view, and says so.
+  assert.equal(await viewButton("dom").getAttribute("aria-label"), "切换到画面");
+  assert.equal(await viewButton("dom").getAttribute("aria-pressed"), null);
   await viewButton("dom").click();
-  await firstPage.locator('#shell-bar [data-view-mode="px"][aria-pressed="true"]').waitFor();
+  await firstPage.locator('#shell-bar [data-view-mode="px"][data-current="true"]').waitFor();
   assert.equal(await viewButton("dom").isVisible(), false);
+  assert.equal(await viewButton("px").getAttribute("aria-label"), "切换到页面");
   await viewButton("px").click();
-  await firstPage.locator('#shell-bar [data-view-mode="dom"][aria-pressed="true"]').waitFor();
+  await firstPage.locator('#shell-bar [data-view-mode="dom"][data-current="true"]').waitFor();
+  // With 画面 unavailable, a tap explains instead of doing nothing.
+  for (const socket of wss.clients)
+    if (socket.readyState === 1)
+      socket.send(JSON.stringify({ t: "px-capacity", available: false }));
+  await firstPage.waitForFunction(
+    () => document.querySelector('#shell-bar [data-view-mode="px"]')?.disabled === true,
+  );
+  await viewButton("dom").click();
+  await firstPage.locator(".shell-view-notice").getByText("画面暂时不可用，请稍后再试").waitFor();
+  for (const socket of wss.clients)
+    if (socket.readyState === 1)
+      socket.send(JSON.stringify({ t: "px-capacity", available: true }));
+  await firstPage.waitForFunction(
+    () => document.querySelector('#shell-bar [data-view-mode="px"]')?.disabled === false,
+  );
   checks.phoneViewButtonSwitches = true;
   await firstPage.locator("#shell-menu-toggle").click();
   await firstPage.locator("#shell-menu").getByRole("button", { name: "深色", exact: true }).click();

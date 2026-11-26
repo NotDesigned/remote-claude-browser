@@ -1,6 +1,6 @@
 /** Files and clipboard: the local file picker, upload progress and the download tray. */
 import type { TabId } from "@mirror/protocol";
-import { useState, type MutableRef } from "preact/hooks";
+import { useEffect, useState, type MutableRef } from "preact/hooks";
 import { apiRequest } from "../api";
 import { DownloadTray, type DownloadEntry } from "../chrome/downloads";
 import type { UploadState } from "../uploads";
@@ -18,6 +18,9 @@ export interface TransferPanelsProps {
   onDismissDownload(id: string): void;
 }
 
+/** How long an upload runs before it offers 取消上传: a quick one shows nothing but the bar. */
+export const UPLOAD_CANCEL_DELAY_MS = 1500;
+
 export function TransferPanels({
   fileInputRef,
   uploadState,
@@ -29,6 +32,14 @@ export function TransferPanels({
   onDismissDownload,
 }: TransferPanelsProps) {
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const uploading = uploadState?.phase === "uploading";
+  const [cancellable, setCancellable] = useState(false);
+  useEffect(() => {
+    setCancellable(false);
+    if (!uploading) return;
+    const timer = setTimeout(() => setCancellable(true), UPLOAD_CANCEL_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [uploading]);
   return (
     <aside id="transfer-panels" aria-label="文件与剪贴板">
       <input
@@ -68,6 +79,12 @@ export function TransferPanels({
             }
           />
         </div>
+      )}
+      {/* A long upload can be stopped: a small pill just above the bar, not a panel. */}
+      {uploading && cancellable && (
+        <button id="upload-cancel" type="button" onClick={onCancelUpload}>
+          取消上传
+        </button>
       )}
       {/* Only what needs the person: a tap to open the picker, or a failure. */}
       {uploadState !== null &&

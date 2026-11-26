@@ -570,7 +570,7 @@ button.profile-card:focus-visible {
 }
 
 .profile-new {
-  border: 1px dashed var(--line-strong);
+  border: 1px dashed var(--line-dashed);
   background: transparent;
   box-shadow: none;
 }

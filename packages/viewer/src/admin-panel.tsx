@@ -167,7 +167,8 @@ export function AdminPanel({
       : {}),
   };
   const hasChanges = fields.id === null || Object.keys(changes).length > 0;
-  const reload = async () => polled.setData(await adminOverview());
+  // Through the poller, so an older poll still in flight cannot overwrite the result.
+  const reload = () => polled.refresh();
   const save = async () => {
     if (pending || !hasChanges) return;
     setPending(true);

@@ -72,7 +72,7 @@ export function NetworkPanel({
       <div
         class="network-tabs"
         role="tablist"
-        aria-label="网络与 API 设置"
+        aria-label="网络与接入"
         onKeyDown={(event) => {
           const next = tabForKey(tab, event.key);
           if (next === null) return;
