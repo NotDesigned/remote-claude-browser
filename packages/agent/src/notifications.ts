@@ -8,7 +8,12 @@
  * gateway, which shows it on the viewer's device and reports back what happened to it.
  *
  * Only top-level documents get this: a cross-origin frame may not ask for notifications anyway.
- * A service worker's own showNotification cannot be reached from the page and stays blocked.
+ * A page's ServiceWorkerRegistration.showNotification is covered here; a service worker's own
+ * self.registration.showNotification is not, and stays blocked by the policy. Covering it would
+ * mean auto-attaching to service_worker targets (launch.ts attaches pages and frames only) and
+ * patching each worker before it runs; it would rarely fire anyway: such notifications mostly
+ * answer push messages, and push needs the browser's real permission (blocked) and a push service
+ * this Chromium does not have.
  *
  * While the page may notify and nobody is looking at the session, the page also sees itself
  * hidden and unfocused: sites only notify when they are in the background, and the remote tab is

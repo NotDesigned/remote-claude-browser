@@ -8,6 +8,7 @@
 
 ### 新增
 
+- 网页通知：远程浏览器里网站发出的通知（例如 Claude 的任务完成提醒）显示在你自己的设备上。网站请求权限时工作台给出「允许」「拒绝」提示，「⋯」菜单新增「网页通知」开关；点通知会回到工作台、切到对应标签页，网站也收到点击。电脑浏览器和 Android Chrome 可用，iPhone、iPad 需要先把工作台添加到主屏幕。远程浏览器自己的通知和授权提示仍然关闭。见 [docs/usage.md](docs/usage.md#网页通知)。
 - `MIRROR_PROXY_SUBSCRIPTION_ALLOW_PRIVATE`：设为 `1` 时，代理订阅地址可以指向内网和其他保留地址（默认拒绝）。见 [docs/configuration.md](docs/configuration.md#写在-compose-文件里的变量)。
 - 部署新版本后，旧页面会显示「页面已更新」，并在没有输入、上传进行时自动刷新到新版本，也可以点「立即刷新」。
 - 服务端容器自带 AppArmor 配置文件 `deploy/apparmor/remote-claude-browser`，用 `scripts/install-apparmor.sh` 加载。以前在 Docker 使用 AppArmor 的宿主机（Ubuntu、Debian）上，Docker 默认的配置文件挡住了每个浏览器配置的网络和文件系统要用的挂载，配置打不开；Ubuntu 23.10 起还要改宿主机的 `kernel.apparmor_restrict_unprivileged_userns`。新的配置文件只在 Docker 默认配置文件上多允许三样：服务端自己的脚本用到的那几种挂载（只能挂到浏览器配置的网络命名空间目录和各个浏览器的根目录下，`/proc`、`/sys` 不能挂到别处，`pivot_root` 仍被禁止）、用户命名空间和本配置文件内的信号，这个系统参数不用改。
