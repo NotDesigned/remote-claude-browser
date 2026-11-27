@@ -1,8 +1,9 @@
 /**
  * Asset fetch lanes.
  *
- * Lane A is the default and reads CDP's base64 IO stream in bounded chunks. Lane B is used
- * for Range requests and as the automatic fallback when Lane A cannot be established.
+ * Lane A is the default and reads CDP's base64 IO stream in bounded chunks. Lane B, the gateway's own
+ * HTTP client, is used for Range requests and, only with MIRROR_ASSET_DIRECT_FALLBACK=all, when Lane
+ * A cannot be established (see AssetDirectFallback).
  * Browser-plane access is injected through CdpSend; this module never imports the browser.
  *
  * Content-Type is copied only from response headers. No URL-based inference happens here.
@@ -57,6 +58,33 @@ export interface AssetFetcherDeps {
   directRequest?: DirectRequest;
   /** Test seam for the proxy-less direct dispatcher (default: public addresses only). */
   directDispatcher?: () => Agent;
+  /** Defaults to MIRROR_ASSET_DIRECT_FALLBACK (see assetDirectFallback). */
+  directFallback?: AssetDirectFallback;
+}
+
+/**
+ * When Lane B, the gateway's own HTTP client, may fetch what the page asked for. A site can tell
+ * that client from the browser (its TLS handshake and headers differ), so by default it is used
+ * only for Range requests (seeking in audio and video), which the browser lane cannot serve:
+ *  - `range`: Range requests only; an asset the browser could not load fails (502);
+ *  - `off`: never; Range requests fail too;
+ *  - `all`: Range requests and every asset the browser could not load (the earlier behaviour).
+ */
+export type AssetDirectFallback = "all" | "range" | "off";
+
+/** MIRROR_ASSET_DIRECT_FALLBACK; unset is `range`. Throws on anything else, so start-up fails. */
+export function assetDirectFallback(value: string | undefined): AssetDirectFallback {
+  const mode = value === undefined || value.trim() === "" ? "range" : value.trim();
+  if (mode === "all" || mode === "range" || mode === "off") return mode;
+  throw new Error(`MIRROR_ASSET_DIRECT_FALLBACK must be all, range or off, not ${value}`);
+}
+
+/** How assets were fetched, and why the direct lane was used or refused. Counts only. */
+export interface AssetLaneCounts {
+  cdp: number;
+  blob: number;
+  direct: { range: number; "cdp-failed": number };
+  refused: { range: number; "cdp-failed": number };
 }
 
 export interface AssetFetcher {
@@ -67,6 +95,8 @@ export interface ManagedAssetFetcher extends AssetFetcher {
   /** Drops a workspace's connections and TLS state, including those of requests in flight. */
   closeSession(sessionId: string): Promise<void>;
   close(): Promise<void>;
+  /** Counts since start, for the admin overview. */
+  lanes(): AssetLaneCounts;
 }
 
 interface LoadResourceResult {
@@ -86,6 +116,15 @@ interface IoReadResult {
 }
 
 export function createAssetFetcher(deps: AssetFetcherDeps): ManagedAssetFetcher {
+  const fallback =
+    deps.directFallback ?? assetDirectFallback(process.env.MIRROR_ASSET_DIRECT_FALLBACK);
+  const counts: AssetLaneCounts = {
+    cdp: 0,
+    blob: 0,
+    direct: { range: 0, "cdp-failed": 0 },
+    refused: { range: 0, "cdp-failed": 0 },
+  };
+  let lastRefusalReport = Number.NEGATIVE_INFINITY;
   // One connection pool per workspace, so no TLS session or socket crosses between them.
   const pools = new Map<string, { dispatcher: Agent | ProxyAgent; closed: boolean }>();
   const closeSession = async (sessionId: string): Promise<void> => {
@@ -126,20 +165,51 @@ export function createAssetFetcher(deps: AssetFetcherDeps): ManagedAssetFetcher 
       };
 
       if (new URL(request.ref.url).protocol === "blob:") {
+        counts.blob += 1;
         return fetchBrowserObject(deps, request.ref, cdpSessionId);
       }
 
       if (request.range !== undefined) {
+        if (fallback === "off") {
+          counts.refused.range += 1;
+          throw new Error(
+            "Range requests are not fetched by the gateway (MIRROR_ASSET_DIRECT_FALLBACK=off)",
+          );
+        }
+        counts.direct.range += 1;
         return fetchDirect(deps, directRequest, request, cdpSessionId);
       }
 
+      let failure: unknown;
       try {
-        return await fetchThroughCdp(deps, request.ref, cdpSessionId);
-      } catch {
-        return fetchDirect(deps, directRequest, request, cdpSessionId);
+        const response = await fetchThroughCdp(deps, request.ref, cdpSessionId);
+        counts.cdp += 1;
+        return response;
+      } catch (error) {
+        failure = error;
       }
+      if (fallback !== "all") {
+        // The gateway's own client would show the site a TLS handshake that is not the browser's.
+        counts.refused["cdp-failed"] += 1;
+        // Once a minute at most, and never the address: how often it happens is what matters.
+        if (Date.now() - lastRefusalReport >= 60_000) {
+          lastRefusalReport = Date.now();
+          console.warn(
+            `assets: the browser could not load an asset, which is not fetched by the gateway instead (MIRROR_ASSET_DIRECT_FALLBACK=${fallback}; ${counts.refused["cdp-failed"]} so far)`,
+          );
+        }
+        throw new Error("The browser could not load the asset", { cause: failure });
+      }
+      counts.direct["cdp-failed"] += 1;
+      return fetchDirect(deps, directRequest, request, cdpSessionId);
     },
     closeSession,
+    lanes: () => ({
+      cdp: counts.cdp,
+      blob: counts.blob,
+      direct: { ...counts.direct },
+      refused: { ...counts.refused },
+    }),
     async close() {
       await Promise.all([...pools.keys()].map(closeSession));
     },

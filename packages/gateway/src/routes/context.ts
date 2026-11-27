@@ -3,6 +3,7 @@
  * a few shared actions. Built once by the composition root (clients-main.ts).
  */
 import type { ServerStatusMsg } from "@mirror/protocol";
+import type { AssetLaneCounts } from "../assets/fetch";
 import type { preHandlerAsyncHookHandler } from "fastify";
 import type { SessionAccess } from "../auth/session-access";
 import type { FrontendUser, UserStore } from "../auth/users";
@@ -57,6 +58,8 @@ export interface GatewayContext {
   /** The guard of a route that serves one workspace (`:sid`). */
   requireSession(): preHandlerAsyncHookHandler;
   status(sid?: string): ServerStatusMsg;
+  /** How page assets were fetched since start (browser, blob, direct, refused), counts only. */
+  assetLanes(): AssetLaneCounts;
   isStopping(): boolean;
   report(message: string, error: unknown): void;
 }

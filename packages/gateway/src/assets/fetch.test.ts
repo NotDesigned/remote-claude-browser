@@ -5,7 +5,13 @@ import { Agent } from "undici";
 import { describe, expect, it, vi } from "vitest";
 
 import type { CdpSend } from "../types";
-import { createAssetFetcher, type DirectRequest, type DirectResponse } from "./fetch";
+import {
+  assetDirectFallback,
+  createAssetFetcher,
+  type AssetDirectFallback,
+  type DirectRequest,
+  type DirectResponse,
+} from "./fetch";
 import type { AssetRef } from "./token";
 
 const ref: AssetRef = {
@@ -37,6 +43,8 @@ describe("asset fetch lanes", () => {
       return directResponse("@font-face{}", { "content-type": "text/css" });
     });
     const fetcher = createAssetFetcher({
+      // The earlier fallback to the gateway's own client, kept with MIRROR_ASSET_DIRECT_FALLBACK=all.
+      directFallback: "all",
       send,
       sessionFor: () => "cdp",
       userAgentFor: () => "UA",
@@ -75,6 +83,8 @@ describe("asset fetch lanes", () => {
     await new Promise<void>((done) => proxy.listen(0, "127.0.0.1", done));
     const address = proxy.address() as import("node:net").AddressInfo;
     const fetcher = createAssetFetcher({
+      // The earlier fallback to the gateway's own client, kept with MIRROR_ASSET_DIRECT_FALLBACK=all.
+      directFallback: "all",
       proxyFor: () => `http://127.0.0.1:${address.port}`,
       sessionFor: () => "cdp-fixture",
       userAgentFor: () => "profile UA",
@@ -273,6 +283,8 @@ describe("asset fetch lanes", () => {
       return directResponse("fallback", { "content-type": "text/plain" });
     });
     const fetcher = createAssetFetcher({
+      // The earlier fallback to the gateway's own client, kept with MIRROR_ASSET_DIRECT_FALLBACK=all.
+      directFallback: "all",
       send,
       sessionFor: () => "cdp-session-a",
       directRequest,
@@ -383,3 +395,86 @@ async function readBody(body: Readable): Promise<string> {
   for await (const chunk of body) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks).toString("utf8");
 }
+
+describe("MIRROR_ASSET_DIRECT_FALLBACK", () => {
+  /** A browser that cannot load anything, and a direct lane that records what it was asked. */
+  function failingBrowser(directFallback?: AssetDirectFallback) {
+    const send = vi.fn<CdpSend>(async (_sessionId, method) => {
+      if (method === "Network.getCookies") return { cookies: [] };
+      if (method === "Browser.getVersion") return { userAgent: "UA" };
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "top" } } };
+      throw new Error("CDP unavailable");
+    });
+    const directRequest = vi.fn<DirectRequest>(async () =>
+      directResponse("direct", { "content-type": "text/plain" }),
+    );
+    const fetcher = createAssetFetcher({
+      send,
+      sessionFor: () => "cdp",
+      directRequest,
+      ...(directFallback === undefined ? {} : { directFallback }),
+    });
+    return { fetcher, directRequest };
+  }
+
+  it("reads the mode, range unless set, and refuses anything else", () => {
+    expect(assetDirectFallback(undefined)).toBe("range");
+    expect(assetDirectFallback("")).toBe("range");
+    expect(assetDirectFallback("all")).toBe("all");
+    expect(assetDirectFallback(" off ")).toBe("off");
+    expect(() => assetDirectFallback("yes")).toThrow(/all, range or off/);
+  });
+
+  it("range (default): no direct fetch for an asset the browser could not load; Range still direct", async () => {
+    vi.stubEnv("MIRROR_ASSET_DIRECT_FALLBACK", "");
+    try {
+      const { fetcher, directRequest } = failingBrowser();
+      try {
+        await expect(fetcher.fetch({ ref })).rejects.toThrow(/browser could not load/);
+        expect(directRequest).not.toHaveBeenCalled();
+        const range = await fetcher.fetch({ ref, range: "bytes=0-3" });
+        expect(range.lane).toBe("direct");
+        expect(directRequest).toHaveBeenCalledOnce();
+        expect(fetcher.lanes()).toEqual({
+          cdp: 0,
+          blob: 0,
+          direct: { range: 1, "cdp-failed": 0 },
+          refused: { range: 0, "cdp-failed": 1 },
+        });
+      } finally {
+        await fetcher.close();
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("off: Range requests are refused too", async () => {
+    const { fetcher, directRequest } = failingBrowser("off");
+    try {
+      await expect(fetcher.fetch({ ref, range: "bytes=0-3" })).rejects.toThrow(/=off/);
+      await expect(fetcher.fetch({ ref })).rejects.toThrow();
+      expect(directRequest).not.toHaveBeenCalled();
+      expect(fetcher.lanes().refused).toEqual({ range: 1, "cdp-failed": 1 });
+    } finally {
+      await fetcher.close();
+    }
+  });
+
+  it("all: the earlier fallback, counted", async () => {
+    vi.stubEnv("MIRROR_ASSET_DIRECT_FALLBACK", "all");
+    try {
+      const { fetcher, directRequest } = failingBrowser();
+      try {
+        expect((await fetcher.fetch({ ref })).lane).toBe("direct");
+        expect((await fetcher.fetch({ ref, range: "bytes=0-3" })).lane).toBe("direct");
+        expect(directRequest).toHaveBeenCalledTimes(2);
+        expect(fetcher.lanes().direct).toEqual({ range: 1, "cdp-failed": 1 });
+      } finally {
+        await fetcher.close();
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});

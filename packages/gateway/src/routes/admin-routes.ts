@@ -144,6 +144,7 @@ export function registerAdminRoutes(
       })),
       sessions,
       resources: ctx.status(),
+      assetLanes: ctx.assetLanes(),
       runningProfiles: accounts.size,
     });
   });

@@ -599,6 +599,7 @@ export async function startClientGateway(
     authorized: (request, sid) => access.ownsSession(request, sid),
   });
   const ctx: GatewayContext = {
+    assetLanes: () => assetFetcher.lanes(),
     e2e,
     lock,
     userStore,

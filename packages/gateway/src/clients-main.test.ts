@@ -319,6 +319,13 @@ describe("multi-user management routes", () => {
       initial.json().users.find((user: { id: string }) => user.id === current.id),
     ).toMatchObject({ profileCount: 1, sessionCount: 2, onlineSessions: 0, maxSessions: null });
     expect(initial.json().sessions).toHaveLength(2);
+    // How page assets were fetched, counts only.
+    expect(initial.json().assetLanes).toEqual({
+      cdp: 0,
+      blob: 0,
+      direct: { range: 0, "cdp-failed": 0 },
+      refused: { range: 0, "cdp-failed": 0 },
+    });
     expect(initial.json().sessions[0]).toMatchObject({
       username: "admin",
       online: false,
