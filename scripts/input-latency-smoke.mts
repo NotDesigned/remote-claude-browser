@@ -88,6 +88,26 @@ try {
     }),
   );
   await remote.waitForFunction(() => typeof (window as any).__mirror_cmd === "function");
+  // The fence's round trip: command sent, answer back in the stream (agent/src/fence.ts).
+  const fenceTimes: number[] = [];
+  for (let n = 1; n <= 40; n++) {
+    const started = performance.now();
+    const answered = new Promise<void>((done) => fenced.set(n, done));
+    await remote.evaluate(
+      (n) => (window as any).__mirror_cmd({ cmd: "fence", n, reqId: 100_000 + n }),
+      n,
+    );
+    await answered;
+    fenced.delete(n);
+    fenceTimes.push(performance.now() - started);
+  }
+  fenceTimes.sort((a, b) => a - b);
+  const fence = {
+    p50: Number(fenceTimes[Math.floor(fenceTimes.length * 0.5)]!.toFixed(1)),
+    p95: Number(fenceTimes[Math.floor(fenceTimes.length * 0.95)]!.toFixed(1)),
+  };
+  console.log(`fence round trip: ${JSON.stringify(fence)}`);
+  assert.ok(fence.p95 <= 10, `the fence round trip took ${fence.p95} ms (p95)`);
   let nextCommand = 0;
   const remoteCdp = await remote.context().newCDPSession(remote);
   const received: Up[] = [],
@@ -467,27 +487,6 @@ try {
   await page.locator('[data-view-mode="dom"]').click();
   await page.locator("#mirror-host iframe").waitFor();
   assert.equal(await page.locator(".px-ime-input").count(), 0);
-  // The fence's round trip: command sent, answer back in the stream (agent/src/fence.ts).
-  await page.locator('[data-view-mode="dom"]').waitFor();
-  const fenceTimes: number[] = [];
-  for (let n = 1; n <= 40; n++) {
-    const started = performance.now();
-    const answered = new Promise<void>((done) => fenced.set(n, done));
-    await remote.evaluate(
-      (n) => (window as any).__mirror_cmd({ cmd: "fence", n, reqId: 100_000 + n }),
-      n,
-    );
-    await answered;
-    fenced.delete(n);
-    fenceTimes.push(performance.now() - started);
-  }
-  fenceTimes.sort((a, b) => a - b);
-  const fence = {
-    p50: Number(fenceTimes[Math.floor(fenceTimes.length * 0.5)]!.toFixed(1)),
-    p95: Number(fenceTimes[Math.floor(fenceTimes.length * 0.95)]!.toFixed(1)),
-  };
-  console.log(`fence round trip: ${JSON.stringify(fence)}`);
-  assert.ok(fence.p95 <= 10, `the fence round trip took ${fence.p95} ms (p95)`);
   const result = {
     fixtureOnly: true,
     fence,
