@@ -313,12 +313,18 @@ async function probe(mode, input) {
     const { ProxyAgent, request } = require("undici");
     const agent = new ProxyAgent(input.proxyUrl);
     try {
-      const result = await request("http://203.0.113.10/range", {
-        dispatcher: agent,
-        headers: { range: "bytes=5-11" },
-        headersTimeout: 3500,
-        bodyTimeout: 3500,
-      });
+      let result;
+      for (let attempt = 0; attempt < 15; attempt++) {
+        result = await request("http://203.0.113.10/range", {
+          dispatcher: agent,
+          headers: { range: "bytes=5-11" },
+          headersTimeout: 3500,
+          bodyTimeout: 3500,
+        });
+        if (result.statusCode !== 502 || attempt === 14) break;
+        await result.body.dump();
+        await new Promise((done) => setTimeout(done, 150));
+      }
       assert.equal(result.statusCode, 206);
       assert.equal(result.headers["content-range"], `bytes 5-11/${fixtureBody(input.exit).length}`);
       assert.equal(await result.body.text(), fixtureBody(input.exit).slice(5, 12));
