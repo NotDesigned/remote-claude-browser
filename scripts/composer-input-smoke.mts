@@ -966,7 +966,9 @@ async function checkAcks(label: string, name: string, page: Page, acks: AckHarne
       matched === compared.length,
       `${label} ${name}: the replay's field matched the page's hash ${result.replayHash}`,
     );
-  if (!proxyInput) assert.ok(windowMs.length > 0, `${label} ${name}: no echo window closed`);
+  // A phone types with insertText alone in "caret": no composition ends there to close a window.
+  if (!proxyInput && !(name === "caret" && label === "Phone"))
+    assert.ok(windowMs.length > 0, `${label} ${name}: no echo window closed`);
   // At the end of each burst the page reports its own field's text: all of it for the textarea,
   // at least 99 % for ProseMirror (which may still be rendering). Over a lossy link input
   // arrives in bursts after each stall, and the text is read after the ack went out: the next
@@ -993,6 +995,207 @@ async function checkAcks(label: string, name: string, page: Page, acks: AckHarne
       result.windowCloseP95 <= budget,
       `${label} ${name}: the echo window closed after ${result.windowCloseP95} ms (p95)`,
     );
+}
+
+/** The page's composer: its text and selection as offsets into it (one paragraph). */
+const pageField = (remote: Page) =>
+  remote.evaluate(() => {
+    const view = (window as any).composerView;
+    const { from, to, anchor, head } = view.state.selection;
+    return {
+      text: view.state.doc.textBetween(0, view.state.doc.content.size, "\n") as string,
+      sel: [Math.min(anchor, head) - 1, Math.max(anchor, head) - 1] as [number, number],
+      focused: view.hasFocus() as boolean,
+      _: [from, to],
+    };
+  });
+
+/**
+ * What the viewer shows of the composer's caret and selection: where offset `at` of the replay's
+ * composer is on screen, and the caret drawn there (the proxy's caret element, or the replay's own
+ * focused field and selection on the legacy path), and the text shown selected. A string, so that
+ * the bundler's helpers stay out of it.
+ */
+const VIEWER_CARET = String.raw`(at) => {
+  const frame = document.querySelector("#mirror-host iframe");
+  const doc = frame.contentDocument;
+  const field = doc.querySelector("#composer");
+  const frameRect = frame.getBoundingClientRect();
+  const scale = frame.offsetWidth > 0 ? frameRect.width / frame.offsetWidth : 1;
+  const map = (x, y) => ({
+    x: frameRect.left + frame.clientLeft * scale + x * scale,
+    y: frameRect.top + frame.clientTop * scale + y * scale,
+  });
+  const walker = doc.createTreeWalker(field, NodeFilter.SHOW_TEXT);
+  let left = at;
+  let point = null;
+  let lastText = null;
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    lastText = node;
+    if (left <= node.data.length) {
+      point = { node, offset: left };
+      break;
+    }
+    left -= node.data.length;
+  }
+  let expected;
+  if (lastText === null) {
+    const line = field.querySelector("p") || field;
+    const rect = line.getBoundingClientRect();
+    const style = getComputedStyle(line);
+    expected = map(rect.left + (parseFloat(style.paddingLeft) || 0), rect.top + rect.height / 2);
+  } else {
+    const target = point || { node: lastText, offset: lastText.data.length };
+    const range = doc.createRange();
+    range.setStart(target.node, target.offset);
+    range.collapse(true);
+    let rect = range.getClientRects()[0] || null;
+    if (rect === null || rect.height === 0) {
+      range.setStart(target.node, Math.max(0, target.offset - 1));
+      range.setEnd(target.node, target.offset);
+      const before = range.getClientRects()[0];
+      rect = new DOMRect(before.right, before.top, 0, before.height);
+    }
+    expected = map(rect.left, rect.top + rect.height / 2);
+  }
+  let caret = null;
+  let selected = "";
+  const proxyCaret = document.querySelector(".proxy-caret");
+  if (proxyCaret !== null && getComputedStyle(proxyCaret).display !== "none") {
+    const rect = proxyCaret.getBoundingClientRect();
+    if (rect.height > 0)
+      caret = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, kind: "proxy" };
+    const highlight = document.querySelector(".proxy-selection");
+    selected = (highlight && highlight.getAttribute("data-selected")) || "";
+  } else {
+    const selection = doc.getSelection();
+    const focused = doc.activeElement === field || field.contains(doc.activeElement);
+    if (focused && selection !== null && selection.rangeCount > 0) {
+      selected = selection.toString();
+      const range = doc.createRange();
+      range.setStart(selection.focusNode, selection.focusOffset);
+      range.collapse(true);
+      const rect = range.getClientRects()[0];
+      caret = rect
+        ? { ...map(rect.left, rect.top + rect.height / 2), kind: "native" }
+        : { ...expected, kind: "native-unmeasured" };
+    }
+  }
+  return { expected, caret, selected };
+}`;
+type ViewerCaret = {
+  expected: { x: number; y: number };
+  caret: { x: number; y: number; kind: string } | null;
+  selected: string;
+};
+const viewerCaret = (page: Page, at: number): Promise<ViewerCaret> =>
+  page.evaluate(`(${VIEWER_CARET})(${at})`);
+
+/** The point of offset `at` in the replay's composer, in viewer coordinates (for a press). */
+const pointAt = async (page: Page, at: number) => (await viewerCaret(page, at)).expected;
+
+/**
+ * Caret and selection while typing: the caret is shown where the page's is, arrows and Home/End
+ * and Shift+arrows move and extend it at once, a press places it, a double-click selects a word,
+ * Ctrl+A selects all, and typing after moving the caret lands in the middle of the text.
+ */
+async function caret(mirror: Mirror): Promise<void> {
+  const { label, softKeyboard, page, remote, type } = mirror;
+  const settle = () => page.waitForTimeout(700);
+  const expectShown = async (step: string, at: number, selected = "", soon = false) => {
+    // Right away (the prediction) when `soon`, and again once the page has answered.
+    if (soon) await page.waitForTimeout(60);
+    const shown = await viewerCaret(page, at);
+    const where = JSON.stringify(shown);
+    assert.ok(shown.caret !== null, `${label} caret ${step}: no caret shown (${where})`);
+    assert.ok(
+      Math.abs(shown.caret!.x - shown.expected.x) <= 3 &&
+        Math.abs(shown.caret!.y - shown.expected.y) <= 6,
+      `${label} caret ${step}: the caret is not shown at offset ${at} (${where})`,
+    );
+    assert.equal(shown.selected, selected, `${label} caret ${step}: the selection shown`);
+  };
+  const expectPage = async (step: string, text: string, sel: [number, number]) => {
+    const field = await pageField(remote);
+    assert.equal(field.text, text, `${label} caret ${step}: the page's text`);
+    assert.deepEqual(field.sel, sel, `${label} caret ${step}: the page's selection`);
+  };
+  const press = async (key: string, times = 1) => {
+    for (let index = 0; index < times; index++) await page.keyboard.press(key);
+  };
+  const shortcut = process.platform === "darwin" ? "Meta" : "Control";
+
+  // An empty field still shows its caret.
+  await settle();
+  await expectShown("empty", 0);
+  await type("hello world");
+  await settle();
+  await expectPage("typed", "hello world", [11, 11]);
+  await expectShown("typed", 11);
+
+  // Arrows move it at once; what is typed next lands there.
+  await press("ArrowLeft", 5);
+  await expectShown("left x5", 6, "", true);
+  await settle();
+  await expectPage("left x5", "hello world", [6, 6]);
+  await expectShown("left x5 settled", 6);
+  await type("big ");
+  await settle();
+  await expectPage("typed in the middle", "hello big world", [10, 10]);
+  await expectShown("typed in the middle", 10);
+  await press("Home");
+  await expectShown("Home", 0, "", true);
+  await press("End");
+  await expectShown("End", 15, "", true);
+  await settle();
+  await expectPage("End", "hello big world", [15, 15]);
+
+  // Shift+arrows extend a selection, shown at once; typing replaces it.
+  await press("Shift+ArrowLeft", 5);
+  await expectShown("shift+left x5", 10, "world", true);
+  await settle();
+  await expectPage("shift+left x5", "hello big world", [10, 15]);
+  await expectShown("shift+left x5 settled", 10, "world");
+  await type("there");
+  await settle();
+  await expectPage("typed over the selection", "hello big there", [15, 15]);
+  await expectShown("typed over the selection", 15);
+  await press("Shift+ArrowLeft", 6);
+  await press("Backspace");
+  await settle();
+  await expectPage("backspace over the selection", "hello big", [9, 9]);
+  await expectShown("backspace over the selection", 9);
+
+  // A press places the caret; a double-click selects a word.
+  const at = await pointAt(page, 6);
+  if (softKeyboard) await page.touchscreen.tap(at.x + 1, at.y);
+  else await page.mouse.click(at.x + 1, at.y);
+  await settle();
+  await expectPage("pressed at 6", "hello big", [6, 6]);
+  await expectShown("pressed at 6", 6);
+  await type("very ");
+  await settle();
+  await expectPage("typed after the press", "hello very big", [11, 11]);
+  await expectShown("typed after the press", 11);
+  if (!softKeyboard) {
+    const word = await pointAt(page, 7);
+    await page.mouse.dblclick(word.x + 2, word.y);
+    await settle();
+    await expectPage("double-click", "hello very big", [6, 10]);
+    await expectShown("double-click", 10, "very");
+  }
+
+  // Ctrl/Cmd+A selects everything; Backspace empties it.
+  await press(`${shortcut}+a`);
+  await settle();
+  // The legacy path selects all in the replay only; its Backspace then syncs the whole field.
+  if (proxyInput) await expectPage("select all", "hello very big", [0, 14]);
+  await expectShown("select all", 14, "hello very big");
+  await press("Backspace");
+  await settle();
+  await expectPage("emptied", "", [0, 0]);
+  await expectShown("emptied", 0);
+  console.log(`${label}: the caret and selection follow arrows, presses and typing.`);
 }
 
 /** The P1 gate on SMOKE_DEVICE (desktop unless set): measured, judged by p1-gate.sh. */
@@ -1022,7 +1225,8 @@ async function gate(mirror: Mirror): Promise<void> {
     await writeFile(process.env.SMOKE_GATE_OUT, JSON.stringify(record));
 }
 
-// COMPOSER_SMOKE_ONLY=Desktop,rounds (any of Desktop, Phone, rounds, sends, slow-page, textarea)
+// COMPOSER_SMOKE_ONLY=Desktop,rounds (any of Desktop, Phone, rounds, sends, slow-page, textarea,
+// caret)
 // runs part of it; COMPOSER_SMOKE_ONLY=gate runs only the gate.
 const only = (process.env.COMPOSER_SMOKE_ONLY ?? "").split(",").filter(Boolean);
 const phone = device === "iphone" || device === "pixel";
@@ -1033,6 +1237,8 @@ const runs: Array<[string, boolean, (mirror: Mirror) => Promise<void>, string]> 
   ["Phone", true, sends, "sends"],
   ["Desktop", false, slowPage, "slow-page"],
   ["Desktop", false, textarea, "textarea"],
+  ["Desktop", false, caret, "caret"],
+  ["Phone", true, caret, "caret"],
 ];
 try {
   if (only.includes("gate")) await run(phone ? "Phone" : "Desktop", phone, gate);
