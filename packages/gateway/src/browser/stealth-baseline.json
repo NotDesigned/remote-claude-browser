@@ -1,12 +1,8 @@
 {
-  "inst.expando:FontFace.instanceof": "P0-A: today's leak, removed by workstream A",
-  "inst.expando:FontFace.instanceof@child": "P0-A: today's leak, removed by workstream A",
   "msg.any": "P2-E: a child frame still reports to its parent by message",
   "msg.any@child": "P2-E: a child frame still reports to its parent by message",
   "msg.literal": "P0-A: today's leak, removed by workstream A",
   "msg.literal@child": "P0-A: today's leak, removed by workstream A",
-  "nat.shape:window.FontFace": "P0-A: today's leak, removed by workstream A",
-  "nat.shape:window.FontFace@child": "P0-A: today's leak, removed by workstream A",
   "net.laneB:nonRange": "P0-A: today's leak, removed by workstream A",
   "perf.longtask:ms": "metric",
   "shadow.composed": "P3: the closed-root shim really opens closed roots",

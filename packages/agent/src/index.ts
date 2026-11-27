@@ -237,7 +237,10 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
     },
     onError: (error) => console.warn("mirror EME detection unavailable", error),
   });
-  const recordCanvas = config.canvas.enabled && canStartCanvasSnapshotWorker();
+  // Hardening: rrweb's canvas recording replaces every 2D and WebGL method, marks canvases with
+  // __context and forces preserveDrawingBuffer; the sampler below reads pixels through natives
+  // captured at start instead, on the sites listed for it.
+  const recordCanvas = !config.hardening && config.canvas.enabled && canStartCanvasSnapshotWorker();
   let canvasSampler: CanvasSampler | null = null;
 
   installStitchReadyListener(window);
@@ -292,7 +295,9 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
             dataURLOptions: { type: "image/webp", quality: config.canvas.quality },
           }
         : {}),
-      collectFonts: true,
+      // Hardening: rrweb's collectFonts replaces window.FontFace with a plain function; font-capture
+      // already carries fonts added by script into the snapshot's CSS.
+      collectFonts: !config.hardening,
       inlineStylesheet: true,
       inlineImages: false,
       maskAllInputs: false,
