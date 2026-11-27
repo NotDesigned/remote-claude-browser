@@ -51,7 +51,12 @@ export interface ProxyLab {
   /** Event to the overlay being in the DOM, ms (inside the handler). */
   echoSync: number[];
   doubleFrames: number;
+  /** Frames where the replay and the prediction together did not show what was typed last. */
   gapFrames: number;
+  /** Frames where they showed something else (a page's input rule, until its ack). */
+  mismatchFrames: number;
+  /** Lengths of the runs of such frames, one per run. */
+  gapRuns: number[];
   planFallback: number;
   hashMismatch: number;
   late: number;
@@ -69,6 +74,8 @@ export function createProxyLab(): ProxyLab {
     echoSync: [],
     doubleFrames: 0,
     gapFrames: 0,
+    mismatchFrames: 0,
+    gapRuns: [],
     planFallback: 0,
     hashMismatch: 0,
     late: 0,
@@ -438,18 +445,27 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
       base = { text, caret: Math.min(selection?.[1] ?? base?.caret ?? text.length, text.length) };
   };
 
+  let gapRun = 0;
+  const endGapRun = () => {
+    if (gapRun === 0 || !options.lab) return;
+    options.lab.gapRuns.push(gapRun);
+    if (options.lab.gapRuns.length > 10_000) options.lab.gapRuns.shift();
+    gapRun = 0;
+  };
   const tick = () => {
     frame = null;
     if (options.lab) {
       options.lab.frames += 1;
       if (last.shown.some((iseq) => iseq <= settledPage)) options.lab.doubleFrames += 1;
-      if (
-        preedit === null &&
-        last.visible !== null &&
-        last.intended !== null &&
-        last.visible !== last.intended
-      )
-        options.lab.gapFrames += 1;
+      const { visible, intended } = last;
+      if (preedit === null && visible !== null && intended !== null && visible !== intended) {
+        options.lab.mismatchFrames += 1;
+        // A gap: what was typed last is missing from the screen (neither replay nor overlay).
+        if (intended.startsWith(visible) || (hiddenUntilSettled && edits.length > 0)) {
+          options.lab.gapFrames += 1;
+          gapRun += 1;
+        } else endGapRun();
+      } else endGapRun();
     }
     expireDispatched();
     draw();
@@ -457,7 +473,10 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
   };
   const schedule = () => {
     if (frame !== null) return;
-    if (edits.length === 0 && preedit === null) return;
+    if (edits.length === 0 && preedit === null) {
+      endGapRun();
+      return;
+    }
     frame = doc.defaultView?.requestAnimationFrame(tick) ?? null;
   };
 

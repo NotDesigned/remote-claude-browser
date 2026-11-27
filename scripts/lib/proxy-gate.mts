@@ -337,9 +337,8 @@ export async function proxyGate(m: GateMirror): Promise<Record<string, unknown>>
   await g5case("autocorrect teh → the", "fix the word", async () => {
     await type("fix teh ");
     await page.waitForTimeout(300);
-    if (await selectWord("teh")) await cdp.send("Input.insertText", { text: "the" });
-    // An autocorrect leaves the caret where the person was typing, after the space.
-    await caretToEnd();
+    // The keyboard replaces the word and its space at once, the caret staying after them.
+    if (await selectWord("teh ")) await cdp.send("Input.insertText", { text: "the " });
     await page.waitForTimeout(200);
     await type("word");
   });
@@ -448,6 +447,11 @@ export async function proxyGate(m: GateMirror): Promise<Record<string, unknown>>
     g7: {
       doubleFrames: report.probe.double,
       gapFrames: report.lab?.gapFrames ?? null,
+      mismatchFrames: report.lab?.mismatchFrames ?? null,
+      gapRuns: report.lab?.gapRuns.length ?? null,
+      gapRunP95: report.lab ? percentile(report.lab.gapRuns, 0.95) : null,
+      gapRunMax:
+        report.lab && report.lab.gapRuns.length > 0 ? Math.max(...report.lab.gapRuns) : null,
       frames: report.probe.frames,
     },
     g8: {

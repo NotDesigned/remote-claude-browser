@@ -440,7 +440,8 @@ async function run(
       acks,
       counters,
     });
-    await checkAcks(label, body.name, page, acks);
+    // The gate records the ack checks with its measurements instead of stopping on them.
+    if (body !== gate) await checkAcks(label, body.name, page, acks);
   } finally {
     wss.off("connection", onConnection);
     for (const socket of sockets) {
@@ -861,10 +862,18 @@ async function gate(mirror: Mirror): Promise<void> {
     proxy: proxyInput,
     failures,
   });
+  let ackChecks = "ok";
+  try {
+    await checkAcks(mirror.label, "gate", mirror.page, mirror.acks);
+  } catch (error) {
+    ackChecks = error instanceof Error ? error.message : String(error);
+  }
   const record = {
     link: describeLink(link),
     rttMs: link.rttMs,
     lossRate: link.lossRate,
+    ackChecks,
+    ackSummary: measured.at(-1) ?? null,
     ...result,
   };
   console.log(`GATE ${JSON.stringify(record)}`);

@@ -147,12 +147,26 @@ function textOp(text: string, lastKey: string | undefined): PlanOp {
 
 /** Applies ops to a text and caret as the page would (a press per grapheme). */
 export function applyOps(
-  state: { text: string; caret: number },
+  state: { text: string; caret: number; anchor?: number },
   ops: readonly PlanOp[],
 ): { text: string; caret: number } {
   let { text, caret } = state;
   caret = Math.max(0, Math.min(caret, text.length));
+  // A selection (anchor to caret): the first op replaces it, deletes it or collapses it.
+  let anchor =
+    state.anchor === undefined ? caret : Math.max(0, Math.min(state.anchor, text.length));
   for (const op of ops) {
+    if (anchor !== caret) {
+      const [from, to] = [Math.min(anchor, caret), Math.max(anchor, caret)];
+      anchor = caret;
+      if (op.t === "press" && (op.key === "ArrowLeft" || op.key === "ArrowRight")) {
+        caret = anchor = op.key === "ArrowLeft" ? from : to;
+        continue;
+      }
+      text = text.slice(0, from) + text.slice(to);
+      caret = anchor = from;
+      if (op.t === "press") continue;
+    }
     if (op.t === "press") {
       if (op.key === "Backspace" || op.key === "ArrowLeft") {
         const step = previousGrapheme(text, caret);
@@ -167,6 +181,7 @@ export function applyOps(
       text = text.slice(0, caret) + op.text + text.slice(caret);
       caret += op.text.length;
     }
+    anchor = caret;
   }
   return { text, caret };
 }
