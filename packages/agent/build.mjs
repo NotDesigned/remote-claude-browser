@@ -44,6 +44,7 @@ export const DEFAULT_AGENT_CONFIG = Object.freeze({
     nodeResponseEventName: "__mirror_node_response",
     readyEventName: "__mirror_ready",
   }),
+  hardening: true,
 });
 export function createAgentBundle(config = DEFAULT_AGENT_CONFIG) {
   const canvas = config && typeof config === "object" && config.canvas && typeof config.canvas === "object"
@@ -63,6 +64,7 @@ export function createAgentBundle(config = DEFAULT_AGENT_CONFIG) {
       nodeResponseEventName: bridge.nodeResponseEventName,
       readyEventName: bridge.readyEventName,
     },
+    hardening: config && typeof config === "object" ? config.hardening : undefined,
   };
   return \`globalThis[Symbol.for(\${JSON.stringify(AGENT_CONFIG_SYMBOL)})]=\${JSON.stringify(embedded)};\\n\${AGENT_CODE}\`;
 }

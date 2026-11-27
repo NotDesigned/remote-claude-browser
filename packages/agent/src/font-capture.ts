@@ -6,6 +6,8 @@
  * its own from the start, and its snapshots carry them as an ordinary stylesheet.
  */
 
+import type { NativeMask } from "./native-mask";
+
 const SYNTHETIC_STYLE_ID = 1_000_000_000;
 /** Lets several fonts arriving together cost one more snapshot. */
 const LATE_FONT_SNAPSHOT_DELAY_MS = 500;
@@ -76,6 +78,12 @@ export interface FontCaptureOptions {
   /** A font arrived after a snapshot went out. Called once per burst. */
   onLateFont?(): void;
   setTimer?(callback: () => void, ms: number): unknown;
+  /**
+   * Hardening: the replacements look native, and the font set is hooked where Chrome keeps it (it
+   * has no global FontFaceSet; without this, fonts reach the replay only through rrweb's own
+   * collectFonts, which replaces window.FontFace with a plain function).
+   */
+  mask?: NativeMask;
 }
 
 /** Must run before the page's own scripts. */
@@ -87,7 +95,9 @@ export function installFontCapture(target: Window, options: FontCaptureOptions =
   let snapshotTaken = false;
   const schedule = options.setTimer ?? ((callback, ms) => setTimeout(callback, ms));
 
-  if (typeof win.FontFace === "function")
+  const mask = options.mask;
+  if (typeof win.FontFace === "function") {
+    const original = win.FontFace;
     win.FontFace = new Proxy(win.FontFace, {
       construct(constructor, args: unknown[], newTarget) {
         const face = Reflect.construct(constructor, args, newTarget) as object;
@@ -101,12 +111,17 @@ export function installFontCapture(target: Window, options: FontCaptureOptions =
         return face;
       },
     });
+    mask?.mask(win.FontFace, original);
+  }
 
-  const prototype = (win as unknown as { FontFaceSet?: { prototype: FontFaceSet } }).FontFaceSet
-    ?.prototype;
+  const prototype =
+    (win as unknown as { FontFaceSet?: { prototype: FontFaceSet } }).FontFaceSet?.prototype ??
+    (mask !== undefined && win.document?.fonts
+      ? (Object.getPrototypeOf(win.document.fonts) as FontFaceSet)
+      : undefined);
   if (prototype) {
     const add = prototype.add;
-    prototype.add = function (this: FontFaceSet, face: FontFace) {
+    const replacement = function (this: FontFaceSet, face: FontFace) {
       const result = add.call(this, face);
       const source = sources.get(face);
       if (source && !added.has(face)) {
@@ -119,6 +134,7 @@ export function installFontCapture(target: Window, options: FontCaptureOptions =
       }
       return result;
     };
+    prototype.add = mask === undefined ? replacement : mask.method("add", replacement, add);
   }
 
   return {

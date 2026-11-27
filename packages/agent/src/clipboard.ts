@@ -1,5 +1,6 @@
 /** Page-local clipboard virtualization keeps shared Chrome's OS clipboard out of client data. */
 import type { Emitter } from "./emit";
+import type { NativeMask } from "./native-mask";
 
 interface ClipboardLike {
   writeText(text: string): Promise<void>;
@@ -47,6 +48,8 @@ export interface ClipboardHookOptions {
   readonly capturedWrite: CapturedClipboardWrite | null;
   readonly emitter: Pick<Emitter, "emitClipboard">;
   readonly window?: WindowLike;
+  /** Hardening: the replacements go on the prototype and look like the browser's own. */
+  readonly mask?: NativeMask;
 }
 
 /** Capture both the receiver and method before page code can replace either reference. */
@@ -61,6 +64,7 @@ export function installClipboardHooks(options: ClipboardHookOptions): () => void
   const view = options.window ?? (window as unknown as WindowLike);
   const clipboard = options.capturedWrite?.clipboard;
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
+  const prototypeDescriptors = new Map<string, { owner: object; descriptor: PropertyDescriptor }>();
   let text = "";
   let writeVersion = 0;
   let items: ClipboardItem[] = [];
@@ -68,8 +72,26 @@ export function installClipboardHooks(options: ClipboardHookOptions): () => void
     text = value;
     options.emitter.emitClipboard(value);
   };
+  const mask = options.mask;
   const replace = (name: string, value: unknown) => {
     if (clipboard === undefined) return;
+    if (mask !== undefined) {
+      // On the prototype, where the browser keeps them, and looking like its own methods: an
+      // own property of navigator.clipboard is something no browser has.
+      const owner = Object.getPrototypeOf(clipboard) as object | null;
+      const native = owner === null ? undefined : Object.getOwnPropertyDescriptor(owner, name);
+      if (owner === null || typeof native?.value !== "function") return;
+      try {
+        Object.defineProperty(owner, name, {
+          ...native,
+          value: mask.method(name, value as () => unknown, native.value as () => unknown),
+        });
+        prototypeDescriptors.set(name, { owner, descriptor: native });
+      } catch {
+        // Event interception still protects native keyboard copy in constrained embeddings.
+      }
+      return;
+    }
     const previous = Object.getOwnPropertyDescriptor(clipboard, name);
     try {
       Object.defineProperty(clipboard, name, { configurable: true, writable: true, value });
@@ -127,6 +149,8 @@ export function installClipboardHooks(options: ClipboardHookOptions): () => void
     view.removeEventListener("copy", onCopy, true);
     view.removeEventListener("cut", onCut, true);
     view.removeEventListener("paste", onPaste, true);
+    for (const [name, { owner, descriptor }] of prototypeDescriptors)
+      Object.defineProperty(owner, name, descriptor);
     if (clipboard === undefined) return;
     for (const [name, previous] of descriptors) {
       if (previous === undefined) delete (clipboard as unknown as Record<string, unknown>)[name];

@@ -7,6 +7,7 @@
  * was the alternative, but Chromium shows a sharing bar with it, which changes the page's height.
  */
 import { VOICE_SAMPLE_RATE, decodeVoiceSamples, encodeVoiceSamples } from "@mirror/protocol";
+import type { NativeMask } from "./native-mask";
 
 /** About 85 ms at the voice rate: a low enough message rate for the binding. */
 const FRAME_SAMPLES = 2048;
@@ -28,7 +29,13 @@ export interface VoiceBridge {
 export function installVoiceBridge(
   target: Window & typeof globalThis,
   send: (message: VoiceOut) => void,
+  /** Hardening: the replaced Web Audio and media methods look like the browser's own. */
+  mask?: NativeMask,
 ): VoiceBridge {
+  const masked = <T extends object>(name: string, fake: T, original: object): T =>
+    mask === undefined
+      ? fake
+      : (mask.method(name, fake as unknown as () => unknown, original) as unknown as T);
   const NativeAudioContext = target.AudioContext;
   const NativeOffline = target.OfflineAudioContext;
   const NativeDestination = target.AudioDestinationNode;
@@ -92,7 +99,11 @@ export function installVoiceBridge(
     }
     return result;
   };
-  target.AudioNode.prototype.connect = connect as typeof AudioNode.prototype.connect;
+  target.AudioNode.prototype.connect = masked(
+    "connect",
+    connect,
+    nativeConnect,
+  ) as typeof AudioNode.prototype.connect;
   const disconnect = function (this: AudioNode, ...args: unknown[]): unknown {
     if (args[0] instanceof NativeDestination) {
       const tap = contextTaps.get(this.context);
@@ -104,18 +115,26 @@ export function installVoiceBridge(
     }
     return (nativeDisconnect as (...a: unknown[]) => unknown).apply(this, args);
   };
-  target.AudioNode.prototype.disconnect = disconnect as typeof AudioNode.prototype.disconnect;
+  target.AudioNode.prototype.disconnect = masked(
+    "disconnect",
+    disconnect,
+    nativeDisconnect,
+  ) as typeof AudioNode.prototype.disconnect;
 
   // Sound from media elements, unless the page routes the element through Web Audio above.
   const elementGains = new WeakMap<HTMLMediaElement, GainNode>();
   const routedElements = new WeakSet<HTMLMediaElement>();
   const nativeElementSource = target.AudioContext.prototype.createMediaElementSource;
-  target.AudioContext.prototype.createMediaElementSource = function (element) {
-    routedElements.add(element);
-    const gain = elementGains.get(element);
-    if (gain) gain.gain.value = 0;
-    return nativeElementSource.call(this, element);
-  };
+  target.AudioContext.prototype.createMediaElementSource = masked(
+    "createMediaElementSource",
+    function (this: AudioContext, element: HTMLMediaElement) {
+      routedElements.add(element);
+      const gain = elementGains.get(element);
+      if (gain) gain.gain.value = 0;
+      return nativeElementSource.call(this, element);
+    },
+    nativeElementSource,
+  );
   const tapElement = (element: HTMLMediaElement): void => {
     if (elementGains.has(element) || routedElements.has(element)) return;
     const capture = (element as HTMLMediaElement & { captureStream?(): MediaStream }).captureStream;
@@ -142,14 +161,18 @@ export function installVoiceBridge(
     attach();
   };
   const nativePlay = target.HTMLMediaElement.prototype.play;
-  target.HTMLMediaElement.prototype.play = function () {
-    try {
-      tapElement(this);
-    } catch {
-      // Playback matters more than hearing it here; the page must never see this fail.
-    }
-    return nativePlay.call(this);
-  };
+  target.HTMLMediaElement.prototype.play = masked(
+    "play",
+    function (this: HTMLMediaElement) {
+      try {
+        tapElement(this);
+      } catch {
+        // Playback matters more than hearing it here; the page must never see this fail.
+      }
+      return nativePlay.call(this);
+    },
+    nativePlay,
+  );
 
   // The microphone.
   let micOpen = false;
@@ -170,27 +193,55 @@ export function installVoiceBridge(
       if (micWaiters.length === 1) send({ mic: true });
     });
   };
+  const trackStopped = (): void => {
+    micTracks -= 1;
+    if (micTracks > 0) return;
+    micOpen = false;
+    send({ mic: false });
+  };
+  /** Hardening: the microphone's tracks, which the prototype's masked stop() answers for. */
+  const issuedTracks = new WeakMap<MediaStreamTrack, { stopped: boolean }>();
+  let trackPrototypeHooked = false;
+  const hookTrackPrototype = (track: MediaStreamTrack): void => {
+    if (trackPrototypeHooked || mask === undefined) return;
+    trackPrototypeHooked = true;
+    const prototype = Object.getPrototypeOf(track) as MediaStreamTrack;
+    const nativeStop = prototype.stop;
+    prototype.stop = masked(
+      "stop",
+      function (this: MediaStreamTrack) {
+        nativeStop.call(this);
+        const issued = issuedTracks.get(this);
+        if (issued === undefined || issued.stopped) return;
+        issued.stopped = true;
+        trackStopped();
+      },
+      nativeStop,
+    );
+  };
   const issueTrack = (): MediaStreamTrack => {
     getHub();
     const track = micOut.stream.getAudioTracks()[0]!.clone();
     micTracks += 1;
+    if (mask !== undefined) {
+      hookTrackPrototype(track);
+      issuedTracks.set(track, { stopped: false });
+      return track;
+    }
     const nativeStop = track.stop;
     let stopped = false;
     track.stop = function () {
       nativeStop.call(track);
       if (stopped) return;
       stopped = true;
-      micTracks -= 1;
-      if (micTracks > 0) return;
-      micOpen = false;
-      send({ mic: false });
+      trackStopped();
     };
     return track;
   };
   const devices = target.navigator.mediaDevices as MediaDevices | undefined;
   if (devices !== undefined) {
     const nativeGetUserMedia = devices.getUserMedia.bind(devices);
-    devices.getUserMedia = async (constraints) => {
+    const getUserMedia = async (constraints?: MediaStreamConstraints): Promise<MediaStream> => {
       if (!constraints?.audio) return nativeGetUserMedia(constraints);
       if (!(await openMic()))
         throw new DOMException("The microphone was not allowed", "NotAllowedError");
@@ -200,6 +251,11 @@ export function installVoiceBridge(
       stream.addTrack(issueTrack());
       return stream;
     };
+    // Hardening: on the prototype, where the browser has it, and looking like its own method.
+    const owner = Object.getPrototypeOf(devices) as MediaDevices | null;
+    if (mask !== undefined && owner !== null && typeof owner.getUserMedia === "function")
+      owner.getUserMedia = masked("getUserMedia", getUserMedia, owner.getUserMedia);
+    else devices.getUserMedia = getUserMedia;
   }
   // Device enumeration and permission state belong to Chromium. The viewer authorizes its own
   // microphone separately; inventing devices or PermissionStatus objects changes Web API semantics.

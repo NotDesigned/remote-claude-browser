@@ -26,6 +26,7 @@ import type {
   NotifyEventType,
   NotifyPermission,
 } from "@mirror/protocol";
+import type { NativeMask } from "./native-mask";
 
 /** Chromium's limit, which pages may read. */
 const MAX_ACTIONS = 2;
@@ -66,6 +67,8 @@ interface NotificationAction {
 export function installNotificationShim(
   target: Target,
   send: (message: NotifyAgentOut) => void,
+  /** Hardening: the agent's one native mask instead of a toString of this shim's own. */
+  mask?: NativeMask,
 ): NotificationShim {
   const NativeEventTarget = target.EventTarget;
   const NativeEvent = target.Event;
@@ -78,29 +81,15 @@ export function installNotificationShim(
   const origin = target.location.origin;
 
   // Functions defined here print like the browser's own, so a page's quick look at
-  // Notification.toString() finds nothing unusual.
-  const nativeNames = new WeakMap<object, string>();
-  const nativeToString = target.Function.prototype.toString;
-  const toString = function (this: unknown): string {
-    const name = typeof this === "function" ? nativeNames.get(this) : undefined;
-    if (name !== undefined) return `function ${name}() { [native code] }`;
-    return nativeToString.call(this as () => void);
-  };
-  nativeNames.set(toString, "toString");
-  defineProperty(toString, "name", { value: "toString", configurable: true });
-  defineProperty(target.Function.prototype, "toString", {
-    value: toString,
-    writable: true,
-    configurable: true,
-    enumerable: false,
-  });
-  const asNative = <T extends object>(value: T, name: string, length?: number): T => {
-    nativeNames.set(value, name);
-    defineProperty(value, "name", { value: name, configurable: true });
-    if (length !== undefined)
-      defineProperty(value, "length", { value: length, configurable: true });
-    return value;
-  };
+  // Notification.toString() finds nothing unusual. With the agent's mask they are also made the way
+  // the browser makes its functions: only the constructor has a prototype or can be constructed.
+  const asNative =
+    mask === undefined
+      ? legacyNativeNames(target)
+      : <T extends object>(value: T, name: string, length?: number): T =>
+          typeof value === "function" && name !== "Notification"
+            ? (mask.method(name, value as unknown as () => unknown, length ?? 0) as unknown as T)
+            : mask.asNativeNamed(value, name, length ?? 0);
 
   let permission: NotifyPermission = "default";
   let away = false;
@@ -490,6 +479,35 @@ export function installNotificationShim(
         for (const status of statuses) nativeDispatchEvent.call(status, new NativeEvent("change"));
       if (visibility.awayNow() !== before) visibility.changed();
     },
+  };
+}
+
+/** The shim's own toString, as it was before the agent had one mask for everything. */
+function legacyNativeNames(
+  target: Target,
+): <T extends object>(value: T, name: string, length?: number) => T {
+  const defineProperty = Object.defineProperty;
+  const nativeNames = new WeakMap<object, string>();
+  const nativeToString = target.Function.prototype.toString;
+  const toString = function (this: unknown): string {
+    const name = typeof this === "function" ? nativeNames.get(this) : undefined;
+    if (name !== undefined) return `function ${name}() { [native code] }`;
+    return nativeToString.call(this as () => void);
+  };
+  nativeNames.set(toString, "toString");
+  defineProperty(toString, "name", { value: "toString", configurable: true });
+  defineProperty(target.Function.prototype, "toString", {
+    value: toString,
+    writable: true,
+    configurable: true,
+    enumerable: false,
+  });
+  return <T extends object>(value: T, name: string, length?: number): T => {
+    nativeNames.set(value, name);
+    defineProperty(value, "name", { value: name, configurable: true });
+    if (length !== undefined)
+      defineProperty(value, "length", { value: length, configurable: true });
+    return value;
   };
 }
 

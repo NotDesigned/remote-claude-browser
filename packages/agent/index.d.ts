@@ -27,6 +27,11 @@ export interface AgentConfig {
     nodeResponseEventName?: string;
     readyEventName?: string;
   };
+  /**
+   * Defaults to true: replaced built-ins look native, no hidden frame, no fixed message names, no
+   * synthetic wheel. False restores the earlier agent exactly (MIRROR_AGENT_HARDENING=0).
+   */
+  hardening?: boolean;
 }
 
 export declare const DEFAULT_AGENT_CONFIG: Readonly<{
@@ -40,6 +45,7 @@ export declare const DEFAULT_AGENT_CONFIG: Readonly<{
     nodeResponseEventName: "__mirror_node_response";
     readyEventName: "__mirror_ready";
   }>;
+  hardening: true;
 }>;
 
 /** Build an injectable agent string with configuration embedded for one browser session. */

@@ -1,3 +1,5 @@
+import type { NativeMask } from "./native-mask";
+
 /** Closed shadow roots are otherwise deliberately hidden by Element#shadowRoot. */
 const closedRoots = new WeakMap<Element, ShadowRoot>();
 const coercedRoots = new WeakSet<ShadowRoot>();
@@ -13,8 +15,10 @@ const coercedRoots = new WeakSet<ShadowRoot>();
  * This must run before record() and before page scripts. `runImmediately` injection into an
  * ALREADY-LOADED page cannot retro-shim existing closed roots; session attach therefore has
  * degraded fidelity until the first navigation. There is intentionally no retrofit attempt.
+ *
+ * With `mask` (hardening), the three replacements look like the browser's own functions.
  */
-export function installClosedShadowShim(): void {
+export function installClosedShadowShim(mask?: NativeMask): void {
   const prototype = Element.prototype;
   const nativeAttachShadow = prototype.attachShadow;
   const shadowRootDescriptor = Object.getOwnPropertyDescriptor(prototype, "shadowRoot");
@@ -50,6 +54,12 @@ export function installClosedShadowShim(): void {
     return coercedRoots.has(this) ? "closed" : getNativeMode.call(this);
   }
 
+  if (mask !== undefined) {
+    prototype.attachShadow = mask.method("attachShadow", attachShadow, nativeAttachShadow);
+    mask.accessor(prototype, "shadowRoot", { get: shadowRoot });
+    mask.accessor(ShadowRoot.prototype, "mode", { get: mode });
+    return;
+  }
   Object.defineProperty(prototype, "attachShadow", {
     configurable: true,
     writable: true,

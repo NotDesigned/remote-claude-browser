@@ -21,8 +21,10 @@ import {
   AGENT_CONFIG_KEY,
   DEFAULT_AGENT_CONFIG,
   readAgentConfig,
+  setHardened,
   type AgentBridgeConfig,
 } from "./config";
+import { installNativeMask } from "./native-mask";
 import { captureRtcConstructors, installCanvasRtcRecord } from "./canvas-rtc";
 import { installVoiceBridge } from "./voice";
 import { installNotificationShim } from "./notifications";
@@ -152,11 +154,16 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   const mainWorldBridge = legacyBridge ? undefined : createMainWorldBridge(config.bridge);
   const emitBinding = mainWorldBridge?.emitBinding;
 
+  // Every replaced built-in, the agent's and rrweb's, looks like the browser's own (hardening).
+  const mask = config.hardening ? installNativeMask(window) : undefined;
+  setHardened(config.hardening);
+
   // Must precede record() so rrweb's shadow observer and initial snapshot use the retained roots.
-  installClosedShadowShim();
+  installClosedShadowShim(mask);
   // A cross-origin child's snapshot is the only way its fonts reach the replay.
   const isReturnedDocument = createReturnedDocumentCheck();
   const fontCapture = installFontCapture(window, {
+    ...(mask === undefined ? {} : { mask }),
     onLateFont: () => {
       if (!isCrossOriginChild() || !recordReadiness.isStarted()) return;
       // That replaces the nodes of the frames below, which have to report again: the snapshot's
@@ -169,17 +176,21 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   const docId = crypto.getRandomValues(new Uint32Array(1))[0]!;
   const isTop = window === window.top;
   const emitter = createEmitter(docId, emitBinding, config.bridge.bindingName);
-  installClipboardHooks({ capturedWrite: clipboardWrite, emitter });
+  installClipboardHooks({
+    capturedWrite: clipboardWrite,
+    emitter,
+    ...(mask === undefined ? {} : { mask }),
+  });
   // Only Claude's own page: its voice features are the purpose, and other sites keep their browser.
   const voice =
     isTop && location.hostname === VOICE_HOSTNAME
-      ? installVoiceBridge(window, (message) => emitter.emitVoice(message))
+      ? installVoiceBridge(window, (message) => emitter.emitVoice(message), mask)
       : null;
   // Website notifications go to the person's device. Top documents only, and only with the
   // gateway's bridge: the standalone fixtures have nothing to answer them.
   const notifications =
     isTop && mainWorldBridge !== undefined && /^https?:$/.test(location.protocol)
-      ? installNotificationShim(window, (message) => emitter.emitNotify(message))
+      ? installNotificationShim(window, (message) => emitter.emitNotify(message), mask)
       : null;
   let crossOriginIframeMirror: CrossOriginIframeMirror | null = null;
   const recordReadiness = createRecordReadiness();

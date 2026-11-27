@@ -12,14 +12,17 @@ describe("agent session config", () => {
     expect(readAgentConfig({ canvas: { fps: 12, quality: 0.55 } })).toEqual({
       canvas: { enabled: true, fps: 12, quality: 0.55, sites: [...DEFAULT_CANVAS_SITES] },
       bridge: DEFAULT_AGENT_CONFIG.bridge,
+      hardening: true,
     });
     expect(readAgentConfig({ canvas: { fps: 1, quality: -1 } })).toEqual({
       canvas: { enabled: true, fps: 4, quality: 0.1, sites: [...DEFAULT_CANVAS_SITES] },
       bridge: DEFAULT_AGENT_CONFIG.bridge,
+      hardening: true,
     });
     expect(readAgentConfig({ canvas: { fps: 60, quality: 2 } })).toEqual({
       canvas: { enabled: true, fps: 15, quality: 1, sites: [...DEFAULT_CANVAS_SITES] },
       bridge: DEFAULT_AGENT_CONFIG.bridge,
+      hardening: true,
     });
   });
 
@@ -27,6 +30,7 @@ describe("agent session config", () => {
     expect(readAgentConfig({ canvas: { enabled: false } })).toEqual({
       canvas: { enabled: false, fps: 8, quality: 0.7, sites: [...DEFAULT_CANVAS_SITES] },
       bridge: DEFAULT_AGENT_CONFIG.bridge,
+      hardening: true,
     });
     expect(readAgentConfig({ canvas: { enabled: true } }).canvas.enabled).toBe(true);
     expect(readAgentConfig({ canvas: { sites: ["*"] } }).canvas.sites).toEqual(["*"]);
@@ -41,6 +45,13 @@ describe("agent session config", () => {
       expect(readAgentConfig({ canvas: { enabled } }).canvas.enabled).toBe(true);
     },
   );
+
+  it("hardens unless told not to, by a boolean only", () => {
+    expect(readAgentConfig(undefined).hardening).toBe(true);
+    expect(readAgentConfig({ hardening: false }).hardening).toBe(false);
+    expect(readAgentConfig({ hardening: "0" }).hardening).toBe(true);
+    expect(readAgentConfig({ hardening: true }).hardening).toBe(true);
+  });
 
   it("accepts private per-session bridge names and rejects unusable values", () => {
     expect(

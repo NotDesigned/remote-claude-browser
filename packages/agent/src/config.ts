@@ -16,6 +16,12 @@ export interface CanvasSnapshotConfig {
 export interface AgentConfig {
   canvas: CanvasSnapshotConfig;
   bridge: AgentBridgeConfig;
+  /**
+   * The page cannot tell the recorder is there: every replaced built-in looks native, rrweb makes no
+   * hidden frame, frames talk without fixed names. False (MIRROR_AGENT_HARDENING=0) restores the
+   * earlier agent exactly.
+   */
+  hardening: boolean;
 }
 
 export interface AgentBridgeConfig {
@@ -49,7 +55,18 @@ export const DEFAULT_AGENT_CONFIG: AgentConfig = {
     nodeResponseEventName: "__mirror_node_response",
     readyEventName: "__mirror_ready",
   },
+  hardening: true,
 };
+
+/**
+ * Whether this document's agent runs hardened. Set once, at agent start, for the code that has no
+ * config of its own (the command handler).
+ */
+let hardened = DEFAULT_AGENT_CONFIG.hardening;
+export const isHardened = (): boolean => hardened;
+export function setHardened(value: boolean): void {
+  hardened = value;
+}
 
 function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
@@ -112,5 +129,11 @@ export function readAgentConfig(value: unknown): AgentConfig {
       nodeResponseEventName: bridgeString("nodeResponseEventName"),
       readyEventName: bridgeString("readyEventName"),
     },
+    hardening:
+      typeof value === "object" &&
+      value !== null &&
+      typeof (value as { hardening?: unknown }).hardening === "boolean"
+        ? (value as { hardening: boolean }).hardening
+        : DEFAULT_AGENT_CONFIG.hardening,
   };
 }

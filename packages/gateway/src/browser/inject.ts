@@ -155,6 +155,7 @@ export function injectAgent(
         nodeResponseEventName: channel.nodeResponseEventName,
         readyEventName: channel.readyEventName,
       },
+      hardening: process.env.MIRROR_AGENT_HARDENING !== "0",
     });
     // A page opened in a new window does not answer these until it is resumed, so they are sent in
     // order and only then awaited. Awaiting each one left that window blank until the protocol timed

@@ -65,6 +65,41 @@ describe("clipboard hooks", () => {
     cleanup();
   });
 
+  it("with the native mask, replaces the prototype's methods and adds no own property", async () => {
+    const { createContext, runInContext } = await import("node:vm");
+    const context = createContext({});
+    const win = runInContext("globalThis", context) as Window & typeof globalThis;
+    const { installNativeMask } = await import("./native-mask");
+    const mask = installNativeMask(win);
+    const nativeWrite = vi.fn(async (_text: string) => undefined);
+    class Clipboard {}
+    Object.defineProperty(Clipboard.prototype, "writeText", {
+      value: nativeWrite,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+    const clipboard = new Clipboard() as { writeText(text: string): Promise<void> };
+    const before = Object.getOwnPropertyDescriptor(Clipboard.prototype, "writeText")!;
+    const clips: string[] = [];
+    const cleanup = installClipboardHooks({
+      capturedWrite: captureClipboardWrite({ clipboard }),
+      emitter: { emitClipboard: (text) => clips.push(text) },
+      window: new FakeWindow(),
+      mask,
+    });
+    expect(Reflect.ownKeys(clipboard)).toEqual([]);
+    const after = Object.getOwnPropertyDescriptor(Clipboard.prototype, "writeText")!;
+    expect({ ...after, value: undefined }).toEqual({ ...before, value: undefined });
+    expect("prototype" in (after.value as object)).toBe(false);
+    expect((after.value as () => void).name).toBe(nativeWrite.name);
+    await clipboard.writeText("kept in the page");
+    expect(nativeWrite).not.toHaveBeenCalled();
+    expect(clips).toEqual(["kept in the page"]);
+    cleanup();
+    expect(Object.getOwnPropertyDescriptor(Clipboard.prototype, "writeText")).toEqual(before);
+  });
+
   it("captures native copy while clearing the OS clipboard payload", () => {
     const view = new FakeWindow();
     view.selection = "native selection";
