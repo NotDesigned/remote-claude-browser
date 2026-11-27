@@ -150,7 +150,6 @@ export const NODE_OVERHEAD_BYTES = 200;
 /** Ids removed this many ago are forgotten; adds under them are then orphans, not removals. */
 const GRAVEYARD_LIMIT = 200_000;
 
-
 const isContainer = (node: TNode) =>
   node.type === NodeKind.Document || node.type === NodeKind.Element;
 const isIframe = (node: TNode) => node.type === NodeKind.Element && node.tagName === "iframe";

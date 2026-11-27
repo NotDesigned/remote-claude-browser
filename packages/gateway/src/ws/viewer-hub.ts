@@ -4,12 +4,18 @@
  * Sessions reach their viewers through publish().
  */
 import {
+  CAP_LIVE_TREE,
+  decodeCursorTriples,
   encodeMsg,
   LOCAL_RESYNC_REASON,
+  resyncNode,
   type Down,
   type ServerStatusMsg,
+  type TabId,
   type Up,
 } from "@mirror/protocol";
+import { pageSyncMetrics } from "../hub/live-tree/metrics";
+import type { TabHub } from "../hub/tabhub";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import { isOwnOrigin } from "../auth/origin";
 import type { SessionAccess } from "../auth/session-access";
@@ -29,6 +35,12 @@ const VIDEO_BACKLOG_BYTES = 512 * 1024;
 
 /** The close code that tells a viewer its session ended for good. */
 export const SESSION_ENDED_CODE = 4010;
+/**
+ * One viewer asking this many whole catch-ups of one tab and epoch within the window makes the
+ * gateway check its tree against the page (storm breaker).
+ */
+export const CATCH_UP_STORM_COUNT = 3;
+export const CATCH_UP_STORM_MS = 60_000;
 
 export interface ViewerHubDeps {
   server: HttpServer;
@@ -48,6 +60,8 @@ export interface ViewerHubDeps {
   isStopping(): boolean;
   /** Someone started or stopped looking at the session (a viewer connected or left). */
   onPresence?(sid: string): void;
+  /** The hubs keep live trees (MIRROR_LIVE_TREE): `hello.caps` says so, and catch-ups use them. */
+  liveTree?: boolean;
   report(message: string, error: unknown): void;
 }
 
@@ -70,7 +84,41 @@ export function createViewerHub(deps: ViewerHubDeps) {
   const hasViewer = (sid: string) =>
     [...viewers.values()].some((connection) => connection.sid === sid);
   const onlineSessions = () => new Set([...viewers.values()].map((connection) => connection.sid));
-  const caps = ackCaps(inputAckConfig().acks);
+  const caps = [...ackCaps(inputAckConfig().acks), ...(deps.liveTree ? [CAP_LIVE_TREE] : [])];
+  /** Whole catch-ups each viewer asked for, per tab and epoch, for the storm breaker. */
+  const catchUpTimes = new WeakMap<ViewerConn, Map<string, number[]>>();
+  const noteWholeCatchUp = (viewer: ViewerConn, hub: TabHub) => {
+    pageSyncMetrics.catchUp.synth += 1;
+    let byTab = catchUpTimes.get(viewer);
+    if (byTab === undefined) catchUpTimes.set(viewer, (byTab = new Map()));
+    const key = `${hub.tabId}:${hub.epoch}`;
+    const now = Date.now();
+    const times = (byTab.get(key) ?? []).filter((at) => now - at < CATCH_UP_STORM_MS);
+    times.push(now);
+    byTab.set(key, times);
+    // One viewer keeps going apart from the tree it is served: check the tree against the page.
+    if (times.length >= CATCH_UP_STORM_COUNT) {
+      byTab.set(key, []);
+      hub.suspect();
+    }
+  };
+  /**
+   * This viewer's own catch-up of one tab, from the live tree: the subtree of `node` when it can
+   * be had (after the deltas the viewer lacks), else the tab's whole state.
+   */
+  const treeCatchUp = (viewer: ViewerConn, hub: TabHub, node: number | undefined) => (): Down[] => {
+    if (node !== undefined) {
+      const cursor = viewer.cursorFor(hub.tabId);
+      const subtree = hub.subtreeDown(node);
+      if (subtree !== null && cursor !== undefined && hub.canResume(cursor.epoch, cursor.nextSeq)) {
+        pageSyncMetrics.subtree.served += 1;
+        return [...hub.joinPayload(cursor), subtree];
+      }
+      pageSyncMetrics.subtree.fallback += 1;
+    }
+    noteWholeCatchUp(viewer, hub);
+    return hub.joinPayload();
+  };
   const roles = createRoleManager({
     // Read for each connection: deploy-viewer.sh publishes a viewer without restarting this.
     build: deps.build,
@@ -129,10 +177,20 @@ export function createViewerHub(deps: ViewerHubDeps) {
       sendVoice(runtime.account, message.tab, { state: message.ok });
       return;
     }
+    if (message.t === "held") {
+      viewers.get(id)?.viewer.setHeld(decodeCursorTriples(message.tabs));
+      return;
+    }
     if (message.t === "resync-req") {
       ws.fanout.flushSession(runtime.sid);
       const hub = runtime.tabs.hubFor(message.tab);
       const viewer = viewers.get(id)?.viewer;
+      // With the live tree, any viewer's resync is its own: answered from the gateway's state,
+      // never by asking the page for a snapshot that every viewer would rebuild from.
+      if (deps.liveTree && hub !== undefined && hub.treeState !== "off" && viewer !== undefined) {
+        viewer.requestCatchUp(message.tab, treeCatchUp(viewer, hub, resyncNode(message.node)));
+        return;
+      }
       // This viewer's typing echo went its own way; the stream itself is fine, so the cached
       // state answers it without making every viewer rebuild from a new page snapshot.
       if (message.reason === LOCAL_RESYNC_REASON && hub !== undefined && viewer !== undefined) {
@@ -177,6 +235,7 @@ export function createViewerHub(deps: ViewerHubDeps) {
     replaceSessionOnConnect: true,
     requireConnectionKey: true,
     hubsForSession: (sid) => registry.get(sid)?.tabs.hubs() ?? [],
+    liveTree: deps.liveTree === true,
     sessionForRequest: (request) => {
       const sid = sidFromRequest(request);
       return sid && access.sessionGrant(request, sid)?.runtime ? sid : undefined;
@@ -288,8 +347,36 @@ export function createViewerHub(deps: ViewerHubDeps) {
     );
   };
 
+  /**
+   * A tab became the active one: each viewer of the session gets what it lacks of it, at once
+   * and in order after the `tabs` message. A viewer that still holds the tab's replay within the
+   * tail gets the tail and `caught-up`; any other gets the tab's state.
+   */
+  function catchUpViewers(sid: string, tab: TabId, hub: TabHub): void {
+    if (deps.isStopping() || registry.isClosing(sid)) return;
+    ws.fanout.flushSession(sid);
+    for (const connection of viewers.values()) {
+      if (connection.sid !== sid) continue;
+      const viewer = connection.viewer;
+      if (!viewer.canCatchUp) continue;
+      viewer.cancelCatchUp(tab);
+      const held = viewer.heldCursor(tab);
+      if (held !== undefined && hub.canResume(held.epoch, held.nextSeq)) {
+        pageSyncMetrics.catchUp.tail += 1;
+        viewer.sendCatchUp([
+          ...hub.joinPayload(held),
+          { t: "caught-up", tab, epoch: hub.epoch, seq: hub.seq },
+        ]);
+        continue;
+      }
+      pageSyncMetrics.catchUp.synth += 1;
+      viewer.sendCatchUp(hub.joinPayload());
+    }
+  }
+
   return {
     publish,
+    catchUpViewers,
     broadcastStatus,
     onlineSessions,
     /** How many devices have a viewer connected. */

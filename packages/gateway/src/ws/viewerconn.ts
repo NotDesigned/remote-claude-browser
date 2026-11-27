@@ -13,7 +13,8 @@
  * cap, is closed; it reconnects and starts again from a snapshot.
  */
 import { encodeWithInlineSheets, sheetsOf } from "../hub/snapshot-sheets";
-import { encodeMsg, type Down, type TabId } from "@mirror/protocol";
+import { serializedDown } from "../hub/tabhub";
+import { encodeMsg, type Down, type ResumeCursor, type TabId } from "@mirror/protocol";
 
 export const STALL_BYTES = 8 * 1024 * 1024;
 export const RESUME_BYTES = 1 * 1024 * 1024;
@@ -63,13 +64,15 @@ interface PxFlow {
   timer?: NodeJS.Timeout;
 }
 
-interface ReplayCursor {
+export interface ReplayCursor {
   epoch: number;
   nextSeq: number;
 }
 
 export class ViewerConn {
   private readonly cursors = new Map<TabId, ReplayCursor>();
+  /** The replays this viewer says it still holds (`held`, with the live tree). */
+  private readonly held = new Map<TabId, ReplayCursor>();
   private readonly drainPollMs: number;
   private drainTimer: NodeJS.Timeout | null = null;
   private readonly knownSheets: Set<string> | undefined;
@@ -90,7 +93,8 @@ export class ViewerConn {
 
   constructor(
     readonly socket: ViewerSocket,
-    private readonly getJoinPayload: () => Down[],
+    /** Every tab's catch-up; with cursors, a tab this connection is in step with gets its tail. */
+    private readonly getJoinPayload: (cursors?: ReadonlyMap<TabId, ReplayCursor>) => Down[],
     opts: ViewerConnOpts = {},
   ) {
     this.drainPollMs = opts.drainPollMs ?? 30;
@@ -117,6 +121,9 @@ export class ViewerConn {
   send(msg: Down, serialized: Serialized): boolean {
     if (!this.isOpen()) return false;
     if (msg.t === "delta" && this.wasAlreadyReplayed(msg)) return false;
+    // The catch-up waiting for this tab is built when it is sent and covers these; sent now, they
+    // would reach the viewer before it, and the catch-up would then go back in time.
+    if (msg.t === "delta" && this.pendingCatchUps.has(msg.tab)) return false;
     if (this.overHardCap()) return false;
     if (msg.t === "audio" && (this.stalled || this.socket.bufferedAmount > AUDIO_DROP_BYTES))
       return false;
@@ -160,9 +167,50 @@ export class ViewerConn {
   sendCatchUp(payload: readonly Down[]): void {
     if (!this.isOpen()) return;
     for (const msg of payload) {
-      this.socket.send(msg.t === "snapshot" ? this.snapshotFrame(msg) : encodeMsg(msg));
+      this.socket.send(
+        msg.t === "snapshot"
+          ? this.snapshotFrame(msg, serializedDown(msg))
+          : (serializedDown(msg) ?? encodeMsg(msg)),
+      );
       this.advanceCursor(msg);
     }
+  }
+
+  /** What this connection has sent of `tab`: the next seq of its epoch, if any. */
+  cursorFor(tab: TabId): ReplayCursor | undefined {
+    return this.cursors.get(tab);
+  }
+
+  /** The viewer's `held` replays; they replace what it said before. */
+  setHeld(cursors: readonly ResumeCursor[]): void {
+    this.held.clear();
+    for (const cursor of cursors)
+      this.held.set(cursor.tab, { epoch: cursor.epoch, nextSeq: cursor.nextSeq });
+  }
+
+  /**
+   * A replay of `tab` the viewer holds that this connection can continue: in the epoch this
+   * connection last sent and no further along than what it sent. Anything else is ignored.
+   */
+  heldCursor(tab: TabId): ReplayCursor | undefined {
+    const held = this.held.get(tab);
+    const sent = this.cursors.get(tab);
+    if (held === undefined || sent === undefined) return undefined;
+    if (held.epoch !== sent.epoch || held.nextSeq > sent.nextSeq) return undefined;
+    return held;
+  }
+
+  /** Whether a catch-up can be sent now (not stalled, not closed). */
+  get canCatchUp(): boolean {
+    return this.isOpen() && !this.stalled;
+  }
+
+  /** Forgets a coalesced catch-up for `tab`: one that covers it is being sent now. */
+  cancelCatchUp(tab: TabId): void {
+    const pending = this.pendingCatchUps.get(tab);
+    if (pending === undefined) return;
+    clearTimeout(pending.timer);
+    this.pendingCatchUps.delete(tab);
   }
 
   /**
@@ -317,10 +365,12 @@ export class ViewerConn {
       }
 
       // Keep `stalled` true during the flush: this connection drops the pending tail while its
-      // healthy peers receive it, then gets that same tail exactly once from joinPayload().
+      // healthy peers receive it, then gets that same tail exactly once from joinPayload(). The
+      // deltas it dropped never advanced its cursors, so a hub that still has them sends only
+      // those (a short stall), and one that does not, its current state.
       this.beforeResync?.();
       this.stalled = false;
-      this.sendJoinPayload();
+      if (this.isOpen()) this.sendCatchUp(this.getJoinPayload(this.cursors));
     }, this.drainPollMs);
     this.drainTimer.unref();
   }
@@ -359,6 +409,8 @@ export class ViewerConn {
         epoch: msg.epoch,
         nextSeq: msg.seq + msg.data.length,
       });
+    } else if (msg.t === "caught-up") {
+      this.cursors.set(msg.tab, { epoch: msg.epoch, nextSeq: msg.seq + 1 });
     } else if (msg.t === "resync") {
       this.cursors.delete(msg.tab);
     }

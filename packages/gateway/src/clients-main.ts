@@ -66,6 +66,9 @@ import { registerUploadRoutes } from "./uploads";
 import { registerSecurityHeaders } from "./security-headers";
 import { gatewayHost, registerViewerStatic, trustedProxies, viewerBuildId } from "./serving";
 import { createClientRuntime, type ClientRuntime } from "./session/client-runtime";
+import { sharedTreeBudget } from "./hub/live-tree/budget";
+import { processLiveTreeConfig } from "./hub/live-tree/config";
+import type { LiveTreeOptions } from "./hub/tabhub";
 import { ClientSessionError, createClientSessions, isClientSlot } from "./session/clients";
 import { createIdleReaper, PAGE_GENERATING_EXPRESSION } from "./session/idle-reaper";
 import { createLifecycleLock } from "./session/lifecycle-lock";
@@ -82,6 +85,19 @@ export async function startClientGateway(
   } = {},
 ) {
   const e2e = process.env.MIRROR_E2E === "1";
+  // MIRROR_LIVE_TREE and its limits: refused at startup when malformed.
+  const liveTree = processLiveTreeConfig();
+  const liveTreeOptions: LiveTreeOptions | false = liveTree.enabled
+    ? {
+        ringEvents: liveTree.ringEvents,
+        ringBytes: liveTree.ringBytes,
+        maxNodes: liveTree.maxNodes,
+        maxBytes: liveTree.maxBytes,
+        maxSidecar: liveTree.maxSidecar,
+        verify: liveTree.verify,
+        budget: sharedTreeBudget(liveTree.totalMaxBytes),
+      }
+    : false;
   const managedProfile = !process.env.CHROME_USER_DATA_DIR;
   const profile =
     process.env.CHROME_USER_DATA_DIR ?? (await mkdtemp(join(tmpdir(), "mirror-clients-")));
@@ -348,6 +364,8 @@ export async function startClientGateway(
           isDriver: (viewerId, sid) => hub.isDriver(viewerId, sid),
           backlogged: (sid) => hub.backlogged(sid),
           sendViewer: (viewerId, sid, message) => hub.sendViewer(viewerId, sid, message),
+          liveTree: liveTreeOptions,
+          catchUpViewers: (sid, tab, tabHub) => hub.catchUpViewers(sid, tab, tabHub),
           pixelCapacity,
           grabSlots,
           displayGrabbable:
@@ -466,6 +484,7 @@ export async function startClientGateway(
     build: () => viewerBuildId(),
     isStopping,
     onPresence: (sid) => notifications.presenceChanged(sid),
+    liveTree: liveTree.enabled,
     report,
   });
   const idleReaper = createIdleReaper({

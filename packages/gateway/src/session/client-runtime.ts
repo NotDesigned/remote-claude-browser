@@ -30,6 +30,7 @@ import { createUploadManager } from "../uploads";
 import { ClientSessionError, type ClientRecord } from "./clients";
 import type { ClientSessions, RuntimeStart } from "./runtime-registry";
 import { createTabLifecycle } from "./tabs";
+import type { LiveTreeOptions, TabHub } from "../hub/tabhub";
 
 export interface ClientRuntime {
   sid: string;
@@ -73,6 +74,10 @@ export interface ClientRuntimeDeps {
   onNavigated(account: Account, sid: string, message: { tab: string; url: string }): void;
   /** A tab of the workspace went away (closed, or its target detached). */
   onTabClosed?(sid: string, tab: string): void;
+  /** Each tab's live tree (MIRROR_LIVE_TREE); absent or false keeps the legacy store. */
+  liveTree?: LiveTreeOptions | false;
+  /** A tab became active: catch the session's viewers up on it, each with what it lacks. */
+  catchUpViewers?(sid: string, tab: string, hub: TabHub): void;
   report(message: string, error: unknown): void;
 }
 
@@ -131,6 +136,10 @@ export async function createClientRuntime(
     publish,
     onSnapshot: (snapshot) => recovery?.noteSnapshot(snapshot.tab),
     onError: (error) => report("client tab failed", error),
+    liveTree: deps.liveTree ?? false,
+    ...(deps.catchUpViewers === undefined
+      ? {}
+      : { catchUp: (tab: string, hub: TabHub) => deps.catchUpViewers!(sid, tab, hub) }),
   });
   const isDriver = (id: string) => deps.isDriver(id, sid);
   const phone = deps.sessions.get(sid)?.phone === true;
