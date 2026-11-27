@@ -147,7 +147,7 @@ describe("edit hashes", () => {
   });
 
   it("does not see what no reader can: NBSP, CRLF, a trailing newline", () => {
-    expect(editHash("a b")).toBe(editHash("a b"));
+    expect(editHash("a\u00a0b")).toBe(editHash("a b"));
     expect(editHash("a\r\nb")).toBe(editHash("a\nb"));
     expect(editHash("a\rb")).toBe(editHash("a\nb"));
     expect(editHash("text\n")).toBe(editHash("text"));
@@ -162,7 +162,7 @@ describe("edit hashes", () => {
   });
 
   it("keeps the normalization shared with the agent", () => {
-    expect(normalizeEditableText("x \r\n\n")).toBe("x ");
+    expect(normalizeEditableText("x\u00a0\r\n\n")).toBe("x ");
     expect(sameEditableText("hello world\n", "hello world")).toBe(true);
     expect(sameEditableText("a\nb", "ab")).toBe(false);
   });

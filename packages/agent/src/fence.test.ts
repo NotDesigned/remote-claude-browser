@@ -134,7 +134,7 @@ describe("fence", () => {
   it("reports a textarea's length, hash and selection, and its text only when asked", async () => {
     const document = fakeDocument();
     const textarea = element(document, "textarea", [], {
-      value: "hello world\n",
+      value: "hello\u00a0world\n",
       selectionStart: 5,
       selectionEnd: 11,
       disabled: false,

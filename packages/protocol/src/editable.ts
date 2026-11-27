@@ -34,7 +34,10 @@ export function editableText(node: EditableTextNode): string {
  * are the differences no reader of the text could see.
  */
 export function normalizeEditableText(text: string): string {
-  return text.replace(/ /g, " ").replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+  return text
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\n+$/, "");
 }
 
 export function sameEditableText(actual: string, expected: string): boolean {
