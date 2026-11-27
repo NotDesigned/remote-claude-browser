@@ -62,6 +62,7 @@ export interface InputRelayDeps {
    * on unless MIRROR_AGENT_HARDENING=0, where the agent dispatches its synthetic wheel instead.
    */
   announceScrollUp?: boolean;
+  /**
    * An input's dispatch settled (input acks, acks.ts): `ok` false when it was refused or failed.
    * A coalesced hover, wheel or scroll is reported once, as the newest message it became.
    */

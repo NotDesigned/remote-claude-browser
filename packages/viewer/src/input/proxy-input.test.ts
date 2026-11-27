@@ -62,6 +62,7 @@ function setup() {
       tab: "t",
       iseq: stamped,
       mode: "page",
+      fenced: true,
       edit: { node: 7, len: text.length, hash: editHash(text), sel: [sel, sel] },
       failed: [],
       failedValue: false,

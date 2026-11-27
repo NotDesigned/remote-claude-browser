@@ -379,7 +379,13 @@ async function run(
         sessionId: "client-1",
         serverTs: Date.now(),
         ...(acks.caps.length > 0 || liveTree
-          ? { caps: [...acks.caps, ...(proxyInput ? ["proxyin1"] : []), ...(liveTree ? ["tree1"] : [])] }
+          ? {
+              caps: [
+                ...acks.caps,
+                ...(proxyInput ? ["proxyin1"] : []),
+                ...(liveTree ? ["tree1"] : []),
+              ],
+            }
           : {}),
       }),
     );

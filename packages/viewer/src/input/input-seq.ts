@@ -20,7 +20,6 @@ import {
   CAP_INPUT_ACKS,
   isAckedInput,
   CAP_PROXY_INPUT,
-  isInputUp,
   type EditState,
   type InputAckMsg,
   type TabId,

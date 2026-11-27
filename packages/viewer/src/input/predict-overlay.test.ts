@@ -54,6 +54,7 @@ const pageAck = (iseq: number, text: string, extra: Partial<SettledAck> = {}): S
   tab: "t",
   iseq,
   mode: "page",
+  fenced: true,
   edit: { node: 7, len: text.length, hash: editHash(text), sel: [text.length, text.length] },
   failed: [],
   failedValue: false,

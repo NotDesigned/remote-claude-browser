@@ -84,7 +84,10 @@ export function createViewerHub(deps: ViewerHubDeps) {
   const hasViewer = (sid: string) =>
     [...viewers.values()].some((connection) => connection.sid === sid);
   const onlineSessions = () => new Set([...viewers.values()].map((connection) => connection.sid));
-  const caps = [...ackCaps(inputAckConfig().acks, proxyInputConfig()), ...(deps.liveTree ? [CAP_LIVE_TREE] : [])];
+  const caps = [
+    ...ackCaps(inputAckConfig().acks, proxyInputConfig()),
+    ...(deps.liveTree ? [CAP_LIVE_TREE] : []),
+  ];
   /** Whole catch-ups each viewer asked for, per tab and epoch, for the storm breaker. */
   const catchUpTimes = new WeakMap<ViewerConn, Map<string, number[]>>();
   const noteWholeCatchUp = (viewer: ViewerConn, hub: TabHub) => {
