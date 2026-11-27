@@ -10,15 +10,20 @@
 import {
   NODE_IN_FRAME_ERROR,
   editableText,
+  normalizeEditableText,
+  sameEditableText,
   type AgentCmd,
   type ResolveResult,
 } from "@mirror/protocol";
 import { record } from "@rrweb/record";
 import type { Emitter } from "./emit";
+import { createFence, focusedEditingHost } from "./fence";
 
 export interface NodeMirror {
   getIds(): number[];
   getNode(nodeId: number): Node | null;
+  /** The recorder's id for a node, or -1 (rrweb's mirror has it). */
+  getId?(node: Node): number;
 }
 
 export interface CrossOriginIframeMirror {
@@ -45,6 +50,9 @@ export interface CommandDependencies {
   /** Timers for re-checking an editor after an edit; tests replace them. */
   schedule?: (callback: () => void, delayMs: number) => void;
   editableSettleDelaysMs?: readonly number[];
+  /** The document a fence reads the focused field of, and its channel; tests replace them. */
+  fenceDocument?: Document;
+  fenceChannel?: typeof MessageChannel;
 }
 
 const DEFAULT_SNAPSHOT_READY_TIMEOUT_MS = 2_000;
@@ -223,21 +231,11 @@ function announceScrollUp(scroller: Element, y: number): void {
 }
 
 /**
- * Rich editors (ProseMirror, Lexical, claude.ai's composer) answer an `insertText` by rebuilding
- * their DOM a moment later, and store a typed space as U+00A0 or end with an empty paragraph. An
- * exact check one microtask after the edit therefore reported failures that were not failures and
- * blocked the user's Enter. These are the differences no reader of the text could see.
+ * An exact check one microtask after an edit reported failures that were not failures and blocked
+ * the user's Enter: rich editors rebuild their DOM a moment later and store a typed space as
+ * U+00A0. The comparison that ignores what no reader could see is shared through the protocol.
  */
-export function normalizeEditableText(text: string): string {
-  return text
-    .replace(/\u00a0/g, " ")
-    .replace(/\r\n?/g, "\n")
-    .replace(/\n+$/, "");
-}
-
-export function sameEditableText(actual: string, expected: string): boolean {
-  return actual === expected || normalizeEditableText(actual) === normalizeEditableText(expected);
-}
+export { normalizeEditableText, sameEditableText };
 
 /** When to look again after the edit: about 100 ms in all, which a rich editor settles within. */
 const EDITABLE_SETTLE_DELAYS_MS = [0, 16, 34, 50];
@@ -338,15 +336,10 @@ export function rebaseEditable(
   return fromStart() ?? fromEnd(current.length) ?? current;
 }
 
-function focusedEditingHost(document: Document): HTMLElement | null {
-  let active = document.activeElement as HTMLElement | null;
-  if (active === null || !active.isContentEditable) return null;
-  while (active.parentElement?.isContentEditable) active = active.parentElement;
-  return active;
-}
+export { focusedEditingHost };
 
 export function createCommandHandler(
-  emitter: Pick<Emitter, "emit">,
+  emitter: Pick<Emitter, "emit"> & { readonly docId?: number },
   dependencies: CommandDependencies = {},
 ): (cmd: AgentCmd) => void {
   const schedule =
@@ -371,6 +364,7 @@ export function createCommandHandler(
   };
 
   const frames: FrameIdCache = { ids: null };
+  let fence: ReturnType<typeof createFence> | null = null;
   const handler = (cmd: AgentCmd): void => {
     try {
       const nodeMirror = getNodeMirror();
@@ -623,6 +617,16 @@ export function createCommandHandler(
           emitter.emit({ kind: "cmdres", reqId: cmd.reqId, ok: true });
           return;
         }
+        case "fence":
+          fence ??= createFence({
+            emitter,
+            docId: emitter.docId ?? 0,
+            getId: (node) => getNodeMirror().getId?.(node) ?? -1,
+            document: dependencies.fenceDocument ?? document,
+            ...(dependencies.fenceChannel ? { MessageChannel: dependencies.fenceChannel } : {}),
+          });
+          fence(cmd);
+          return;
         case "ping":
           emitter.emit({ kind: "cmdres", reqId: cmd.reqId, ok: true, data: "pong" });
           return;
