@@ -18,6 +18,7 @@ import { createGrabSlots, createPixelWindow } from "../browser/pixel-window";
 import { createRendererRecovery } from "../browser/recovery";
 import { createClaudeTheme } from "../claude/theme";
 import { createViewportAgreement } from "../hub/viewport";
+import { createAckScheduler, inputAckConfig, type AckScheduler } from "../input/acks";
 import { createInputRelay } from "../input/relay";
 import { createScreencast } from "../px";
 import type { createPixelCapacity } from "../px-capacity";
@@ -42,6 +43,8 @@ export interface ClientRuntime {
   tabs: ReturnType<typeof createTabLifecycle>;
   viewport: ReturnType<typeof createViewportAgreement>;
   input: ReturnType<typeof createInputRelay>;
+  /** Input acknowledgements for the driver (input/acks.ts); absent when MIRROR_INPUT_ACKS=off. */
+  acks?: AckScheduler;
   pixels: ReturnType<typeof createScreencast>;
   navigation: ReturnType<typeof createNavigationController>;
   recovery: ReturnType<typeof createRendererRecovery>;
@@ -144,7 +147,17 @@ export async function createClientRuntime(
     deps.displayGrabbable && scoped.sendBrowser
       ? createPixelWindow({ sendBrowser: scoped.sendBrowser, display: account.display?.env })
       : undefined;
+  const ackConfig = inputAckConfig();
+  let acks: AckScheduler | undefined;
   const input = createInputRelay({
+    ...(ackConfig.acks === "off"
+      ? {}
+      : {
+          onDispatched: (viewerId, message, ok) => acks?.noteDispatched(viewerId, message, ok),
+          beforeDispatch: async (viewerId, message) =>
+            (await acks?.beforeDispatch(viewerId, message)) ?? true,
+          onReset: (tab) => acks?.reset(tab),
+        }),
     onValueStatus: (tab, failed, reason) =>
       publish({ t: "input-status", tab, failed, ...(reason ? { reason } : {}) }),
     agentLink: ownAgent,
@@ -163,6 +176,20 @@ export async function createClientRuntime(
     },
     viewportFor: (tab) => viewport.viewportFor(tab),
   });
+  if (ackConfig.acks !== "off")
+    acks = createAckScheduler({
+      fence: (tab, n, text) =>
+        ownAgent.sendCmd(tab, { cmd: "fence", n, ...(text === true ? { text: true } : {}) }),
+      hubFor: (tab) => tabs.hubFor(tab),
+      sendTo: (viewerId, message) => {
+        deps.sendViewer(viewerId, sid, message);
+      },
+      enqueue: input.enqueue,
+      isIdle: input.isIdle,
+      guard: ackConfig.guard,
+      onGuard: (tab, kind, refused) =>
+        console.log(`submit guard: ${sid} ${tab} ${kind}${refused ? " refused" : ""}`),
+    });
   // What the input relay keeps per tab goes with the tab.
   scoped.onDetached((target) => {
     if (target.type !== "page" || targets.has(target.targetId)) return;
@@ -273,6 +300,7 @@ export async function createClientRuntime(
     tabs,
     viewport,
     input,
+    ...(acks === undefined ? {} : { acks }),
     pixels,
     navigation,
     recovery,

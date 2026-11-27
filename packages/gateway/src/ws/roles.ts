@@ -42,6 +42,8 @@ export interface RoleManagerOptions {
    * connection: the viewer can be published again while the gateway keeps running.
    */
   build?: () => string | undefined;
+  /** `hello.caps`: what this gateway does beyond the base protocol (input acks and so on). */
+  caps?: () => readonly string[];
 }
 
 export type UpDisposition = "forwarded" | "handled" | "dropped";
@@ -125,6 +127,7 @@ export function createRoleManager(options: RoleManagerOptions = {}): RoleManager
       }
 
       const build = options.build?.();
+      const caps = options.caps?.() ?? [];
       send(peer, {
         t: "hello",
         viewerId,
@@ -134,6 +137,7 @@ export function createRoleManager(options: RoleManagerOptions = {}): RoleManager
         ...(connection.viewportLimit && { viewportLimit: connection.viewportLimit }),
         ...(connection.resumed?.length ? { resumed: [...connection.resumed] } : {}),
         ...(build === undefined ? {} : { build }),
+        ...(caps.length > 0 ? { caps: [...caps] } : {}),
       });
       broadcastState(session);
       return viewerId;

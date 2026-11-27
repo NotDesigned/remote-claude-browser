@@ -31,6 +31,10 @@ function harness(
     rectTimeoutMs?: number;
     value?: () => Promise<CmdRes>;
     nativePointer?: Parameters<typeof createInputRelay>[0]["nativePointer"];
+    hooks?: Pick<
+      Parameters<typeof createInputRelay>[0],
+      "onDispatched" | "beforeDispatch" | "onReset"
+    >;
   } = {},
 ) {
   const cdp: { sessionId: string; method: string; params?: Record<string, unknown> }[] = [];
@@ -79,9 +83,104 @@ function harness(
     viewportFor: () => ({ w: 640, h: 480 }),
     rectTimeoutMs: options.rectTimeoutMs ?? 10,
     nativePointer: options.nativePointer,
+    ...options.hooks,
   });
   return { relay, cdp, commands, notes, rectCalls: () => rectCalls };
 }
+
+describe("InputRelay acknowledgement hooks", () => {
+  it("reports each dispatch once, a merged hover as the newest message it became", async () => {
+    let release!: (value: CmdRes) => void;
+    const reported: Array<[string, number | undefined, boolean]> = [];
+    const h = harness({
+      rect: (call) =>
+        call === 1
+          ? new Promise((resolve) => {
+              release = resolve;
+            })
+          : Promise.resolve({
+              reqId: call,
+              ok: true,
+              data: { x: 10, y: 20, w: 100, h: 80, visible: true },
+            }),
+      rectTimeoutMs: 1000,
+      hooks: {
+        onDispatched: (viewerId, msg, ok) => reported.push([viewerId, msg.iseq, ok]),
+      },
+    });
+    const hover = (iseq: number) => ({ ...pointer("move"), buttons: 0, iseq });
+    const first = h.relay("driver", hover(1));
+    await vi.waitFor(() => expect(h.rectCalls()).toBe(1));
+    const merged = [2, 3, 4].map((iseq) => h.relay("driver", hover(iseq)));
+    const refused = h.relay("spectator", { ...pointer("down"), iseq: 5 });
+    release({ reqId: 1, ok: true, data: { x: 10, y: 20, w: 100, h: 80, visible: true } });
+    await Promise.all([first, ...merged, refused]);
+    expect(reported).toEqual([
+      ["driver", 1, true],
+      ["driver", 4, true],
+      ["spectator", 5, false],
+    ]);
+  });
+
+  it("runs the guard in the queue right before dispatch, and false refuses the input", async () => {
+    const order: string[] = [];
+    const reported: boolean[] = [];
+    const h = harness({
+      hooks: {
+        beforeDispatch: async (_viewer, msg) => {
+          order.push(`guard ${msg.t}`);
+          return msg.t !== "key";
+        },
+        onDispatched: (_viewer, _msg, ok) => reported.push(ok),
+      },
+    });
+    const enter = { t: "key", tab: "tab-1", kind: "down", key: "Enter", code: "Enter", mods: 0 };
+    const results = await Promise.all([
+      h.relay("driver", { t: "text", tab: "tab-1", insert: "a" }),
+      h.relay("driver", enter as InputMsg),
+    ]);
+    expect(results).toEqual([true, false]);
+    expect(order).toEqual(["guard text", "guard key"]);
+    expect(reported).toEqual([true, false]);
+    expect(h.cdp.map((entry) => entry.method)).toEqual(["Input.insertText"]);
+  });
+
+  it("serializes queued tasks with input, and knows when nothing is queued", async () => {
+    let release!: (value: CmdRes) => void;
+    const h = harness({
+      rect: () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+      rectTimeoutMs: 1000,
+    });
+    const order: string[] = [];
+    expect(h.relay.isIdle("tab-1")).toBe(true);
+    const click = h.relay("driver", pointer("down"));
+    h.relay.enqueue("tab-1", async () => {
+      order.push(`task after ${h.cdp.length} input`);
+    });
+    const typed = h.relay("driver", { t: "text", tab: "tab-1", insert: "a" });
+    expect(h.relay.isIdle("tab-1")).toBe(false);
+    await vi.waitFor(() => expect(h.rectCalls()).toBe(1));
+    release({ reqId: 1, ok: true, data: { x: 10, y: 20, w: 100, h: 80, visible: true } });
+    await Promise.all([click, typed]);
+    expect(order).toEqual(["task after 1 input"]);
+    expect(h.cdp.map((entry) => entry.method)).toEqual([
+      "Input.dispatchMouseEvent",
+      "Input.insertText",
+    ]);
+    expect(h.relay.isIdle("tab-1")).toBe(true);
+  });
+
+  it("tells the acknowledgements when a tab's input is discarded", () => {
+    const resets: string[] = [];
+    const h = harness({ hooks: { onReset: (tab) => resets.push(tab) } });
+    h.relay.resetTab("tab-1");
+    h.relay.forgetTab("tab-2");
+    expect(resets).toEqual(["tab-1", "tab-2"]);
+  });
+});
 
 describe("InputRelay", () => {
   it("routes authorized pixel input to native menus while keeping DOM input on CDP", async () => {
