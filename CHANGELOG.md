@@ -8,6 +8,24 @@
 
 ### 新增
 
+无
+
+### 变更
+
+无
+
+### 移除
+
+无
+
+### 升级步骤
+
+无
+
+## [0.5.0] - 2026-11-28
+
+### 新增
+
 - `MIRROR_AGENT_HARDENING`、`MIRROR_ASSET_DIRECT_FALLBACK`。见 [docs/configuration.md](docs/configuration.md#写在-compose-文件里的变量)。
 - 网页通知：远程浏览器里网站发出的通知（例如 Claude 的任务完成提醒）显示在你自己的设备上。网站请求权限时工作台给出「允许」「拒绝」提示，「⋯」菜单新增「网页通知」开关；点通知会回到工作台、切到对应标签页，网站也收到点击。电脑浏览器和 Android Chrome 可用，iPhone、iPad 需要先把工作台添加到主屏幕。远程浏览器自己的通知和授权提示仍然关闭。见 [docs/usage.md](docs/usage.md#网页通知)。
 - `MIRROR_PROXY_SUBSCRIPTION_ALLOW_PRIVATE`：设为 `1` 时，代理订阅地址可以指向内网和其他保留地址（默认拒绝）。见 [docs/configuration.md](docs/configuration.md#写在-compose-文件里的变量)。
@@ -57,6 +75,10 @@
   - 出口检查（「检查出口」、节点检查、remote-cc 的出口检查）同时进行的数量有上限：每个用户 2 个、全站 8 个，超过时回答 429。
   - CPA 原生管理接口的响应在网关域名下只以数据形式返回：HTML、XML、脚本类型改成纯文本，只保留 `attachment` 形式的下载头，并加上 `sandbox` CSP；转发的路径是网关检查过、已规范化的路径，编码过的 `.` 和分隔符直接拒绝。
   - 每个用户自己新建和绑定的收件地址合计最多 20 个（管理员分配的不计）；验证码没能发出时不再留下待验证的绑定。
+  - 「收件箱」转换 HTML 邮件时跳过其中的图片追踪地址，不为邮件链接生成会在本机打开的普通链接，改为提供「在远程浏览器打开」按钮（未连接远程浏览器时提供「先选择远程浏览器」）。
+  - 「页面里的外部链接」设为「本机浏览器」时，`claude.ai`、`claude.com`、`anthropic.com` 和 `stripe.com` 的链接仍留在远程浏览器里打开。
+  - 页面模式回放去掉网页里的 `preconnect`、`dns-prefetch`、`prefetch`、`preload`、`ping` 和定时跳转，SVG 2 的 `href` 与 `<object data>` 同样经网关代理，查看端不再直接向原站发起请求。
+  - `claude.ai` 上的外观存储包装、语音模式的麦克风音轨属性（及其 `clone()` 副本）和 `<audio autoplay>` 的 `srcObject` 播放都保持浏览器原生接口特征；音视频分段请求补齐浏览器的 `Sec-CH-UA` 和 `Sec-Fetch-*` 请求头。
 - 关闭会话窗口失败时，会话的浏览器保持登记，下次打开沿用它，不会在同一个会话上再开一套窗口；以前它会被忘掉，窗口和计时器却还在。
 - 长时间运行的会话不再随关闭的标签页、切换的子框架和文档积累内部记录（麦克风状态、输入缓存、框架归属、资源缓存键等）。
 - 结束会话时，即使关闭窗口失败，也会删除它的上传临时目录。
@@ -290,7 +312,8 @@
 
 无
 
-[未发布]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.4.0...HEAD
+[未发布]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/NotDesigned/remote-claude-browser/releases/tag/v0.2.0

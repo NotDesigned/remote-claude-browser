@@ -1,6 +1,6 @@
 {
   "name": "remote-browser",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Run Chromium remotely and rebuild its pages as a scriptless interactive mirror",
   "private": true,
   "license": "Apache-2.0",

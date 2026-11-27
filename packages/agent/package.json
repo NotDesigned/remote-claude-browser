@@ -1,6 +1,6 @@
 {
   "name": "@mirror/agent",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "description": "Injected rrweb recorder for Remote Browser",
   "private": true,
   "license": "Apache-2.0",
