@@ -263,6 +263,7 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     outstanding: sequencer.outstanding,
     overlay: predictOverlay,
     node: replayNode,
+    idOf: (node) => mirror.getReplayer()?.getMirror().getId(node) ?? -1,
     replaySelection: () => {
       const root = mirror.getReplayer()?.iframe.contentDocument;
       return root?.getSelection()?.toString() ?? "";

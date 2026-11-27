@@ -36,6 +36,8 @@ export interface PendingEdit {
   first: number;
   last: number;
   ops: PlanOp[];
+  /** Per op, the iseq of the message that has its effect (a key's press, a text). */
+  iseqs: number[];
   /** The text it typed, for the chip if it is not delivered. */
   text: string;
   /** Set by a dispatch-only acknowledgement. */
@@ -304,7 +306,7 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
       if (text === "") hide();
       else showChip(text, null);
       last = {
-        shown: edits.map((edit) => edit.last),
+        shown: edits.flatMap((edit) => edit.iseqs),
         settledPage,
         text,
         visible: null,
@@ -331,7 +333,7 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
       predicted.text.slice(prefix, predicted.text.length - suffix) +
       start.text.slice(to);
     last = {
-      shown: remaining.map((edit) => edit.last),
+      shown: remaining.flatMap((edit) => edit.iseqs),
       settledPage,
       text: drawn,
       visible,
@@ -525,6 +527,7 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
         const failed = edits.filter((edit) =>
           ack.failed.some((iseq) => iseq >= edit.first && iseq <= edit.last),
         );
+        // What the page took of a failed edit stays on the page: its text goes to the chip.
         if (failed.length > 0) {
           if (options.lab) options.lab.failed += failed.length;
           edits = edits.filter((edit) => !failed.includes(edit));
@@ -535,12 +538,18 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
       if (ack.mode === "page") {
         settledPage = Math.max(settledPage, ack.iseq);
         hiddenUntilSettled = false;
-        const dropped = edits.filter((edit) => edit.last <= ack.iseq);
-        edits = edits.filter((edit) => edit.last > ack.iseq);
-        // What the page should hold now, by this viewer's own account. The replay may already
-        // show later edits too (the ack's marker plays after everything the replay was given).
+        // What the page should hold now, by this viewer's own account: every op whose message
+        // the ack covers is on the page (a key's release may not be yet). The replay may already
+        // show later ops too (the ack's marker plays after everything the replay was given).
         let expected = base;
-        if (expected !== null) for (const edit of dropped) expected = applyOps(expected, edit.ops);
+        const kept: PendingEdit[] = [];
+        for (const edit of edits) {
+          const done = edit.iseqs.filter((iseq) => iseq <= ack.iseq).length;
+          if (expected !== null && done > 0) expected = applyOps(expected, edit.ops.slice(0, done));
+          if (done < edit.ops.length && edit.last > ack.iseq)
+            kept.push({ ...edit, ops: edit.ops.slice(done), iseqs: edit.iseqs.slice(done) });
+        }
+        edits = kept;
         const element = field();
         const text = element === null ? null : replayFieldText(element);
         const edit = ack.edit;
@@ -553,11 +562,13 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
             base = { text: value, caret: caretAt(value) };
           } else if (expected !== null && editHash(expected.text) === edit.hash) {
             base = { text: expected.text, caret: caretAt(expected.text) };
-          } else if (text !== null) {
-            if (ack.final && editHash(text) !== edit.hash && options.lab)
-              options.lab.hashMismatch += 1;
-            else if (options.lab && dropped.length > 0) options.lab.hashMismatch += 1;
-            base = { text, caret: caretAt(text) };
+          } else {
+            // The page made something else of it (an input rule, a page of its own mind).
+            if (options.lab) options.lab.hashMismatch += 1;
+            if (text !== null && editHash(text) === edit.hash)
+              base = { text, caret: caretAt(text) };
+            else if (expected !== null) base = { ...expected, caret: caretAt(expected.text) };
+            else if (text !== null) base = { text, caret: caretAt(text) };
           }
         } else if (expected !== null) {
           base = expected;

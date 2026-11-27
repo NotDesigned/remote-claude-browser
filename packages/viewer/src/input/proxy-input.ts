@@ -21,6 +21,7 @@ import { createCompositionGuard } from "./composition-guard";
 import { eventMods, isPasteShortcut } from "./encode";
 import type { HiddenKeyboard } from "./focus-follow";
 import { pastedFiles } from "./keys";
+import { isPasswordField } from "./password";
 import type { SettledAck } from "./input-seq";
 import {
   nextGrapheme,
@@ -50,6 +51,8 @@ export interface ProxyInputOptions {
   overlay: PredictOverlay;
   /** The replay node of a recorder id. */
   node(id: number): Node | null;
+  /** The recorder id of a replay node (-1 when it has none). */
+  idOf?(node: Node): number;
   /** Text selected in the replay with the mouse, for a local copy. */
   replaySelection?(): string;
   onPasteFiles?(files: File[]): void;
@@ -65,6 +68,12 @@ export interface ProxyInput extends HiddenKeyboard {
   flush(): void;
   /** The remote page's focus moved. */
   remoteFocus(focus: RemoteFocus | null): void;
+  /**
+   * The person pressed this replay text field: the page will focus it once the press arrives.
+   * The overlay and the proxy follow at once, so what is typed before the page's focus report
+   * comes back is predicted there (and a password is never drawn as text).
+   */
+  pressed(field: Element): void;
   /** An acknowledgement settled for the tab. */
   settled(ack: SettledAck): void;
   /** The replay applied more of the page's stream: reseed if idle and the field changed. */
@@ -244,23 +253,28 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
     if (id === null) return null;
     const before = options.lastStamped(id);
     let sent = true;
+    const iseqs: number[] = [];
     const send = (message: Up) => {
       if (!options.send(message)) sent = false;
     };
+    const effect = () => iseqs.push(options.lastStamped(id));
     for (const op of ops) {
       if (op.t === "press") {
         send(keyMessage("down", op.key, op.key, 0));
+        effect();
         send(keyMessage("up", op.key, op.key, 0));
       } else if (op.t === "char" && keyEvent !== null) {
         const mods = eventMods(keyEvent);
         send(keyMessage("down", keyEvent.key, keyEvent.code, mods, op.text));
+        effect();
         send(keyMessage("up", keyEvent.key, keyEvent.code, mods));
       } else {
         send({ t: "text", tab: id, insert: op.text });
+        effect();
       }
     }
     const after = options.lastStamped(id);
-    return sent ? { first: before + 1, last: after } : null;
+    return sent ? { first: before + 1, last: after, iseqs } : null;
   };
 
   /** The page's field as the proxy should show it: a reseed. */
@@ -353,7 +367,7 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
       overlay.undelivered(text, false);
       return;
     }
-    overlay.push({ first: sent.first, last: sent.last, ops, text });
+    overlay.push({ first: sent.first, last: sent.last, ops, iseqs: sent.iseqs, text });
     place();
     measureEcho(event);
   };
@@ -597,6 +611,22 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
     hasFocus,
     blur,
     flush,
+    pressed(field) {
+      if (disposed) return;
+      let host = field as HTMLElement;
+      while ((host.parentElement as HTMLElement | null)?.isContentEditable === true)
+        host = host.parentElement!;
+      const id = options.idOf?.(host) ?? -1;
+      if (id < 0) return;
+      const isPassword = isPasswordField(host);
+      if (id === focusId && isPassword === password) return;
+      if (blurTimer !== null) clearTimer(blurTimer);
+      blurTimer = null;
+      focusId = id;
+      swap(isPassword);
+      overlay.setTarget({ nodeId: id, password: isPassword });
+      caretUnknown = true;
+    },
     remoteFocus(focus) {
       if (disposed) return;
       if (focus === null || !focus.editable) {

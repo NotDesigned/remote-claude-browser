@@ -88,7 +88,14 @@ export function createAckHarness(options: {
         sendTo(viewerId, ack) {
           const bytes = Buffer.byteLength(JSON.stringify(ack));
           harness.sent.push({ viewerId, ack, bytes });
-          if (ack.mode === "page" && ack.final && ack.edit && ack.seq !== undefined) {
+          // A password reports no hash: there is nothing to compare.
+          if (
+            ack.mode === "page" &&
+            ack.final &&
+            ack.edit &&
+            ack.edit.hash !== "" &&
+            ack.seq !== undefined
+          ) {
             const history = values.get(ack.edit.node);
             if (history !== undefined) {
               const last = history.filter((entry) => entry.seq <= ack.seq!).at(-1);

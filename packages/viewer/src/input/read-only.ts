@@ -19,6 +19,8 @@ export interface ReadOnlyOptions {
   /** Before focusing the proxy for a press: commit what it composes. */
   flush(): void;
   focus(point?: { clientX: number; clientY: number }): void;
+  /** The field pressed, before the proxy is focused for it. */
+  pressed?(field: Element): void;
   /** Maps a point in `doc` to the viewer document (the replay may be scaled or nested). */
   toViewer?(point: { clientX: number; clientY: number }): { clientX: number; clientY: number };
 }
@@ -39,16 +41,20 @@ export function attachReadOnly(options: ReadOnlyOptions): () => void {
   };
   const onMouseDown = (event: MouseEvent) => {
     if (!event.isTrusted || !options.active() || event.button !== 0) return;
-    if (textFieldOf(event.target) === null) return;
+    const field = textFieldOf(event.target);
+    if (field === null) return;
     event.preventDefault();
     options.flush();
+    options.pressed?.(field);
     options.focus(point(event));
   };
   const onTouchEnd = (event: TouchEvent) => {
     if (!event.isTrusted || !options.active()) return;
-    if (textFieldOf(event.target) === null) return;
+    const field = textFieldOf(event.target);
+    if (field === null) return;
     const touch = event.changedTouches[0];
     options.flush();
+    options.pressed?.(field);
     options.focus(touch === undefined ? undefined : point(touch));
   };
   const onFocusIn = (event: FocusEvent) => {
