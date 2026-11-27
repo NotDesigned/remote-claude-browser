@@ -26,7 +26,7 @@
 import {
   EventType,
   IncrementalSource,
-  REMOTE_FOCUS_EVENT,
+  STICKY_CUSTOM_TAGS,
   WORKING_MARK_ANIMATION,
   type eventWithTime,
 } from "@mirror/protocol";
@@ -150,7 +150,6 @@ export const NODE_OVERHEAD_BYTES = 200;
 /** Ids removed this many ago are forgotten; adds under them are then orphans, not removals. */
 const GRAVEYARD_LIMIT = 200_000;
 
-export const STICKY_TAGS: readonly string[] = [REMOTE_FOCUS_EVENT, WORKING_MARK_ANIMATION];
 
 const isContainer = (node: TNode) =>
   node.type === NodeKind.Document || node.type === NodeKind.Element;
@@ -274,7 +273,7 @@ export class LiveTree {
   private applyEvent(event: eventWithTime): "ok" | "ignored" {
     if (event.type === EventType.Custom) {
       const tag = (event.data as { tag?: unknown }).tag;
-      if (typeof tag !== "string" || !STICKY_TAGS.includes(tag)) return "ignored";
+      if (typeof tag !== "string" || !STICKY_CUSTOM_TAGS.includes(tag)) return "ignored";
       const payload = (event.data as { payload?: { id?: unknown } }).payload;
       const key =
         tag === WORKING_MARK_ANIMATION && typeof payload?.id === "number"
