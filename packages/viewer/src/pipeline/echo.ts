@@ -16,8 +16,25 @@
  * composer clearing itself after sending). Held back until typing settles, the replay showed the
  * sent message in the composer while the next one was typed after it; the reconcile is asked for
  * as soon as that change arrives.
+ *
+ * With input acks (`acks`, a gateway with `ackecho1`), "typing settles" is no longer a guess from
+ * a timer: a field stays held while any input is unacknowledged, until the final ack after its
+ * last input has settled (input/input-seq.ts). That ack carries the hash of what the page's field
+ * holds, compared with what this replay's field holds after it has applied everything before the
+ * ack: equal, and the two are provably in step, so what was held back is dropped; different, and
+ * the reconcile is asked for at once. An ack that covers Enter with the page's field empty, while
+ * this one still shows text, is the page having sent and cleared it. The decay timer stays only as
+ * a ceiling (ACK_LIVENESS_MS) for acks that never come.
  */
-import { EventType, IncrementalSource, type eventWithTime } from "@mirror/protocol";
+import {
+  EventType,
+  IncrementalSource,
+  editHash,
+  editableText,
+  normalizeEditableText,
+  type eventWithTime,
+} from "@mirror/protocol";
+import type { InputLabCounter, SettledAck } from "../input/input-seq";
 import {
   deepActiveElement,
   isContenteditableEchoField,
@@ -37,6 +54,10 @@ interface EditingState {
   timer: ReturnType<typeof setTimeout> | null;
   /** What the page did to this editor that its replay did not see, while typing. */
   suppressed?: SuppressedEdits;
+  /** Ack mode: held until the final ack covering `watermark` settles. */
+  awaiting?: boolean;
+  /** Ack mode: the newest input sent when this field was last typed into. */
+  watermark?: number;
 }
 
 interface SuppressedEdits {
@@ -68,6 +89,21 @@ const RECONCILE_RETRY_MS = 1_000;
 const RECONCILE_RETRIES = 30;
 /** How long after Enter the page taking the editor's text away counts as it sending that text. */
 const SENT_CLEAR_MS = 5_000;
+/** Ack mode: a field typed into is let go after this long without its final ack. */
+export const ACK_LIVENESS_MS = 3_000;
+
+/** The input acks the filter follows, for the tab in view (input/input-seq.ts). */
+export interface EchoAcks {
+  /** The gateway has `ackecho1`: acks decide the editing window. */
+  enabled(): boolean;
+  subscribe(listener: (settled: SettledAck) => void): () => void;
+  /** Inputs sent and not yet settled. */
+  outstanding(): number;
+  /** The newest iseq sent. */
+  lastStamped(): number;
+  /** Shadow measurement (inputlab). */
+  count?(counter: InputLabCounter): void;
+}
 
 export interface EchoFilter extends Stage {
   setFocused(focus: EditableFocus | null): void;
@@ -97,6 +133,16 @@ export interface EchoFilterOptions {
   onContenteditableReconcile?: () => boolean | void;
   /** The replay's node for an rrweb id, to compare local text with what the page reports. */
   nodeFor?: (id: number) => Node | null;
+  /** Input acks: with `enabled()`, they decide when typing has settled instead of `decayMs`. */
+  acks?: EchoAcks;
+}
+
+/** A field's text as the page's editHash sees it. */
+export function localFieldText(element: HTMLElement): string {
+  if (isValueEchoField(element)) return element.value;
+  return (element as { childNodes?: unknown }).childNodes === undefined
+    ? (element.textContent ?? "")
+    : editableText(element);
 }
 
 export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
@@ -105,6 +151,16 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
   const schedule = options.setTimer ?? setTimeout;
   const cancel = options.clearTimer ?? clearTimeout;
   const nodeFor = options.nodeFor ?? (() => null);
+  const acks = options.acks;
+  const ackMode = () => acks?.enabled() === true;
+  /** Whether a field's echoes are still held back. */
+  const active = (state: EditingState, at: number) =>
+    ackMode()
+      ? at - state.lastKeyTs < ACK_LIVENESS_MS * 2 &&
+        (state.awaiting === true || (acks?.outstanding() ?? 0) > 0)
+      : at - state.lastKeyTs < decayMs;
+  /** Ack mode: a reconcile that could not be sent is asked again with the next settled ack. */
+  let reconcileDeferred = false;
   const nodes = new Map<number, EditingState>();
   let focused: EditableFocus | null = null;
   /** Nodes the page added while their additions were suppressed: this replay never had them. */
@@ -123,12 +179,18 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
   let reconcileRetries = 0;
   /** Each editor's text when Enter was last pressed in it, and when. */
   const sentTexts = new WeakMap<Element, { text: string; at: number }>();
+  /** Ack mode: Enter pressed in a field, and the newest iseq sent before it. */
+  let sentAck: { element: HTMLElement; nodeId: number; after: number } | null = null;
 
   const requestReconcile = () => {
     if (reconcileRequested) reconcileAgain = true;
     if (reconcileRequested || reconcileRetry !== null) return;
     if (options.onContenteditableReconcile?.() === false) {
       // Latched only once sent: the divergence is still there when input to the tab returns.
+      if (ackMode()) {
+        reconcileDeferred = true;
+        return;
+      }
       if (reconcileRetries >= RECONCILE_RETRIES) return;
       reconcileRetries += 1;
       reconcileRetry = schedule(() => {
@@ -155,8 +217,15 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       return;
     }
     if (!isValueEchoField(state.element)) {
-      // Leaving the editor mid-burst: its last echoes are still on the way.
-      const remaining = state.lastKeyTs + decayMs - now();
+      // Leaving the editor mid-burst: its last echoes are still on the way. With acks, its final
+      // ack says when they are all here.
+      if (ackMode()) {
+        if (active(state, now())) {
+          if (state.timer === null) armDecay(nodeId, state);
+          return;
+        }
+      }
+      const remaining = ackMode() ? 0 : state.lastKeyTs + decayMs - now();
       if (remaining > 0) {
         if (state.timer !== null) cancel(state.timer);
         state.timer = schedule(() => reconcile(nodeId), remaining);
@@ -195,6 +264,22 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
   };
 
   const armDecay = (nodeId: number, state: EditingState) => {
+    if (ackMode()) {
+      // Only a ceiling: the final ack closes the window. Re-armed whole, never for less.
+      if (state.timer !== null) return;
+      state.timer = schedule(() => {
+        state.timer = null;
+        const current = nodes.get(nodeId);
+        if (current !== state) return;
+        if (now() - current.lastKeyTs < ACK_LIVENESS_MS) {
+          armDecay(nodeId, current);
+          return;
+        }
+        current.awaiting = false;
+        reconcile(nodeId);
+      }, ACK_LIVENESS_MS);
+      return;
+    }
     if (state.timer !== null) cancel(state.timer);
     const remaining = Math.max(0, decayMs - (now() - state.lastKeyTs));
     state.timer = schedule(() => {
@@ -204,6 +289,8 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
         armDecay(nodeId, current);
         return;
       }
+      // The page has not answered for everything typed yet: shadow measurement of acks.
+      if ((acks?.outstanding() ?? 0) > 0) acks?.count?.("decayWhileOutstanding");
       reconcile(nodeId);
     }, remaining);
   };
@@ -230,7 +317,7 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       }
       // Suppression lasts only the echo window after local typing, focus or not: past it, the
       // page's own changes to the editor must show.
-      const active: EditingState[] = [];
+      const held: EditingState[] = [];
       for (const [nodeId, state] of nodes) {
         if (state.element.isConnected === false) {
           clearState(nodeId);
@@ -240,10 +327,10 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
         const ids = state.subtreeNodeIds;
         for (const mutation of data.adds)
           if (ids.has(mutation.parentId)) collectSerializedNodeIds(mutation.node, ids);
-        if (ctx.nowMs - state.lastKeyTs < decayMs) active.push(state);
+        if (active(state, ctx.nowMs)) held.push(state);
       }
 
-      const owner = (id: number) => active.find((state) => state.subtreeNodeIds!.has(id));
+      const owner = (id: number) => held.find((state) => state.subtreeNodeIds!.has(id));
       const record = (state: EditingState): SuppressedEdits =>
         (state.suppressed ??= { texts: new Map(), parents: new Map(), removed: [] });
       /** The text each held-back editor's share of this batch took away and put in. */
@@ -290,7 +377,7 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       });
       // The page took away the text Enter sent: it sent it and cleared the editor. Typing goes
       // on, so waiting for it to settle would show the sent text for as long as it does.
-      for (const [state, { removed, added }] of changed) {
+      for (const [state, { removed, added }] of ackMode() ? new Map() : changed) {
         const sent = sentTexts.get(state.element);
         if (sent === undefined || now() - sent.at > SENT_CLEAR_MS) continue;
         const text = compact(sent.text);
@@ -328,8 +415,9 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
         const node = nodeFor(mutation.id);
         if (node === null || !focusedEditor.contains(node)) return false;
         const at = passedTexts.get(mutation.id);
-        // An earlier change still waiting in the replay buffer would make this one necessary.
-        if (at !== undefined && ctx.nowMs - at < PASSED_TEXT_MEMORY_MS) return false;
+        // An earlier change still waiting in the replay buffer would make this one necessary. With
+        // acks, it is remembered until a settled ack shows the replay caught up.
+        if (at !== undefined && (ackMode() || ctx.nowMs - at < PASSED_TEXT_MEMORY_MS)) return false;
         if (node.textContent === (mutation.value ?? "")) return true;
         passedTexts.set(mutation.id, ctx.nowMs);
         if (passedTexts.size > 256) passedTexts.delete(passedTexts.keys().next().value!);
@@ -364,7 +452,7 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       state.pendingServerValue = undefined;
       return null;
     }
-    if (ctx.nowMs - state.lastKeyTs < decayMs) {
+    if (active(state, ctx.nowMs)) {
       state.pendingServerValue = data.text;
       return null;
     }
@@ -390,6 +478,10 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
     };
     state.element = field;
     state.lastKeyTs = timestamp;
+    if (ackMode()) {
+      state.awaiting = true;
+      state.watermark = acks!.lastStamped();
+    }
     if (isContenteditableEchoField(field)) {
       state.pendingServerValue = undefined;
       state.subtreeNodeIds ??= new Set<number>();
@@ -416,10 +508,20 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       isContenteditableEchoField(focus.element)
     )
       sentTexts.set(focus.element, { text: focus.element.textContent ?? "", at: now() });
+    if (
+      event.key === "Enter" &&
+      !event.shiftKey &&
+      !event.isComposing &&
+      focus !== null &&
+      isEchoField(focus.element) &&
+      ackMode()
+    )
+      sentAck = { element: focus.element, nodeId: focus.nodeId, after: acks!.lastStamped() };
   };
 
   filter.getFocused = () => focused;
   filter.typingWithin = (ms) => {
+    if (ackMode() && (acks?.outstanding() ?? 0) > 0) return true;
     const at = now();
     for (const state of nodes.values()) if (at - state.lastKeyTs < ms) return true;
     return false;
@@ -446,10 +548,74 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
     passedTexts.clear();
     reconcileRequested = false;
     reconcileAgain = false;
+    reconcileDeferred = false;
+    sentAck = null;
     if (reconcileRetry !== null) cancel(reconcileRetry);
     reconcileRetry = null;
     reconcileRetries = 0;
   };
+
+  /** Ack mode: the final ack after a field's last input settled; the replay has its effects. */
+  const closeWindow = (nodeId: number, state: EditingState, settled: SettledAck) => {
+    state.awaiting = false;
+    const edit = settled.mode === "page" ? settled.edit : undefined;
+    if (
+      edit === undefined ||
+      edit === null ||
+      edit.node !== nodeId ||
+      edit.hash === "" ||
+      isPasswordField(state.element)
+    ) {
+      reconcile(nodeId);
+      return;
+    }
+    if (editHash(localFieldText(state.element)) === edit.hash) {
+      // Provably in step: what was held back changes nothing this field shows.
+      clearState(nodeId);
+      state.suppressed = undefined;
+      unmapped.clear();
+      passedTexts.clear();
+      return;
+    }
+    if (isValueEchoField(state.element)) {
+      reconcile(nodeId);
+      return;
+    }
+    clearState(nodeId);
+    requestReconcile();
+  };
+
+  acks?.subscribe((settled) => {
+    if (!ackMode()) return;
+    if (reconcileDeferred) {
+      reconcileDeferred = false;
+      requestReconcile();
+    }
+    // Enter sent the field, and the page has emptied it while this replay still shows text.
+    if (sentAck !== null && settled.iseq > sentAck.after) {
+      const sent = sentAck;
+      const edit = settled.mode === "page" ? settled.edit : undefined;
+      if (
+        edit !== undefined &&
+        edit !== null &&
+        edit.node === sent.nodeId &&
+        edit.len === 0 &&
+        sent.element.isConnected !== false &&
+        normalizeEditableText(localFieldText(sent.element)).trim() !== ""
+      ) {
+        sentAck = null;
+        if (!isValueEchoField(sent.element)) {
+          clearState(sent.nodeId);
+          requestReconcile();
+        }
+      } else if (settled.final) sentAck = null;
+    }
+    if (!settled.final || (acks?.outstanding() ?? 0) > 0) return;
+    for (const [nodeId, state] of [...nodes]) {
+      if (state.awaiting !== true || settled.iseq < (state.watermark ?? 0)) continue;
+      closeWindow(nodeId, state, settled);
+    }
+  });
 
   filter.restoreHook = {
     capture() {

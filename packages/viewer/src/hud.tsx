@@ -2,6 +2,7 @@
 import type { Down, TabId } from "@mirror/protocol";
 import type { GatewayConnectionState } from "./ws";
 import type { ResyncTabState } from "./resync";
+import type { InputLabStats } from "./input/input-seq";
 
 type Tab = Extract<Down, { t: "tabs" }>["tabs"][number];
 
@@ -16,6 +17,8 @@ export interface DiagnosticsProps {
   speedBps: number | null;
   peakSpeedBps: number | null;
   frames?: FrameRates | null;
+  /** Input-ack measurements; shown only with ?inputlab=1 in the address. */
+  inputLab?: InputLabStats | null;
 }
 
 /** Pictures per second reaching each stage of the pixel view. */
@@ -54,6 +57,7 @@ export function Diagnostics({
   speedBps,
   peakSpeedBps,
   frames,
+  inputLab,
 }: DiagnosticsProps) {
   const states = Object.values(resyncByTab).filter(
     (state): state is ResyncTabState => state !== undefined,
@@ -148,6 +152,32 @@ export function Diagnostics({
           <dt>页面重新同步</dt>
           <dd>{totalResyncs} 次</dd>
         </div>
+        {inputLab && (
+          <>
+            <div title="从发出输入到远程页面确认、且本地回放已跟上的时间">
+              <dt>输入确认 p50 / p95</dt>
+              <dd data-inputlab="rtt">
+                {inputLab.ackRttP50 === null
+                  ? "—"
+                  : `${inputLab.ackRttP50} / ${inputLab.ackRttP95} ms`}
+              </dd>
+            </div>
+            <div title="最后一次确认时，远程输入框和本地回放的校验值是否一致">
+              <dt>校验一致 / 不一致</dt>
+              <dd data-inputlab="hash">
+                {inputLab.hashMatchAtFinal} / {inputLab.hashMismatchAtFinal}
+              </dd>
+            </div>
+            <div title="旧逻辑在还有输入未确认时就结束了等待（会把旧文字写回）">
+              <dt>未确认即超时</dt>
+              <dd data-inputlab="decay">{inputLab.decayWhileOutstanding} 次</dd>
+            </div>
+            <div title="远程页面没有回报内容、只确认已发出的次数">
+              <dt>仅确认已发出</dt>
+              <dd data-inputlab="dispatch">{inputLab.dispatchOnlyAcks} 次</dd>
+            </div>
+          </>
+        )}
       </dl>
 
       <div class="status-diagnostics-tabs">

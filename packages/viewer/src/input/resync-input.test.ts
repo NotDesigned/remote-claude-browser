@@ -116,3 +116,43 @@ describe("input resync", () => {
     expect(focusedValueMessage(doc, "T1", () => 3)).toBeNull();
   });
 });
+
+describe("input resync driven by acks", () => {
+  it("sends a refused value again once, at once, and retries nothing on a timer", () => {
+    const clock = timers();
+    const sent: Up[] = [];
+    const resync = createInputResync({
+      valueFor: () => value("hello"),
+      send: (message) => sent.push(message),
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+      ackMode: () => true,
+    });
+    resync.status("T1", true);
+    clock.advance(10_000);
+    expect(sent).toEqual([]);
+    // An ack without a refused value: wait for the next one.
+    resync.settled("T1", false);
+    expect(sent).toEqual([]);
+    resync.settled("T1", true);
+    expect(sent).toEqual([value("hello")]);
+    // Refused again in the same episode: that is for the person to retry.
+    resync.settled("T1", true);
+    expect(sent).toHaveLength(1);
+    // Synced again: a later refusal is sent again once more.
+    resync.status("T1", false);
+    resync.settled("T1", true);
+    expect(sent).toHaveLength(2);
+  });
+
+  it("ignores acks without ack mode", () => {
+    const sent: Up[] = [];
+    const resync = createInputResync({
+      valueFor: () => value("hello"),
+      send: (message) => sent.push(message),
+      ackMode: () => false,
+    });
+    resync.settled("T1", true);
+    expect(sent).toEqual([]);
+  });
+});

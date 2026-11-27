@@ -3,6 +3,7 @@
  * input health, transfers and link quality. useMirrorRuntime feeds it from the gateway socket and
  * the presentation; everything here is a pure function of those events.
  */
+import type { InputLabStats } from "../input/input-seq";
 import type { Down, ServerStatusMsg, TabId } from "@mirror/protocol";
 import type { ViewMode } from "../client-session";
 import { dismissDownload, updateDownloads, type DownloadEntry } from "../chrome/downloads";
@@ -37,6 +38,8 @@ export interface RuntimeState {
   speedBps: number | null;
   peakSpeedBps: number | null;
   frameRates: FrameRates | null;
+  /** Input-ack measurements, only with ?inputlab=1. */
+  inputLab: InputLabStats | null;
   bufferMs: number;
   viewerId: string | null;
   driverId: string | null;
@@ -76,6 +79,7 @@ export type RuntimeAction =
   | { type: "rtt"; ms: number }
   | { type: "speed"; bps: number }
   | { type: "frame-rates"; rates: FrameRates | null }
+  | { type: "input-lab"; stats: InputLabStats | null }
   | { type: "clipboard-error"; message: string | null }
   | { type: "build-stale"; stale: boolean }
   | { type: "active-tab"; tab: TabId | null }
@@ -101,6 +105,7 @@ export function initialRuntime(viewMode: ViewMode, bufferMs: number): RuntimeSta
     speedBps: null,
     peakSpeedBps: null,
     frameRates: null,
+    inputLab: null,
     bufferMs,
     viewerId: null,
     driverId: null,
@@ -191,6 +196,8 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
       });
     case "frame-rates":
       return patch(state, { frameRates: action.rates });
+    case "input-lab":
+      return patch(state, { inputLab: action.stats });
     case "clipboard-error":
       return patch(state, { clipboardError: action.message });
     case "build-stale":

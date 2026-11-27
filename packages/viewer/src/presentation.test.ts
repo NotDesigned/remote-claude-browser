@@ -49,6 +49,7 @@ function fixture(entryTab: string | null = null) {
     observeRtt: vi.fn(),
     refreshViewportLayout: vi.fn(),
     keepTabs: vi.fn(),
+    mark: vi.fn(() => false),
     teardown: vi.fn(),
   } satisfies Mirror;
   const send = vi.fn<(message: Up) => void>();

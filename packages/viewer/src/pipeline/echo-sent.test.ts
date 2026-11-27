@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { EventType, IncrementalSource, type eventWithTime } from "@mirror/protocol";
-import { createEchoFilter } from "./echo";
+import { EventType, IncrementalSource, editHash, type eventWithTime } from "@mirror/protocol";
+import { ACK_LIVENESS_MS, createEchoFilter } from "./echo";
+import type { SettledAck } from "../input/input-seq";
 
 /** An editor whose text nodes are known by rrweb id. */
 class FakeEditor {
@@ -174,5 +175,109 @@ describe("the page clearing an editor after Enter sent its text", () => {
     // That one comes from after the clear, and nothing more is held: no third.
     echo.settled();
     expect(reconcile).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe.each([
+  { mode: "legacy", ackMode: false },
+  { mode: "ack", ackMode: true },
+])("the composer cleared after Enter while the next message is typed ($mode)", ({ ackMode }) => {
+  function ackSetup() {
+    let time = 0;
+    const listeners = new Set<(settled: SettledAck) => void>();
+    let stamped = 0;
+    let settledIseq = 0;
+    const reconcile = vi.fn(() => true);
+    const editor = new FakeEditor();
+    const echo = createEchoFilter({
+      now: () => time,
+      onContenteditableReconcile: reconcile,
+      nodeFor: editor.nodeFor,
+      setTimer: ((callback: () => void, delay = 0) => {
+        if (ackMode && delay < ACK_LIVENESS_MS)
+          throw new Error(`ack mode scheduled a ${delay} ms timer`);
+        return setTimeout(callback, delay);
+      }) as typeof setTimeout,
+      acks: {
+        enabled: () => ackMode,
+        subscribe: (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        outstanding: () => stamped - settledIseq,
+        lastStamped: () => stamped,
+      },
+    });
+    const focus = {
+      element: editor as unknown as HTMLElement,
+      nodeId: 20,
+      subtreeNodeIds: new Set([20, 21, 22]),
+    };
+    editor.children.set(22, { textContent: "first question" });
+    editor.textContent = "first question";
+    echo.setFocused(focus);
+    stamped += 1;
+    echo.input(focus);
+    const at = (ms: number) => {
+      time = ms;
+      return { tab: "T1", nowMs: ms };
+    };
+    const settle = (iseq: number, len: number, final = false) => {
+      settledIseq = iseq;
+      for (const listener of listeners)
+        listener({
+          tab: "T1",
+          iseq,
+          mode: "page",
+          edit: {
+            node: 20,
+            len,
+            hash: editHash(len === 0 ? "" : "first question"),
+            sel: [len, len],
+          },
+          failed: [],
+          failedValue: false,
+          final,
+        });
+    };
+    return { echo, editor, focus, reconcile, at, settle, send: () => ++stamped };
+  }
+
+  it("shows the page's empty composer at once, before typing settles", () => {
+    vi.useFakeTimers();
+    try {
+      const { echo, editor, focus, reconcile, at, settle, send } = ackSetup();
+      settle(1, 14, true);
+      at(200);
+      echo.keyDown({ key: "Enter" } as KeyboardEvent, focus);
+      send(); // Enter down
+      send(); // Enter up
+      // Typing goes straight on while the page's clear is on its way.
+      at(250);
+      editor.textContent = "first questionn";
+      send();
+      echo.input(focus);
+      // The clear arrives, in nodes the page made anew.
+      echo(
+        batch({
+          removes: [{ parentId: 21, id: 22 }],
+          adds: [
+            {
+              parentId: 21,
+              nextId: null,
+              node: { id: 30, type: 2, tagName: "br", childNodes: [] },
+            },
+          ],
+        }),
+        at(300),
+      );
+      // Legacy mode knows from the removed text; ack mode waits for the page's own word.
+      expect(reconcile).toHaveBeenCalledTimes(ackMode ? 0 : 1);
+      // Its ack: the page's composer is empty, past Enter, while this one shows text.
+      settle(3, 0);
+      expect(reconcile).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
