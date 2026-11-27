@@ -296,6 +296,7 @@ async function runMode(
 
       if (link !== undefined && name === "top") {
         const before = snapshots.length;
+        const incrementalBefore = incremental.length;
         assert.equal((await link.sendCmd(page.targetId, { cmd: "snapshot" })).ok, true);
         const snapshot = await waitFor("snapshot", () => snapshots[before]);
         // A font the page added from script after load still reaches the replay: in the snapshot's
@@ -306,6 +307,19 @@ async function runMode(
             : fontEvents.includes("fx-late-font")
               ? "late font as a font event"
               : "FAIL: the late font never reached the replay",
+        );
+        // The cross-origin child's document reaches the replay after the new snapshot: the stitch
+        // request and the child's events go between the frames under the session's key.
+        const attached = await waitFor("the child frame's document", () =>
+          incremental
+            .slice(incrementalBefore)
+            .some(
+              (event) =>
+                event.json.includes('"isAttachIframe":true') && event.json.includes("child-button"),
+            ),
+        ).catch(() => false);
+        checks.push(
+          attached ? "child frame stitched" : "FAIL: the child frame's document never arrived",
         );
       }
       if (link !== undefined && name === "typing")

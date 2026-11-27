@@ -21,6 +21,52 @@ export const STITCH_READY_MESSAGE_TYPE = "@mirror/stitch-ready";
 export const STITCH_ACK_MESSAGE_TYPE = "@mirror/stitch-ack";
 export const STITCH_SYNC_MIN_INTERVAL_MS = 250;
 
+type StitchKind = "sync" | "sync-ready" | "ready" | "ack";
+/**
+ * Hardening: the value under the session's key for each message: 1 sync, 2 ready, 3 ack, and 4 the
+ * sync that answers a ready (the `ready: true` of the fixed-name form).
+ */
+const KEYED: Record<StitchKind, number> = { sync: 1, ready: 2, ack: 3, "sync-ready": 4 };
+let stitchKey = "";
+
+/**
+ * Hardening: frames of one browser exchange `{[key]: n}` instead of messages with fixed names a
+ * page could look for, and a child passes its rrweb events up under the same key. Empty: the fixed
+ * names. Set once, at agent start, before any listener is installed.
+ */
+export function setStitchKey(key: string): void {
+  stitchKey = key;
+}
+
+function stitchMessage(kind: StitchKind): unknown {
+  if (stitchKey !== "") return { [stitchKey]: KEYED[kind] };
+  if (kind === "sync") return { type: STITCH_SYNC_MESSAGE_TYPE };
+  if (kind === "sync-ready") return { type: STITCH_SYNC_MESSAGE_TYPE, ready: true };
+  if (kind === "ready") return { type: STITCH_READY_MESSAGE_TYPE };
+  return { type: STITCH_ACK_MESSAGE_TYPE };
+}
+
+/** The stitch message `data` is, if it is one. */
+export function readStitchMessage(data: unknown): StitchKind | null {
+  if (typeof data !== "object" || data === null) return null;
+  if (stitchKey !== "") {
+    const value = (data as Record<string, unknown>)[stitchKey];
+    for (const kind of Object.keys(KEYED) as StitchKind[]) if (KEYED[kind] === value) return kind;
+    return null;
+  }
+  const { type, ready } = data as { type?: unknown; ready?: unknown };
+  if (type === STITCH_SYNC_MESSAGE_TYPE) return ready === true ? "sync-ready" : "sync";
+  if (type === STITCH_READY_MESSAGE_TYPE) return "ready";
+  if (type === STITCH_ACK_MESSAGE_TYPE) return "ack";
+  return null;
+}
+
+/** An rrweb event passed up to the frame above, the way rrweb's own child recorder passes it. */
+export function rrwebParentMessage(event: unknown, origin: string, isCheckout: boolean): unknown {
+  if (stitchKey !== "") return { [stitchKey]: { event, origin, isCheckout } };
+  return { type: "rrweb", event, origin, isCheckout };
+}
+
 export interface StitchSyncDependencies {
   isRecorderStarted(): boolean;
   onRecorderStarted(listener: () => void): () => void;
@@ -63,24 +109,17 @@ export function isCrossOriginChild(target: Window = window): boolean {
 
 export function broadcastStitchSync(target: Window = window): void {
   for (const frame of Array.from(target.frames)) {
-    frame.postMessage({ type: STITCH_SYNC_MESSAGE_TYPE }, "*");
+    frame.postMessage(stitchMessage("sync"), "*");
   }
 }
 
 export function installStitchReadyListener(target: Window = window): () => void {
   const onMessage = (event: MessageEvent): void => {
-    if (
-      typeof event.data !== "object" ||
-      event.data === null ||
-      (event.data as { type?: unknown }).type !== STITCH_READY_MESSAGE_TYPE ||
-      event.source === null
-    ) {
-      return;
-    }
+    if (readStitchMessage(event.data) !== "ready" || event.source === null) return;
 
     // Reply directly to the ready child. A nested child forwards the resulting sync to its own
     // descendants, preserving the depth>=2 path without waking unrelated sibling recorders.
-    (event.source as Window).postMessage({ type: STITCH_SYNC_MESSAGE_TYPE, ready: true }, "*");
+    (event.source as Window).postMessage(stitchMessage("sync-ready"), "*");
   };
 
   target.addEventListener("message", onMessage);
@@ -157,7 +196,7 @@ export function acknowledgeAttachedDocument(
     if (node.type !== DOCUMENT_NODE) continue;
     const frame = nodeFor(parentId) as HTMLIFrameElement | null;
     try {
-      frame?.contentWindow?.postMessage({ type: STITCH_ACK_MESSAGE_TYPE }, "*");
+      frame?.contentWindow?.postMessage(stitchMessage("ack"), "*");
     } catch {
       // A frame on its way out has no window to tell.
     }
@@ -170,8 +209,8 @@ export function acknowledgeAttachedDocument(
  */
 export function installStitchSyncForwarder(target: Window = window): () => void {
   const onMessage = (event: MessageEvent): void => {
-    if ((event.data as { type?: unknown } | null)?.type === STITCH_SYNC_MESSAGE_TYPE)
-      broadcastStitchSync(target);
+    const kind = readStitchMessage(event.data);
+    if (kind === "sync" || kind === "sync-ready") broadcastStitchSync(target);
   };
   target.addEventListener("message", onMessage);
   return () => target.removeEventListener("message", onMessage);
@@ -229,13 +268,12 @@ export function installStitchSyncListener(
     lastSnapshotAt = now();
     acknowledged = false;
     pendingSnapshot = false;
-    target.parent.postMessage({ type: STITCH_READY_MESSAGE_TYPE }, "*");
+    target.parent.postMessage(stitchMessage("ready"), "*");
   });
 
   const onMessage = (event: MessageEvent): void => {
-    if (typeof event.data !== "object" || event.data === null) return;
-    const data = event.data as { type?: unknown; ready?: unknown };
-    if (data.type === STITCH_ACK_MESSAGE_TYPE) {
+    const kind = readStitchMessage(event.data);
+    if (kind === "ack") {
       acknowledged = true;
       // The frame above took in a snapshot of this document after the request that is waiting
       // was sent, which is all that request asked for.
@@ -246,9 +284,9 @@ export function installStitchSyncListener(
       }
       return;
     }
-    if (data.type !== STITCH_SYNC_MESSAGE_TYPE) return;
+    if (kind !== "sync" && kind !== "sync-ready") return;
     // The answer to this document's ready message, whose snapshot the frame above already has.
-    if (data.ready === true && acknowledged && !pendingSnapshot) return;
+    if (kind === "sync-ready" && acknowledged && !pendingSnapshot) return;
 
     pendingSnapshot = true;
     // Forward even while this recorder is starting so an intermediate frame cannot prevent a

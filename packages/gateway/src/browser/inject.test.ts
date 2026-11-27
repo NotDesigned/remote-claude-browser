@@ -122,6 +122,45 @@ describe("injectAgent", () => {
     ]);
   });
 
+  it("gives every frame of one browser the same random stitch key, and hardens by default", async () => {
+    const embedded = (source: unknown) =>
+      JSON.parse(/globalThis\[[^\]]+\]=(\{.*?\});\n/.exec(String(source))![1]!) as {
+        bridge: { stitchKey: string; bridgeKey: string };
+        hardening: boolean;
+      };
+    const agentSource = (browser: RecordingBrowser, sessionId: string) =>
+      browser.calls.find(
+        (call) =>
+          call.sessionId === sessionId &&
+          call.method === "Page.addScriptToEvaluateOnNewDocument" &&
+          call.params?.worldName === undefined,
+      )?.params?.source;
+    const browser = new RecordingBrowser();
+    await injectAgent(browser, { targetId: "page-1", sessionId: "s-1", type: "page" });
+    await injectAgent(browser, { targetId: "frame-1", sessionId: "s-2", type: "iframe" });
+    const top = embedded(agentSource(browser, "s-1"));
+    const child = embedded(agentSource(browser, "s-2"));
+    expect(top.hardening).toBe(true);
+    expect(top.bridge.stitchKey).toMatch(/^[a-z][0-9a-z]{11}$/);
+    // Each session has its own bridge, but the frames must agree on the key.
+    expect(child.bridge.bridgeKey).not.toBe(top.bridge.bridgeKey);
+    expect(child.bridge.stitchKey).toBe(top.bridge.stitchKey);
+    const other = new RecordingBrowser();
+    await injectAgent(other, { targetId: "page-1", sessionId: "s-1", type: "page" });
+    expect(embedded(agentSource(other, "s-1")).bridge.stitchKey).not.toBe(top.bridge.stitchKey);
+
+    vi.stubEnv("MIRROR_AGENT_HARDENING", "0");
+    try {
+      const legacy = new RecordingBrowser();
+      await injectAgent(legacy, { targetId: "page-1", sessionId: "s-1", type: "page" });
+      const config = embedded(agentSource(legacy, "s-1"));
+      expect(config.hardening).toBe(false);
+      expect(config.bridge.stitchKey).toBe("");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("resumes a page that answers nothing until it is resumed, as a new window does", async () => {
     const browser = new RecordingBrowser();
     const target: TargetRef = { targetId: "page-1", sessionId: "session-1", type: "page" };

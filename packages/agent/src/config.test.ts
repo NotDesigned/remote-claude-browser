@@ -68,4 +68,13 @@ describe("agent session config", () => {
       readAgentConfig({ bridge: { bindingName: "", rtcBindingName: 42, bridgeKey: "" } }).bridge,
     ).toEqual(DEFAULT_AGENT_CONFIG.bridge);
   });
+
+  it("takes a stitch key of plain lowercase letters and digits only", () => {
+    expect(DEFAULT_AGENT_CONFIG.bridge.stitchKey).toBe("");
+    expect(readAgentConfig({ bridge: { stitchKey: "k3x9q2m0p1zz" } }).bridge.stitchKey).toBe(
+      "k3x9q2m0p1zz",
+    );
+    for (const stitchKey of ["short", "@mirror/stitch", "UPPERCASE123", 12345678, "a".repeat(33)])
+      expect(readAgentConfig({ bridge: { stitchKey } }).bridge.stitchKey).toBe("");
+  });
 });

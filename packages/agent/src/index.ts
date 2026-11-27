@@ -53,6 +53,8 @@ import {
   installStitchSyncListener,
   isCrossOriginChild,
   isHiddenBlankFrame,
+  rrwebParentMessage,
+  setStitchKey,
 } from "./stitch";
 
 const LEGACY_GUARD = Symbol.for("@mirror/agent/installed");
@@ -161,8 +163,16 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   // rrweb's own wrappers go through the same mask (patches/@rrweb__record@2.1.1.patch), and it
   // reads the DOM through the browser's accessors taken here, before the shim below replaces any,
   // instead of borrowing them from a hidden iframe it would add to the page.
-  if (mask !== undefined)
-    setRecordHardening({ enabled: true, mask: mask.mask, untainted: captureUntainted(window) });
+  if (mask !== undefined) {
+    // Frames of this browser stitch and pass events up under its key, not under fixed names.
+    setStitchKey(config.bridge.stitchKey);
+    setRecordHardening({
+      enabled: true,
+      mask: mask.mask,
+      untainted: captureUntainted(window),
+      ...(config.bridge.stitchKey === "" ? {} : { messageKey: config.bridge.stitchKey }),
+    });
+  }
 
   // Must precede record() so rrweb's shadow observer and initial snapshot use the retained roots.
   installClosedShadowShim(mask);
@@ -367,10 +377,7 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
         if (isTop) emitter.emit({ kind: "rrweb", docId, e: event });
         // The way rrweb itself passes a child's events up, so the frames above translate its ids.
         else
-          window.parent.postMessage(
-            { type: "rrweb", event, origin: window.location.origin, isCheckout: false },
-            "*",
-          );
+          window.parent.postMessage(rrwebParentMessage(event, window.location.origin, false), "*");
       },
     });
   }

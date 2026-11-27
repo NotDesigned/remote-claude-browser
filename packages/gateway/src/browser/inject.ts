@@ -44,6 +44,27 @@ export function skipOnErrorPage(source: string): string {
 }
 
 const injections = new WeakMap<BrowserHandle, Map<string, Promise<void>>>();
+const stitchKeys = new WeakMap<BrowserHandle, string>();
+
+/**
+ * The name under which the frames of one browser message each other (stitch requests, a child's
+ * rrweb events). Frames in other processes have their own sessions and bridge names but must agree
+ * on this one, so it is minted once per browser: 12 random base36 characters, never a fixed name a
+ * page could look for. Empty with MIRROR_AGENT_HARDENING=0, which keeps the fixed names.
+ */
+export function stitchKeyFor(browser: BrowserHandle): string {
+  if (process.env.MIRROR_AGENT_HARDENING === "0") return "";
+  let key = stitchKeys.get(browser);
+  if (key === undefined) {
+    const bytes = crypto.getRandomValues(new Uint8Array(12));
+    key = Array.from(bytes, (byte, index) =>
+      // Letters first, so it reads as a name; base36 after.
+      index === 0 ? String.fromCharCode(97 + (byte % 26)) : (byte % 36).toString(36),
+    ).join("");
+    stitchKeys.set(browser, key);
+  }
+  return key;
+}
 const rebindingBrowsers = new WeakSet<BrowserHandle>();
 
 interface FrameTree {
@@ -154,6 +175,7 @@ export function injectAgent(
         inboundEventName: channel.inboundEventName,
         nodeResponseEventName: channel.nodeResponseEventName,
         readyEventName: channel.readyEventName,
+        stitchKey: stitchKeyFor(browser),
       },
       hardening: process.env.MIRROR_AGENT_HARDENING !== "0",
     });

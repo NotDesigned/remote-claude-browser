@@ -13,12 +13,16 @@ import {
   isCrossOriginChild,
   installStitchSyncForwarder,
   isHiddenBlankFrame,
+  readStitchMessage,
+  rrwebParentMessage,
+  setStitchKey,
 } from "./stitch";
 import { createRecordReadiness, type RecordReadiness } from "./commands";
 import { EventType, IncrementalSource, type eventWithTime } from "@mirror/protocol";
 
 afterEach(() => {
   vi.useRealTimers();
+  setStitchKey("");
 });
 
 interface WindowHarness {
@@ -307,6 +311,65 @@ describe("stitch-sync", () => {
 
     expect(first.window.postMessage).toHaveBeenCalledOnce();
     expect(second.window.postMessage).toHaveBeenCalledOnce();
+  });
+});
+
+describe("stitch messages under the session's key (hardening)", () => {
+  const KEY = "k3x9q2m0p1zz";
+
+  it("sends no fixed name: only the key, with a number", () => {
+    setStitchKey(KEY);
+    const child = windowHarness();
+    const parent = windowHarness([child.window]);
+    installStitchReadyListener(parent.window);
+    broadcastStitchSync(parent.window);
+    expect(child.window.postMessage).toHaveBeenLastCalledWith({ [KEY]: 1 }, "*");
+    parent.dispatch({ [KEY]: 2 }, child.window);
+    expect(child.window.postMessage).toHaveBeenLastCalledWith({ [KEY]: 4 }, "*");
+    expect(rrwebParentMessage({ type: 2 }, "https://child.test", true)).toEqual({
+      [KEY]: { event: { type: 2 }, origin: "https://child.test", isCheckout: true },
+    });
+    for (const sent of vi.mocked(child.window.postMessage).mock.calls)
+      expect(JSON.stringify(sent[0])).not.toMatch(/@mirror|rrweb|type/);
+  });
+
+  it("ignores the fixed names once there is a key, and the key without one", () => {
+    setStitchKey(KEY);
+    expect(readStitchMessage({ type: STITCH_SYNC_MESSAGE_TYPE })).toBeNull();
+    expect(readStitchMessage({ [KEY]: 3 })).toBe("ack");
+    expect(readStitchMessage({ [KEY]: 9 })).toBeNull();
+    setStitchKey("");
+    expect(readStitchMessage({ [KEY]: 1 })).toBeNull();
+    expect(readStitchMessage({ type: STITCH_SYNC_MESSAGE_TYPE, ready: true })).toBe("sync-ready");
+    expect(rrwebParentMessage(1, "o", false)).toEqual({
+      type: "rrweb",
+      event: 1,
+      origin: "o",
+      isCheckout: false,
+    });
+  });
+
+  it("runs the whole ready, ack and sync exchange under the key", async () => {
+    vi.useFakeTimers();
+    setStitchKey(KEY);
+    const parent = windowHarness();
+    const child = windowHarness([], parent.window);
+    installStitchReadyListener(parent.window);
+    const takeFullSnapshot = vi.fn();
+    const readiness = createRecordReadiness();
+    installStitchSyncListener(child.window, stitchDependencies(readiness, takeFullSnapshot));
+    // The frame above takes in the first snapshot before the ready message, and says so.
+    parent.window.postMessage = vi.fn((data: unknown) => {
+      if (readStitchMessage(data) === "ready") child.dispatch({ [KEY]: 3 });
+      parent.dispatch(data, child.window);
+    });
+    readiness.markStarted();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(parent.window.postMessage).toHaveBeenCalledWith({ [KEY]: 2 }, "*");
+    expect(takeFullSnapshot).not.toHaveBeenCalled();
+    // A later request is honoured.
+    child.dispatch({ [KEY]: 1 });
+    expect(takeFullSnapshot).toHaveBeenCalledOnce();
   });
 });
 

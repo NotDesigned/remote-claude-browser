@@ -43,6 +43,7 @@ export const DEFAULT_AGENT_CONFIG = Object.freeze({
     inboundEventName: "__mirror_inbound",
     nodeResponseEventName: "__mirror_node_response",
     readyEventName: "__mirror_ready",
+    stitchKey: "",
   }),
   hardening: true,
 });
@@ -63,6 +64,7 @@ export function createAgentBundle(config = DEFAULT_AGENT_CONFIG) {
       inboundEventName: bridge.inboundEventName,
       nodeResponseEventName: bridge.nodeResponseEventName,
       readyEventName: bridge.readyEventName,
+      stitchKey: bridge.stitchKey,
     },
     hardening: config && typeof config === "object" ? config.hardening : undefined,
   };

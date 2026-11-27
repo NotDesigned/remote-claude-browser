@@ -26,6 +26,8 @@ export interface AgentConfig {
     inboundEventName?: string;
     nodeResponseEventName?: string;
     readyEventName?: string;
+    /** Hardening: frames of one browser message each other under this name (8-32 of [0-9a-z]). */
+    stitchKey?: string;
   };
   /**
    * Defaults to true: replaced built-ins look native, no hidden frame, no fixed message names, no
@@ -44,6 +46,7 @@ export declare const DEFAULT_AGENT_CONFIG: Readonly<{
     inboundEventName: "__mirror_inbound";
     nodeResponseEventName: "__mirror_node_response";
     readyEventName: "__mirror_ready";
+    stitchKey: "";
   }>;
   hardening: true;
 }>;

@@ -32,6 +32,12 @@ export interface AgentBridgeConfig {
   inboundEventName: string;
   nodeResponseEventName: string;
   readyEventName: string;
+  /**
+   * Hardening: the name under which frames of one browser exchange their stitch and rrweb
+   * messages, the same for every frame of that browser. Empty: the fixed names
+   * (`@mirror/stitch-*`, `type: "rrweb"`).
+   */
+  stitchKey: string;
 }
 
 export const MIN_CANVAS_FPS = 4;
@@ -54,6 +60,7 @@ export const DEFAULT_AGENT_CONFIG: AgentConfig = {
     inboundEventName: "__mirror_inbound",
     nodeResponseEventName: "__mirror_node_response",
     readyEventName: "__mirror_ready",
+    stitchKey: "",
   },
   hardening: true,
 };
@@ -85,7 +92,7 @@ export function readAgentConfig(value: unknown): AgentConfig {
       : undefined;
   const bridgeValues: Partial<Record<keyof AgentBridgeConfig, unknown>> =
     typeof bridge === "object" && bridge !== null ? bridge : {};
-  const bridgeString = (key: keyof AgentBridgeConfig): string => {
+  const bridgeString = (key: Exclude<keyof AgentBridgeConfig, "stitchKey">): string => {
     const candidate = key in bridgeValues ? bridgeValues[key] : undefined;
     return typeof candidate === "string" && candidate.length > 0 && candidate.length <= 128
       ? candidate
@@ -128,6 +135,11 @@ export function readAgentConfig(value: unknown): AgentConfig {
       inboundEventName: bridgeString("inboundEventName"),
       nodeResponseEventName: bridgeString("nodeResponseEventName"),
       readyEventName: bridgeString("readyEventName"),
+      stitchKey:
+        typeof bridgeValues.stitchKey === "string" &&
+        /^[0-9a-z]{8,32}$/.test(bridgeValues.stitchKey)
+          ? bridgeValues.stitchKey
+          : DEFAULT_AGENT_CONFIG.bridge.stitchKey,
     },
     hardening:
       typeof value === "object" &&
