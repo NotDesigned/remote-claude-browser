@@ -146,8 +146,15 @@ describe("fence", () => {
     handler({ cmd: "fence", reqId: 2, n: 2, text: true });
     await settled();
     const edit = { node: 12, len: 11, hash: editHash("hello world"), sel: [5, 11] };
-    expect(messages[0]).toEqual({ kind: "fence", docId: 77, n: 1, edit });
-    expect(messages[2]).toEqual({ kind: "fence", docId: 77, n: 2, edit, text: "hello world" });
+    const fences = messages.filter((message) => message.kind === "fence");
+    expect(fences.find((fence) => fence.n === 1)).toEqual({ kind: "fence", docId: 77, n: 1, edit });
+    expect(fences.find((fence) => fence.n === 2)).toEqual({
+      kind: "fence",
+      docId: 77,
+      n: 2,
+      edit,
+      text: "hello world",
+    });
   });
 
   it("reports an editing host's text as editableText does, with the caret mapped into it", async () => {
@@ -216,6 +223,71 @@ describe("fence", () => {
       edit: { node: 3, len: 6, hash: "", sel: [6, 6] },
     });
     expect(JSON.stringify(messages)).not.toContain("secret");
+  });
+
+  it("treats a field rrweb still masks as a password after a show-password toggle", async () => {
+    const document = fakeDocument();
+    const shown = element(document, "input", [], {
+      type: "text",
+      value: "hunter2hunter2",
+      selectionStart: 14,
+      selectionEnd: 14,
+      disabled: false,
+      readOnly: false,
+      hasAttribute: (name: string) => name === "data-rr-is-password",
+    });
+    document.activeElement = shown;
+    const { handler, messages, settled } = harness(document, new Map([[shown, 9]]));
+    handler({ cmd: "fence", reqId: 1, n: 1 });
+    handler({ cmd: "fence", reqId: 2, n: 2, text: true });
+    await settled();
+    const fences = messages.filter((message) => message.kind === "fence");
+    expect(fences).toHaveLength(2);
+    for (const fence of fences)
+      expect(fence).toMatchObject({ edit: { node: 9, len: 14, hash: "", sel: [14, 14] } });
+    expect(JSON.stringify(messages)).not.toContain("hunter2");
+  });
+
+  it("answers a submit-guard fence at once, with the field as it is before Enter", () => {
+    const document = fakeDocument();
+    const textarea = element(document, "textarea", [], {
+      value: "send me",
+      selectionStart: 7,
+      selectionEnd: 7,
+      disabled: false,
+      readOnly: false,
+    });
+    document.activeElement = textarea;
+    const { handler, messages } = harness(document, new Map([[textarea, 4]]));
+    handler({ cmd: "fence", reqId: 1, n: 1, text: true });
+    expect(messages.map((message) => message.kind)).toEqual(["fence", "cmdres"]);
+    expect(messages[0]).toMatchObject({ n: 1, text: "send me" });
+  });
+
+  it("posts on its channel with the port methods captured at evaluation", async () => {
+    const proto = MessagePort.prototype as unknown as { postMessage: (...args: unknown[]) => void };
+    const original = proto.postMessage;
+    let seen = 0;
+    proto.postMessage = function (this: MessagePort, ...args: unknown[]) {
+      seen += 1;
+      return Reflect.apply(original, this, args);
+    };
+    try {
+      const { createFence } = await import("./fence");
+      const messages: AgentMsg[] = [];
+      const fence = createFence({
+        emitter: { emit: (message) => messages.push(message) },
+        docId: 1,
+        getId: () => -1,
+        document: fakeDocument() as unknown as Document,
+      });
+      fence({ reqId: 1, n: 1 });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(messages.map((message) => message.kind)).toEqual(["fence", "cmdres"]);
+      expect(seen).toBe(0);
+    } finally {
+      proto.postMessage = original;
+    }
   });
 
   it("reports no field when nothing editable has focus", async () => {

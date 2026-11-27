@@ -567,12 +567,28 @@ describe("TabHub fences", () => {
     hub.ingest(rrweb(7, delta(7, 1)));
     const before = hub.joinPayload();
     expect(hub.ingest(fence(7, 1, "secret text"))).toEqual([]);
-    expect(heard).toEqual([{ n: 1, epoch: 1, seq: 3, edit, text: "secret text" }]);
+    expect(heard).toEqual([{ n: 1, epoch: 1, seq: 3, edit }]);
     expect(hub.joinPayload()).toEqual(before);
     expect(JSON.stringify(hub.joinPayload())).not.toContain("secret");
     expect(hub.deltas).toHaveLength(2);
     // The next event's seq follows on: the fence used none.
     expect(hub.ingest(rrweb(7, delta(7, 2)))[0]).toMatchObject({ seq: 4 });
+  });
+
+  it("hands a submit-guard fence's text out once and keeps none of it", async () => {
+    const hub = opened();
+    hub.ingest(fence(7, 1, "secret text"));
+    await expect(hub.whenFenced(1, 1_000)).resolves.toMatchObject({ n: 1, text: "secret text" });
+    const again = await hub.whenFenced(1, 1_000);
+    expect(again).toMatchObject({ n: 1 });
+    expect(again).not.toHaveProperty("text");
+    const waiting = hub.whenFenced(2, 1_000);
+    hub.ingest(fence(7, 2, "more secret"));
+    await expect(waiting).resolves.toMatchObject({ n: 2, text: "more secret" });
+    // Texts nobody took are kept only a few deep.
+    for (let n = 3; n <= 10; n++) hub.ingest(fence(7, n, `secret ${n}`));
+    expect(await hub.whenFenced(3, 1_000)).not.toHaveProperty("text");
+    expect(await hub.whenFenced(10, 1_000)).toMatchObject({ text: "secret 10" });
   });
 
   it("drops a fence from another document", () => {
