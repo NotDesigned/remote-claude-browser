@@ -43,6 +43,7 @@ import {
   type ProxyLab,
 } from "../input/predict-overlay";
 import { createProxyInput, type ProxyInput } from "../input/proxy-input";
+import { inputModeOverride } from "./input-mode";
 import type { VoiceLink } from "../media/voice";
 import { createMirror, type Mirror } from "../mirror";
 import { EventPipeline } from "../pipeline";
@@ -100,20 +101,6 @@ export interface InputLabHandle {
   };
 }
 
-/** `?input=proxy|legacy` (kept for the tab's session): debug override of single-writer input. */
-export function inputModeOverride(): "proxy" | "legacy" | null {
-  let value: string | null = null;
-  try {
-    value = new URLSearchParams(window.location.search).get("input");
-    const storage = window.sessionStorage;
-    if (value === "proxy" || value === "legacy") storage.setItem("mirror.input-mode", value);
-    else value = storage.getItem("mirror.input-mode");
-  } catch {
-    // No storage: the address alone decides.
-  }
-  return value === "proxy" || value === "legacy" ? value : null;
-}
-
 function configuredResyncWindowMs(): number {
   const raw = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env
     ?.VITE_P2_RESYNC_WINDOW_MS;
@@ -153,7 +140,7 @@ async function replayFixture(path: string, mirror: Mirror, signal?: AbortSignal)
 }
 
 /** This tab's own memory; sessionStorage itself throws when site data is blocked. */
-function sessionStorageOrNull(): Pick<Storage, "getItem" | "setItem"> | null {
+function sessionStorageOrNull(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | null {
   try {
     return window.sessionStorage;
   } catch {
@@ -256,12 +243,13 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     mark: (tab, played) => mirror.mark(tab, played),
   });
   const activeTab = () => mirror.getActiveTab();
-  // Single-writer input: on when the gateway offers it and this viewer drives (or forced).
-  const inputOverride = inputModeOverride();
+  // Single-writer input: on when the gateway offers it and this viewer drives, unless this tab
+  // asked for the legacy way.
+  const inputOverride = inputModeOverride(window.location.search, sessionStorageOrNull());
   const proxyActive = () =>
     inputOverride !== "legacy" &&
     sequencer.enabled() &&
-    (sequencer.proxyEnabled() || inputOverride === "proxy") &&
+    sequencer.proxyEnabled() &&
     presentation.isDriver();
   const proxyLab = createProxyLab();
   const replayNode = (id: number) => mirror.getReplayer()?.getMirror().getNode(id) ?? null;
