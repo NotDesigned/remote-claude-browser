@@ -68,9 +68,27 @@ export function inputAckConfig(env: Record<string, string | undefined> = process
   };
 }
 
-/** `hello.caps` for a gateway running acks in this mode. */
-export function ackCaps(mode: InputAcksMode): string[] {
-  return mode === "off" ? [] : mode === "shadow" ? ["ack1"] : ["ack1", "ackecho1"];
+export type ProxyInputMode = "off" | "on";
+
+/**
+ * MIRROR_PROXY_INPUT: single-writer input (`proxyin1`), "off" unless set. It needs input acks,
+ * so "on" with MIRROR_INPUT_ACKS=off is refused at startup, as is a value it does not know.
+ */
+export function proxyInputConfig(
+  env: Record<string, string | undefined> = process.env,
+): ProxyInputMode {
+  const raw = env.MIRROR_PROXY_INPUT;
+  const mode = raw === undefined || raw === "" ? "off" : raw;
+  if (mode !== "off" && mode !== "on") throw new Error("MIRROR_PROXY_INPUT must be off or on");
+  if (mode === "on" && inputAckConfig(env).acks === "off")
+    throw new Error("MIRROR_PROXY_INPUT=on needs input acks: MIRROR_INPUT_ACKS must not be off");
+  return mode;
+}
+
+/** `hello.caps` for a gateway running acks in this mode, and single-writer input when on. */
+export function ackCaps(mode: InputAcksMode, proxy: ProxyInputMode = "off"): string[] {
+  const caps = mode === "off" ? [] : mode === "shadow" ? ["ack1"] : ["ack1", "ackecho1"];
+  return mode !== "off" && proxy === "on" ? [...caps, "proxyin1"] : caps;
 }
 
 export interface AckHub {

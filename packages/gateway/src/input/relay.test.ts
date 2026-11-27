@@ -796,6 +796,35 @@ describe("InputRelay", () => {
     ]);
   });
 
+  it("types a key's own text as is, never through the US layout", async () => {
+    const h = harness();
+    const messages: InputMsg[] = [
+      // A French layout's 2 key, an AltGr character and a phone's accented letter.
+      { t: "key", tab: "tab-1", kind: "down", key: "é", code: "Digit2", mods: 0, text: "é" },
+      {
+        t: "key",
+        tab: "tab-1",
+        kind: "down",
+        key: "@",
+        code: "KeyQ",
+        mods: Mod.Ctrl | Mod.Alt,
+        text: "@",
+      },
+      { t: "key", tab: "tab-1", kind: "down", key: "Unidentified", code: "", mods: 0, text: "ü" },
+      // Too long, or a control character: the key's own description stays.
+      { t: "key", tab: "tab-1", kind: "down", key: "a", code: "KeyA", mods: 0, text: "123456789" },
+      { t: "key", tab: "tab-1", kind: "down", key: "Enter", code: "Enter", mods: 0, text: "\r" },
+    ];
+    for (const msg of messages) await h.relay("driver", msg);
+    expect(h.cdp.map(({ params }) => params)).toEqual([
+      expect.objectContaining({ type: "keyDown", key: "é", text: "é", unmodifiedText: "é" }),
+      expect.objectContaining({ type: "keyDown", key: "@", text: "@", unmodifiedText: "@" }),
+      expect.objectContaining({ type: "keyDown", key: "ü", text: "ü", unmodifiedText: "ü" }),
+      expect.objectContaining({ type: "keyDown", key: "a", text: "a" }),
+      expect.objectContaining({ type: "keyDown", key: "Enter", text: "\r" }),
+    ]);
+  });
+
   it("places a pointer inside a frame's border, and scrolls the frame a node is in by frame id", async () => {
     const commands: { targetId: string; command: AgentCmdInput; frameId: string | undefined }[] =
       [];
