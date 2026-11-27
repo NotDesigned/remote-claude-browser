@@ -112,15 +112,20 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
   /** Text mutations let through to a focused editor, by node, to know none is still buffered. */
   const passedTexts = new Map<number, number>();
   let reconcileRequested = false;
-  /** A reconcile was due while another was on its way, which may show the page from before. */
+  /**
+   * The page changed the editor while a reconcile was on its way, or one was due then. That one's
+   * catch-up may come from before the change, and the change is held back here: once it is
+   * applied (settled), which drops what was held, another is asked for, or the replay would show
+   * the editor as it was (the message just sent, left in a composer the page has cleared).
+   */
   let reconcileAgain = false;
   let reconcileRetry: ReturnType<typeof setTimeout> | null = null;
   let reconcileRetries = 0;
   /** Each editor's text when Enter was last pressed in it, and when. */
   const sentTexts = new WeakMap<Element, { text: string; at: number }>();
 
-  const requestReconcile = (again = false) => {
-    if (again && reconcileRequested) reconcileAgain = true;
+  const requestReconcile = () => {
+    if (reconcileRequested) reconcileAgain = true;
     if (reconcileRequested || reconcileRetry !== null) return;
     if (options.onContenteditableReconcile?.() === false) {
       // Latched only once sent: the divergence is still there when input to the tab returns.
@@ -292,8 +297,10 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
         if (text === "" || !compact(removed).includes(text) || compact(added).includes(text))
           continue;
         sentTexts.delete(state.element);
-        requestReconcile(true);
+        requestReconcile();
       }
+      // A change held back now is not in a catch-up that may already be on its way.
+      if (reconcileRequested && changed.size > 0) reconcileAgain = true;
 
       // What passes and names a node this replay never got cannot be applied here.
       if (

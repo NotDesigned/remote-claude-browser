@@ -151,4 +151,28 @@ describe("the page clearing an editor after Enter sent its text", () => {
     echo.settled();
     expect(reconcile).toHaveBeenCalledTimes(2);
   });
+
+  it("asks again for a clear held back while a reconcile was on its way, though not seen as one", () => {
+    const { echo, editor, focus, reconcile, at } = setup();
+    echo.keyDown({ key: "Enter" } as KeyboardEvent, focus);
+    echo(batch({ removes: [{ parentId: 21, id: 22 }] }), at(100));
+    expect(reconcile).toHaveBeenCalledOnce();
+    // The catch-up is late (typing went on): this replay's editor still holds every message since,
+    // so the page clearing only the last of them is not the text Enter sent here.
+    editor.children.set(23, { textContent: "fifth" });
+    editor.textContent = "first questionfifth";
+    focus.subtreeNodeIds.add(23);
+    at(900);
+    echo.input(focus);
+    echo.keyDown({ key: "Enter" } as KeyboardEvent, focus);
+    expect(echo(batch({ texts: [{ id: 23, value: "" }] }), at(1_000))).toBeNull();
+    expect(reconcile).toHaveBeenCalledOnce();
+    // The catch-up asked for before that clear is applied, and drops what was held back: the
+    // replay would show "fifth" in a composer the page has cleared.
+    echo.settled();
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    // That one comes from after the clear, and nothing more is held: no third.
+    echo.settled();
+    expect(reconcile).toHaveBeenCalledTimes(2);
+  });
 });
