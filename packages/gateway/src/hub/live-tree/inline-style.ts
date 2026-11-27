@@ -141,6 +141,83 @@ export function covers(shorthand: string, longhand: string): boolean {
   return false;
 }
 
+/** Shorthands of one to four values for top, right, bottom and left. */
+const BOX_SHORTHANDS: Record<string, readonly [string, string, string, string]> = {
+  margin: ["margin-top", "margin-right", "margin-bottom", "margin-left"],
+  padding: ["padding-top", "padding-right", "padding-bottom", "padding-left"],
+  inset: ["top", "right", "bottom", "left"],
+  "border-width": [
+    "border-top-width",
+    "border-right-width",
+    "border-bottom-width",
+    "border-left-width",
+  ],
+  "border-style": [
+    "border-top-style",
+    "border-right-style",
+    "border-bottom-style",
+    "border-left-style",
+  ],
+  "border-color": [
+    "border-top-color",
+    "border-right-color",
+    "border-bottom-color",
+    "border-left-color",
+  ],
+  "scroll-margin": [
+    "scroll-margin-top",
+    "scroll-margin-right",
+    "scroll-margin-bottom",
+    "scroll-margin-left",
+  ],
+  "scroll-padding": [
+    "scroll-padding-top",
+    "scroll-padding-right",
+    "scroll-padding-bottom",
+    "scroll-padding-left",
+  ],
+};
+
+/** Top-level space-separated values, keeping parentheses and quotes whole. */
+function splitValues(value: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let current = "";
+  for (const char of value.trim()) {
+    if (quote !== null) {
+      current += char;
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") quote = char;
+    if (char === "(") depth++;
+    if (char === ")") depth = Math.max(0, depth - 1);
+    if (/\s/.test(char) && depth === 0) {
+      if (current !== "") parts.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (current !== "") parts.push(current);
+  return parts;
+}
+
+/** A box shorthand's longhands, or null when it is not one this can write out. */
+function expandBox(declaration: Declaration): Declaration[] | null {
+  const names = BOX_SHORTHANDS[declaration.name];
+  if (names === undefined || /var\(/i.test(declaration.value)) return null;
+  const values = splitValues(declaration.value);
+  if (values.length < 1 || values.length > 4) return null;
+  const [top, right = top, bottom = top, left = right] = values as [string, ...string[]];
+  return [top, right, bottom, left].map((value, index) => ({
+    name: names[index]!,
+    value: value!,
+    important: declaration.important,
+  }));
+}
+
 export interface StyleResult {
   value: string;
   /** A removed longhand was only set through a shorthand, which was dropped. */
@@ -153,6 +230,12 @@ export function applyStyleDiff(current: string, diff: StyleDiff): StyleResult {
   for (const [rawName, change] of Object.entries(diff)) {
     const name = rawName.startsWith("--") ? rawName : rawName.toLowerCase();
     if (change === false) {
+      declarations = declarations.filter((declaration) => declaration.name !== name);
+      // A box shorthand (margin: 1px 2px) is written out as its longhands, in its place, so
+      // that one of them can go.
+      declarations = declarations.flatMap((declaration) =>
+        covers(declaration.name, name) ? (expandBox(declaration) ?? [declaration]) : [declaration],
+      );
       declarations = declarations.filter((declaration) => declaration.name !== name);
       const shorthands = declarations.filter((declaration) => covers(declaration.name, name));
       if (shorthands.length > 0) {

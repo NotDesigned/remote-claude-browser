@@ -124,7 +124,18 @@ class Follower {
     const synthesized = synthesizeFresh(tree);
     const replayed = await this.harness.replay(stream);
     const fromTree = await this.harness.replay(synthesized.events, synthesized.sheets);
-    const differences = differencePaths(replayed, fromTree);
+    let differences = differencePaths(replayed, fromTree);
+    if (differences.length > 0) {
+      // Where the tree's replay has what the page's has, the Replayer is the one that is off. (A
+      // cross-site frame's document can come back from the page under new ids, so the page's
+      // part can only be told by its shape.)
+      const page = await this.harness.replay(checkout);
+      this.replayerGaps += differences.length;
+      differences = differences.filter(
+        (path) => firstDifference(valueAt(fromTree, path), valueAt(page, path)) !== null,
+      );
+      this.replayerGaps -= differences.length;
+    }
     if (differences.length > 0) {
       // Node by node, the tree's snapshot must agree with the stream's replay or the page's.
       const [stream_, tree_, page_] = [

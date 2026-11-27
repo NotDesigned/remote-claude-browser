@@ -55,12 +55,33 @@ describe("inline style diff", () => {
     expect(result.uncertain).toBe(false);
   });
 
-  it("removing a longhand only a shorthand sets is uncertain and drops the shorthand", () => {
-    const result = applyStyleDiff("margin: 0; color: red", { "margin-top": false });
+  it("writes out a box shorthand to remove one of its longhands", () => {
+    const result = applyStyleDiff("margin: 1px 2px; color: red", { "margin-top": false });
+    expect(result.uncertain).toBe(false);
+    expect(declarationMap(result.value)).toEqual(
+      new Map([
+        ["margin-right", "2px"],
+        ["margin-bottom", "1px"],
+        ["margin-left", "2px"],
+        ["color", "red"],
+      ]),
+    );
+    const inset = applyStyleDiff("inset: 0 calc(1px + 2px) 3px !important", { top: false });
+    expect(declarationMap(inset.value)).toEqual(
+      new Map([
+        ["right", "calc(1px + 2px)!important"],
+        ["bottom", "3px!important"],
+        ["left", "calc(1px + 2px)!important"],
+      ]),
+    );
+  });
+
+  it("removing a longhand only another shorthand sets is uncertain and drops the shorthand", () => {
+    const result = applyStyleDiff("font: 12px serif; color: red", { "font-size": false });
     expect(result.uncertain).toBe(true);
     expect(declarationMap(result.value)).toEqual(new Map([["color", "red"]]));
-    const inset = applyStyleDiff("inset: 0", { top: false });
-    expect(inset.uncertain).toBe(true);
-    expect(inset.value).toBe("");
+    const variable = applyStyleDiff("margin: var(--m)", { "margin-top": false });
+    expect(variable.uncertain).toBe(true);
+    expect(variable.value).toBe("");
   });
 });

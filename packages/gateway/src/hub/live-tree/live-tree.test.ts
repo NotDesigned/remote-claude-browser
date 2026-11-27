@@ -267,7 +267,7 @@ describe("LiveTree mutations", () => {
   it("applies inline style diffs and counts the uncertain ones", () => {
     const tree = seeded();
     tree.apply(
-      mutation({ attributes: [{ id: 5, attributes: { style: "margin: 0; color: red" } }] }),
+      mutation({ attributes: [{ id: 5, attributes: { style: "font: 12px serif; color: red" } }] }),
     );
     tree.apply(
       mutation({
@@ -277,11 +277,11 @@ describe("LiveTree mutations", () => {
       }),
     );
     expect((find(shown(tree), 5)!.attributes as N).style).toBe(
-      "margin: 0; color: blue; width: 2px !important;",
+      "font: 12px serif; color: blue; width: 2px !important;",
     );
     expect(tree.anomalies.styleUncertain).toBe(0);
     tree.apply(
-      mutation({ attributes: [{ id: 5, attributes: { style: { "margin-left": false } } }] }),
+      mutation({ attributes: [{ id: 5, attributes: { style: { "font-size": false } } }] }),
     );
     expect(tree.anomalies.styleUncertain).toBe(1);
     expect((find(shown(tree), 5)!.attributes as N).style).toBe(
