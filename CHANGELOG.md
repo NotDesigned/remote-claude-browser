@@ -16,6 +16,7 @@
 - 预构建镜像增加 `remote-claude-browser-cpa-broker` 和 `remote-claude-browser-cpa`，四个镜像都按版本标签发布（例如 `v0.5.0`），只发布 CI 通过的那个提交，并附带构建来源证明。见 [docs/deployment.md](docs/deployment.md#安装)。
 - 部署文档新增「日志和磁盘」，备份一节给出包括 CPA 卷和 Caddy 证书在内的完整命令和还原方法。命令只处理本部署的 CPA 容器和卷（按部署标签和实例 ID 筛选），同一台 Docker 主机上别的部署不受影响。
 - `MIRROR_ASSET_MAX_BYTES`：经代理的单个网页资源的字节上限，默认 64 MB。见 [docs/configuration.md](docs/configuration.md#写在-compose-文件里的变量)。
+- `MIRROR_INPUT_ACKS`（输入确认：`off`、`shadow` 只统计、`on` 按确认判断）、`MIRROR_SUBMIT_GUARD`（按回车前核对远程输入框的文字，目前只统计）。见 [docs/configuration.md](docs/configuration.md#写在-compose-文件里的变量)。
 
 ### 变更
 
@@ -116,6 +117,7 @@
 - 新打开的标签页直接显示浏览器配置选择，不再先闪一下工作台的顶栏。
 - 出口节点的 Mihomo 自动重启后，第一次出口检查失败会再重试几次，不会在出口其实可用时一直显示错误；重启和检查失败会写进服务端日志。
 - 会话宽限：只有 claude.ai 正在生成回复才推迟关闭（以前任何网站上有「停止」按钮都会一直推迟）；断开满 30 分钟后即使仍在生成也会关闭，见 [docs/deployment.md](docs/deployment.md#资源与超时)。
+- 页面模式打字后，工作台判断远程输入框是否已经跟上，不再固定等约 1 秒：每次输入带序号，远程页面处理完后网关回传确认和输入框内容的校验值，工作台收到就立即核对；网络慢时也不会再把旧文字写回输入框。旧版工作台和更新前打开的页面仍按原来的方式工作。
 
 ### 移除
 
