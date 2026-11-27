@@ -181,7 +181,12 @@ async function harness(liveTree: LiveTreeOptions | false = TREE): Promise<Harnes
         socket.once("open", () => resolve());
         socket.once("error", reject);
       });
-      await until(() => received.some((down) => down.t === "snapshot"));
+      // The join's snapshots, and the tab list, which comes on its own.
+      await until(
+        () =>
+          received.some((down) => down.t === "snapshot") &&
+          received.some((down) => down.t === "tabs"),
+      );
       return { socket, received, send: (up: Up) => socket.send(encodeMsg(up)) };
     },
     async close() {
