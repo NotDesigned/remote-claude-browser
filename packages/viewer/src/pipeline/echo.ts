@@ -164,6 +164,8 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       ? at - state.lastKeyTs < ACK_LIVENESS_MS * 2 &&
         (state.awaiting === true || (acks?.outstanding() ?? 0) > 0)
       : at - state.lastKeyTs < decayMs;
+  /** When a field was last typed into, or a key went down in one. */
+  let lastTyped = Number.NEGATIVE_INFINITY;
   /** Ack mode: a reconcile that could not be sent is asked again with the next settled ack. */
   let reconcileDeferred = false;
   const nodes = new Map<number, EditingState>();
@@ -495,6 +497,7 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
     if (focus.nodeId < 0 || !isEchoField(focus.element)) return;
     const field = focus.element;
     const timestamp = now();
+    lastTyped = timestamp;
     const state = nodes.get(focus.nodeId) ?? {
       element: field,
       lastKeyTs: timestamp,
@@ -521,6 +524,7 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
 
   filter.keyDown = (event, focus) => {
     filter.setFocused(focus);
+    if (focus !== null) lastTyped = now();
     // Enter is not an acknowledgement of earlier edits. Keep local text protected
     // until the ordinary reconciliation window; a delayed echo may be a prefix.
     // What it may have sent is remembered, to know the page's clearing of it when it comes.
@@ -554,6 +558,8 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
     if (ackMode() && (acks?.outstanding() ?? 0) > 0)
       for (const state of nodes.values()) if (at - state.lastKeyTs < ACK_LIVENESS_MS) return true;
     for (const state of nodes.values()) if (at - state.lastKeyTs < ms) return true;
+    // An ack may have let go of the field already: the person typing still counts.
+    if (ackMode() && at - lastTyped < ms) return true;
     return false;
   };
   filter.settled = () => {

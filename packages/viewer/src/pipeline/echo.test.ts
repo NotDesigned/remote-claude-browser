@@ -872,7 +872,10 @@ describe.each([
         final: true,
         edit: { node: 20, len: 5, hash: editHash("hello"), sel: [5, 5] },
       });
-      expect(echo.typingWithin(400)).toBe(false);
+      expect(echo.typingWithin(50)).toBe(false);
+      // The window is closed, but a key going down now is still typing: no catch-up under it.
+      echo.keyDown({ key: "x" } as KeyboardEvent, focus);
+      expect(echo.typingWithin(50)).toBe(true);
     } else clock.to(1_200);
     expect(reconcile).not.toHaveBeenCalled();
     // A later change to that node still asks: this replay never got it (the page clearing its
