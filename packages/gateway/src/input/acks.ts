@@ -17,7 +17,7 @@
  * Only input that carries `iseq` is tracked: an older viewer sends none, and gets no fences.
  *
  * No fence goes to the page while an IME composition is open there (an `ime` with text, until the
- * commit or anything else typed): running the fence's command in the page then can end the
+ * commit or a key): running the fence's command in the page then can end the
  * composition early, and the page loses its uncommitted text. The inputs are acknowledged once
  * the composition ends.
  */
@@ -329,7 +329,9 @@ export function createAckScheduler(deps: AckSchedulerDeps): AckScheduler {
       state.unfenced += 1;
       state.firstUnfencedAt ??= now();
       if (msg.t === "ime") state.composing = msg.text !== "";
-      else if (msg.t === "text" || msg.t === "key" || msg.t === "value") state.composing = false;
+      // A whole-field sync (`value`) may come while the page still composes: only a commit or a
+      // key ends it.
+      else if (msg.t === "text" || msg.t === "key") state.composing = false;
       if (
         !state.composing &&
         (deps.isIdle(msg.tab) ||

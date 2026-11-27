@@ -135,6 +135,11 @@ export interface EchoFilterOptions {
   nodeFor?: (id: number) => Node | null;
   /** Input acks: with `enabled()`, they decide when typing has settled instead of `decayMs`. */
   acks?: EchoAcks;
+  /**
+   * An IME composition is open in the replay. With acks, a field is then not brought back in step
+   * (that would end the composition and lose its text): the ack after the commit does it.
+   */
+  composing?: () => boolean;
 }
 
 /** A field's text as the page's editHash sees it. */
@@ -623,6 +628,8 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
 
   acks?.subscribe((settled) => {
     if (!ackMode()) return;
+    // Nothing is written into an editor while an IME composes in it.
+    if (options.composing?.() === true) return;
     if (reconcileDeferred) {
       reconcileDeferred = false;
       requestReconcile();

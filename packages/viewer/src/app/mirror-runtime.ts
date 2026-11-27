@@ -202,7 +202,10 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     mark: (tab, played) => mirror.mark(tab, played),
   });
   const activeTab = () => mirror.getActiveTab();
+  /** An IME composition is open in the replay (see attachInteraction). */
+  let composing = false;
   const echo = createEchoFilter({
+    composing: () => composing,
     acks: {
       enabled: sequencer.echoEnabled,
       subscribe: (listener) =>
@@ -370,10 +373,17 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
       const unlock = () => options.voice()?.unlock();
       frame?.addEventListener("pointerdown", unlock, true);
       frame?.addEventListener("keydown", unlock, true);
+      const compositionStart = () => (composing = true);
+      const compositionEnd = () => (composing = false);
+      frame?.addEventListener("compositionstart", compositionStart, true);
+      frame?.addEventListener("compositionend", compositionEnd, true);
       // A parked page gets its interaction again each time it is shown: these must not pile up.
       const unlockCleanup = () => {
         frame?.removeEventListener("pointerdown", unlock, true);
         frame?.removeEventListener("keydown", unlock, true);
+        frame?.removeEventListener("compositionstart", compositionStart, true);
+        frame?.removeEventListener("compositionend", compositionEnd, true);
+        composing = false;
       };
       const detachInput = attachMirrorInput({
         replayer,

@@ -182,7 +182,7 @@ describe.each([
   { mode: "legacy", ackMode: false },
   { mode: "ack", ackMode: true },
 ])("the composer cleared after Enter while the next message is typed ($mode)", ({ ackMode }) => {
-  function ackSetup() {
+  function ackSetup(extra: { composing?: () => boolean } = {}) {
     let time = 0;
     const listeners = new Set<(settled: SettledAck) => void>();
     let stamped = 0;
@@ -193,6 +193,7 @@ describe.each([
       now: () => time,
       onContenteditableReconcile: reconcile,
       nodeFor: editor.nodeFor,
+      ...extra,
       setTimer: ((callback: () => void, delay = 0) => {
         if (ackMode && delay < ACK_LIVENESS_MS)
           throw new Error(`ack mode scheduled a ${delay} ms timer`);
@@ -298,6 +299,20 @@ describe.each([
     settle(1, 14, true);
     // A click on the page's send button (no Enter here), then its clear 1.5 s later.
     expect(echo(batch({ removes: [{ parentId: 21, id: 22 }] }), at(1_500))).not.toBeNull();
+    expect(reconcile).toHaveBeenCalledTimes(ackMode ? 1 : 0);
+  });
+
+  it("writes nothing into the editor while an IME composes in it", () => {
+    let composing = true;
+    const setup = ackSetup({ composing: () => composing });
+    const { reconcile, settle } = setup;
+    // The page's text differs (the composition is not in it yet): later, not now.
+    settle(1, 0, true);
+    expect(reconcile).not.toHaveBeenCalled();
+    composing = false;
+    setup.send();
+    setup.echo.input(setup.focus);
+    settle(2, 0, true);
     expect(reconcile).toHaveBeenCalledTimes(ackMode ? 1 : 0);
   });
 
