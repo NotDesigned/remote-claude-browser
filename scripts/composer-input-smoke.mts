@@ -60,7 +60,7 @@ const remoteHtml = `<!doctype html><meta charset="utf-8"><meta name="viewport" c
 <style>body{margin:0;font:16px sans-serif}#bar{position:fixed;bottom:0;left:0;right:0;padding:8px;background:#eee}
 .ProseMirror{min-height:40px;border:1px solid #888;padding:6px;background:#fff;white-space:pre-wrap}
 .ProseMirror p{margin:0}.is-empty::before{content:attr(data-placeholder);color:#999;float:left;height:0}
-#thread{padding:8px 8px 120px}</style>
+#thread{padding:8px 8px 120px;max-height:45vh;overflow:auto}</style>
 <div id="thread"></div><textarea id="plain" rows="3" style="width:90%;margin:8px"></textarea><div id="bar"></div>
 <script>${composerScript.replaceAll("</script", "<\\/script")}</script>
 <script>
