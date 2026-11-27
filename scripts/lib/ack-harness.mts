@@ -90,12 +90,27 @@ export function createAckHarness(options: {
       noteText(node.id, seq, node.textContent ?? "");
     for (const child of node.childNodes ?? []) addedTexts(child, seq);
   };
-  /** Whether a text node already held the end of `line` at stream position `seq`. */
+  /**
+   * Whether text nodes at stream position `seq` already held the end of `line` — either in one
+   * text node or split across an inline mark boundary (e.g. `<strong>bold</strong>` + `" "`/`" t"`).
+   */
   const carried = (line: string, seq: number) => {
     const tail = line.replace(/\u00a0/g, " ").slice(-3);
+    const atSeq: string[] = [];
     for (const history of texts.values()) {
       const last = history.filter((entry) => entry.seq <= seq).at(-1);
-      if (last !== undefined && last.text.endsWith(tail)) return true;
+      if (last !== undefined) {
+        if (last.text.endsWith(tail)) return true;
+        atSeq.push(last.text);
+      }
+    }
+    for (let i = 0; i < atSeq.length; i++) {
+      const b = atSeq[i]!;
+      if (b.length === 0 || b.length >= tail.length || !tail.endsWith(b)) continue;
+      const prefix = tail.slice(0, tail.length - b.length);
+      for (let j = 0; j < atSeq.length; j++) {
+        if (i !== j && atSeq[j]!.endsWith(prefix)) return true;
+      }
     }
     return false;
   };
