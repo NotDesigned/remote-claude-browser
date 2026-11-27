@@ -23,7 +23,7 @@ export interface LiveTreeConfig {
 const MiB = 1024 * 1024;
 
 export const DEFAULT_LIVE_TREE: LiveTreeConfig = {
-  enabled: false,
+  enabled: true,
   ringEvents: 2_000,
   ringBytes: 2 * MiB,
   maxNodes: 400_000,

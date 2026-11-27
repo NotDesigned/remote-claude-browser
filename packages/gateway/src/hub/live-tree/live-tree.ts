@@ -44,7 +44,6 @@ export const NodeKind = {
 
 export const PARENT: unique symbol = Symbol("parent");
 export const SHADOW: unique symbol = Symbol("shadow");
-const SIZE: unique symbol = Symbol("size");
 const IN_SHADOW: unique symbol = Symbol("inShadow");
 export const SHEET_CACHE: unique symbol = Symbol("sheetCache");
 
@@ -64,7 +63,6 @@ export interface TNode {
   [key: string]: unknown;
   [PARENT]?: TNode | null;
   [SHADOW]?: TNode[];
-  [SIZE]?: number;
   [IN_SHADOW]?: boolean;
   [SHEET_CACHE]?: { text: string; hash: string };
 }
@@ -504,10 +502,9 @@ export class LiveTree {
         this.materializeStyle(parent);
         this.prune(parent.id);
       }
-      this.estBytes -= target[SIZE] ?? 0;
+      this.estBytes -= nodeSize(target);
       target.textContent = mutation.value ?? "";
-      target[SIZE] = nodeSize(target);
-      this.estBytes += target[SIZE];
+      this.estBytes += nodeSize(target);
     }
 
     // ~12440: attributes.
@@ -519,7 +516,7 @@ export class LiveTree {
         continue;
       }
       if (target.type !== NodeKind.Element) throw new TreeBroken("attribute-on-non-element");
-      this.estBytes -= target[SIZE] ?? 0;
+      this.estBytes -= nodeSize(target);
       const attributes = (target.attributes ??= {});
       for (const name in mutation.attributes) {
         const value = mutation.attributes[name];
@@ -552,8 +549,7 @@ export class LiveTree {
           else attributes.style = result.value;
         }
       }
-      target[SIZE] = nodeSize(target);
-      this.estBytes += target[SIZE];
+      this.estBytes += nodeSize(target);
     }
     if (this.checkInvariants) this.assertInvariants();
   }
@@ -598,10 +594,9 @@ export class LiveTree {
     const css = style.attributes?._cssText;
     if (typeof css !== "string") return;
     const texts = (style.childNodes ?? []).filter((child) => child.type === NodeKind.Text);
-    this.estBytes -= style[SIZE] ?? 0;
+    this.estBytes -= nodeSize(style);
     delete style.attributes!._cssText;
-    style[SIZE] = nodeSize(style);
-    this.estBytes += style[SIZE];
+    this.estBytes += nodeSize(style);
     if (texts.length === 0) {
       if (adding !== undefined) this.setText(adding, css);
       return;
@@ -613,10 +608,9 @@ export class LiveTree {
   }
 
   private setText(node: TNode, text: string): void {
-    this.estBytes -= node[SIZE] ?? 0;
+    this.estBytes -= nodeSize(node);
     node.textContent = text;
-    node[SIZE] = nodeSize(node);
-    this.estBytes += node[SIZE];
+    this.estBytes += nodeSize(node);
   }
 
   /** Adds the page meant but no parent or next sibling ever arrived for. */
@@ -647,12 +641,11 @@ export class LiveTree {
       node.attributes = attributes;
     }
     node[PARENT] = parent;
-    node[IN_SHADOW] = inShadow;
+    if (inShadow) node[IN_SHADOW] = true;
     if (this.nodes.has(node.id)) throw new TreeBroken("duplicate-id");
     this.nodes.set(node.id, node);
     this.graveyard.delete(node.id);
-    node[SIZE] = nodeSize(node);
-    this.estBytes += node[SIZE];
+    this.estBytes += nodeSize(node);
     if (source.childNodes !== undefined || isContainer(node)) {
       node.childNodes = [];
       for (const child of source.childNodes ?? []) {
@@ -676,7 +669,7 @@ export class LiveTree {
     if (index < 0) list.push(node);
     else list.splice(index, 0, node);
     node[PARENT] = parent;
-    node[IN_SHADOW] = shadow;
+    if (shadow || node[IN_SHADOW] !== undefined) node[IN_SHADOW] = shadow;
   }
 
   /** Takes a node out of its parent's list; its ids stay. */
@@ -702,7 +695,7 @@ export class LiveTree {
         this.nodes.delete(current.id);
         this.graveyard.add(current.id);
         removed?.add(current.id);
-        this.estBytes -= current[SIZE] ?? 0;
+        this.estBytes -= nodeSize(current);
         if (this.sidecarOwners.has(current.id)) this.prune(current.id);
         this.canvas.delete(current.id);
         this.frameScrolls.delete(current.id);
@@ -728,6 +721,13 @@ export class LiveTree {
 
   // ---- other events ----
 
+  /** Changes a node's own fields, keeping the size estimate in step. */
+  private resized(node: TNode, change: () => void): void {
+    this.estBytes -= nodeSize(node);
+    change();
+    this.estBytes += nodeSize(node);
+  }
+
   private applyScroll(
     event: eventWithTime,
     data: { id: number; x: number; y: number },
@@ -739,11 +739,11 @@ export class LiveTree {
       else this.frameScrolls.set(node.id, structuredClone(event));
       // A document scrolls by its scrolling element, which a snapshot records as scrolled too.
       const scrolling = scrollingElement(node);
-      if (scrolling !== undefined) setScroll(scrolling, data);
+      if (scrolling !== undefined) this.resized(scrolling, () => setScroll(scrolling, data));
       return "ok";
     }
     if (node.type !== NodeKind.Element) return "ignored";
-    setScroll(node, data);
+    this.resized(node, () => setScroll(node, data));
     return "ok";
   }
 
@@ -752,7 +752,7 @@ export class LiveTree {
     const node = this.nodes.get(data.id);
     if (node === undefined || node.type !== NodeKind.Element) return "ignored";
     const attributes = (node.attributes ??= {});
-    this.estBytes -= node[SIZE] ?? 0;
+    this.estBytes -= nodeSize(node);
     const type = attributes.type;
     const text = typeof data.text === "string" ? data.text : "";
     if (type === "radio" || type === "checkbox" || type === "submit" || type === "button") {
@@ -765,8 +765,7 @@ export class LiveTree {
       // rebuild with a value ignores them).
       if (node.tagName === "select") this.selectOption(node, text);
     }
-    node[SIZE] = nodeSize(node);
-    this.estBytes += node[SIZE];
+    this.estBytes += nodeSize(node);
     return "ok";
   }
 
@@ -798,6 +797,7 @@ export class LiveTree {
   private applyMedia(data: Record<string, unknown>): "ok" | "ignored" {
     const node = this.nodes.get(Number(data.id));
     if (node === undefined || node.type !== NodeKind.Element) return "ignored";
+    this.estBytes -= nodeSize(node);
     const attributes = (node.attributes ??= {});
     if (data.type === 0) attributes.rr_mediaState = "played";
     if (data.type === 1) attributes.rr_mediaState = "paused";
@@ -806,6 +806,7 @@ export class LiveTree {
     if (typeof data.muted === "boolean") attributes.rr_mediaMuted = data.muted;
     if (typeof data.loop === "boolean") attributes.rr_mediaLoop = data.loop;
     if (typeof data.volume === "number") attributes.rr_mediaVolume = data.volume;
+    this.estBytes += nodeSize(node);
     return "ok";
   }
 
@@ -1024,6 +1025,7 @@ function compareAttributes(
 }
 
 function setScroll(node: TNode, data: { x: number; y: number }): void {
+  // Numbers: the size estimate does not change.
   const attributes = (node.attributes ??= {});
   if (data.x) attributes.rr_scrollLeft = Number(data.x);
   else delete attributes.rr_scrollLeft;

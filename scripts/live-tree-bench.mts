@@ -8,7 +8,7 @@
 // minute, synthesis time (p50, p95, and a memoized repeat), retained heap per tab after GC and
 // the tree's own estimate, synthesized and page snapshot bytes, page snapshots by cause, and the
 // RSS of four such tabs.
-import { writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { EventType, type AgentMsg } from "../packages/protocol/src/index";
@@ -57,34 +57,45 @@ function heap(): number {
   return process.memoryUsage().heapUsed;
 }
 
-// ---- record ----
-const server = await startFixtureServer();
-const tab = await openRecordedTab(chrome);
-let trace: AgentMsg[];
+// ---- record (or BENCH_TRACE: a trace recorded before, saved there the first time) ----
+let trace: AgentMsg[] = [];
 let streamEvents = 0;
 let pageSnapshotBytes = 0;
-try {
-  await tab.navigate(`${server.origin}/long?cross=${server.crossOrigin}`);
-  const started = tab.messages.length;
-  await tab.evaluate(`window.__fixture.stream(${Math.round(STREAM_MS / 33)}, 33)`);
-  streamEvents = tab.messages.length - started;
-  await tab.evaluate(`window.__fixture.cssStorm(400)`);
-  await tab.evaluate(`window.__fixture.stream(${FAST_TOKENS}, 0)`);
-  // The page's own snapshot now, to compare with the tree's at the same point.
-  const before = eventsOf(tab.messages).length;
-  await tab.pageSnapshot(800);
-  const events = eventsOf(tab.messages);
-  const full = events.findIndex(
-    (event, index) => index >= before && event.type === EventType.FullSnapshot,
-  );
-  pageSnapshotBytes = JSON.stringify([events[full - 1], externalizeSheets(events[full]!)]).length;
-  // The trace ends just before that snapshot.
-  let seen = 0;
-  const cut = tab.messages.findIndex((message) => message.kind === "rrweb" && seen++ === full - 1);
-  trace = tab.messages.slice(0, cut);
-} finally {
-  await tab.close();
-  await server.close();
+const traceFile = process.env.BENCH_TRACE;
+if (traceFile !== undefined && existsSync(traceFile)) {
+  ({ trace, streamEvents, pageSnapshotBytes } = JSON.parse(readFileSync(traceFile, "utf8")));
+} else await record();
+if (traceFile !== undefined && !existsSync(traceFile))
+  writeFileSync(traceFile, JSON.stringify({ trace, streamEvents, pageSnapshotBytes }));
+
+async function record(): Promise<void> {
+  const server = await startFixtureServer();
+  const tab = await openRecordedTab(chrome);
+  try {
+    await tab.navigate(`${server.origin}/long?cross=${server.crossOrigin}`);
+    const started = tab.messages.length;
+    await tab.evaluate(`window.__fixture.stream(${Math.round(STREAM_MS / 33)}, 33)`);
+    streamEvents = tab.messages.length - started;
+    await tab.evaluate(`window.__fixture.cssStorm(400)`);
+    await tab.evaluate(`window.__fixture.stream(${FAST_TOKENS}, 0)`);
+    // The page's own snapshot now, to compare with the tree's at the same point.
+    const before = eventsOf(tab.messages).length;
+    await tab.pageSnapshot(800);
+    const events = eventsOf(tab.messages);
+    const full = events.findIndex(
+      (event, index) => index >= before && event.type === EventType.FullSnapshot,
+    );
+    pageSnapshotBytes = JSON.stringify([events[full - 1], externalizeSheets(events[full]!)]).length;
+    // The trace ends just before that snapshot.
+    let seen = 0;
+    const cut = tab.messages.findIndex(
+      (message) => message.kind === "rrweb" && seen++ === full - 1,
+    );
+    trace = tab.messages.slice(0, cut);
+  } finally {
+    await tab.close();
+    await server.close();
+  }
 }
 const deltas = trace.filter((message) => message.kind === "rrweb").length;
 console.log(`trace: ${trace.length} agent messages, ${deltas} rrweb events`);

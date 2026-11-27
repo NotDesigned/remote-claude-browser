@@ -20,6 +20,7 @@ import {
   type Up,
 } from "../packages/protocol/src/index";
 import { TabHub } from "../packages/gateway/src/hub/tabhub";
+import { TreeBudget } from "../packages/gateway/src/hub/live-tree/budget";
 import { createInputRelay, type InputMsg } from "../packages/gateway/src/input/relay";
 import { viewerDist } from "./viewer-dist.mjs";
 import { describeLink, slowLinkConfig, slowSocket, type SlowSocket } from "./lib/slow-link.mts";
@@ -107,7 +108,23 @@ const link = slowLinkConfig();
 const ackMode = smokeAckMode();
 console.log(`mobile-input: ${describeLink(link)}, MIRROR_INPUT_ACKS=${ackMode}`);
 const sockets = new Set<{ raw: any; slow: SlowSocket }>();
-const hub = new TabHub({ sessionId: "client-1", tabId: "mobile" });
+// As the gateway runs it: with the live tree unless MIRROR_LIVE_TREE=0.
+const liveTree = process.env.MIRROR_LIVE_TREE !== "0";
+const hub = new TabHub({
+  sessionId: "client-1",
+  tabId: "mobile",
+  liveTree: liveTree
+    ? {
+        ringEvents: 2_000,
+        ringBytes: 2 * 1024 * 1024,
+        maxNodes: 400_000,
+        maxBytes: 48 * 1024 * 1024,
+        maxSidecar: 20_000,
+        verify: process.env.MIRROR_LIVE_TREE_VERIFY === "1",
+        budget: new TreeBudget(256 * 1024 * 1024),
+      }
+    : false,
+});
 const chunks = new ChunkReassembler();
 const pending = new Map<number, (reply: CmdRes) => void>();
 const received: Up[] = [];
@@ -263,7 +280,11 @@ try {
           await remote.setViewportSize({ width: message.w, height: message.h });
           hub.requestSnapshot("viewport");
         });
-      if (message.t === "resync-req") hub.requestSnapshot("resync");
+      // With the live tree a resync is this viewer's alone, from the hub's state.
+      if (message.t === "resync-req") {
+        if (liveTree) for (const down of hub.joinPayload()) socket.send(JSON.stringify(down));
+        else hub.requestSnapshot("resync");
+      }
       if (message.t === "mode")
         controlWork = controlWork.then(async () => {
           mode = message.mode;

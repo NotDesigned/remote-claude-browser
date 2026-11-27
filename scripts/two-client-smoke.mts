@@ -867,6 +867,56 @@ try {
   await waitFor(async () => (await state("a", first.sid)).tabs.length === 1, "close own new tab");
   checks.popupAndNewTabOwnership = true;
 
+  // The gateway keeps each tab's current page (tree1, unless MIRROR_LIVE_TREE=0).
+  if (a.messages.some((message) => message.t === "hello" && message.caps?.includes("tree1"))) {
+    const since = (from: number) => a.messages.slice(from);
+    // One viewer's resync is its own: answered from the gateway's state in the same epoch, with
+    // no new page snapshot (that would open a new epoch).
+    const epoch = a.cursors.get(aTab)?.epoch;
+    assert.ok(epoch !== undefined, "A has a replay of its tab");
+    let from = a.messages.length;
+    a.send({ t: "resync-req", tab: aTab, reason: "seq gap: two-client smoke" });
+    await waitFor(
+      () => since(from).some((message) => message.t === "snapshot" && message.tab === aTab),
+      "A's own catch-up",
+    );
+    const own = since(from).find((message) => message.t === "snapshot" && message.tab === aTab)!;
+    assert.equal(own.t === "snapshot" && own.epoch, epoch, "a resync opened a new epoch");
+    assert.equal((await state("a", first.sid)).tabs[0]!.epoch, epoch);
+    // A tab left behind and shown again: only what changed meanwhile, then caught-up.
+    a.send({ t: "nav", tab: aTab, action: "newtab", url: fixtureOrigin + "/new-a" });
+    await waitFor(async () => (await state("a", first.sid)).tabs.length === 2, "second tab");
+    const other = (await state("a", first.sid)).tabs.find((tab) => tab.tab !== aTab)!.tab;
+    await waitFor(() => a.cursors.has(other), "the new tab's snapshot");
+    const left = a.cursors.get(aTab)!;
+    a.send({ t: "held", tabs: [[aTab, left.epoch, left.nextSeq]] });
+    await evaluate(
+      "a",
+      first.sid,
+      aTab,
+      "document.querySelector('#native-messages').append('在后台时的变化'); true",
+    );
+    await delay(500);
+    from = a.messages.length;
+    a.send({ t: "nav", tab: aTab, action: "activate" });
+    await waitFor(
+      () => since(from).some((message) => message.t === "caught-up" && message.tab === aTab),
+      "A caught up on the tab it left",
+    );
+    const back = since(from).filter((message) => "tab" in message && message.tab === aTab);
+    assert.ok(
+      back.some((message) => message.t === "delta"),
+      "the change made while away was sent",
+    );
+    assert.ok(
+      !back.some((message) => message.t === "snapshot" || message.t === "resync"),
+      `switching back sent the whole page: ${back.map((message) => message.t).join(",")}`,
+    );
+    a.send({ t: "nav", tab: other, action: "close" });
+    await waitFor(async () => (await state("a", first.sid)).tabs.length === 1, "close it again");
+    checks.liveTreeCatchUps = true;
+  }
+
   if (process.env.TWO_CLIENT_SKIP_DOWNLOAD !== "1") {
     assert.equal(
       await evaluate(
