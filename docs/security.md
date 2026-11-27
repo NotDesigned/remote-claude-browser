@@ -84,6 +84,23 @@ remote-cc 的令牌只能通过工作台里的一次批准取得，属于批准�
 - 查看端的背压有上限，落后时用快照重新同步。
 - 会话按可用内存准入。
 
+## 页面能否察觉
+
+页面模式的采集脚本运行在网站自己的页面里，网站的脚本原则上能看出它。`pnpm test:stealth`（`packages/gateway/src/browser/stealth.accept.ts`）用同一个 Chrome 分别加载不注入和注入采集脚本的检测页面，比较页面自己能看到的一切：替换过的内置函数的文本、名称、参数个数、能否构造、属性描述，页面对象上多出的属性，计时器编号，页面没有创建的 iframe 和节点，跨 frame 消息，事件是否可信，网关发出的 CDP 命令（不发 `Runtime.enable`、`Debugger.enable` 等），以及资源请求是否来自网关自己的网络。差异只允许是 `stealth-baseline.json` 列出的几项，多一项或少一项测试都失败；`MIRROR_AGENT_HARDENING=0` 时必须正好是加固前的那一份（`stealth-baseline.legacy.json`）。
+
+目前仍能察觉的：
+
+| 检测项 | 页面能看到什么 | 计划 |
+| --- | --- | --- |
+| `msg.any` | 跨域子 frame 把记录经 `postMessage` 交给上层 frame（消息不再带固定名字，但消息本身还在） | P2：子 frame 的记录直接交给网关 |
+| `trust.value` | 复选框、下拉框等取值控件由脚本设值，`input`/`change`/`click` 不是可信事件 | P1：可信输入 |
+| `trust.editable` | contenteditable 输入框的文字同步用 `execCommand`，没有 `keydown`/`beforeinput` | P1：可信输入 |
+| `xrealm.tostring` | 页面自己创建的 iframe 里的 `Function.prototype.toString` 能看出被替换的函数 | P3：在隔离环境采集 |
+| `stack.shape` | 被替换的函数在异常调用栈里多出一层 | P3 |
+| `shadow.composed` | 为了记录 closed shadow root，它其实是以 open 模式创建的，`composedPath()` 能看出来 | P3 |
+
+`perf.longtask`（序列化大页面时最长的主线程任务）只记录，不比较。
+
 ## 已知限制
 
 - 工作台登录没有多因素认证，也没有持久的审计日志。

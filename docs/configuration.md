@@ -146,6 +146,8 @@
 | `MIRROR_DIAGNOSTIC_STDERR` | 不设置                          | `1` 把 Chromium 的标准错误输出写进服务端日志，排查浏览器启动失败时用；日志会变多 |
 | `MIRROR_EXIT_LOOKUP_URL` | `https://ipwho.is/`               | 检查出口时，经节点查询出口地址和时区的服务。测试用来指向本地的替身，一般不用改 |
 | `MIRROR_ASSET_MAX_BYTES` | `67108864`（64 MB）               | 经代理的单个网页资源的字节上限，超过即中断且不写入磁盘缓存。见[部署 · 资源与超时](deployment.md#资源与超时) |
+| `MIRROR_AGENT_HARDENING` | 开启                              | `0` 退回旧的采集脚本：替换的内置函数带 `__rrweb_original__` 标记、采集时临时插入隐藏 iframe、跨域 frame 的消息用固定名字、向上滚动时派发非可信的滚轮事件，rrweb 自己采集字体和 canvas。只在排查新行为引起的问题时使用。见[威胁模型 · 页面能否察觉](security.md#页面能否察觉) |
+| `MIRROR_ASSET_DIRECT_FALLBACK` | `range`                     | 浏览器取不到网页资源时，网关能否改用自己的网络下载（网站能从 TLS 特征看出不是浏览器）。`range` 只有分段请求（音视频拖动）由网关下载，其他返回 502；`off` 分段请求也不下载；`all` 旧行为，取不到就由网关下载。其他值网关拒绝启动。各种情况的次数见管理页概览接口的 `assetLanes` |
 
 `cpa-broker` 服务的 `environment` 里还有这些，一般不用改：
 
