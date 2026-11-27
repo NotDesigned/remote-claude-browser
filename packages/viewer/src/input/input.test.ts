@@ -1368,14 +1368,19 @@ describe("P1 input capture", () => {
     const page = "https://claude.ai/chat/1";
 
     it("picks out a link to another site", () => {
-      expect(externalLink(link("https://support.anthropic.com/a"), page)).toBe(
-        "https://support.anthropic.com/a",
+      expect(externalLink(link("https://example.org/docs/a"), page)).toBe(
+        "https://example.org/docs/a",
       );
     });
 
-    it("leaves Claude's own links, which need the remote login, to the remote browser", () => {
+    it("leaves Claude, Anthropic and billing links to the remote browser", () => {
       expect(externalLink(link("https://claude.ai/api/org/files/1"), page)).toBeNull();
       expect(externalLink(link("https://platform.claude.ai/x"), "https://example.com/")).toBeNull();
+      expect(externalLink(link("https://claude.com/pricing"), page)).toBeNull();
+      expect(externalLink(link("https://platform.claude.com/oauth/authorize"), page)).toBeNull();
+      expect(externalLink(link("https://console.anthropic.com/settings/billing"), page)).toBeNull();
+      expect(externalLink(link("https://support.anthropic.com/a"), page)).toBeNull();
+      expect(externalLink(link("https://checkout.stripe.com/c/pay/cs_test_1"), page)).toBeNull();
     });
 
     it("leaves moving around within the site in view, and anything that is not a web address", () => {

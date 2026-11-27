@@ -66,9 +66,16 @@ export function togglesLocally(target: EventTarget | null): boolean {
   return type === "checkbox" || type === "radio";
 }
 
+const REMOTE_ONLY_DOMAINS = ["claude.ai", "claude.com", "anthropic.com", "stripe.com"];
+
+function staysInRemoteBrowser(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return REMOTE_ONLY_DOMAINS.some((domain) => host === domain || host.endsWith(`.${domain}`));
+}
+
 /**
- * A link to somewhere else, for opening in this device's own browser. Claude's own links are left to
- * the remote browser, which has the login they need, and so is moving around within a site.
+ * A link to somewhere else, for opening in this device's own browser. Claude, Anthropic and billing
+ * links stay in the remote browser so neither login state nor the viewer's device IP crosses out.
  */
 export function externalLink(
   target: EventTarget | null,
@@ -83,7 +90,7 @@ export function externalLink(
     return null;
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-  if (url.hostname === "claude.ai" || url.hostname.endsWith(".claude.ai")) return null;
+  if (staysInRemoteBrowser(url.hostname)) return null;
   try {
     if (pageUrl !== undefined && new URL(pageUrl).origin === url.origin) return null;
   } catch {

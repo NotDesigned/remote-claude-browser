@@ -493,7 +493,8 @@ async function checkComposerFocus(page, address, label) {
       const frame = document.querySelector("#mirror-host .mirror-stage:not([data-parked]) iframe");
       if (frame) trail.frames.add(frame);
       const inner = frame?.contentDocument?.activeElement;
-      const ok = document.activeElement === frame && inner?.id === "composer";
+      const proxyActive = document.activeElement?.getAttribute("data-proxy-input") === "true";
+      const ok = proxyActive || (document.activeElement === frame && inner?.id === "composer");
       if (!ok)
         trail.lost.push(
           `${document.activeElement?.tagName}/${inner?.tagName ?? "-"}#${inner?.id ?? ""}`,

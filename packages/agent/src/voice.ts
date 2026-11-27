@@ -173,8 +173,48 @@ export function installVoiceBridge(
     },
     nativePlay,
   );
+  // WebRTC voice elements often receive srcObject with autoplay rather than an explicit play() call.
+  const srcObjectDescriptor = Object.getOwnPropertyDescriptor(
+    target.HTMLMediaElement.prototype,
+    "srcObject",
+  );
+  if (srcObjectDescriptor?.set !== undefined) {
+    const nativeSetSrcObject = srcObjectDescriptor.set;
+    const setSrcObject = function (this: HTMLMediaElement, value: MediaProvider | null) {
+      nativeSetSrcObject.call(this, value);
+      if (value !== null) {
+        try {
+          tapElement(this);
+        } catch {
+          // Playback matters more than hearing it here; the page must never see this fail.
+        }
+      }
+    };
+    if (mask !== undefined) {
+      mask.accessor(target.HTMLMediaElement.prototype, "srcObject", {
+        set: setSrcObject as unknown as (this: never, value: never) => void,
+      });
+    } else {
+      Object.defineProperty(target.HTMLMediaElement.prototype, "srcObject", {
+        ...srcObjectDescriptor,
+        set: setSrcObject,
+      });
+    }
+  }
 
   // The microphone.
+  const randomHex = (bytes: number): string => {
+    const buffer = new Uint8Array(bytes);
+    target.crypto.getRandomValues(buffer);
+    let hex = "";
+    for (const byte of buffer) hex += byte.toString(16).padStart(2, "0");
+    return hex;
+  };
+  const micDeviceId = randomHex(32);
+  const micGroupId = randomHex(32);
+  const MIC_LABEL = "Default - Microphone";
+  const MIC_SAMPLE_RATE = 48_000;
+
   let micOpen = false;
   let micTracks = 0;
   const micWaiters: ((granted: boolean) => void)[] = [];
@@ -199,11 +239,11 @@ export function installVoiceBridge(
     micOpen = false;
     send({ mic: false });
   };
-  /** Hardening: the microphone's tracks, which the prototype's masked stop() answers for. */
+  /** Hardening: the microphone's tracks, masked so WebAudio destination strings never leak. */
   const issuedTracks = new WeakMap<MediaStreamTrack, { stopped: boolean }>();
   let trackPrototypeHooked = false;
   const hookTrackPrototype = (track: MediaStreamTrack): void => {
-    if (trackPrototypeHooked || mask === undefined) return;
+    if (trackPrototypeHooked) return;
     trackPrototypeHooked = true;
     const prototype = Object.getPrototypeOf(track) as MediaStreamTrack;
     const nativeStop = prototype.stop;
@@ -218,24 +258,91 @@ export function installVoiceBridge(
       },
       nativeStop,
     );
+    const nativeClone = prototype.clone;
+    if (typeof nativeClone === "function") {
+      prototype.clone = masked(
+        "clone",
+        function (this: MediaStreamTrack) {
+          const cloned = nativeClone.call(this);
+          const issued = issuedTracks.get(this);
+          if (issued !== undefined) {
+            if (!issued.stopped) micTracks += 1;
+            issuedTracks.set(cloned, { stopped: issued.stopped });
+          }
+          return cloned;
+        },
+        nativeClone,
+      );
+    }
+    const labelDescriptor = Object.getOwnPropertyDescriptor(prototype, "label");
+    if (labelDescriptor?.get !== undefined) {
+      const nativeGetLabel = labelDescriptor.get;
+      const getLabel = function (this: MediaStreamTrack): string {
+        if (issuedTracks.has(this)) return MIC_LABEL;
+        return nativeGetLabel.call(this);
+      };
+      if (mask !== undefined) {
+        mask.accessor(prototype, "label", {
+          get: getLabel as unknown as (this: never) => unknown,
+        });
+      } else {
+        Object.defineProperty(prototype, "label", { ...labelDescriptor, get: getLabel });
+      }
+    }
+    const nativeGetSettings = prototype.getSettings;
+    if (typeof nativeGetSettings === "function") {
+      prototype.getSettings = masked(
+        "getSettings",
+        function (this: MediaStreamTrack): MediaTrackSettings {
+          const settings = nativeGetSettings.call(this);
+          if (!issuedTracks.has(this)) return settings;
+          return {
+            ...settings,
+            autoGainControl: true,
+            channelCount: 1,
+            deviceId: micDeviceId,
+            echoCancellation: true,
+            groupId: micGroupId,
+            noiseSuppression: true,
+            sampleRate: MIC_SAMPLE_RATE,
+            sampleSize: 16,
+          };
+        },
+        nativeGetSettings,
+      );
+    }
+    const nativeGetCapabilities = (
+      prototype as MediaStreamTrack & { getCapabilities?(): MediaTrackCapabilities }
+    ).getCapabilities;
+    if (typeof nativeGetCapabilities === "function") {
+      prototype.getCapabilities = masked(
+        "getCapabilities",
+        function (this: MediaStreamTrack): MediaTrackCapabilities {
+          const capabilities = nativeGetCapabilities.call(this);
+          if (!issuedTracks.has(this)) return capabilities;
+          return {
+            ...capabilities,
+            autoGainControl: [true, false],
+            channelCount: { max: 1, min: 1 },
+            deviceId: micDeviceId,
+            echoCancellation: [true, false],
+            groupId: micGroupId,
+            noiseSuppression: [true, false],
+            sampleRate: { max: MIC_SAMPLE_RATE, min: MIC_SAMPLE_RATE },
+            sampleSize: { max: 16, min: 16 },
+          };
+        },
+        nativeGetCapabilities,
+      );
+    }
   };
   const issueTrack = (): MediaStreamTrack => {
     getHub();
-    const track = micOut.stream.getAudioTracks()[0]!.clone();
+    const raw = micOut.stream.getAudioTracks()[0]!;
+    hookTrackPrototype(raw);
+    const track = raw.clone();
     micTracks += 1;
-    if (mask !== undefined) {
-      hookTrackPrototype(track);
-      issuedTracks.set(track, { stopped: false });
-      return track;
-    }
-    const nativeStop = track.stop;
-    let stopped = false;
-    track.stop = function () {
-      nativeStop.call(track);
-      if (stopped) return;
-      stopped = true;
-      trackStopped();
-    };
+    issuedTracks.set(track, { stopped: false });
     return track;
   };
   const devices = target.navigator.mediaDevices as MediaDevices | undefined;

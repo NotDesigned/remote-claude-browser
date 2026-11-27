@@ -367,13 +367,22 @@ async function fetchDirect(
       ? deps.userAgentFor(request.ref, cdpSessionId)
       : browserUserAgent(deps.send, cdpSessionId),
   ]);
-  const headers: Record<string, string> = { "user-agent": userAgent };
+  const target = new URL(request.ref.url);
+  const hardened = process.env.MIRROR_AGENT_HARDENING !== "0";
+  const headers: Record<string, string> = {};
+  if (hardened) {
+    Object.assign(headers, clientHintHeaders(userAgent, target.protocol === "https:"));
+    headers.accept = "*/*";
+    headers["accept-encoding"] =
+      request.range !== undefined ? "identity;q=1, *;q=0" : "gzip, deflate, br";
+  }
+  headers["user-agent"] = userAgent;
   const cookie = cookieHeader(cookiesResult);
   if (cookie !== "") headers.cookie = cookie;
   if (request.range !== undefined) headers.range = request.range;
+  let fetchSite = "none";
   if (request.ref.documentUrl) {
     const source = new URL(request.ref.documentUrl);
-    const target = new URL(request.ref.url);
     // Match the browser's default strict-origin-when-cross-origin policy.
     if (
       /^https?:$/.test(source.protocol) &&
@@ -384,6 +393,19 @@ async function fetchDirect(
       source.hash = "";
       headers.referer = source.origin === target.origin ? source.href : `${source.origin}/`;
     }
+    if (/^https?:$/.test(source.protocol)) {
+      fetchSite =
+        source.origin === target.origin
+          ? "same-origin"
+          : sameSiteHost(source, target)
+            ? "same-site"
+            : "cross-site";
+    }
+  }
+  if (hardened && target.protocol === "https:") {
+    headers["sec-fetch-site"] = fetchSite;
+    headers["sec-fetch-mode"] = "no-cors";
+    headers["sec-fetch-dest"] = rangeFetchDest(target.pathname, request.range !== undefined);
   }
 
   const response = await directRequest(request.ref.url, { headers });
@@ -395,6 +417,41 @@ async function fetchDirect(
     body: response.body instanceof Readable ? response.body : Readable.from(response.body),
     lane: "direct",
   };
+}
+
+function clientHintHeaders(userAgent: string, secure: boolean): Record<string, string> {
+  if (!secure) return {};
+  const major = /\bChrome\/(\d+)/.exec(userAgent)?.[1];
+  if (!major) return {};
+  const platform = /\bWindows\b/i.test(userAgent)
+    ? "Windows"
+    : /\bAndroid\b/i.test(userAgent)
+      ? "Android"
+      : /\b(?:Macintosh|Mac OS X)\b/i.test(userAgent)
+        ? "macOS"
+        : /\bCrOS\b/i.test(userAgent)
+          ? "Chrome OS"
+          : "Linux";
+  return {
+    "sec-ch-ua": `"Not:A-Brand";v="99", "Google Chrome";v="${major}", "Chromium";v="${major}"`,
+    "sec-ch-ua-mobile": /\bMobile\b/.test(userAgent) ? "?1" : "?0",
+    "sec-ch-ua-platform": JSON.stringify(platform),
+  };
+}
+
+function rangeFetchDest(pathname: string, isRange: boolean): string {
+  if (!isRange) return "empty";
+  if (/\.(?:mp3|wav|ogg|m4a|aac|opus|flac)$/i.test(pathname)) return "audio";
+  return "video";
+}
+
+function sameSiteHost(source: URL, target: URL): boolean {
+  if (source.protocol !== target.protocol) return false;
+  const a = source.hostname.toLowerCase();
+  const b = target.hostname.toLowerCase();
+  if (a === b) return true;
+  const base = (host: string) => host.split(".").slice(-2).join(".");
+  return a.includes(".") && b.includes(".") && base(a) === base(b);
 }
 
 const defaultDirectRequest: DirectRequest = async (url, options) => {

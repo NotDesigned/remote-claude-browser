@@ -13,8 +13,60 @@ import "./user-panel.css";
 import "./mailbox-panel.css";
 
 const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" });
+const MAX_MAIL_LINKS = 20;
 
-export function MailboxPanel({ onClose }: { onClose(): void }) {
+/** Pulls unique HTTP(S) links out of plain-text mail without turning them into local anchors. */
+export function extractMailLinks(text: string): string[] {
+  const seen = new Set<string>();
+  const links: string[] = [];
+  for (const match of text.matchAll(/https?:\/\/[^\s<>"'\]]+/gi)) {
+    let raw = match[0];
+    while (raw.length > 0) {
+      const last = raw[raw.length - 1]!;
+      if (/[.,;:!?]/.test(last)) {
+        raw = raw.slice(0, -1);
+        continue;
+      }
+      if (last === ")") {
+        const opens = (raw.match(/\(/g) ?? []).length;
+        const closes = (raw.match(/\)/g) ?? []).length;
+        if (closes > opens) {
+          raw = raw.slice(0, -1);
+          continue;
+        }
+      }
+      break;
+    }
+    try {
+      const parsed = new URL(raw);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") continue;
+      if (seen.has(raw)) continue;
+      seen.add(raw);
+      links.push(raw);
+      if (links.length >= MAX_MAIL_LINKS) break;
+    } catch {
+      // Ignore malformed URL-like text fragments.
+    }
+  }
+  return links;
+}
+
+export interface MailboxPanelProps {
+  onClose(): void;
+  /** Active remote browser profile name, when connected. */
+  browserProfileName?: string;
+  /** Opens a link inside the remote proxied browser instead of the viewer's local device. */
+  onOpenUrlInBrowser?(url: string): void;
+  /** Navigates to the browser profile picker when no remote browser session is open yet. */
+  onChooseBrowser?(): void;
+}
+
+export function MailboxPanel({
+  onClose,
+  browserProfileName,
+  onOpenUrlInBrowser,
+  onChooseBrowser,
+}: MailboxPanelProps) {
   const { confirm, dialog } = useConfirm();
   const [mailboxes, setMailboxes] = useState<Awaited<ReturnType<typeof mailboxApi.addresses>>>();
   const [addressId, setAddressId] = useState("");
@@ -421,7 +473,48 @@ export function MailboxPanel({ onClose }: { onClose(): void }) {
                 {selectedMessage.from} · {dateTime.format(selectedMessage.receivedAt)}
               </p>
               {contents ? (
-                <pre class="mailbox-body">{contents.text || "邮件没有正文。"}</pre>
+                <>
+                  {(() => {
+                    const links = extractMailLinks(contents.text);
+                    if (links.length === 0) return null;
+                    return (
+                      <div class="mailbox-links" role="region" aria-label="邮件内链接">
+                        <p class="user-panel-muted mailbox-links-hint">
+                          {onOpenUrlInBrowser
+                            ? `为避免暴露本机网络地址，请通过远程浏览器${browserProfileName ? `（${browserProfileName}）` : ""}打开邮件链接：`
+                            : "当前未连接远程浏览器；请勿复制到本机浏览器打开邮件链接。"}
+                        </p>
+                        {!onOpenUrlInBrowser && onChooseBrowser && (
+                          <div class="user-panel-actions">
+                            <button
+                              type="button"
+                              class="user-panel-save"
+                              onClick={() => onChooseBrowser()}
+                            >
+                              先选择远程浏览器
+                            </button>
+                          </div>
+                        )}
+                        <ul class="mailbox-link-list">
+                          {links.map((url) => (
+                            <li key={url} class="mailbox-link-item">
+                              <code class="mailbox-link-url">{url}</code>
+                              <button
+                                type="button"
+                                class="user-panel-save"
+                                disabled={!onOpenUrlInBrowser}
+                                onClick={() => onOpenUrlInBrowser?.(url)}
+                              >
+                                在远程浏览器打开
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    );
+                  })()}
+                  <pre class="mailbox-body">{contents.text || "邮件没有正文。"}</pre>
+                </>
               ) : (
                 <p class="user-panel-muted" role="status">
                   正在读取邮件…

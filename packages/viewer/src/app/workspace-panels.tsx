@@ -17,6 +17,9 @@ export interface WorkspacePanelsProps {
   /** The ready session and its profile's proxy, for the network panel. */
   browserSessionId: string | undefined;
   browserProxyId: string | null | undefined;
+  browserProfileName?: string;
+  onOpenMailUrlInBrowser?(url: string): void;
+  onBrowseProfiles?(): void;
   remoteCcCode: string | null;
   /** Back from linking single sign-on. */
   accountLinked: boolean;
@@ -36,6 +39,9 @@ export function WorkspacePanels({
   currentSid,
   browserSessionId,
   browserProxyId,
+  browserProfileName,
+  onOpenMailUrlInBrowser,
+  onBrowseProfiles,
   remoteCcCode,
   accountLinked,
   onEntryLinkUsed,
@@ -76,6 +82,9 @@ export function WorkspacePanels({
       {panels.open === "mailboxes" && (
         <MailboxPanel
           key={user.id}
+          browserProfileName={browserProfileName}
+          onOpenUrlInBrowser={onOpenMailUrlInBrowser}
+          onChooseBrowser={onBrowseProfiles}
           onClose={() => dispatchPanels({ type: "close", panel: "mailboxes" })}
         />
       )}

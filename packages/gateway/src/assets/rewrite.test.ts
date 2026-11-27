@@ -311,6 +311,127 @@ describe("rrweb RewriteStage", () => {
     expect(proxiedRef(relative!.attributes.href).url).toBe("https://page.example/relative.css");
   });
 
+  it("strips resource hints, ping, meta refresh and proxies SVG 2 href and object data", () => {
+    const stage = createRewriteStage(KEY);
+    stage(
+      event({
+        type: EventType.Meta,
+        timestamp: 1,
+        data: { href: "https://claude.ai/chat", width: 800, height: 600 },
+      }),
+      CTX,
+    );
+    const rewritten = stage(
+      fullSnapshot({
+        type: 0,
+        id: 1,
+        childNodes: [
+          {
+            type: 2,
+            id: 2,
+            tagName: "link",
+            attributes: { rel: "preconnect", href: "https://api.anthropic.com" },
+            childNodes: [],
+          },
+          {
+            type: 2,
+            id: 3,
+            tagName: "link",
+            attributes: { rel: "dns-prefetch", href: "https://telemetry.anthropic.com" },
+            childNodes: [],
+          },
+          {
+            type: 2,
+            id: 4,
+            tagName: "link",
+            attributes: {
+              rel: "preload",
+              as: "image",
+              href: "https://claude.ai/hero.png",
+              imagesrcset: "https://claude.ai/hero-2x.png 2x",
+            },
+            childNodes: [],
+          },
+          {
+            type: 2,
+            id: 5,
+            tagName: "a",
+            attributes: {
+              href: "https://claude.ai/settings",
+              ping: "https://telemetry.anthropic.com/ping",
+            },
+            childNodes: [],
+          },
+          {
+            type: 2,
+            id: 6,
+            tagName: "meta",
+            attributes: { "http-equiv": "refresh", content: "0;url=https://claude.ai/escape" },
+            childNodes: [],
+          },
+          {
+            type: 2,
+            id: 7,
+            tagName: "svg",
+            attributes: {},
+            childNodes: [
+              {
+                type: 2,
+                id: 8,
+                tagName: "image",
+                isSVG: true,
+                attributes: { href: "https://claude.ai/svg2.png" },
+                childNodes: [],
+              },
+              {
+                type: 2,
+                id: 9,
+                tagName: "use",
+                isSVG: true,
+                attributes: { href: "#local-symbol" },
+                childNodes: [],
+              },
+            ],
+          },
+          {
+            type: 2,
+            id: 10,
+            tagName: "object",
+            attributes: { data: "/embed.svg" },
+            childNodes: [],
+          },
+        ],
+      }),
+      CTX,
+    ) as unknown as { data: { node: { childNodes: Array<Record<string, any>> } } };
+    const [preconnect, dnsPrefetch, preload, anchor, meta, svg, obj] =
+      rewritten.data.node.childNodes;
+    expect(preconnect!.attributes).toEqual({});
+    expect(dnsPrefetch!.attributes).toEqual({});
+    expect(preload!.attributes).toEqual({ as: "image" });
+    expect(anchor!.attributes).toEqual({ href: "https://claude.ai/settings" });
+    expect(meta!.attributes).toEqual({});
+    expect(proxiedRef(svg!.childNodes[0].attributes.href).url).toBe("https://claude.ai/svg2.png");
+    expect(svg!.childNodes[1].attributes.href).toBe("#local-symbol");
+    expect(proxiedRef(obj!.attributes.data).url).toBe("https://claude.ai/embed.svg");
+
+    const mutated = stage(
+      event({
+        type: EventType.IncrementalSnapshot,
+        timestamp: 2,
+        data: {
+          source: IncrementalSource.Mutation,
+          attributes: [{ id: 2, attributes: { href: "https://late.anthropic.com" } }],
+          adds: [],
+          removes: [],
+          texts: [],
+        },
+      }),
+      CTX,
+    ) as unknown as { data: { attributes: Array<{ attributes: Record<string, unknown> }> } };
+    expect(mutated.data.attributes[0]!.attributes).toEqual({});
+  });
+
   it("rewrites an @font-face woff2 URL to a sealed session asset route", () => {
     const stage = createRewriteStage(KEY);
     stage(

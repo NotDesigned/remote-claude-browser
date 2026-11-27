@@ -207,6 +207,16 @@ export function App() {
           currentSid={clientSession?.sid}
           browserSessionId={readySid ?? undefined}
           browserProxyId={clientPhase === "ready" ? currentProfile?.proxyId : undefined}
+          browserProfileName={clientPhase === "ready" ? currentProfile?.name : undefined}
+          onOpenMailUrlInBrowser={
+            clientPhase === "ready" && connection === "open"
+              ? (url) => {
+                  runtime.send({ t: "nav", tab: activeTab ?? "", action: "newtab", url });
+                  dispatchPanels({ type: "browser-opened" });
+                }
+              : undefined
+          }
+          onBrowseProfiles={() => navigateWorkspace("profiles")}
           remoteCcCode={entry.remoteCcCode}
           accountLinked={entry.accountLinked}
           onEntryLinkUsed={entry.consume}

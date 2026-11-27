@@ -299,17 +299,25 @@ describe("asset fetch lanes", () => {
   });
 
   it("sends Range straight through Lane B and never attempts Lane A", async () => {
+    const chromeUa =
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
     const send = vi.fn<CdpSend>(async (_sessionId, method) => {
       if (method === "Network.getCookies") return { cookies: [] };
-      if (method === "Browser.getVersion") return { userAgent: "Range UA" };
+      if (method === "Browser.getVersion") return { userAgent: chromeUa };
       throw new Error(`Lane A must not run for Range: ${method}`);
     });
     const directRequest = vi.fn<DirectRequest>(async (_url, options) => {
       expect(options.headers.range).toBe("bytes=500-999");
+      expect(options.headers["accept-encoding"]).toBe("identity;q=1, *;q=0");
+      expect(options.headers["sec-fetch-mode"]).toBe("no-cors");
+      expect(options.headers["sec-fetch-dest"]).toBe("audio");
+      expect(options.headers["sec-fetch-site"]).toBe("same-origin");
+      expect(options.headers["sec-ch-ua"]).toContain('"Chromium";v="134"');
+      expect(options.headers["sec-ch-ua-platform"]).toBe('"macOS"');
       return directResponse(
         "partial",
         {
-          "content-type": "video/mp4",
+          "content-type": "audio/mpeg",
           "content-range": "bytes 500-999/2000",
         },
         206,
@@ -321,7 +329,14 @@ describe("asset fetch lanes", () => {
       directRequest,
     });
 
-    const response = await fetcher.fetch({ ref, range: "bytes=500-999" });
+    const response = await fetcher.fetch({
+      ref: {
+        ...ref,
+        url: "https://claude.ai/assets/clip.mp3",
+        documentUrl: "https://claude.ai/chat/1",
+      },
+      range: "bytes=500-999",
+    });
 
     expect(response.statusCode).toBe(206);
     expect(response.headers["content-range"]).toBe("bytes 500-999/2000");

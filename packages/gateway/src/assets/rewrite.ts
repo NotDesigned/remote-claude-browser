@@ -25,6 +25,21 @@ type UnknownRecord = Record<string, unknown>;
 const NODE_ELEMENT = 2;
 const NODE_TEXT = 3;
 const DIRECT_URL_ATTRIBUTES = new Set(["src", "poster", "xlink:href"]);
+const SVG_HREF_TAGS = new Set([
+  "image",
+  "use",
+  "feimage",
+  "pattern",
+  "filter",
+  "lineargradient",
+  "radialgradient",
+  "textpath",
+  "mpath",
+  "script",
+  "style",
+]);
+const NETWORK_LINK_REL =
+  /\b(dns-prefetch|preconnect|prefetch|preload|modulepreload|prerender|icon|apple-touch-icon|apple-touch-icon-precomposed|mask-icon|manifest|pingback)\b/i;
 const CSS_WHITESPACE = /[\t\n\f\r ]/;
 const IDENT_CHAR = /[A-Za-z0-9_-]/;
 
@@ -41,6 +56,7 @@ interface RewriteContext {
     documentUrl?: string,
   ) => string;
   tags?: Map<number, string>;
+  linkRels?: Map<number, string>;
   styleTextIds?: Set<number>;
   nodeContexts?: Map<number, Pick<RewriteContext, "baseUrl" | "documentUrl">>;
 }
@@ -62,6 +78,7 @@ export function createRewriteStage(serverKey: Buffer): RewriteStage {
   const key = Buffer.from(serverKey);
   const documentUrls = new Map<string, string>();
   const tags = new Map<number, string>();
+  const linkRels = new Map<number, string>();
   const styleTextIds = new Set<number>();
   const nodeContexts = new Map<number, Pick<RewriteContext, "baseUrl" | "documentUrl">>();
   // One live tab owns this stage. Bound memoization while making repeated DOM references
@@ -105,6 +122,7 @@ export function createRewriteStage(serverKey: Buffer): RewriteStage {
   return (event, ctx) => {
     if (event.type === EventType.FullSnapshot) {
       tags.clear();
+      linkRels.clear();
       styleTextIds.clear();
       nodeContexts.clear();
     }
@@ -124,6 +142,7 @@ export function createRewriteStage(serverKey: Buffer): RewriteStage {
       assetUrl,
       rewriteSheet,
       tags,
+      linkRels,
       styleTextIds,
       nodeContexts,
     });
@@ -179,11 +198,13 @@ function rewriteMutationEvent(
   const attributes = Array.isArray(data.attributes)
     ? data.attributes.map((mutation) => {
         const item = record(mutation);
+        const nodeId = typeof item.id === "number" ? item.id : undefined;
         const rewritten = rewriteAttributes(
           item.attributes,
           key,
           contextFor(ctx, item.id),
-          ctx.tags?.get(item.id as number),
+          nodeId === undefined ? undefined : ctx.tags?.get(nodeId),
+          nodeId,
         );
         if (rewritten === item.attributes) return mutation;
         changed = true;
@@ -324,7 +345,8 @@ function rewriteSerializedNode(
   }
 
   let changed = false;
-  const attributes = rewriteAttributes(node.attributes, key, ctx, tag);
+  const nodeId = typeof node.id === "number" ? node.id : undefined;
+  const attributes = rewriteAttributes(node.attributes, key, ctx, tag, nodeId);
   changed ||= attributes !== node.attributes;
 
   const childIsStyle = insideStyle || (node.type === NODE_ELEMENT && tag === "style");
@@ -344,10 +366,14 @@ function rewriteSerializedNode(
   };
 }
 
-/** A change to only the address of a link says nothing about its rel, and only stylesheets change. */
-function isStylesheetLink(attributes: UnknownRecord): boolean {
-  const rel = Object.entries(attributes).find(([name]) => name.toLowerCase() === "rel")?.[1];
-  return rel === undefined || (typeof rel === "string" && /\bstylesheet\b/i.test(rel));
+function readCaseInsensitiveAttr(
+  attributes: UnknownRecord,
+  target: string,
+): { present: boolean; value: unknown } {
+  for (const [name, value] of Object.entries(attributes)) {
+    if (name.toLowerCase() === target) return { present: true, value };
+  }
+  return { present: false, value: undefined };
 }
 
 function rewriteAttributes(
@@ -355,16 +381,48 @@ function rewriteAttributes(
   key: Buffer,
   ctx: RewriteContext,
   tag?: string,
+  nodeId?: number,
 ): unknown {
   if (!isRecord(value)) return value;
   let changed = false;
   const output: UnknownRecord = { ...value };
 
+  let linkIsStylesheet = false;
+  let linkIsNetworkHint = false;
+  if (tag === "link") {
+    const relEntry = readCaseInsensitiveAttr(value, "rel");
+    if (nodeId !== undefined && relEntry.present) {
+      if (typeof relEntry.value === "string") ctx.linkRels?.set(nodeId, relEntry.value);
+      else ctx.linkRels?.delete(nodeId);
+    }
+    const effectiveRel =
+      typeof relEntry.value === "string"
+        ? relEntry.value
+        : !relEntry.present && nodeId !== undefined
+          ? ctx.linkRels?.get(nodeId)
+          : undefined;
+    linkIsStylesheet = effectiveRel !== undefined && /\bstylesheet\b/i.test(effectiveRel);
+    linkIsNetworkHint =
+      effectiveRel !== undefined && !linkIsStylesheet && NETWORK_LINK_REL.test(effectiveRel);
+  }
+
+  const metaHttpEquiv = tag === "meta" ? readCaseInsensitiveAttr(value, "http-equiv").value : null;
+  const isMetaRefresh = typeof metaHttpEquiv === "string" && /^\s*refresh\s*$/i.test(metaHttpEquiv);
+
   for (const [name, original] of Object.entries(value)) {
     const lowerName = name.toLowerCase();
     // The replayer writes a frame's document itself. A sandbox without allow-same-origin keeps it
     // out, srcdoc would replace what it wrote, and the frame inherits the replay's own sandbox.
-    if (lowerName === "sandbox" || lowerName === "srcdoc") {
+    // Hyperlink ping, meta refresh and non-stylesheet link hints would initiate network traffic
+    // directly from the viewer's device browser outside the proxy.
+    if (
+      lowerName === "sandbox" ||
+      lowerName === "srcdoc" ||
+      lowerName === "ping" ||
+      (isMetaRefresh && (lowerName === "http-equiv" || lowerName === "content")) ||
+      (linkIsNetworkHint &&
+        (lowerName === "href" || lowerName === "imagesrcset" || lowerName === "rel"))
+    ) {
       delete output[name];
       changed = true;
       continue;
@@ -384,7 +442,12 @@ function rewriteAttributes(
     )
       continue;
     let rewritten: unknown = original;
-    if (DIRECT_URL_ATTRIBUTES.has(lowerName) && typeof original === "string") {
+    if (
+      (DIRECT_URL_ATTRIBUTES.has(lowerName) ||
+        (lowerName === "data" && tag === "object") ||
+        (lowerName === "href" && tag !== undefined && SVG_HREF_TAGS.has(tag))) &&
+      typeof original === "string"
+    ) {
       rewritten = rewriteUrlPreservingSpace(
         original,
         (url) => proxyUrl(url, key, ctx),
@@ -394,7 +457,7 @@ function rewriteAttributes(
       lowerName === "href" &&
       tag === "link" &&
       typeof original === "string" &&
-      isStylesheetLink(value)
+      linkIsStylesheet
     ) {
       // A stylesheet the page may not read has no text to mirror, and the viewer may not load it
       // from its own origin, so it comes through the proxy like the images and fonts it refers to.
@@ -403,7 +466,10 @@ function rewriteAttributes(
         (url) => proxyUrl(url, key, ctx),
         ctx.baseUrl,
       );
-    } else if (lowerName === "srcset" && typeof original === "string") {
+    } else if (
+      (lowerName === "srcset" || lowerName === "imagesrcset") &&
+      typeof original === "string"
+    ) {
       rewritten = rewriteSrcset(original, (url) => proxyUrl(url, key, ctx), ctx.baseUrl);
     } else if (lowerName === "style") {
       rewritten = rewriteStyleAttribute(original, key, ctx);

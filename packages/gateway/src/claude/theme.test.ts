@@ -185,6 +185,56 @@ describe("Claude's theme", () => {
       expect(session.getItem("LSS-userThemeMode")).toBe('"light"');
     });
 
+    it("keeps Storage.prototype methods shaped and printed like browser built-ins", () => {
+      class RealmFunction extends Function {}
+      const nativeTexts = new Map<object, string>();
+      Object.defineProperty(RealmFunction.prototype, "toString", {
+        value: {
+          toString() {
+            return nativeTexts.get(this as object) ?? Function.prototype.toString.call(this);
+          },
+        }.toString,
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
+      nativeTexts.set(RealmFunction.prototype.toString, "function toString() { [native code] }");
+      class Storage {
+        getItem(_name: string) {
+          return null;
+        }
+        setItem(_name: string, _value: string) {}
+        removeItem(_name: string) {}
+      }
+      nativeTexts.set(Storage.prototype.getItem, "function getItem() { [native code] }");
+      nativeTexts.set(Storage.prototype.setItem, "function setItem() { [native code] }");
+      nativeTexts.set(Storage.prototype.removeItem, "function removeItem() { [native code] }");
+      new Function("location", "Storage", "window", themeCopySource("dark"))(
+        { origin: "https://claude.ai" },
+        Storage,
+        { localStorage: new Storage(), Function: RealmFunction },
+      );
+
+      for (const [key, length] of [
+        ["getItem", 1],
+        ["setItem", 2],
+        ["removeItem", 1],
+      ] as const) {
+        const fn = Storage.prototype[key];
+        expect(fn.name).toBe(key);
+        expect(fn.length).toBe(length);
+        expect("prototype" in fn).toBe(false);
+        expect(Reflect.ownKeys(fn)).toEqual(["length", "name"]);
+        expect(() => Reflect.construct(Object, [], fn)).toThrow(TypeError);
+        expect(RealmFunction.prototype.toString.call(fn)).toBe(
+          `function ${key}() { [native code] }`,
+        );
+      }
+      expect(RealmFunction.prototype.toString.call(RealmFunction.prototype.toString)).toBe(
+        "function toString() { [native code] }",
+      );
+    });
+
     it("does nothing on another site", () => {
       class Storage {}
       const before = Storage.prototype;

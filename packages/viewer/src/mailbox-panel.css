@@ -58,3 +58,35 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.mailbox-links {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.mailbox-links-hint {
+  margin: 0;
+}
+.mailbox-link-list {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.mailbox-link-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mailbox-link-url {
+  flex: 1 1 240px;
+  min-width: 0;
+  font-size: 0.85em;
+  overflow-wrap: anywhere;
+  user-select: none;
+}

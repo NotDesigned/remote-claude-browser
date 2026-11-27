@@ -55,27 +55,72 @@ export function themeCopySource(theme: ClaudeTheme): string {
     let value = ${JSON.stringify(JSON.stringify(theme))};
     let chosen = null;
     const { getItem, setItem, removeItem } = Storage.prototype;
+    const apply = Reflect.apply;
     const isLocal = (storage) => storage === window.localStorage;
-    Storage.prototype.getItem = function (name) {
-      if (isLocal(this) && String(name) === key) return value;
-      if (isLocal(this) && String(name) === chosenKey) return chosen;
-      return getItem.call(this, name);
+    const methods = {
+      getItem(name) {
+        if (arguments.length >= 1 && isLocal(this)) {
+          const k = String(name);
+          if (k === key) return value;
+          if (k === chosenKey) return chosen;
+        }
+        return apply(getItem, this, arguments);
+      },
+      setItem(name, next) {
+        if (arguments.length >= 2 && isLocal(this)) {
+          const k = String(name);
+          if (k === pushKey) {
+            value = String(next);
+            chosen = null;
+            return;
+          }
+          if (k === key) {
+            value = String(next);
+            chosen = value;
+            return;
+          }
+        }
+        return apply(setItem, this, arguments);
+      },
+      removeItem(name) {
+        if (arguments.length >= 1 && isLocal(this) && String(name) === key) {
+          value = null;
+          chosen = null;
+          return;
+        }
+        return apply(removeItem, this, arguments);
+      },
     };
-    Storage.prototype.setItem = function (name, next) {
-      if (isLocal(this) && String(name) === pushKey) {
-        value = String(next);
-        chosen = null;
-      } else if (isLocal(this) && String(name) === key) {
-        value = String(next);
-        chosen = value;
-      } else setItem.call(this, name, next);
-    };
-    Storage.prototype.removeItem = function (name) {
-      if (isLocal(this) && String(name) === key) {
-        value = null;
-        chosen = null;
-      } else removeItem.call(this, name);
-    };
+    if (typeof window.Function === "function") {
+      const FunctionPrototype = window.Function.prototype;
+      const prevToString = FunctionPrototype.toString;
+      const weakGet = WeakMap.prototype.get;
+      const texts = new WeakMap([
+        [methods.getItem, apply(prevToString, getItem, [])],
+        [methods.setItem, apply(prevToString, setItem, [])],
+        [methods.removeItem, apply(prevToString, removeItem, [])],
+      ]);
+      const holder = {
+        toString() {
+          if ((typeof this === "function" || typeof this === "object") && this !== null) {
+            const text = apply(weakGet, texts, [this]);
+            if (text !== undefined) return text;
+          }
+          return apply(prevToString, this, []);
+        },
+      };
+      texts.set(holder.toString, apply(prevToString, prevToString, []));
+      const descriptor = Object.getOwnPropertyDescriptor(FunctionPrototype, "toString");
+      Object.defineProperty(FunctionPrototype, "toString", {
+        value: holder.toString,
+        writable: descriptor ? descriptor.writable : true,
+        enumerable: descriptor ? descriptor.enumerable : false,
+        configurable: descriptor ? descriptor.configurable : true,
+      });
+    }
+    Storage.prototype.getItem = methods.getItem;
+    Storage.prototype.setItem = methods.setItem;
+    Storage.prototype.removeItem = methods.removeItem;
   })()`;
 }
 

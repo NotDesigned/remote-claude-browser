@@ -2,7 +2,10 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
 import { compile } from "html-to-text";
 
-const emailText = compile({ wordwrap: false });
+const emailText = compile({
+  wordwrap: false,
+  selectors: [{ selector: "img", format: "skip" }],
+});
 
 export class MailboxError extends Error {
   constructor(

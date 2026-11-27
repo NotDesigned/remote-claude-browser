@@ -147,6 +147,18 @@ it("routes verified delivery to matching addresses and serves message bodies onl
     expect(await store.readMessage("owner", first.id, "test-email")).toMatchObject({
       authenticated: false,
     });
+    fetcher.mockResolvedValueOnce(
+      Response.json({
+        from: "noreply@anthropic.com",
+        text: null,
+        html: '<img alt="Logo" src="https://claude.ai/pixel.png?uid=1" width="1" height="1"><p>Sign in: <a href="https://claude.ai/magic-link#tok">Open Claude</a></p><img src="https://tracker.example/open.gif">',
+        authentication: { dmarc: "pass" },
+      }),
+    );
+    expect(await store.readMessage("owner", first.id, "test-email")).toMatchObject({
+      text: "Sign in: Open Claude [https://claude.ai/magic-link#tok]",
+      authenticated: true,
+    });
     const url = `${mailboxPath}/${first.id}`;
     expect((await app.inject({ method: "DELETE", url, headers: other })).statusCode).toBe(404);
     expect((await app.inject({ method: "DELETE", url, headers: owner })).statusCode).toBe(204);
