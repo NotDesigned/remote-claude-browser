@@ -98,6 +98,8 @@ export interface PredictOverlayOptions {
   /** The chip's 「重发」 and 「放回」. */
   resend?(text: string): void;
   putBack?(text: string): void;
+  /** Measurement (caret.ts); replaced in tests. */
+  measure?: { caret: typeof caretRect; rects: typeof rangeRects };
 }
 
 export interface OverlayState {
@@ -163,6 +165,8 @@ const LAYER_STYLE: Partial<CSSStyleDeclaration> = {
 export function createPredictOverlay(options: PredictOverlayOptions): PredictOverlay {
   const now = options.now ?? (() => performance.now());
   const doc = options.doc;
+  const measureCaret = options.measure?.caret ?? caretRect;
+  const measureRects = options.measure?.rects ?? rangeRects;
   const layer = doc.createElement("div");
   layer.className = "proxy-predict";
   layer.setAttribute("aria-hidden", "true");
@@ -288,7 +292,7 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
     let left = 16;
     let top = 16;
     if (near !== null) {
-      const box = caretRect(near, 0, doc);
+      const box = measureCaret(near, 0, doc);
       if (box !== null) {
         left = Math.max(8, box.box.left);
         top = Math.max(8, box.box.top - 32);
@@ -352,7 +356,7 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
       hide();
       return;
     }
-    const caret = caretRect(element, from, doc);
+    const caret = measureCaret(element, from, doc);
     const late = remaining.some((edit) => edit.dispatch?.late === true);
     if (caret === null || (!isValueField(element) && getComputedDirection(element) === "rtl")) {
       line.style.display = "none";
@@ -367,7 +371,7 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
     const color = style?.color ?? "#000";
     const fill = background(element);
     // Deleted text: covered with the field's own background.
-    const rects = rangeRects(element, from, to, doc);
+    const rects = measureRects(element, from, to, doc);
     masks.replaceChildren(
       ...rects.map((rect) => {
         const mask = doc.createElement("div");
@@ -647,7 +651,7 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
       const element = field();
       if (element === null) return null;
       const state = overlay.predicted();
-      return state === null ? null : caretRect(element, state.caret, doc);
+      return state === null ? null : measureCaret(element, state.caret, doc);
     },
     pending: () => edits.length,
     lastSelection: () => selection,
