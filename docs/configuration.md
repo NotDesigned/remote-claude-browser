@@ -86,6 +86,9 @@
 | 变量                  | 默认         | 说明                                                                                                                                                           |
 | --------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `MIRROR_CANVAS_SITES` | 人机验证服务 | 页面模式会采样哪些网站的 canvas，逗号分隔；`none` 表示一个都不采样。空表示只采样 hCaptcha、reCAPTCHA、Cloudflare 和 Arkose 的验证页（`protocol/src/agent.ts`） |
+| `MIRROR_INPUT_ACKS`      | `shadow`                          | 页面模式的输入确认。`off` 不发确认；`shadow` 发确认，工作台只统计（见[排查 · 输入未同步](troubleshooting.md#输入未同步)）；`on` 工作台按确认判断远程输入框是否跟上，不再按固定的约 1 秒。其他值时网关拒绝启动 |
+| `MIRROR_PROXY_INPUT`     | `on` | 页面模式的单写者输入（实验）。`on` 时，输入框获得焦点后，打字先进入工作台本地的输入层，再以可信的按键和文字送到远程页面，回放里的输入框不在本地编辑（见[架构](architecture.md#页面模式和资源)）。需要输入确认：和 `MIRROR_INPUT_ACKS=off` 一起设置时，或取其他值时，网关拒绝启动。排查时可在工作台地址后加 `?input=legacy` 或 `?input=proxy`，只对这个标签页切换；`?inputlab=1` 显示它的诊断 |
+| `MIRROR_LIVE_TREE`       | `1`                               | 网关是否为每个标签页保存当前的页面（实时树），从它补齐新加入、重连、切回标签页和出错的查看端。`0` 改回快照加有上限的变化记录，变化记录装满后要网页重拍整页快照。其他值时网关拒绝启动 |
 
 ### 单点登录（OIDC）
 
@@ -142,10 +145,7 @@
 | `MIRROR_ACCOUNTS_DIR`                     | `<数据目录>/profile-accounts`     | 默认配置以外的浏览器配置存放 Chrome 资料的目录                                                                                                                     |
 | `MIRROR_PROXY_SUBSCRIPTION_ALLOW_PRIVATE` | 不设置                            | `1` 允许订阅地址指向私有、回环、链路本地和其他保留地址。不设置时，导入和刷新订阅只连接公网地址（`net/public-target.ts`），任何登录的用户都不能借订阅让网关访问内网 |
 | `MIRROR_CANVAS_SNAPSHOTS` | `0`（`compose.yml`）             | 页面模式是否采样 canvas。`0` 不采样；不设置时按 `MIRROR_CANVAS_SITES` 采样 |
-| `MIRROR_INPUT_ACKS`      | `shadow`                          | 页面模式的输入确认。`off` 不发确认；`shadow` 发确认，工作台只统计（见[排查 · 输入未同步](troubleshooting.md#输入未同步)）；`on` 工作台按确认判断远程输入框是否跟上，不再按固定的约 1 秒。其他值时网关拒绝启动 |
-| `MIRROR_PROXY_INPUT`     | `off`                             | 页面模式的单写者输入（实验）。`on` 时，输入框获得焦点后，打字先进入工作台本地的输入层，再以可信的按键和文字送到远程页面，回放里的输入框不在本地编辑（见[架构](architecture.md#页面模式和资源)）。需要输入确认：和 `MIRROR_INPUT_ACKS=off` 一起设置时，或取其他值时，网关拒绝启动。排查时可在工作台地址后加 `?input=legacy` 或 `?input=proxy`，只对这个标签页切换；`?inputlab=1` 显示它的诊断 |
 | `MIRROR_SUBMIT_GUARD`    | `shadow`                          | 按回车前核对远程输入框的文字和工作台显示的是否一致。`off` 不核对；`shadow` 只统计结果（日志 `submit guard:`）；`on` 不一致时不发送回车（尚未默认开启）。其他值时网关拒绝启动 |
-| `MIRROR_LIVE_TREE`       | `1`                               | 网关是否为每个标签页保存当前的页面（实时树），从它补齐新加入、重连、切回标签页和出错的查看端。`0` 改回快照加有上限的变化记录，变化记录装满后要网页重拍整页快照。其他值时网关拒绝启动 |
 | `MIRROR_LIVE_TREE_RING_EVENTS` | `2000`                      | 每个标签页留多少个最近的增量，用来只补发查看端缺的部分；更早的查看端改发合成的快照 |
 | `MIRROR_LIVE_TREE_RING_BYTES` | `2097152`（2 MiB）           | 同上，按字节计的上限 |
 | `MIRROR_LIVE_TREE_TAB_MAX_NODES` | `400000`                  | 一个文档的实时树超过这么多节点时，这个文档改用快照加变化记录 |
