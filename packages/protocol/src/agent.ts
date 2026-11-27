@@ -21,6 +21,7 @@
  * Filter auto-attach to page/iframe target types; resume workers immediately without injecting.
  */
 import type { eventWithTime } from "./rrweb";
+import type { EditState } from "./wire";
 
 /** Standalone/default CDP binding name; production embeds a randomized per-session name. */
 export const BINDING_NAME = "__mirror_emit";
@@ -42,6 +43,12 @@ export type AgentMsg =
       ts: number;
     }
   | { kind: "rrweb"; docId: number; e: eventWithTime }
+  /**
+   * The answer to a `fence`, emitted after every effect of earlier input reached the recorder: it
+   * travels in the ordered stream like `rrweb`, so everything before it in the stream happened
+   * first. `text` (submit-guard fences only) never leaves the gateway.
+   */
+  | { kind: "fence"; docId: number; n: number; edit: EditState | null; text?: string }
   | { kind: "cmdres"; reqId: number; ok: boolean; data?: unknown; err?: string };
 
 /**
@@ -75,7 +82,12 @@ export type AgentCmd =
        */
       base?: string;
     } // native text edit or control setter + input/change
+  /** Emit a `fence` message once earlier input has settled; `text` only for the submit guard. */
+  | { cmd: "fence"; reqId: number; n: number; text?: boolean }
   | { cmd: "ping"; reqId: number }; // liveness
+
+/** What an agent from before fences answers one with. */
+export const UNKNOWN_FENCE_ERROR = "unknown command: fence";
 
 /**
  * The error `rect` and `scroll` give for a node another frame's recorder owns. The gateway
