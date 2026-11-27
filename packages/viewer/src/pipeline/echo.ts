@@ -655,7 +655,6 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
         sentAck = null;
         if (lastEnter?.element === sent.element) lastEnter = null;
         if (!isValueEchoField(sent.element)) {
-          clearState(sent.nodeId);
           requestReconcile();
         }
       } else if (settled.final) sentAck = null;
