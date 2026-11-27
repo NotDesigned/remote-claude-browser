@@ -675,7 +675,7 @@ async function textarea({ label, page, remote, mirrored, type }: Mirror): Promis
   await mirrored.locator("#plain").click();
   await page.waitForTimeout(300);
   const typed: string[] = [];
-  for (const burst of ["first burst", " and a second", " — third, with a dash", " fourth"]) {
+  for (const burst of ["first burst", " and a second", " then a third, with a comma", " fourth"]) {
     await type(burst, 15);
     typed.push(burst);
     await page.waitForTimeout(500);
