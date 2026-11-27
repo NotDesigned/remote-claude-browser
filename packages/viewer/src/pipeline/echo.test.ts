@@ -881,6 +881,47 @@ describe.each([
     expect(reconcile).toHaveBeenCalledOnce();
   });
 
+  it("asks for the page's editor when it changed after the ack it matched", () => {
+    const clock = clockTimers(ackMode);
+    const acks = fakeAcks(ackMode);
+    const reconcile = vi.fn(() => true);
+    const editor = new FakeContenteditable();
+    const echo = createEchoFilter({
+      now: clock.now,
+      ...clock.options,
+      acks: acks.acks,
+      onContenteditableReconcile: reconcile,
+      nodeFor: editor.nodeFor,
+    });
+    editor.textContent = "hello";
+    const focus = {
+      element: editor as unknown as HTMLElement,
+      nodeId: 20,
+      subtreeNodeIds: new Set([20, 21]),
+    };
+    echo.setFocused(focus);
+    acks.send();
+    echo.input(focus);
+    // The page's text, in a node of its own, then its clear: both held back here.
+    echo(
+      mutationEvent(
+        [],
+        [{ parentId: 21, nextId: null, node: { id: 40, type: 3, textContent: "hello" } }],
+      ),
+      clock.to(100),
+    );
+    echo(removal(21, 40), clock.to(150));
+    // The final ack comes from before the clear: same text as here.
+    if (ackMode)
+      acks.settle({
+        iseq: 1,
+        final: true,
+        edit: { node: 20, len: 5, hash: editHash("hello"), sel: [5, 5] },
+      });
+    else clock.to(1_200);
+    expect(reconcile).toHaveBeenCalledOnce();
+  });
+
   it("holds the field while input is unacknowledged, whatever the time, and counts the old bug", () => {
     const clock = clockTimers(ackMode);
     const acks = fakeAcks(ackMode);

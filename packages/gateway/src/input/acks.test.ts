@@ -192,6 +192,33 @@ describe("input acks", () => {
     expect(acks).toHaveLength(2);
   });
 
+  it("sends no fence into an open IME composition, and acknowledges it once committed", async () => {
+    const { acks, state, relay, iseq } = page();
+    let next = iseq();
+    const ime = (value: string) =>
+      relay("driver", {
+        t: "ime",
+        tab: TAB,
+        text: value,
+        selStart: value.length,
+        selEnd: value.length,
+        iseq: ++next,
+      });
+    void ime("n");
+    void ime("ni");
+    await settle();
+    await settle();
+    // Running the fence's command in the page could end the composition early.
+    expect(state.fences).toBe(0);
+    expect(acks).toEqual([]);
+    // The commit (text) ends it: everything up to it is acknowledged.
+    void relay("driver", { t: "text", tab: TAB, insert: "你", iseq: ++next });
+    await settle(10);
+    await settle();
+    expect(state.fences).toBeGreaterThan(0);
+    expect(acks.at(-1)![1]).toMatchObject({ iseq: 3, mode: "page", final: true });
+  });
+
   it("fences after 8 inputs, and 50 ms after the first, while the relay stays busy", async () => {
     const fenced: number[] = [];
     let now = 0;

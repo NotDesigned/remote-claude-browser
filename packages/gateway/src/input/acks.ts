@@ -15,6 +15,11 @@
  * back in time give `mode: "dispatch"` acks: the inputs were dispatched, nothing more is known.
  *
  * Only input that carries `iseq` is tracked: an older viewer sends none, and gets no fences.
+ *
+ * No fence goes to the page while an IME composition is open there (an `ime` with text, until the
+ * commit or anything else typed): running the fence's command in the page then can end the
+ * composition early, and the page loses its uncommitted text. The inputs are acknowledged once
+ * the composition ends.
  */
 import {
   EXPECT_TAIL,
@@ -105,6 +110,8 @@ interface TabState {
   firstUnfencedAt: number | null;
   /** Fences queued or awaited. */
   fencing: number;
+  /** An IME composition is open on the page: fences wait until it ends. */
+  composing: boolean;
   quietTimer: unknown;
   agent: "unknown" | "fence" | "legacy";
   /** The page document `agent` was learned from. */
@@ -271,7 +278,7 @@ export function createAckScheduler(deps: AckSchedulerDeps): AckScheduler {
     if (state.quietTimer !== null) clearTimer(state.quietTimer);
     state.quietTimer = setTimer(() => {
       state.quietTimer = null;
-      if (tabs.get(tab) !== state) return;
+      if (tabs.get(tab) !== state || state.composing) return;
       enqueueFence(tab, state, true);
     }, QUIET_FENCE_MS);
   };
@@ -290,6 +297,7 @@ export function createAckScheduler(deps: AckSchedulerDeps): AckScheduler {
       unfenced: 0,
       firstUnfencedAt: null,
       fencing: 0,
+      composing: false,
       quietTimer: null,
       agent: existing?.agent ?? "unknown",
       agentDoc: existing?.agentDoc,
@@ -320,10 +328,13 @@ export function createAckScheduler(deps: AckSchedulerDeps): AckScheduler {
       if (!ok && !state.failed.includes(iseq)) state.failed.push(iseq);
       state.unfenced += 1;
       state.firstUnfencedAt ??= now();
+      if (msg.t === "ime") state.composing = msg.text !== "";
+      else if (msg.t === "text" || msg.t === "key" || msg.t === "value") state.composing = false;
       if (
-        deps.isIdle(msg.tab) ||
-        state.unfenced >= FENCE_AFTER_INPUTS ||
-        now() - state.firstUnfencedAt >= FENCE_AFTER_MS
+        !state.composing &&
+        (deps.isIdle(msg.tab) ||
+          state.unfenced >= FENCE_AFTER_INPUTS ||
+          now() - state.firstUnfencedAt >= FENCE_AFTER_MS)
       )
         enqueueFence(msg.tab, state, false);
       armQuiet(msg.tab, state);

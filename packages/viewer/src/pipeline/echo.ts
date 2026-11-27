@@ -598,9 +598,17 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
     if (editHash(localFieldText(state.element)) === edit.hash) {
       // The same text: what was held back changes nothing this field shows. Nodes the page made
       // that this replay never got stay known, so a later change to them is still caught.
+      // What was held back may go past the ack's stream position (the filter sees events before
+      // the replay plays them): a change the page made since, such as clearing the composer, is
+      // still a divergence.
+      const suppressed = state.suppressed;
       clearState(nodeId);
       state.suppressed = undefined;
       passedTexts.clear();
+      if (suppressed !== undefined && diverged(state.element, suppressed, nodeFor)) {
+        requestReconcile();
+        return;
+      }
       if (isContenteditableEchoField(state.element))
         lastEnter = { element: state.element, text: state.element.textContent ?? "" };
       return;
