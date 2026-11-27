@@ -122,7 +122,7 @@ describe("injectAgent", () => {
     ]);
   });
 
-  it("gives every frame of one browser the same random stitch key, and hardens by default", async () => {
+  it("gives the frames of each tab their own random stitch key, and hardens by default", async () => {
     const embedded = (source: unknown) =>
       JSON.parse(/globalThis\[[^\]]+\]=(\{.*?\});\n/.exec(String(source))![1]!) as {
         bridge: { stitchKey: string; bridgeKey: string };
@@ -137,14 +137,41 @@ describe("injectAgent", () => {
       )?.params?.source;
     const browser = new RecordingBrowser();
     await injectAgent(browser, { targetId: "page-1", sessionId: "s-1", type: "page" });
-    await injectAgent(browser, { targetId: "frame-1", sessionId: "s-2", type: "iframe" });
+    await injectAgent(browser, {
+      targetId: "frame-1",
+      sessionId: "s-2",
+      type: "iframe",
+      parentTargetId: "page-1",
+    });
+    // A frame inside that frame, in yet another process.
+    await injectAgent(browser, {
+      targetId: "frame-2",
+      sessionId: "s-3",
+      type: "iframe",
+      parentTargetId: "frame-1",
+    });
     const top = embedded(agentSource(browser, "s-1"));
     const child = embedded(agentSource(browser, "s-2"));
+    const grandchild = embedded(agentSource(browser, "s-3"));
     expect(top.hardening).toBe(true);
     expect(top.bridge.stitchKey).toMatch(/^[a-z][0-9a-z]{11}$/);
-    // Each session has its own bridge, but the frames must agree on the key.
+    // Each session has its own bridge, but the frames of one tab must agree on the key.
     expect(child.bridge.bridgeKey).not.toBe(top.bridge.bridgeKey);
     expect(child.bridge.stitchKey).toBe(top.bridge.stitchKey);
+    expect(grandchild.bridge.stitchKey).toBe(top.bridge.stitchKey);
+    // Another tab of the same browser, and the frames in it, have a key of their own: a frame
+    // embedded in both tabs must not see the same name.
+    await injectAgent(browser, { targetId: "page-2", sessionId: "s-4", type: "page" });
+    await injectAgent(browser, {
+      targetId: "frame-3",
+      sessionId: "s-5",
+      type: "iframe",
+      parentTargetId: "page-2",
+    });
+    const tab2 = embedded(agentSource(browser, "s-4")).bridge.stitchKey;
+    expect(tab2).toMatch(/^[a-z][0-9a-z]{11}$/);
+    expect(tab2).not.toBe(top.bridge.stitchKey);
+    expect(embedded(agentSource(browser, "s-5")).bridge.stitchKey).toBe(tab2);
     const other = new RecordingBrowser();
     await injectAgent(other, { targetId: "page-1", sessionId: "s-1", type: "page" });
     expect(embedded(agentSource(other, "s-1")).bridge.stitchKey).not.toBe(top.bridge.stitchKey);
