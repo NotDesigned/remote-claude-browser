@@ -289,8 +289,13 @@ const foldSpaces = (text: string) => text.replace(/\u00a0/g, " ");
  * the page to `value` would undo that and, after a send, put the message just sent back into the
  * composer. Instead the one change from `base` to `value` is made at the same place in the page's
  * text: typing at the end goes on at the end, an edit elsewhere is found by the unchanged text
- * before or after it. Only when neither is still there does the viewer's whole text win, as it
- * did before.
+ * before or after it.
+ *
+ * When neither is still there, the edit was made on text the page no longer has, and the page's
+ * text stands: the viewer catches up with it. Above all that is a composer the page cleared after
+ * sending, while the viewer still showed the message: a Backspace, or a phone keyboard's
+ * autocorrect replacing the last word as Return or the send button is tapped, edits the message
+ * just sent. Taking the viewer's whole text then put that message back into the page's composer.
  */
 export function rebaseEditable(
   current: string,
@@ -328,9 +333,9 @@ export function rebaseEditable(
   if (after === "") {
     // At the end of the text: on at the end of the page's text, before an editor's closing break.
     const end = base.endsWith("\n") ? current.length : current.replace(/\n+$/, "").length;
-    return fromEnd(end) ?? fromStart() ?? value;
+    return fromEnd(end) ?? fromStart() ?? current;
   }
-  return fromStart() ?? fromEnd(current.length) ?? value;
+  return fromStart() ?? fromEnd(current.length) ?? current;
 }
 
 function focusedEditingHost(document: Document): HTMLElement | null {

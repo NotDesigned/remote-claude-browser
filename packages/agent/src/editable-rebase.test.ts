@@ -43,8 +43,21 @@ describe("rebaseEditable", () => {
     expect(rebaseEditable("a—", "a--", "a--")).toBe("a—");
   });
 
-  it("falls back to the viewer's text when the edit cannot be placed", () => {
-    expect(rebaseEditable("xyz", "hello world", "hello, world")).toBe("hello, world");
+  it("keeps the page's text when the edit cannot be placed on it", () => {
+    expect(rebaseEditable("xyz", "hello world", "hello, world")).toBe("xyz");
+  });
+
+  it("does not put a sent message back for an edit of it made after the page cleared it", () => {
+    // Backspace while the viewer still showed the message.
+    expect(rebaseEditable("", "oops typo", "oops typ")).toBe("");
+    // A phone keyboard's autocorrect replacing the last word just after Return or the send button.
+    expect(rebaseEditable("", "meet teh", "meet the")).toBe("");
+    expect(rebaseEditable("", "meet teh", "meet the ")).toBe("");
+    // An edit inside it, and one over the whole of it.
+    expect(rebaseEditable("", "hello world", "hello, world")).toBe("");
+    expect(rebaseEditable("", "hello", "bye")).toBe("");
+    // The next message already begun on the page keeps going, untouched by the edit.
+    expect(rebaseEditable("n", "meet tehn", "meet then")).toBe("n");
   });
 
   it("keeps a typed line break at the end", () => {
@@ -151,6 +164,15 @@ describe("contenteditable value command with a base", () => {
     handler({ cmd: "value", reqId: 1, nodeId: 5, value: "hello thereX", base: "hello there" });
     await settle();
     expect(state.text).toBe("X");
+    expect(messages).toEqual([{ kind: "cmdres", reqId: 1, ok: true }]);
+  });
+
+  it("keeps the cleared composer empty when an edit of the sent message comes", async () => {
+    const { state, handler, messages, settle, document } = setup("");
+    handler({ cmd: "value", reqId: 1, nodeId: 5, value: "meet the", base: "meet teh" });
+    await settle();
+    expect(state.text).toBe("");
+    expect(document.execCommand).not.toHaveBeenCalled();
     expect(messages).toEqual([{ kind: "cmdres", reqId: 1, ok: true }]);
   });
 
