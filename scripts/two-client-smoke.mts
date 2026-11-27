@@ -443,7 +443,12 @@ try {
   await Promise.all([a.negotiate(aTab, 760, 540), b.negotiate(bTab, 940, 640)]);
   await focusEnd("a", first.sid, aTab);
   await focusEnd("b", second.sid, bTab);
-  a.send({ t: "text", tab: aTab, insert: "甲客户端：分析AI问题" });
+  // a numbers its input (a viewer that has acks), b does not (an older viewer).
+  assert.ok(
+    a.messages.some((message) => message.t === "hello" && message.caps?.includes("ack1")),
+    "the gateway offers input acks",
+  );
+  a.send({ t: "text", tab: aTab, insert: "甲客户端：分析AI问题", iseq: 1 });
   b.send({ t: "text", tab: bTab, insert: "乙客户端：独立中文输入" });
   await waitFor(
     async () =>
@@ -452,6 +457,26 @@ try {
     "independent Chinese input",
   );
   checks.independentChineseInput = true;
+  await waitFor(
+    () =>
+      a.messages.some(
+        (message) => message.t === "input-ack" && message.tab === aTab && message.iseq === 1,
+      ),
+    "an input ack for the viewer that sent the input",
+  );
+  await delay(300);
+  assert.deepEqual(
+    b.messages.filter((message) => message.t === "input-ack"),
+    [],
+    "a viewer that numbers no input gets no acks",
+  );
+  assert.ok(
+    a.messages
+      .filter((message) => message.t === "input-ack")
+      .every((message) => message.t === "input-ack" && message.tab === aTab),
+    "acks only for the tab the viewer typed in",
+  );
+  checks.inputAcksOnlyToTheirViewer = true;
   assert.deepEqual(await evaluate("a", first.sid, aTab, "[innerWidth,innerHeight]"), [760, 540]);
   assert.deepEqual(await evaluate("b", second.sid, bTab, "[innerWidth,innerHeight]"), [940, 640]);
   checks.independentViewports = true;
