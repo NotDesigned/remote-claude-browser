@@ -541,7 +541,9 @@ async function checkAgainst(
   const baseline = await readBaseline(path);
   if (process.env.STEALTH_WRITE_BASELINE === "1") {
     const next: Record<string, string> = {};
-    for (const key of [...found.keys()].sort()) next[key] = baseline[key] ?? reasonFor(key);
+    const keep = Object.keys(baseline).filter((key) => baseline[key]!.startsWith("optional:"));
+    for (const key of [...new Set([...found.keys(), ...keep])].sort())
+      next[key] = baseline[key] ?? reasonFor(key);
     await writeFile(path, JSON.stringify(next, null, 2) + "\n");
     console.log(`stealth ${label}: wrote ${found.size} entries to ${path}`);
     return [];
@@ -549,8 +551,9 @@ async function checkAgainst(
   const errors: string[] = [];
   for (const [key, detail] of found)
     if (!(key in baseline)) errors.push(`${label}: new leak ${key} — ${detail}`);
+  // "optional:" entries leak only with some Chrome builds (a global the build may not have).
   for (const key of Object.keys(baseline))
-    if (!found.has(key))
+    if (!found.has(key) && !baseline[key]!.startsWith("optional:"))
       errors.push(`${label}: ${key} no longer leaks; delete it from ${path.split("/").pop()}`);
   return errors;
 }

@@ -48,6 +48,8 @@
   "nat.shape:Element.attachShadow@child": "P0-A: today's leak, removed by workstream A",
   "nat.shape:Element.shadowRoot": "P0-A: today's leak, removed by workstream A",
   "nat.shape:Element.shadowRoot@child": "P0-A: today's leak, removed by workstream A",
+  "nat.shape:FontFaceSet.add": "optional: P0-A: Chrome builds with a global FontFaceSet, whose add the old font capture replaced",
+  "nat.shape:FontFaceSet.add@child": "optional: P0-A: Chrome builds with a global FontFaceSet, whose add the old font capture replaced",
   "nat.shape:Function.toString": "P0-A: today's leak, removed by workstream A",
   "nat.shape:HTMLInputElement.checked": "P0-A: today's leak, removed by workstream A",
   "nat.shape:HTMLInputElement.checked@child": "P0-A: today's leak, removed by workstream A",
