@@ -19,7 +19,9 @@
     <style>
       body {
         margin: 0;
-        font: 15px/1.5 system-ui, sans-serif;
+        font:
+          15px/1.5 system-ui,
+          sans-serif;
         background: #faf9f5;
         color: #1f1e1d;
       }
@@ -186,7 +188,8 @@
 
         const params = new URLSearchParams(location.search);
         const cross = params.get("cross");
-        if (cross) document.getElementById("cross-site").src = cross + "/conversation-frame.html?site=cross";
+        if (cross)
+          document.getElementById("cross-site").src = cross + "/conversation-frame.html?site=cross";
 
         const cssInJs = document.getElementById("css-in-js").sheet;
         let cssCount = 0;
