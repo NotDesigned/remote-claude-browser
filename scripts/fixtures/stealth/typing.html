@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script src="/detector.js" data-fx></script>
+    <title>Stealth typing</title>
+    <style data-fx>
+      body {
+        font: 16px sans-serif;
+        margin: 8px;
+      }
+      #ce,
+      .ProseMirror {
+        min-height: 32px;
+        border: 1px solid #888;
+        padding: 4px;
+        margin: 4px 0;
+      }
+      .ProseMirror p {
+        margin: 0;
+      }
+      #scroller {
+        height: 160px;
+        overflow: auto;
+        border: 1px solid #888;
+      }
+      #scroller p {
+        margin: 0;
+        height: 40px;
+      }
+    </style>
+  </head>
+  <body>
+    <input id="inp" />
+    <textarea id="ta"></textarea>
+    <div id="ce" contenteditable="true"></div>
+    <div id="pm"></div>
+    <div id="scroller"></div>
+    <script src="/prosemirror-composer.js" data-fx></script>
+    <script data-fx>
+      PMComposer.mount(document.getElementById("pm"), { onSend: () => {} });
+      // A transcript that follows its end until a person scrolls up, as chat apps do: only a wheel
+      // tells it a person did.
+      const scroller = document.getElementById("scroller");
+      const state = { stuck: true };
+      for (let i = 0; i < 60; i++) {
+        const line = document.createElement("p");
+        line.textContent = "line " + i;
+        scroller.append(line);
+      }
+      scroller.scrollTop = scroller.scrollHeight;
+      scroller.addEventListener("wheel", (event) => {
+        if (event.deltaY < 0) state.stuck = false;
+      });
+      scroller.addEventListener("scroll", () => {
+        if (state.stuck) scroller.scrollTop = scroller.scrollHeight;
+      });
+      __fx.scroll = () => ({
+        stuck: state.stuck,
+        top: scroller.scrollTop,
+        bottom: scroller.scrollHeight - scroller.clientHeight,
+      });
+    </script>
+  </body>
+</html>

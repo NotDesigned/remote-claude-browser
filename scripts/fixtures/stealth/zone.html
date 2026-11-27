@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script data-fx>
+      // As Angular's zone.js does before anything else: recorders take it for a patched page.
+      globalThis.Zone = function Zone() {};
+    </script>
+    <script src="/detector.js" data-fx></script>
+    <title>Stealth zone</title>
+  </head>
+  <body>
+    <p>A page that loads zone.js first.</p>
+    <div id="list"></div>
+    <script data-fx>
+      const list = document.getElementById("list");
+      for (let i = 0; i < 20; i++) {
+        const item = document.createElement("p");
+        item.textContent = "item " + i;
+        list.append(item);
+      }
+    </script>
+  </body>
+</html>

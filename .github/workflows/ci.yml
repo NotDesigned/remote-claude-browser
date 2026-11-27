@@ -77,6 +77,8 @@ jobs:
       - run: pnpm run build
       - name: Test navigation and the back-forward cache
         run: pnpm run test:browser-lifecycle
+      - name: Test that pages cannot see the recorder
+        run: pnpm run test:stealth
       - name: Test cross-site frame assumptions
         run: pnpm run probe:oopif
       - name: Test that nested frames send their documents once

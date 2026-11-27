@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script src="/detector.js" data-fx></script>
+    <title>Stealth shadow</title>
+  </head>
+  <body>
+    <div id="open-host"></div>
+    <div id="closed-host"></div>
+    <script data-fx>
+      const openRoot = document.getElementById("open-host").attachShadow({ mode: "open" });
+      openRoot.innerHTML = "<p>Open root</p>";
+      const closedRoot = document.getElementById("closed-host").attachShadow({ mode: "closed" });
+      closedRoot.innerHTML = '<p>Closed root</p><button type="button">Inner</button>';
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync("p { color: rgb(0, 0, 200); }");
+      openRoot.adoptedStyleSheets = [sheet];
+      closedRoot.adoptedStyleSheets = [sheet];
+      const own = (owner, key) =>
+        Object.getOwnPropertyDescriptor(owner, key) === undefined ? "absent" : "own";
+      const names = (value) => Reflect.ownKeys(value).map(String).sort().join(",");
+      __fx.extra = () => ({
+        "shadowRoot.open": names(openRoot),
+        "shadowRoot.closed": names(closedRoot),
+        "shadowRoot.open.adoptedStyleSheets": own(openRoot, "adoptedStyleSheets"),
+        "shadowRoot.closed.adoptedStyleSheets": own(closedRoot, "adoptedStyleSheets"),
+        "shadowRoot.closed.mode": closedRoot.mode,
+        "shadowRoot.closed.hidden": document.getElementById("closed-host").shadowRoot === null,
+      });
+      __fx.composedPath = () => {
+        let length = -1;
+        const listener = (event) => (length = event.composedPath().length);
+        document.addEventListener("click", listener);
+        closedRoot.querySelector("button").click();
+        document.removeEventListener("click", listener);
+        return length;
+      };
+    </script>
+  </body>
+</html>

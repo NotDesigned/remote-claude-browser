@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script src="/detector.js" data-fx></script>
+    <title>Stealth top</title>
+    <style data-fx>
+      body {
+        font: 14px sans-serif;
+        margin: 8px;
+      }
+      canvas {
+        border: 1px solid #888;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Top document</h1>
+    <p>A cross-origin frame, two canvases and a font added from script.</p>
+    <canvas id="c2d" width="120" height="60"></canvas>
+    <canvas id="cgl" width="60" height="60"></canvas>
+    <iframe id="child" data-fx data-fx-child="child" width="300" height="120"></iframe>
+    <script data-fx>
+      const childPort = new URLSearchParams(location.search).get("child");
+      document.getElementById("child").src = `http://127.0.0.1:${childPort}/child.html`;
+      const c2d = document.getElementById("c2d");
+      const ctx = c2d.getContext("2d");
+      ctx.fillStyle = "#c33";
+      ctx.fillRect(10, 10, 100, 40);
+      const cgl = document.getElementById("cgl");
+      const gl = cgl.getContext("webgl");
+      if (gl) {
+        gl.clearColor(0, 0.5, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+      }
+      // Added after load, as web apps do: the replay needs it in the snapshot.
+      window.addEventListener("load", () => {
+        document.fonts.add(new FontFace("fx-late-font", "url(/no-such-font.woff2)"));
+        window.__fontAdded = true;
+      });
+      __fx.extra = () => ({
+        canvas2d: Reflect.ownKeys(c2d).map(String).sort().join(","),
+        canvasgl: Reflect.ownKeys(cgl).map(String).sort().join(","),
+        preserveDrawingBuffer: gl ? gl.getContextAttributes().preserveDrawingBuffer : "no-webgl",
+      });
+    </script>
+  </body>
+</html>

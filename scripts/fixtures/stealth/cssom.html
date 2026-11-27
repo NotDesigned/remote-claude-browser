@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script src="/detector.js" data-fx></script>
+    <title>Stealth CSSOM</title>
+    <style id="sheet" data-fx>
+      body {
+        margin: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <p class="styled">Styles from script.</p>
+    <script data-fx>
+      const owned = document.getElementById("sheet").sheet;
+      owned.insertRule(".styled { color: rgb(200, 0, 0); }", 0);
+      owned.insertRule("@media (min-width: 1px) { .styled { font-weight: bold; } }", 1);
+      owned.cssRules[1].insertRule(".styled { font-style: italic; }", 0);
+      owned.cssRules[0].style.setProperty("text-decoration", "underline");
+      owned.deleteRule(0);
+      const constructed = new CSSStyleSheet();
+      constructed.replaceSync("p { letter-spacing: 1px; }");
+      document.adoptedStyleSheets = [constructed];
+      constructed.replace("p { letter-spacing: 2px; }");
+    </script>
+  </body>
+</html>
