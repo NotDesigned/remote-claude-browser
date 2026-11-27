@@ -658,7 +658,7 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
 
   /** Whether a final ack without a fence puts the filter on its timers, or a fenced one back. */
   const followAckMode = (settled: SettledAck) => {
-    if (settled.mode === "page" && timersFallback) {
+    if (settled.fenced && timersFallback) {
       timersFallback = false;
       // Fields typed into on the timers: the next final ack closes them, the ceiling otherwise.
       for (const [nodeId, state] of nodes) {
@@ -668,7 +668,7 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
         state.timer = null;
         armDecay(nodeId, state);
       }
-    } else if (settled.mode === "dispatch" && settled.final && !timersFallback) {
+    } else if (!settled.fenced && settled.final && !timersFallback) {
       timersFallback = true;
       for (const [nodeId, state] of nodes) {
         state.awaiting = false;

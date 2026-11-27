@@ -10,6 +10,7 @@ import {
   type Down,
   type InputAckMsg,
 } from "../../packages/protocol/src/index";
+import { deflateRawSync } from "node:zlib";
 import {
   ackCaps,
   createAckScheduler,
@@ -32,20 +33,28 @@ export interface AckHarness {
   /** Spread into createInputRelay's deps. */
   relayDeps: Pick<InputRelayDeps, "onDispatched" | "beforeDispatch" | "onReset" | "onForget">;
   /** Once the relay exists. */
-  attach(relay: {
-    enqueue(tab: string, task: () => Promise<void>): void;
-    isIdle(tab: string): boolean;
-  }): void;
+  attach(relay: { enqueue(tab: string, task: () => Promise<void>): void }): void;
   /** Where acks for a viewer go (its connection, through the slow link). */
   route(viewerId: string, send: ((down: Down) => void) | null): void;
   /** Feed every Down the hub produced, to know which stream position carried which text. */
   observe(downs: readonly Down[]): void;
-  /** Acks sent, with their size on the wire. */
-  sent: Array<{ viewerId: string; ack: InputAckMsg; bytes: number }>;
+  /**
+   * Acks sent, with their size as JSON and alone in a fresh permessage-deflate context (the
+   * measure of the protocol's 160-byte budget).
+   */
+  sent: Array<{ viewerId: string; ack: InputAckMsg; bytes: number; deflated: number }>;
   guard: Record<GuardClass, number>;
   fenceTimes: number[];
+  /** Each final ack: how long after its last input was dispatched the gateway sent it. */
+  finalLags: number[];
   /** Final page acks whose field is a value control: was its last value at or before ack.seq? */
   ordering: { inOrder: number; outOfOrder: number };
+  /**
+   * Final page acks whose field is a rich editor (no rrweb Input events): with the page's text
+   * read right after the ack still hashing as the ack says, did a text mutation at or before
+   * ack.seq already carry the end of its last line?
+   */
+  richOrdering: { inOrder: number; outOfOrder: number };
   /** Final page acks: does edit.hash hash the page's own text (read right after the ack)? */
   pageHash: { match: number; mismatch: number };
   /** Reads of the page's text still on their way. */
@@ -64,8 +73,32 @@ export function createAckHarness(options: {
   const mode = options.mode ?? smokeAckMode();
   let scheduler: AckScheduler | undefined;
   const routes = new Map<string, (down: Down) => void>();
+  /** When the relay dispatched each iseq (one viewer per run). */
+  const dispatchedAt = new Map<number, number>();
   /** The last value of each value control, by stream position. */
   const values = new Map<number, Array<{ seq: number; text: string }>>();
+  /** The text of each text node the page changed or added, by stream position. */
+  const texts = new Map<number, Array<{ seq: number; text: string }>>();
+  const noteText = (id: number, seq: number, text: string) => {
+    const history = texts.get(id) ?? [];
+    history.push({ seq, text: text.replace(/\u00a0/g, " ") });
+    texts.set(id, history.slice(-64));
+  };
+  const addedTexts = (node: any, seq: number) => {
+    if (node === null || typeof node !== "object") return;
+    if (node.type === 3 && typeof node.id === "number")
+      noteText(node.id, seq, node.textContent ?? "");
+    for (const child of node.childNodes ?? []) addedTexts(child, seq);
+  };
+  /** Whether a text node already held the end of `line` at stream position `seq`. */
+  const carried = (line: string, seq: number) => {
+    const tail = line.replace(/\u00a0/g, " ").slice(-3);
+    for (const history of texts.values()) {
+      const last = history.filter((entry) => entry.seq <= seq).at(-1);
+      if (last !== undefined && last.text.endsWith(tail)) return true;
+    }
+    return false;
+  };
   const harness: AckHarness = {
     mode,
     caps: ackCaps(mode),
@@ -73,8 +106,11 @@ export function createAckHarness(options: {
       mode === "off"
         ? {}
         : {
-            onDispatched: (viewerId: string, message: InputMsg, ok: boolean) =>
-              scheduler?.noteDispatched(viewerId, message, ok),
+            onDispatched: (viewerId: string, message: InputMsg, ok: boolean) => {
+              const iseq = (message as { iseq?: number }).iseq;
+              if (iseq !== undefined) dispatchedAt.set(iseq, performance.now());
+              scheduler?.noteDispatched(viewerId, message, ok);
+            },
             beforeDispatch: async (viewerId: string, message: InputMsg) =>
               (await scheduler?.beforeDispatch(viewerId, message)) ?? true,
             onReset: (tab: string) => scheduler?.reset(tab),
@@ -87,8 +123,13 @@ export function createAckHarness(options: {
           options.sendCmd(tab, { cmd: "fence", n, ...(text === true ? { text: true } : {}) }),
         hubFor: () => options.hub(),
         sendTo(viewerId, ack) {
-          const bytes = Buffer.byteLength(JSON.stringify(ack));
-          harness.sent.push({ viewerId, ack, bytes });
+          const json = JSON.stringify(ack);
+          harness.sent.push({
+            viewerId,
+            ack,
+            bytes: Buffer.byteLength(json),
+            deflated: deflateRawSync(json).length,
+          });
           if (ack.mode === "page" && ack.final && ack.edit && ack.seq !== undefined) {
             const history = values.get(ack.edit.node);
             if (history !== undefined) {
@@ -100,21 +141,30 @@ export function createAckHarness(options: {
           }
           const edit = ack.mode === "page" && ack.final ? ack.edit : undefined;
           if (edit && edit.hash !== "" && options.pageText !== undefined) {
+            const rich = !values.has(edit.node);
             const read = options
               .pageText()
               .then((text) => {
                 if (text === null) return;
-                if (editHash(text) === edit.hash) harness.pageHash.match += 1;
-                else harness.pageHash.mismatch += 1;
+                if (editHash(text) !== edit.hash) {
+                  harness.pageHash.mismatch += 1;
+                  return;
+                }
+                harness.pageHash.match += 1;
+                const line = text.split("\n").at(-1) ?? "";
+                if (!rich || line.trim() === "" || ack.seq === undefined) return;
+                if (carried(line, ack.seq)) harness.richOrdering.inOrder += 1;
+                else harness.richOrdering.outOfOrder += 1;
               })
               .catch(() => undefined)
               .finally(() => reads.delete(read));
             reads.add(read);
           }
+          const at = dispatchedAt.get(ack.iseq);
+          if (ack.final && at !== undefined) harness.finalLags.push(performance.now() - at);
           routes.get(viewerId)?.(ack);
         },
         enqueue: relay.enqueue,
-        isIdle: relay.isIdle,
         guard: "shadow",
         onGuard: (_tab, kind) => {
           harness.guard[kind] += 1;
@@ -130,11 +180,14 @@ export function createAckHarness(options: {
       for (const down of downs) {
         if (down.t !== "delta") continue;
         down.data.forEach((event, index) => {
-          if (
-            event.type !== EventType.IncrementalSnapshot ||
-            event.data.source !== IncrementalSource.Input
-          )
+          if (event.type !== EventType.IncrementalSnapshot) return;
+          if (event.data.source === IncrementalSource.Mutation) {
+            for (const change of event.data.texts)
+              noteText(change.id, down.seq + index, change.value ?? "");
+            for (const add of event.data.adds) addedTexts(add.node, down.seq + index);
             return;
+          }
+          if (event.data.source !== IncrementalSource.Input) return;
           const history = values.get(event.data.id) ?? [];
           history.push({ seq: down.seq + index, text: event.data.text });
           values.set(event.data.id, history.slice(-64));
@@ -144,7 +197,9 @@ export function createAckHarness(options: {
     sent: [],
     guard: { match: 0, rewrite: 0, stale: 0, focus: 0, timeout: 0 },
     fenceTimes: [],
+    finalLags: [],
     ordering: { inOrder: 0, outOfOrder: 0 },
+    richOrdering: { inOrder: 0, outOfOrder: 0 },
     pageHash: { match: 0, mismatch: 0 },
     settle: async () => {
       await Promise.all([...reads]);
@@ -174,6 +229,8 @@ export interface LabReport {
     localHash?: string;
     rtt?: number;
   }>;
+  /** Each typing echo window as it closed: how long after its last key, and by what. */
+  windows: Array<{ ms: number; how: "ack" | "liveness" | "decay" }>;
   stats: {
     hashMatchAtFinal: number;
     hashMismatchAtFinal: number;
@@ -193,6 +250,7 @@ export const readLabScript = (tab: string): LabReport => {
     stamped: lab.lastStamped(tab),
     acks: lab.acks.filter((ack: InputAckMsg) => ack.tab === tab),
     settled: lab.settled.filter((settled: { tab: string }) => settled.tab === tab),
+    windows: lab.windows.filter((closed: { tab: string | null }) => closed.tab === tab),
     stats: lab.stats(),
   };
 };

@@ -128,6 +128,7 @@ describe("acknowledgements", () => {
         tab: "T1",
         iseq: 2,
         mode: "page",
+        fenced: true,
         edit,
         failed: [],
         failedValue: false,
@@ -196,7 +197,7 @@ describe("acknowledgements", () => {
     sequencer.stamp(key());
     setLive(false);
     sequencer.onAck(pageAck(2, 3));
-    expect(settled[1]).toMatchObject({ iseq: 2, mode: "dispatch" });
+    expect(settled[1]).toMatchObject({ iseq: 2, mode: "dispatch", fenced: true });
   });
 
   it("says when a refused input was a whole-field sync", () => {

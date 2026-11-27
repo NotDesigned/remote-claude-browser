@@ -31,6 +31,12 @@ export interface SettledAck {
   iseq: number;
   /** "dispatch": the input was handled, but what the page did with it is not known here. */
   mode: "page" | "dispatch";
+  /**
+   * The gateway fenced it in the page (its own mode was "page"). False when it could not (an
+   * agent from before fences, a page that did not answer); a fenced ack can still settle as
+   * "dispatch" here, when the replay it was for is gone.
+   */
+  fenced: boolean;
   /** Only for "page": what the page's focused field held (null: no field had focus). */
   edit?: EditState | null;
   failed: readonly number[];
@@ -164,6 +170,7 @@ export function createInputSequencer(options: InputSequencerOptions = {}): Input
       tab: ack.tab,
       iseq: ack.iseq,
       mode: page ? "page" : "dispatch",
+      fenced: ack.mode === "page",
       ...(page ? { edit: ack.edit ?? null } : {}),
       failed,
       failedValue,

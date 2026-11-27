@@ -230,6 +230,7 @@ describe.each([
           tab: "T1",
           iseq,
           mode: "page",
+          fenced: true,
           edit: {
             node: 20,
             len,

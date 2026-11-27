@@ -703,7 +703,10 @@ async function checkAcks(label: string, name: string, page: Page, acks: AckHarne
   const finals = report.settled.filter((settled) => settled.final);
   const compared = finals.filter((settled) => settled.localHash !== undefined && settled.edit);
   const matched = compared.filter((settled) => settled.localHash === settled.edit!.hash).length;
-  const finalRtt = finals.flatMap((settled) => (settled.rtt === undefined ? [] : [settled.rtt]));
+  // From the last key into a field to its echo window closing, as the viewer's echo filter saw it.
+  const windowMs = report.windows.map((closed) => closed.ms);
+  const guardFences = Object.values(acks.guard).reduce((sum, count) => sum + count, 0);
+  const inputFences = (acks.scheduler()?.fenceCount() ?? 0) - guardFences;
   const result = {
     label,
     run: name,
@@ -713,16 +716,25 @@ async function checkAcks(label: string, name: string, page: Page, acks: AckHarne
     acks: acks.sent.length,
     fences: acks.scheduler()?.fenceCount() ?? 0,
     finals: finals.length,
-    fencesPerBurst:
-      finals.length === 0
-        ? null
-        : Number(((acks.scheduler()?.fenceCount() ?? 0) / finals.length).toFixed(2)),
+    guardFences,
+    fencesPerBurst: finals.length === 0 ? null : Number((inputFences / finals.length).toFixed(2)),
     maxAckBytes: Math.max(0, ...acks.sent.map((entry) => entry.bytes)),
+    maxAckDeflated: Math.max(0, ...acks.sent.map((entry) => entry.deflated)),
     pageHash: `${acks.pageHash.match}/${acks.pageHash.match + acks.pageHash.mismatch}`,
     replayHash: `${matched}/${compared.length}`,
     textareaOrder: acks.ordering,
-    windowCloseP95: percentile(finalRtt, 0.95),
+    richOrder: acks.richOrdering,
+    windows: windowMs.length,
+    windowsByLiveness: report.windows.filter((closed) => closed.how !== "ack").length,
+    windowCloseP95: percentile(windowMs, 0.95),
+    slowWindows: report.windows
+      .filter((closed) => closed.ms > link.rttMs + link.jitterMs + 150)
+      .map((closed) => `${closed.how} ${Math.round(closed.ms)}`),
+    slowAcks: report.settled
+      .filter((settled) => (settled.rtt ?? 0) > 500)
+      .map((settled) => [settled.iseq, settled.final, Math.round(settled.rtt!)]),
     fenceP95: percentile(acks.fenceTimes, 0.95),
+    finalLags: acks.finalLags.map(Math.round),
     guard: acks.guard,
     dispatchOnly: report.stats.dispatchOnlyAcks,
     decayWhileOutstanding: report.stats.decayWhileOutstanding,
@@ -743,6 +755,34 @@ async function checkAcks(label: string, name: string, page: Page, acks: AckHarne
     `${label} ${name}: acks went to another viewer`,
   );
   assert.equal(acks.ordering.outOfOrder, 0, `${label} ${name}: a value came after its ack`);
+  assert.equal(
+    acks.richOrdering.outOfOrder,
+    0,
+    `${label} ${name}: the editor's text came after its ack ${JSON.stringify(acks.richOrdering)}`,
+  );
+  // Something was checked: the field's node in the acks is the one rrweb's events name.
+  if (name === "textarea")
+    assert.ok(acks.ordering.inOrder >= 3, `${label} ${name}: no burst's value was ordered`);
+  else assert.ok(acks.richOrdering.inOrder > 0, `${label} ${name}: no burst's text was ordered`);
+  assert.ok(
+    result.maxAckDeflated <= 160,
+    `${label} ${name}: an ack took ${result.maxAckDeflated} bytes deflated`,
+  );
+  if (result.fencesPerBurst !== null)
+    assert.ok(
+      result.fencesPerBurst <= 2,
+      `${label} ${name}: ${result.fencesPerBurst} fences per burst (${inputFences} for ${finals.length})`,
+    );
+  // The replay's own field, at each burst's final ack, hashes as the page's in the textarea, where
+  // the page changes nothing itself. In the composer the page clears what Enter sent and rewrites
+  // input rules: the replay still holds those back when the ack settles, and the mismatch is what
+  // asks for the page's editor (logged only).
+  if (name === "textarea" && compared.length > 0)
+    assert.ok(
+      matched === compared.length,
+      `${label} ${name}: the replay's field matched the page's hash ${result.replayHash}`,
+    );
+  assert.ok(windowMs.length > 0, `${label} ${name}: no echo window closed`);
   // At the end of each burst the page reports its own field's text: all of it for the textarea,
   // at least 99 % for ProseMirror (which may still be rendering).
   const hashed = acks.pageHash.match + acks.pageHash.mismatch;
@@ -751,8 +791,16 @@ async function checkAcks(label: string, name: string, page: Page, acks: AckHarne
       acks.pageHash.match / hashed >= (name === "textarea" ? 1 : 0.99),
       `${label} ${name}: the page's final hashes matched its text ${result.pageHash}`,
     );
+  // A stalled link holds frames for up to 600 ms: the budget is checked on links without stalls
+  // (CI also runs the rounds at 300 ms without them). It is checked for typing bursts: when a
+  // message is sent, the replay may play the ack's marker late after the page's own changes
+  // (logged as slowWindows and slowAcks).
   const budget = link.rttMs + link.jitterMs + 150;
-  if (link.stallRate === 0 && result.windowCloseP95 !== null)
+  if (
+    link.stallRate === 0 &&
+    (name === "rounds" || name === "textarea") &&
+    result.windowCloseP95 !== null
+  )
     assert.ok(
       result.windowCloseP95 <= budget,
       `${label} ${name}: the echo window closed after ${result.windowCloseP95} ms (p95)`,

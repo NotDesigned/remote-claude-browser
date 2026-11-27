@@ -395,14 +395,13 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
         composing = false;
         echo.compositionEnded();
       };
-      // Some IMEs never send compositionend: leaving the field, or input that is not part of a
-      // composition, ends it all the same.
+      // Some IMEs never send compositionend: input that is not part of a composition ends it all
+      // the same. Leaving the field does not: a keyboard may commit the word after the blur.
       const inputEvent = (event: Event) => {
         if ((event as InputEvent).isComposing === false) compositionEnd();
       };
       frame?.addEventListener("compositionstart", compositionStart, true);
       frame?.addEventListener("compositionend", compositionEnd, true);
-      frame?.addEventListener("focusout", compositionEnd, true);
       frame?.addEventListener("input", inputEvent, true);
       // A parked page gets its interaction again each time it is shown: these must not pile up.
       const unlockCleanup = () => {
@@ -410,7 +409,6 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
         frame?.removeEventListener("keydown", unlock, true);
         frame?.removeEventListener("compositionstart", compositionStart, true);
         frame?.removeEventListener("compositionend", compositionEnd, true);
-        frame?.removeEventListener("focusout", compositionEnd, true);
         frame?.removeEventListener("input", inputEvent, true);
         compositionEnd();
       };

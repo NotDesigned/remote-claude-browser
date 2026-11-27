@@ -708,7 +708,15 @@ function fakeAcks(enabled: boolean) {
     settle(ack: Partial<SettledAck> & { iseq: number }) {
       settledIseq = ack.iseq;
       for (const listener of listeners)
-        listener({ tab: "T1", mode: "page", failed: [], failedValue: false, final: false, ...ack });
+        listener({
+          tab: "T1",
+          mode: "page",
+          fenced: ack.mode !== "dispatch",
+          failed: [],
+          failedValue: false,
+          final: false,
+          ...ack,
+        });
     },
   };
 }
@@ -1055,5 +1063,25 @@ describe("echo window while an IME composes (ack mode)", () => {
     clock.to(ACK_LIVENESS_MS * 4);
     // Once it ends, the ceiling lets the field go.
     expect(field.value).toBe("he");
+  });
+});
+
+describe("echo window when the replay an ack was for is gone", () => {
+  it("stays on acks: a fenced ack settled as dispatch only is no reason for the timers", () => {
+    const clock = clockTimers(true);
+    const acks = fakeAcks(true);
+    const echo = createEchoFilter({ now: clock.now, ...clock.options, acks: acks.acks });
+    const field = new FakeInput();
+    const focus = { element: field as unknown as HTMLInputElement, nodeId: 9 };
+    echo.setFocused(focus);
+    acks.send();
+    field.value = "a";
+    echo.input(focus);
+    acks.settle({ iseq: 1, mode: "dispatch", fenced: true, final: true });
+    // Still ack mode: the next burst is held until its own final ack, with no decay timer.
+    acks.send();
+    field.value = "ab";
+    echo.input(focus);
+    expect(echo(inputEvent(9, "a"), clock.to(1_500))).toBeNull();
   });
 });
