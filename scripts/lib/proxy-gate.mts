@@ -100,12 +100,14 @@ const installProbe = (legacy: boolean) => {
       const doc = frame?.contentDocument;
       if (!doc || (doc as any).__gateEcho) return;
       (doc as any).__gateEcho = true;
+      // The replay's own clock: an event's timeStamp counts from its document's time origin.
+      const view = doc.defaultView!;
       doc.addEventListener(
         "input",
         (event) => {
           if (!event.isTrusted) return;
           const stamp = event.timeStamp;
-          requestAnimationFrame((time) => probe.legacyEcho.push(time - stamp));
+          view.requestAnimationFrame((time) => probe.legacyEcho.push(time - stamp));
         },
         true,
       );
@@ -390,18 +392,24 @@ export async function proxyGate(m: GateMirror): Promise<Record<string, unknown>>
   );
   await page.evaluate(() => ((window as any).__gateProbe.stop = true));
   const report = await page.evaluate(readProbe);
-  // The password field is the one the last acks report; none of its reports carries a hash.
-  const passwordId = report.settled.at(-1)?.edit?.node;
-  const passwordEdits = report.settled
-    .map((ack: any) => ack.edit)
-    .filter((edit: any) => edit && edit.node === passwordId);
+  // The password field is the one whose acks report characters but no hash; none of its
+  // reports may carry one.
+  const edits = report.settled.map((ack: any) => ack.edit).filter(Boolean);
+  const passwordIds = new Set(
+    edits.filter((edit: any) => edit.hash === "" && edit.len > 0).map((edit: any) => edit.node),
+  );
+  const passwordEdits = edits.filter((edit: any) => passwordIds.has(edit.node));
   const passwordNode = passwordEdits.filter((edit: any) => edit.hash === "").length;
   const passwordHashes = passwordEdits.filter((edit: any) => edit.hash !== "").length;
 
   const echo = m.proxy ? (report.lab?.echo ?? []) : report.probe.legacyEcho;
   const echoSync = report.lab?.echoSync ?? [];
   const failedAcks = report.settled.filter((ack: any) => (ack.failed ?? []).length > 0).length;
-  const rtts = report.settled.flatMap((ack: any) => (ack.rtt === undefined ? [] : [ack.rtt]));
+  // A burst's final ack repeats an iseq after the quiet wait: no round trip of its own.
+  const rtts = report.settled.flatMap((ack: any) =>
+    ack.rtt === undefined || ack.final ? [] : [ack.rtt],
+  );
+  const dispatchSettled = report.settled.filter((ack: any) => ack.mode === "dispatch").length;
   const result = {
     label: m.label,
     device: m.device,
@@ -462,6 +470,8 @@ export async function proxyGate(m: GateMirror): Promise<Record<string, unknown>>
       passwordHashes,
     },
     recorded: {
+      dispatchSettled,
+      dispatchOnlyAcks: report.stats.dispatchOnlyAcks,
       ackRttP50: percentile(rtts, 0.5),
       ackRttP95: percentile(rtts, 0.95),
       hashMismatch: report.lab?.hashMismatch ?? null,
