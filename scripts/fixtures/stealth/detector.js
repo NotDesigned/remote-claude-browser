@@ -21,6 +21,19 @@
     editableWithoutKey: false,
   };
 
+  // ---- nat.swap: built-ins that are replaced while the page runs, so a page that kept the one it
+  // saw first finds a different function later (rrweb records shadow roots and frames late).
+  const SWAPPABLE = [
+    ["Document", "adoptedStyleSheets"],
+    ["ShadowRoot", "adoptedStyleSheets"],
+  ];
+  const accessorsOf = (name, key) => {
+    const owner = globalThis[name] && globalThis[name].prototype;
+    const d = owner && Object.getOwnPropertyDescriptor(owner, key);
+    return d ? [d.value, d.get, d.set] : [];
+  };
+  const firstSeen = SWAPPABLE.map(([name, key]) => accessorsOf(name, key));
+
   // ---- dom.foreign: frames and nodes the page did not create.
   const watchedTags = new Set(["IFRAME", "FRAME", "OBJECT", "EMBED", "SCRIPT", "STYLE", "LINK"]);
   const ownedFrames = () => document.querySelectorAll("iframe[data-fx]").length;
@@ -172,6 +185,13 @@
       "WebGL2RenderingContext",
     ])
       add(name + ".*", membersOf(proto(name)));
+    const swapped = SWAPPABLE.filter(([name, key], index) => {
+      const now = accessorsOf(name, key);
+      return (
+        now.length !== firstSeen[index].length || now.some((f, i) => f !== firstSeen[index][i])
+      );
+    }).map(([name, key]) => name + "." + key);
+    out["nat.swap:since-head"] = swapped.length === 0 ? "none" : swapped.join(",");
     return out;
   }
 

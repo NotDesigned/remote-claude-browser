@@ -130,4 +130,40 @@ describe("native mask", () => {
     });
     expect(mask.asNativeNamed(() => 1, "Notification", 1)).toHaveProperty("name", "Notification");
   });
+
+  it("masks a wrapper in the realm rrweb installed it in, keeping that realm's own mask", () => {
+    const top = realm();
+    const child = realm();
+    // The child frame's own agent masked a function of its own before the top recorded it.
+    child.run(`
+      const native = Function.prototype.toString;
+      const own = function agentWrapper() {};
+      const replaced = { toString() { return this === own ? "function own() { [native code] }" : native.call(this); } }.toString;
+      Object.defineProperty(Function.prototype, "toString", { value: replaced, writable: true, configurable: true });
+      globalThis.own = own;
+    `);
+    const childToString = child.win.Function.prototype.toString;
+    const mask = installNativeMask(top.win);
+    const original = child.run(
+      "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').set",
+    ) as object;
+    const setter = Object.getOwnPropertyDescriptor(
+      {
+        set value(_value: unknown) {
+          void _value;
+        },
+      },
+      "value",
+    )!.set!;
+    mask.mask(setter, original, child.win);
+    expect(child.toString(setter)).toBe(child.toString(original));
+    expect(top.toString(setter)).toBe(child.toString(original));
+    // The child realm's toString now looks like that realm's own function, and the child agent's
+    // mask still answers for what it masked.
+    const replacedToString = child.win.Function.prototype.toString;
+    expect(replacedToString).not.toBe(childToString);
+    expect(Object.getPrototypeOf(replacedToString)).toBe(child.win.Function.prototype);
+    expect(shape(replacedToString, child.toString)).toEqual(shape(childToString, child.toString));
+    expect(child.toString(child.run("own"))).toBe("function own() { [native code] }");
+  });
 });

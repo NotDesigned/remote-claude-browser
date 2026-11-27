@@ -1,8 +1,8 @@
 diff --git a/dist/index.d.cts b/dist/index.d.cts
-index b143dd4af725e383dee82b164275c6c78cfbd5c7..2622b9dcc6b59ea23e79cea9214ecffa08f229b1 100644
+index b143dd4af725e383dee82b164275c6c78cfbd5c7..29599d3051a695ac8c2abd7410e7558c297ae6d8 100644
 --- a/dist/index.d.cts
 +++ b/dist/index.d.cts
-@@ -2,4 +2,18 @@ import { record } from 'rrweb';
+@@ -2,4 +2,19 @@ import { record } from 'rrweb';
  
  export { record }
  
@@ -15,17 +15,18 @@ index b143dd4af725e383dee82b164275c6c78cfbd5c7..2622b9dcc6b59ea23e79cea9214ecffa
 + */
 +export declare function setRecordHardening(options: {
 +  enabled: boolean;
-+  mask?: (wrapper: object, original: object) => void;
++  /** `win`: the realm the wrapper is installed in, when it is not this one. */
++  mask?: (wrapper: object, original: object, win?: Window) => void;
 +  untainted?: Partial<Record<"Node" | "ShadowRoot" | "Element" | "MutationObserver", object>>;
 +  messageKey?: string;
 +}): void;
 +
  export { }
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index b143dd4af725e383dee82b164275c6c78cfbd5c7..2622b9dcc6b59ea23e79cea9214ecffa08f229b1 100644
+index b143dd4af725e383dee82b164275c6c78cfbd5c7..29599d3051a695ac8c2abd7410e7558c297ae6d8 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
-@@ -2,4 +2,18 @@ import { record } from 'rrweb';
+@@ -2,4 +2,19 @@ import { record } from 'rrweb';
  
  export { record }
  
@@ -38,17 +39,18 @@ index b143dd4af725e383dee82b164275c6c78cfbd5c7..2622b9dcc6b59ea23e79cea9214ecffa
 + */
 +export declare function setRecordHardening(options: {
 +  enabled: boolean;
-+  mask?: (wrapper: object, original: object) => void;
++  /** `win`: the realm the wrapper is installed in, when it is not this one. */
++  mask?: (wrapper: object, original: object, win?: Window) => void;
 +  untainted?: Partial<Record<"Node" | "ShadowRoot" | "Element" | "MutationObserver", object>>;
 +  messageKey?: string;
 +}): void;
 +
  export { }
 diff --git a/dist/record.js b/dist/record.js
-index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931f39917bf 100644
+index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..677ebc71cf01471b8f1ec3c5eb50bfc36254f3eb 100644
 --- a/dist/record.js
 +++ b/dist/record.js
-@@ -96,6 +96,59 @@ const testableMethods = {
+@@ -96,6 +96,60 @@ const testableMethods = {
  };
  const untaintedBasePrototype = {};
  const untaintedBaseIframeCleanup = {};
@@ -74,6 +76,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
 +    for (const key of Object.keys(testableAccessors))
 +      if (untainted[key] && typeof untainted[key] === "object")
 +        untaintedBasePrototype[key] = untainted[key];
++  if (typeof window !== "undefined") installAdoptedSetters(window);
 +  if (taskPort === null && HardenedMessageChannel && portPostMessage) {
 +    const channel = new HardenedMessageChannel();
 +    channel.port1.onmessage = () => {
@@ -83,22 +86,22 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
 +    taskPort = channel.port2;
 +  }
 +}
-+function maskAs(wrapper, original) {
++function maskAs(wrapper, original, win) {
 +  if (hardening.mask && typeof original === "function") {
 +    try {
-+      hardening.mask(wrapper, original);
++      hardening.mask(wrapper, original, win);
 +    } catch {
 +    }
 +  }
 +  return wrapper;
 +}
-+function methodLike(name, impl, original) {
++function methodLike(name, impl, original, win) {
 +  const wrapper = {
 +    [name](...args) {
 +      return reflectApply(impl, this, args);
 +    }
 +  }[name];
-+  return maskAs(wrapper, original);
++  return maskAs(wrapper, original, win);
 +}
 +function nextTask(callback) {
 +  if (!hardening.enabled || taskPort === null) return setTimeout(callback, 0);
@@ -108,7 +111,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
  const isAngularZonePresent = () => {
    return !!globalThis.Zone;
  };
-@@ -130,6 +183,7 @@ function getUntaintedPrototype(key) {
+@@ -130,6 +184,7 @@ function getUntaintedPrototype(key) {
      untaintedBasePrototype[key] = defaultObj.prototype;
      return defaultObj.prototype;
    }
@@ -116,14 +119,23 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
    try {
      const iframeEl = document.createElement("iframe");
      iframeEl.style.display = "none";
-@@ -241,6 +295,20 @@ function patch(source, name, replacement) {
+@@ -233,7 +288,7 @@ let nowTimestamp = Date.now;
+ if (!/* @__PURE__ */ /[1-9][0-9]{12}/.test(Date.now().toString())) {
+   nowTimestamp = () => (/* @__PURE__ */ new Date()).getTime();
+ }
+-function patch(source, name, replacement) {
++function patch(source, name, replacement, win) {
+   try {
+     if (!(name in source)) {
+       return () => {
+@@ -241,6 +296,20 @@ function patch(source, name, replacement) {
      }
      const original = source[name];
      const wrapped = replacement(original);
 +    if (hardening.enabled && typeof wrapped === "function" && typeof original === "function") {
 +      // A method made the way the browser makes its own, kept where the browser keeps it: never an
 +      // own property of an instance (customElements, document.fonts), no prototype, no marker.
-+      const masked = methodLike(name, wrapped, original);
++      const masked = methodLike(name, wrapped, original, win);
 +      originals.set(masked, original);
 +      let owner = source;
 +      while (owner && !Object.prototype.hasOwnProperty.call(owner, name))
@@ -137,7 +149,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
      if (typeof wrapped === "function") {
        wrapped.prototype = wrapped.prototype || {};
        Object.defineProperties(wrapped, {
-@@ -461,7 +529,7 @@ function is2DCanvasBlank(canvas) {
+@@ -461,7 +530,7 @@ function is2DCanvasBlank(canvas) {
    for (let x = 0; x < canvas.width; x += chunkSize) {
      for (let y = 0; y < canvas.height; y += chunkSize) {
        const getImageData = ctx.getImageData;
@@ -146,7 +158,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
        const pixelBuffer = new Uint32Array(
          // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
          originalGetImageData.call(
-@@ -1672,6 +1740,23 @@ function throttle(func, wait, options = {}) {
+@@ -1672,6 +1741,23 @@ function throttle(func, wait, options = {}) {
  }
  function hookSetter(target, key, d, isRevoked, win = window) {
    const original = win.Object.getOwnPropertyDescriptor(target, key);
@@ -163,68 +175,68 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
 +      },
 +      key
 +    ).set;
-+    if (original && original.set) maskAs(setter, original.set);
++    if (original && original.set) maskAs(setter, original.set, win);
 +    win.Object.defineProperty(target, key, { set: setter });
 +    return () => hookSetter(target, key, original || {}, true);
 +  }
    win.Object.defineProperty(
      target,
      key,
-@@ -2913,10 +2998,13 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
+@@ -2913,10 +2999,13 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
        }
      )
    });
 -  win.CSSStyleSheet.prototype.addRule = function(selector, styleBlock, index2 = this.cssRules.length) {
-+  maskAs(win.CSSStyleSheet.prototype.insertRule, insertRule);
++  maskAs(win.CSSStyleSheet.prototype.insertRule, insertRule, win);
 +  const nativeAddRule = win.CSSStyleSheet.prototype.addRule;
 +  const addRule = function(selector, styleBlock, index2 = this.cssRules.length) {
      const rule = `${selector} { ${styleBlock} }`;
      return win.CSSStyleSheet.prototype.insertRule.apply(this, [rule, index2]);
    };
-+  win.CSSStyleSheet.prototype.addRule = hardening.enabled && typeof nativeAddRule === "function" ? methodLike("addRule", addRule, nativeAddRule) : addRule;
++  win.CSSStyleSheet.prototype.addRule = hardening.enabled && typeof nativeAddRule === "function" ? methodLike("addRule", addRule, nativeAddRule, win) : addRule;
    const deleteRule = win.CSSStyleSheet.prototype.deleteRule;
    win.CSSStyleSheet.prototype.deleteRule = new Proxy(deleteRule, {
      apply: callbackWrapper(
-@@ -2938,9 +3026,12 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
+@@ -2938,9 +3027,12 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
        }
      )
    });
 -  win.CSSStyleSheet.prototype.removeRule = function(index2) {
-+  maskAs(win.CSSStyleSheet.prototype.deleteRule, deleteRule);
++  maskAs(win.CSSStyleSheet.prototype.deleteRule, deleteRule, win);
 +  const nativeRemoveRule = win.CSSStyleSheet.prototype.removeRule;
 +  const removeRule = function(index2) {
      return win.CSSStyleSheet.prototype.deleteRule.apply(this, [index2]);
    };
-+  win.CSSStyleSheet.prototype.removeRule = hardening.enabled && typeof nativeRemoveRule === "function" ? methodLike("removeRule", removeRule, nativeRemoveRule) : removeRule;
++  win.CSSStyleSheet.prototype.removeRule = hardening.enabled && typeof nativeRemoveRule === "function" ? methodLike("removeRule", removeRule, nativeRemoveRule, win) : removeRule;
    let replace;
    if (win.CSSStyleSheet.prototype.replace) {
      replace = win.CSSStyleSheet.prototype.replace;
-@@ -2964,6 +3055,7 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
+@@ -2964,6 +3056,7 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
          }
        )
      });
-+    maskAs(win.CSSStyleSheet.prototype.replace, replace);
++    maskAs(win.CSSStyleSheet.prototype.replace, replace, win);
    }
    let replaceSync;
    if (win.CSSStyleSheet.prototype.replaceSync) {
-@@ -2988,6 +3080,7 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
+@@ -2988,6 +3081,7 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
          }
        )
      });
-+    maskAs(win.CSSStyleSheet.prototype.replaceSync, replaceSync);
++    maskAs(win.CSSStyleSheet.prototype.replaceSync, replaceSync, win);
    }
    const supportedNestedCSSRuleTypes = {};
    if (canMonkeyPatchNestedCSSRule("CSSGroupingRule")) {
-@@ -3068,6 +3161,8 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
+@@ -3068,6 +3162,8 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
          )
        }
      );
-+    maskAs(type.prototype.insertRule, unmodifiedFunctions[typeKey].insertRule);
-+    maskAs(type.prototype.deleteRule, unmodifiedFunctions[typeKey].deleteRule);
++    maskAs(type.prototype.insertRule, unmodifiedFunctions[typeKey].insertRule, win);
++    maskAs(type.prototype.deleteRule, unmodifiedFunctions[typeKey].deleteRule, win);
    });
    return callbackWrapper(() => {
      win.CSSStyleSheet.prototype.insertRule = insertRule;
-@@ -3080,6 +3175,48 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
+@@ -3080,6 +3176,65 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
      });
    });
  }
@@ -235,9 +247,10 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
 + * like the browser's, and reports only for the hosts being recorded. A document or shadow root
 + * never gets an own adoptedStyleSheets.
 + */
-+function observeAdoptedStyleSheets(proto, descriptor, host2, hostId, stylesheetManager) {
-+  if (!adoptedPrototypes.has(proto)) {
-+    adoptedPrototypes.add(proto);
++function installAdoptedSetter(proto, descriptor, win) {
++  if (adoptedPrototypes.has(proto)) return;
++  adoptedPrototypes.add(proto);
++  {
 +    const nativeSet = descriptor.set;
 +    if (typeof nativeSet === "function") {
 +      const set = Object.getOwnPropertyDescriptor(
@@ -255,7 +268,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
 +        },
 +        "adoptedStyleSheets"
 +      ).set;
-+      maskAs(set, nativeSet);
++      maskAs(set, nativeSet, win);
 +      Object.defineProperty(proto, "adoptedStyleSheets", {
 +        configurable: descriptor.configurable,
 +        enumerable: descriptor.enumerable,
@@ -264,6 +277,22 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
 +      });
 +    }
 +  }
++}
++/**
++ * Hardening, at setRecordHardening: this realm's Document and ShadowRoot setters are replaced
++ * before any page script runs, so a page never sees them change when its first shadow root or
++ * frame is recorded. A same-origin frame's realm is replaced by that frame's own agent the same
++ * way; the setter rrweb puts in when it records that frame from above wraps it.
++ */
++function installAdoptedSetters(win) {
++  for (const type of [win && win.Document, win && win.ShadowRoot]) {
++    const proto = type && type.prototype;
++    const descriptor = proto && Object.getOwnPropertyDescriptor(proto, "adoptedStyleSheets");
++    if (descriptor) installAdoptedSetter(proto, descriptor, win);
++  }
++}
++function observeAdoptedStyleSheets(proto, descriptor, host2, hostId, stylesheetManager, win) {
++  installAdoptedSetter(proto, descriptor, win);
 +  const entry = { hostId, stylesheetManager };
 +  adoptedHosts.set(host2, entry);
 +  return callbackWrapper(() => {
@@ -273,7 +302,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
  function initAdoptedStyleSheetObserver({
    mirror: mirror2,
    stylesheetManager
-@@ -3096,6 +3233,14 @@ function initAdoptedStyleSheetObserver({
+@@ -3096,6 +3251,15 @@ function initAdoptedStyleSheetObserver({
    if (hostId === null || hostId === -1 || !patchTarget || !originalPropertyDescriptor)
      return () => {
      };
@@ -283,28 +312,29 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
 +      originalPropertyDescriptor,
 +      host2,
 +      hostId,
-+      stylesheetManager
++      stylesheetManager,
++      host2.nodeName === "#document" ? host2.defaultView : host2.ownerDocument && host2.ownerDocument.defaultView
 +    );
    Object.defineProperty(host2, "adoptedStyleSheets", {
      configurable: originalPropertyDescriptor.configurable,
      enumerable: originalPropertyDescriptor.enumerable,
-@@ -3163,6 +3308,7 @@ function initStyleDeclarationObserver({
+@@ -3163,6 +3327,7 @@ function initStyleDeclarationObserver({
        }
      )
    });
-+  maskAs(win.CSSStyleDeclaration.prototype.setProperty, setProperty);
++  maskAs(win.CSSStyleDeclaration.prototype.setProperty, setProperty, win);
    const removeProperty = win.CSSStyleDeclaration.prototype.removeProperty;
    win.CSSStyleDeclaration.prototype.removeProperty = new Proxy(removeProperty, {
      apply: callbackWrapper(
-@@ -3192,6 +3338,7 @@ function initStyleDeclarationObserver({
+@@ -3192,6 +3357,7 @@ function initStyleDeclarationObserver({
        }
      )
    });
-+  maskAs(win.CSSStyleDeclaration.prototype.removeProperty, removeProperty);
++  maskAs(win.CSSStyleDeclaration.prototype.removeProperty, removeProperty, win);
    return callbackWrapper(() => {
      win.CSSStyleDeclaration.prototype.setProperty = setProperty;
      win.CSSStyleDeclaration.prototype.removeProperty = removeProperty;
-@@ -3568,6 +3715,24 @@ class CrossOriginIframeMirror {
+@@ -3568,6 +3734,24 @@ class CrossOriginIframeMirror {
      return remoteIdToIdMap;
    }
  }
@@ -329,7 +359,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
  class IframeManager {
    constructor(options) {
      __publicField(this, "iframes", /* @__PURE__ */ new WeakMap());
-@@ -3591,6 +3756,7 @@ class IframeManager {
+@@ -3591,6 +3775,7 @@ class IframeManager {
        )
      );
      this.mirror = options.mirror;
@@ -337,7 +367,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
      if (this.recordCrossOriginIframes) {
        window.addEventListener("message", this.handleMessage.bind(this));
      }
-@@ -3631,17 +3797,23 @@ class IframeManager {
+@@ -3631,17 +3816,23 @@ class IframeManager {
        );
    }
    handleMessage(message) {
@@ -363,7 +393,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
      );
      if (transformedEvent)
        this.wrappedEmit(
-@@ -3649,11 +3821,13 @@ class IframeManager {
+@@ -3649,11 +3840,13 @@ class IframeManager {
          crossOriginMessageEvent.data.isCheckout
        );
    }
@@ -379,7 +409,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
          this.crossOriginIframeStyleMirror.reset(iframeEl);
          this.replaceIdOnNode(e.data.node, iframeEl);
          const rootId = e.data.node.id;
-@@ -3845,7 +4019,7 @@ class ShadowDomManager {
+@@ -3845,7 +4038,7 @@ class ShadowDomManager {
          mirror: this.mirror
        })
      );
@@ -388,7 +418,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
        if (shadowRoot2.adoptedStyleSheets && shadowRoot2.adoptedStyleSheets.length > 0)
          this.bypassOptions.stylesheetManager.adoptStyleSheets(
            shadowRoot2.adoptedStyleSheets,
-@@ -3860,7 +4034,7 @@ class ShadowDomManager {
+@@ -3860,7 +4053,7 @@ class ShadowDomManager {
            shadowRoot2
          )
        );
@@ -397,7 +427,17 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
    }
    /**
     * Monkey patch 'attachShadow' of an IFrameElement to observe newly added shadow doms.
-@@ -4644,6 +4818,17 @@ function record(options = {}) {
+@@ -3889,7 +4082,8 @@ class ShadowDomManager {
+               manager.addShadowRoot(shadowRootEl, doc);
+             return sRoot;
+           };
+-        }
++        },
++        doc && doc.defaultView || void 0
+       )
+     );
+   }
+@@ -4644,6 +4838,17 @@ function record(options = {}) {
      }
      if (inEmittingFrame) {
        emit == null ? void 0 : emit(eventProcessor(e), isCheckout);
@@ -415,7 +455,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931
      } else if (passEmitsToParent) {
        const message = {
          type: "rrweb",
-@@ -5030,6 +5215,7 @@ record.takeFullSnapshot = (isCheckout) => {
+@@ -5030,6 +5235,7 @@ record.takeFullSnapshot = (isCheckout) => {
  };
  record.mirror = mirror;
  export {

@@ -37,8 +37,12 @@ export interface NativeMask {
     key: string,
     parts: { get?: (this: never) => unknown; set?: (this: never, value: never) => void },
   ): void;
-  /** rrweb's hook: `wrapper` stands in for `original`. */
-  mask(wrapper: object, original: object): void;
+  /**
+   * rrweb's hook: `wrapper` stands in for `original`. `target` is the realm rrweb installed it in
+   * when that is another one (a same-origin frame it records from above): that realm's own
+   * toString must print it as native too, so it gets a mask of its own.
+   */
+  mask(wrapper: object, original: object, target?: Window): void;
 }
 
 const masks = new WeakMap<object, NativeMask>();
@@ -134,22 +138,36 @@ export function installNativeMask(win: Window): NativeMask {
         configurable: native?.configurable ?? true,
       });
     },
-    mask(wrapper, original) {
+    mask(wrapper, original, target) {
       mask.asNative(wrapper, original);
+      if (target === undefined || target === win) return;
+      let other: NativeMask | undefined;
+      try {
+        other = installNativeMask(target);
+      } catch {
+        // A realm this one cannot reach has nothing of ours in it.
+      }
+      other?.asNative(wrapper, original);
     },
   };
 
-  const toString = mask.method<() => string>(
-    "toString",
-    function (this: unknown): string {
-      if ((typeof this === "function" || typeof this === "object") && this !== null) {
-        const text = textOf(this);
-        if (text !== undefined) return text;
-      }
-      return apply(nativeToString, this, []) as string;
-    } as (this: never) => unknown,
-    nativeToString,
-  );
+  const lookup = function (this: unknown): string {
+    if ((typeof this === "function" || typeof this === "object") && this !== null) {
+      const text = textOf(this);
+      if (text !== undefined) return text;
+    }
+    return apply(nativeToString, this, []) as string;
+  };
+  // Another realm's (a same-origin frame's) toString is a Proxy of the one it has: a function made
+  // here would carry this realm's Function.prototype, and the Proxy keeps that realm's own name,
+  // length and prototype. What it wraps may be that frame's agent's mask, which still answers.
+  const foreign = realm.Function !== Function;
+  const toString = foreign
+    ? new Proxy(nativeToString, {
+        apply: (_target, thisArg: unknown) => apply(lookup, thisArg, []) as string,
+      })
+    : mask.method<() => string>("toString", lookup as (this: never) => unknown, nativeToString);
+  if (foreign) remember(toString, printed(nativeToString));
   const descriptor = getOwnPropertyDescriptor(FunctionPrototype, "toString");
   defineProperty(FunctionPrototype, "toString", {
     value: toString,
