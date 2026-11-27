@@ -30,7 +30,7 @@ export interface AckHarness {
   mode: InputAcksMode;
   caps: string[];
   /** Spread into createInputRelay's deps. */
-  relayDeps: Pick<InputRelayDeps, "onDispatched" | "beforeDispatch" | "onReset">;
+  relayDeps: Pick<InputRelayDeps, "onDispatched" | "beforeDispatch" | "onReset" | "onForget">;
   /** Once the relay exists. */
   attach(relay: {
     enqueue(tab: string, task: () => Promise<void>): void;
@@ -78,6 +78,7 @@ export function createAckHarness(options: {
             beforeDispatch: async (viewerId: string, message: InputMsg) =>
               (await scheduler?.beforeDispatch(viewerId, message)) ?? true,
             onReset: (tab: string) => scheduler?.reset(tab),
+            onForget: (tab: string) => scheduler?.forget(tab),
           },
     attach(relay) {
       if (mode === "off") return;

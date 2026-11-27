@@ -82,7 +82,7 @@ export interface EditState {
 
 /**
  * What the viewer showed when Enter was pressed (submit guard): the field, the length and hash of
- * its text, and `head`, the editHash of its first max(0, len - EXPECT_TAIL) code units.
+ * its text, and `head`, the editHash of its first len - expectTail(len) code units.
  */
 export interface EditExpect {
   node: number;
@@ -91,8 +91,17 @@ export interface EditExpect {
   head: string;
 }
 
-/** How many code units at the end of a field the submit guard lets the page rewrite. */
+/** How many code units at the end of a field the submit guard lets the page rewrite, at most. */
 export const EXPECT_TAIL = 16;
+
+/**
+ * The tail the submit guard lets the page rewrite in a text of `len` code units: EXPECT_TAIL, but
+ * never more than half of it. A short message keeps a head to compare, or any text the page holds
+ * would pass as a rewrite of it.
+ */
+export function expectTail(len: number): number {
+  return Math.min(EXPECT_TAIL, Math.floor(Math.max(0, len) / 2));
+}
 
 /**
  * `hello.caps`: what this gateway does beyond the base protocol. A viewer uses a feature only when
@@ -488,6 +497,17 @@ export const INPUT_TAGS: ReadonlySet<string> = new Set([
 
 export function isInputUp(msg: Up): msg is InputUp {
   return INPUT_TAGS.has(msg.t);
+}
+
+/**
+ * The input a viewer stamps with `iseq` and the gateway acknowledges with a fence: what can change
+ * a field's text, selection or focus (keys, text, values, IME, and pointer presses and releases).
+ * Hover moves, drags, wheel and scroll are not: they come many times a second, and a fence for
+ * each would hold the tab's input queue and keep a burst's final ack from ever coming.
+ */
+export function isAckedInput(msg: Up): msg is InputUp {
+  if (msg.t === "ptr") return msg.kind === "down" || msg.kind === "up";
+  return msg.t === "key" || msg.t === "text" || msg.t === "value" || msg.t === "ime";
 }
 
 /** A well-formed input sequence number: a positive safe integer. */

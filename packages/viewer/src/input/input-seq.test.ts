@@ -52,16 +52,35 @@ describe("input sequence numbers", () => {
     const { sequencer } = setup();
     expect(sequencer.stamp(key())).toMatchObject({ iseq: 1 });
     expect(sequencer.stamp({ t: "text", tab: "T1", insert: "x" })).toMatchObject({ iseq: 2 });
-    expect(sequencer.stamp({ t: "scroll", tab: "T1", nodeId: 0, x: 0, y: 1 })).toMatchObject({
+    expect(sequencer.stamp({ t: "value", tab: "T1", nodeId: 4, value: "x" })).toMatchObject({
       iseq: 3,
     });
+    // Hovers, drags, wheel and scroll go unstamped: nothing is fenced or awaited for them.
+    const scroll: Up = { t: "scroll", tab: "T1", nodeId: 0, x: 0, y: 1 };
+    expect(sequencer.stamp(scroll)).toBe(scroll);
+    const hover: Up = {
+      t: "ptr",
+      tab: "T1",
+      kind: "move",
+      nodeId: 1,
+      rx: 0,
+      ry: 0,
+      vx: 1,
+      vy: 1,
+      buttons: 0,
+      mods: 0,
+    };
+    expect(sequencer.stamp(hover)).toBe(hover);
+    expect(sequencer.stamp({ ...hover, kind: "wheel" })).not.toHaveProperty("iseq");
+    expect(sequencer.stamp({ ...hover, kind: "down", buttons: 1 })).toMatchObject({ iseq: 4 });
+    expect(sequencer.stamp({ ...hover, kind: "up" })).toMatchObject({ iseq: 5 });
     // Per tab.
     expect(sequencer.stamp(key("T2"))).toMatchObject({ iseq: 1 });
     // Not input: unchanged.
     const nav: Up = { t: "nav", tab: "T1", action: "reload" } as Up;
     expect(sequencer.stamp(nav)).toBe(nav);
-    expect(sequencer.lastStamped("T1")).toBe(3);
-    expect(sequencer.outstanding("T1")).toBe(3);
+    expect(sequencer.lastStamped("T1")).toBe(5);
+    expect(sequencer.outstanding("T1")).toBe(5);
   });
 
   it("stamps nothing, and drops the submit guard's expect, for a gateway without acks", () => {
@@ -188,6 +207,16 @@ describe("acknowledgements", () => {
     sequencer.onAck(pageAck(2, 3, { failed: [2] }));
     marks[0]!.played(true);
     expect(settled[0]).toMatchObject({ failed: [2], failedValue: true });
+  });
+
+  it("knows a value sync refused late, after a later ack already covered it", () => {
+    const { sequencer, settled } = setup();
+    sequencer.stamp({ t: "value", tab: "T1", nodeId: 7, value: "abc", commit: false });
+    sequencer.stamp(key());
+    sequencer.onAck({ t: "input-ack", tab: "T1", iseq: 2, mode: "dispatch" });
+    // The value was still queued when the tab was reset: its refusal comes after.
+    sequencer.onAck({ t: "input-ack", tab: "T1", iseq: 2, mode: "dispatch", failed: [1] });
+    expect(settled.at(-1)).toMatchObject({ iseq: 2, failed: [1], failedValue: true });
   });
 
   it("gives up what is outstanding when the connection goes", () => {

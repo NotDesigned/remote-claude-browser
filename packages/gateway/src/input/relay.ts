@@ -60,6 +60,8 @@ export interface InputRelayDeps {
   beforeDispatch?(viewerId: string, msg: InputMsg): Promise<boolean | void>;
   /** The tab's queued input was discarded (resetTab, forgetTab). */
   onReset?(tabId: string): void;
+  /** The tab is gone (forgetTab), after onReset. */
+  onForget?(tabId: string): void;
 }
 
 export type InputMsg = Extract<
@@ -271,6 +273,7 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     generations.delete(tabId);
     rectFallbacks.delete(tabId);
     failedValues.delete(tabId);
+    deps.onForget?.(tabId);
   };
   relay.trackedTabs = () =>
     new Set([

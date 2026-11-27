@@ -2,6 +2,7 @@ import {
   EventType,
   UNKNOWN_FENCE_ERROR,
   editHash,
+  expectTail,
   type AgentCmdInput,
   type AgentMsg,
   type CmdRes,
@@ -17,6 +18,7 @@ import {
   FENCE_TIMEOUT_MS,
   parseAckMode,
   QUIET_FENCE_MS,
+  type AckScheduler,
   type AckSchedulerDeps,
 } from "./acks";
 import { createInputRelay, type InputMsg } from "./relay";
@@ -54,7 +56,7 @@ function page(
       data: { node: { type: 0, id: 1, childNodes: [] }, initialOffset: { top: 0, left: 0 } },
     },
   });
-  const state = { text: "", fences: 0, behaviour: options.fence ?? "answer" };
+  const state = { text: "", fences: 0, behaviour: options.fence ?? "answer", closed: false };
   const acks: Array<[string, InputAckMsg]> = [];
   const guards: string[] = [];
   const mutation = (): AgentMsg => ({
@@ -110,7 +112,7 @@ function page(
         state.text = options.rewrite?.(state.text) ?? "";
       return {};
     },
-    sessionFor: () => "session",
+    sessionFor: () => (state.closed ? undefined : "session"),
     isDriver: (viewerId) => options.isDriver?.(viewerId) ?? viewerId === "driver",
     allowsInput: () => true,
     noteInput: () => undefined,
@@ -319,15 +321,23 @@ describe("input acks", () => {
     const { acks, state, text } = page({ fence: "legacy" });
     void text("a");
     await settle();
+    // The quiet fence's ack is final all the same: the viewer stops waiting for one.
     expect(acks.map(([, ack]) => ack)).toEqual([
       { t: "input-ack", tab: TAB, iseq: 1, mode: "dispatch" },
+      { t: "input-ack", tab: TAB, iseq: 1, mode: "dispatch", final: true },
     ]);
     const fences = state.fences;
     void text("b");
     void text("c");
     await settle();
     expect(state.fences).toBe(fences);
-    expect(acks.at(-1)![1]).toEqual({ t: "input-ack", tab: TAB, iseq: 3, mode: "dispatch" });
+    expect(acks.at(-1)![1]).toEqual({
+      t: "input-ack",
+      tab: TAB,
+      iseq: 3,
+      mode: "dispatch",
+      final: true,
+    });
   });
 
   it("acknowledges dispatch only when the page does not answer in time", async () => {
@@ -338,6 +348,8 @@ describe("input acks", () => {
       expect(acks).toEqual([]);
       await settle(FENCE_TIMEOUT_MS + 100);
       expect(acks[0]![1]).toEqual({ t: "input-ack", tab: TAB, iseq: 1, mode: "dispatch" });
+      await settle(FENCE_TIMEOUT_MS + 100);
+      expect(acks.at(-1)![1]).toMatchObject({ iseq: 1, mode: "dispatch", final: true });
     }
   });
 
@@ -348,12 +360,136 @@ describe("input acks", () => {
     await settle(5);
     relay.resetTab(TAB);
     expect(acks.map(([, ack]) => ack)).toEqual([
-      { t: "input-ack", tab: TAB, iseq: 2, mode: "dispatch" },
+      { t: "input-ack", tab: TAB, iseq: 2, mode: "dispatch", final: true },
     ]);
     state.behaviour = "answer";
     await settle(FENCE_TIMEOUT_MS * 3);
     // The quiet fence was cancelled, and the silent fence's timeout answers nothing now.
     expect(acks).toHaveLength(1);
+  });
+
+  it("fences nothing for hovers, wheel or scroll, and they keep no final ack from coming", async () => {
+    const enqueued: string[] = [];
+    const sent: InputAckMsg[] = [];
+    const timers: Array<{ at: number; run: () => void } | null> = [];
+    let now = 0;
+    const scheduler = createAckScheduler({
+      fence: async () => ({ reqId: 0, ok: false, err: UNKNOWN_FENCE_ERROR }),
+      hubFor: () => undefined,
+      sendTo: (_viewer, ack) => sent.push(ack),
+      enqueue: (_tab, task) => {
+        enqueued.push("fence");
+        void task();
+      },
+      isIdle: () => true,
+      now: () => now,
+      setTimer: (run, delay) => timers.push({ at: now + delay, run }) - 1,
+      clearTimer: (timer) => (timers[timer as number] = null),
+    });
+    const advance = async (ms: number) => {
+      const until = now + ms;
+      for (;;) {
+        const due = timers
+          .map((timer, index) => ({ timer, index }))
+          .filter(({ timer }) => timer !== null && timer.at <= until)
+          .sort((a, b) => a.timer!.at - b.timer!.at)[0];
+        if (due === undefined) break;
+        now = due.timer!.at;
+        timers[due.index] = null;
+        due.timer!.run();
+        await Promise.resolve();
+      }
+      now = until;
+      await Promise.resolve();
+    };
+    const ptr = (iseq: number, kind: "move" | "wheel"): InputMsg => ({
+      t: "ptr",
+      tab: TAB,
+      kind,
+      nodeId: 1,
+      rx: 0,
+      ry: 0,
+      vx: 1,
+      vy: 1,
+      buttons: 0,
+      mods: 0,
+      iseq,
+    });
+    for (let iseq = 1; iseq <= 10; iseq++) {
+      scheduler.noteDispatched("driver", ptr(iseq, iseq % 2 === 0 ? "wheel" : "move"), true);
+      await advance(33);
+    }
+    scheduler.noteDispatched(
+      "driver",
+      { t: "scroll", tab: TAB, nodeId: 0, x: 0, y: 1, iseq: 11 },
+      true,
+    );
+    expect(enqueued).toEqual([]);
+    // A key, then the pointer keeps moving: the burst still gets its final ack.
+    scheduler.noteDispatched("driver", { t: "text", tab: TAB, insert: "a", iseq: 12 }, true);
+    expect(enqueued).toEqual(["fence"]);
+    for (let iseq = 13; iseq <= 20; iseq++) {
+      await advance(33);
+      scheduler.noteDispatched("driver", ptr(iseq, "move"), true);
+    }
+    await advance(QUIET_FENCE_MS);
+    expect(enqueued).toEqual(["fence", "fence"]);
+    expect(sent.at(-1)).toMatchObject({ mode: "dispatch", final: true });
+    expect(sent.at(-1)!.iseq).toBeGreaterThanOrEqual(12);
+  });
+
+  it("notes input refused before the relay after the input queued before it", async () => {
+    let slow = true;
+    const { acks, scheduler, text } = page({ dispatchMs: () => (slow ? 300 : 0) });
+    void text("a");
+    void text("b");
+    await settle(10);
+    slow = false;
+    scheduler.refuse("driver", { t: "text", tab: TAB, insert: "c", iseq: 3 });
+    await settle(200);
+    // Nothing covers 3 while 1 and 2 are still waiting to be dispatched.
+    expect(acks.filter(([, ack]) => ack.iseq >= 3)).toEqual([]);
+    await settle(1_000);
+    expect(acks.at(-1)![1]).toMatchObject({ iseq: 3, final: true });
+    expect(acks.flatMap(([, ack]) => ack.failed ?? [])).toEqual([3]);
+  });
+
+  it("reports a refusal that comes after a later input was acknowledged", async () => {
+    const { acks, scheduler, text } = page();
+    void text("a");
+    void text("b");
+    await settle();
+    expect(acks.at(-1)![1]).toMatchObject({ iseq: 2, final: true });
+    // Input 1 again, refused late (it was queued on a chain a reset cut loose).
+    scheduler.noteDispatched(
+      "driver",
+      { t: "value", tab: TAB, nodeId: 9, value: "a", iseq: 1 },
+      false,
+    );
+    expect(acks.at(-1)![1]).toEqual({
+      t: "input-ack",
+      tab: TAB,
+      iseq: 2,
+      mode: "dispatch",
+      failed: [1],
+    });
+  });
+
+  it("forgets a closed tab, and fences nothing for input still on its way to it", async () => {
+    const { acks, relay, state, scheduler, text } = page({ dispatchMs: () => 50 });
+    void text("a");
+    void text("b");
+    await settle(10);
+    state.closed = true;
+    relay.forgetTab(TAB);
+    scheduler.forget(TAB);
+    const fences = state.fences;
+    await settle(1_000);
+    expect(state.fences).toBe(fences);
+    // The reset's ack covers what was dispatched; the stragglers are answered as refused.
+    expect(acks[0]![1]).toMatchObject({ mode: "dispatch", final: true });
+    expect(acks.at(-1)![1]).toMatchObject({ mode: "dispatch", final: true, iseq: 2 });
+    expect((scheduler as AckScheduler).fenceCount()).toBe(fences);
   });
 
   it("sends acks to the driver only, and fences nothing for an older viewer", async () => {
@@ -376,9 +512,20 @@ describe("input acks", () => {
     void text("b", "spectator");
     void text("c", "driver");
     await settle();
-    expect(acks.map(([viewer, ack]) => [viewer, ack.iseq, ack.final ?? false])).toEqual([
+    expect(
+      acks
+        .filter(([viewer]) => viewer === "driver")
+        .map(([viewer, ack]) => [viewer, ack.iseq, ack.final ?? false]),
+    ).toEqual([
       ["driver", 3, false],
       ["driver", 3, true],
+    ]);
+    // The spectator hears that its input was refused, and nothing is fenced for it.
+    expect(acks.filter(([viewer]) => viewer === "spectator")).toEqual([
+      [
+        "spectator",
+        { t: "input-ack", tab: TAB, iseq: 2, mode: "dispatch", failed: [2], final: true },
+      ],
     ]);
   });
 
@@ -391,7 +538,14 @@ describe("input acks", () => {
     await settle(FENCE_TIMEOUT_MS + 10);
     expect(acks[0]).toEqual(["first", { t: "input-ack", tab: TAB, iseq: 2, mode: "dispatch" }]);
     await settle(FENCE_TIMEOUT_MS * 3);
-    expect(acks.map(([viewer]) => viewer)).toEqual(["first", "second"]);
+    expect(acks.filter(([viewer]) => viewer === "first").map(([, ack]) => ack.final)).toEqual([
+      undefined,
+      true,
+    ]);
+    expect(acks.filter(([viewer]) => viewer === "second").at(-1)![1]).toMatchObject({
+      iseq: 3,
+      final: true,
+    });
   });
 });
 
@@ -400,7 +554,7 @@ describe("submit guard", () => {
     node,
     len: text.length,
     hash: editHash(text),
-    head: editHash(text.slice(0, Math.max(0, text.length - 16))),
+    head: editHash(text.slice(0, text.length - expectTail(text.length))),
   });
   const fence = (text: string | null, node = 9) => ({
     n: 1,
@@ -417,7 +571,11 @@ describe("submit guard", () => {
     const shown = "a message long enough to have a head -- here";
     expect(classifySubmit(expectFor(shown), fence(shown))).toBe("match");
     expect(classifySubmit(expectFor(shown), fence(shown.replace("--", "—")))).toBe("rewrite");
-    expect(classifySubmit(expectFor("teh"), fence("the"))).toBe("rewrite");
+    expect(classifySubmit(expectFor("say teh"), fence("say the"))).toBe("rewrite");
+    // A short message keeps a head: another short text is not a rewrite of it.
+    expect(classifySubmit(expectFor("yes"), fence("no thanks"))).toBe("stale");
+    expect(classifySubmit(expectFor("ok"), fence("no"))).toBe("stale");
+    expect(classifySubmit(expectFor("x"), fence("y"))).toBe("stale");
     expect(classifySubmit(expectFor(shown), fence("an old message the page still holds"))).toBe(
       "stale",
     );
@@ -429,17 +587,64 @@ describe("submit guard", () => {
 
   it("only counts in shadow mode, and Enter goes out either way", async () => {
     const { guards, state, text, enter, hub } = page({ guard: "shadow" });
-    const fenced: string[] = [];
-    hub.onFence((result) => fenced.push(result.text ?? ""));
+    const fenced: unknown[] = [];
+    hub.onFence((result) => fenced.push(result));
     void text("hello");
     await settle();
     await enter(expectFor("hello"));
     await enter(expectFor("a different and much longer message than that"));
     await settle();
     expect(guards).toEqual(["match", "stale"]);
-    // The guard's fence read the page's text, which went no further than the gateway.
-    expect(fenced).toContain("hello");
+    // The guard's fence read the page's text, which no listener of the hub is given.
+    expect(JSON.stringify(fenced)).not.toContain("hello");
     expect(state.text).toBe("");
+  });
+
+  it("does not hold Enter back for the guard in shadow mode", async () => {
+    const { guards, relay, state, text } = page({ guard: "shadow" });
+    void text("hello");
+    await settle();
+    state.behaviour = "silent";
+    let sent: boolean | undefined;
+    void relay("driver", {
+      t: "key",
+      tab: TAB,
+      kind: "down",
+      key: "Enter",
+      code: "Enter",
+      mods: 0,
+      iseq: 2,
+      expect: expectFor("hello"),
+    }).then((ok) => (sent = ok));
+    await settle(1);
+    // Dispatched at once; the page's field went with it.
+    expect(sent).toBe(true);
+    expect(state.text).toBe("");
+    await settle(FENCE_TIMEOUT_MS + 10);
+    expect(guards).toEqual(["timeout"]);
+  });
+
+  it("waits for the guard in on mode, at most one fence timeout in all", async () => {
+    const { guards, relay, state, text } = page({ guard: "on", fence: "lost-in-stream" });
+    void text("hello");
+    await settle();
+    let sent: boolean | undefined;
+    void relay("driver", {
+      t: "key",
+      tab: TAB,
+      kind: "down",
+      key: "Enter",
+      code: "Enter",
+      mods: 0,
+      iseq: 2,
+      expect: expectFor("hello"),
+    }).then((ok) => (sent = ok));
+    await settle(FENCE_TIMEOUT_MS - 10);
+    expect(sent).toBeUndefined();
+    await settle(20);
+    expect(sent).toBe(false);
+    expect(guards).toEqual(["timeout:refused"]);
+    expect(state.text).toBe("hello");
   });
 
   it("refuses a stale Enter in on mode, and says so in the next ack", async () => {

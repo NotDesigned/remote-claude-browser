@@ -7,7 +7,7 @@
  * composition commits are forwarded as text.
  */
 import {
-  EXPECT_TAIL,
+  expectTail,
   Mod,
   editHash,
   editableText,
@@ -536,7 +536,7 @@ export function quietKeyboardCorrections(target: EventTarget | null): void {
 /**
  * What a mirror field shows, as the submit guard compares it with the page's field: its rrweb id
  * (the editing host's, for rich editors), the length and editHash of its normalized text, and the
- * hash of all but its last EXPECT_TAIL code units. A password shows a mask here, not its text:
+ * hash of all but its last expectTail(len) code units. A password shows a mask here, not its text:
  * its hash is "", which the guard skips. Null outside a text field.
  */
 export function editExpect(element: Element, getNodeId: (node: Node) => number): EditExpect | null {
@@ -559,7 +559,7 @@ export function editExpect(element: Element, getNodeId: (node: Node) => number):
     node,
     len: text.length,
     hash: editHash(text),
-    head: editHash(text.slice(0, Math.max(0, text.length - EXPECT_TAIL))),
+    head: editHash(text.slice(0, text.length - expectTail(text.length))),
   };
 }
 

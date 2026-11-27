@@ -157,6 +157,7 @@ export async function createClientRuntime(
           beforeDispatch: async (viewerId, message) =>
             (await acks?.beforeDispatch(viewerId, message)) ?? true,
           onReset: (tab) => acks?.reset(tab),
+          onForget: (tab) => acks?.forget(tab),
         }),
     onValueStatus: (tab, failed, reason) =>
       publish({ t: "input-status", tab, failed, ...(reason ? { reason } : {}) }),

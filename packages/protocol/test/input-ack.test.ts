@@ -8,6 +8,8 @@ import {
   editableText,
   editHash,
   encodeMsg,
+  expectTail,
+  isAckedInput,
   isInputUp,
   isIseq,
   normalizeEditableText,
@@ -100,6 +102,39 @@ describe("input acknowledgements on the wire", () => {
     expect(isInputUp({ t: "ping", id: 1, sentTs: 0 })).toBe(false);
     expect(isInputUp({ t: "view", tab: "T", w: 1, h: 1, dpr: 1 })).toBe(false);
     expect(isInputUp({ t: "resync-req", tab: "T", reason: "x" })).toBe(false);
+  });
+
+  it("acknowledges only input that can change a field, not hovers, drags, wheel or scroll", () => {
+    const ptr = (kind: "move" | "down" | "up" | "wheel", buttons = 0): Up => ({
+      t: "ptr",
+      tab: "T",
+      kind,
+      nodeId: 1,
+      rx: 0,
+      ry: 0,
+      vx: 1,
+      vy: 1,
+      buttons,
+      mods: 0,
+    });
+    expect(isAckedInput(ptr("down", 1))).toBe(true);
+    expect(isAckedInput(ptr("up"))).toBe(true);
+    expect(isAckedInput(ptr("move"))).toBe(false);
+    expect(isAckedInput(ptr("move", 1))).toBe(false);
+    expect(isAckedInput(ptr("wheel"))).toBe(false);
+    expect(isAckedInput({ t: "scroll", tab: "T", nodeId: 0, x: 0, y: 1 })).toBe(false);
+    expect(isAckedInput({ t: "text", tab: "T", insert: "x" })).toBe(true);
+    expect(isAckedInput({ t: "value", tab: "T", nodeId: 1, value: "x" })).toBe(true);
+    expect(isAckedInput({ t: "ime", tab: "T", text: "n", selStart: 1, selEnd: 1 })).toBe(true);
+    expect(isAckedInput({ t: "ping", id: 1, sentTs: 0 })).toBe(false);
+  });
+
+  it("lets the page rewrite at most half of a short text at Enter", () => {
+    expect(expectTail(0)).toBe(0);
+    expect(expectTail(3)).toBe(1);
+    expect(expectTail(20)).toBe(10);
+    expect(expectTail(32)).toBe(16);
+    expect(expectTail(500)).toBe(16);
   });
 
   it("accepts only positive safe integers as iseq", () => {

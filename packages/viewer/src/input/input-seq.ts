@@ -1,8 +1,9 @@
 /**
  * Input sequence numbers and acknowledgements (`input-ack`).
  *
- * With a gateway that lists `ack1` in `hello.caps`, every input message gets `iseq`, numbered per
- * tab from 1 on each connection (a new connection is a new viewer to the gateway). The gateway
+ * With a gateway that lists `ack1` in `hello.caps`, every input that can change a field (keys,
+ * text, values, IME, pointer presses and releases: isAckedInput) gets `iseq`, numbered per tab
+ * from 1 on each connection (a new connection is a new viewer to the gateway). The gateway
  * answers with cumulative acks: every input up to `iseq` was handled, its effects are in the page's
  * stream up to `seq` of `epoch`, and this is what the page's focused field now holds (length, hash
  * and selection, never its text).
@@ -17,7 +18,7 @@
 import {
   CAP_ACK_ECHO,
   CAP_INPUT_ACKS,
-  isInputUp,
+  isAckedInput,
   type EditState,
   type InputAckMsg,
   type TabId,
@@ -94,6 +95,11 @@ export interface InputSequencer {
 /** Acks held for a tab whose replay is not live are given up as dispatch only past this many. */
 const MAX_HELD = 64;
 const RTT_SAMPLES = 256;
+/**
+ * `value` iseqs remembered after their ack, to know a refusal that a later ack reports (an input
+ * still queued when its tab was reset is refused after inputs that came later were acknowledged).
+ */
+const VALUES_KEPT = 64;
 
 export function createInputSequencer(options: InputSequencerOptions = {}): InputSequencer {
   const now = options.now ?? (() => performance.now());
@@ -148,7 +154,10 @@ export function createInputSequencer(options: InputSequencerOptions = {}): Input
     for (const iseq of state.sentAt.keys()) if (iseq < ack.iseq) state.sentAt.delete(iseq);
     const failed = ack.failed ?? [];
     const failedValue = failed.some((iseq) => state.values.has(iseq));
-    for (const iseq of state.values) if (iseq <= ack.iseq) state.values.delete(iseq);
+    for (const iseq of state.values) {
+      if (state.values.size <= VALUES_KEPT) break;
+      state.values.delete(iseq);
+    }
     state.settled = ack.iseq;
     if (!page) counters.dispatchOnlyAcks += 1;
     const settled: SettledAck = {
@@ -242,7 +251,8 @@ export function createInputSequencer(options: InputSequencerOptions = {}): Input
         }
         return msg;
       }
-      if (!isInputUp(msg)) return msg;
+      // Hovers, drags, wheel and scroll go unstamped: the gateway fences nothing for them.
+      if (!isAckedInput(msg)) return msg;
       const state = tabState(msg.tab);
       state.stamped += 1;
       state.sentAt.set(state.stamped, now());

@@ -1040,7 +1040,7 @@ describe("P1 input capture", () => {
         code: "Enter",
         mods: 0,
         // What the field showed, for the gateway's submit guard.
-        expect: { node: 47, len: 9, hash: editHash("committed"), head: editHash("") },
+        expect: { node: 47, len: 9, hash: editHash("committed"), head: editHash("commi") },
       },
     ]);
     expect(timers.pending()).toBe(0);

@@ -103,10 +103,14 @@ export function createViewerHub(deps: ViewerHubDeps) {
 
   /** One viewer message for the session's browser, once its role allowed it. */
   async function handle(runtime: ClientRuntime, id: string, message: Up) {
-    if ("tab" in message && message.tab && !runtime.browser.ownsTarget(message.tab)) return;
+    // Input that never reaches the relay is still answered, as refused, in the tab's queue: an
+    // ack must not cover input still queued before it.
+    if ("tab" in message && message.tab && !runtime.browser.ownsTarget(message.tab)) {
+      if (isInput(message)) runtime.acks?.refuse(id, message);
+      return;
+    }
     if ((isInput(message) || message.t === "mode") && runtime.recovery.isBlocked(message.tab)) {
-      // Input that never reaches the relay is still answered, as refused.
-      if (isInput(message)) runtime.acks?.noteDispatched(id, message, false);
+      if (isInput(message)) runtime.acks?.refuse(id, message);
       return;
     }
     if (message.t === "view" || message.t === "view-ack") {
@@ -264,9 +268,15 @@ export function createViewerHub(deps: ViewerHubDeps) {
       const runtime = registry.get(sid);
       if (!runtime) return;
       // A valid driver is still forbidden from naming another client's CDP target.
-      if ("tab" in message && message.tab !== "" && !runtime.browser.ownsTarget(message.tab))
+      if ("tab" in message && message.tab !== "" && !runtime.browser.ownsTarget(message.tab)) {
+        if (isInput(message)) runtime.acks?.refuse(id, message);
         return;
-      await roles.routeUp(id, message, (forwarded) => handle(runtime, id, forwarded));
+      }
+      const routed = await roles.routeUp(id, message, (forwarded) =>
+        handle(runtime, id, forwarded),
+      );
+      // Input of a viewer that no longer drives (it was on its way when the role moved).
+      if (routed === "dropped" && isInput(message)) runtime.acks?.refuse(id, message);
     },
   });
   // Full snapshots are the heavy part of page sync: how often, why, how big and how slow.
