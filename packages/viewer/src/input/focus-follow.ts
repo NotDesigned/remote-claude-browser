@@ -38,6 +38,11 @@ export interface FocusFollowOptions {
   followsByItself: boolean;
   /** Puts focus back into the mirror once the remote page has no field focused. */
   focusMirror(): void;
+  /**
+   * Single-writer input is on (proxy-input.ts): typing always goes to the hidden keyboard, which is
+   * then the proxy, and never to a replay field; the proxy blurs itself after a grace period.
+   */
+  proxyMode?(): boolean;
   now?(): number;
 }
 
@@ -85,7 +90,7 @@ export function createFocusFollower(options: FocusFollowOptions): FocusFollower 
   const docs = new Set<Document>();
 
   const mirrorField = (focus: RemoteFocus): Element | null => {
-    if (focus.id < 0) return null;
+    if (focus.id < 0 || options.proxyMode?.() === true) return null;
     const node = options.getNode(focus.id);
     return isElement(node) && node.isConnected && isTextEditable(node) ? node : null;
   };
@@ -189,6 +194,7 @@ export function createFocusFollower(options: FocusFollowOptions): FocusFollower 
       remote = focus;
       const ours = options.rootDoc.hasFocus() || hiddenHasFocus();
       if (!focus.editable) {
+        if (options.proxyMode?.() === true) return;
         // Letters typed into the hidden textarea now would become text the page has nowhere to
         // put, and its single-key shortcuts would stop working.
         if (hiddenHasFocus()) {
