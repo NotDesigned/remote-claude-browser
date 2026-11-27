@@ -5,6 +5,13 @@
 // up empty. Then one message at a time, sent every way a person sends one (Enter typed at once, a
 // soft keyboard's Return with no key event, the send button, Ctrl+Enter, a page that clears after a
 // round trip, a Backspace or an autocorrect just after sending): nothing may stay in either one.
+//
+// Input acks (MIRROR_INPUT_ACKS, "on" unless set) run as the gateway runs them, and the viewer's
+// inputlab is checked: every input acknowledged once and in order, none refused, the page's field
+// hash matching the replay's at the end of each burst, and the ack's round trip. A slow link
+// (scripts/lib/slow-link.mts: SMOKE_RTT_MS, SMOKE_JITTER_MS, SMOKE_STALL_RATE) can sit between
+// the gateway and the viewers. "slow-page" has the page apply IME text 400 ms late; "textarea"
+// checks that a burst's last value is in the stream before its ack.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
@@ -24,6 +31,15 @@ import {
 import { TabHub } from "../packages/gateway/src/hub/tabhub";
 import { createInputRelay, type InputMsg } from "../packages/gateway/src/input/relay";
 import { viewerDist } from "./viewer-dist.mjs";
+import { describeLink, slowLinkConfig, slowSocket, type SlowSocket } from "./lib/slow-link.mts";
+import {
+  coverageProblems,
+  createAckHarness,
+  percentile,
+  readLabScript,
+  smokeAckMode,
+  type AckHarness,
+} from "./lib/ack-harness.mts";
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use limited-run.sh");
 const require = createRequire(new URL("../packages/gateway/package.json", import.meta.url));
 const { WebSocketServer } = require("ws");
@@ -37,7 +53,7 @@ const remoteHtml = `<!doctype html><meta charset="utf-8"><meta name="viewport" c
 .ProseMirror{min-height:40px;border:1px solid #888;padding:6px;background:#fff;white-space:pre-wrap}
 .ProseMirror p{margin:0}.is-empty::before{content:attr(data-placeholder);color:#999;float:left;height:0}
 #thread{padding:8px 8px 120px}</style>
-<div id="thread"></div><div id="bar"></div>
+<div id="thread"></div><textarea id="plain" rows="3" style="width:90%;margin:8px"></textarea><div id="bar"></div>
 <script>${composerScript.replaceAll("</script", "<\\/script")}</script>
 <script>
 const thread = document.getElementById("thread");
@@ -58,6 +74,15 @@ const send = (text) => {
 };
 const view = PMComposer.mount(document.getElementById("bar"), { onSend: send });
 window.composerView = view;
+// A slow page: with window.slowPage set, text typed in (an IME's commit, a paste) is applied by
+// the editor 400 ms late, as a page busy with its own work does.
+window.slowPage = false;
+document.getElementById("bar").addEventListener("beforeinput", (event) => {
+  if (!window.slowPage || event.inputType !== "insertText" || !event.data) return;
+  event.preventDefault();
+  const text = event.data;
+  setTimeout(() => view.dispatch(view.state.tr.insertText(text)), 400);
+}, true);
 // claude.ai may clear its composer only after the message went out (a network round trip):
 // with window.clearDelay set, Enter, Ctrl/Cmd+Enter and the send button send now and clear later.
 window.clearDelay = null;
@@ -118,14 +143,17 @@ const browser = await chromium.launch({
   headless: true,
 });
 const wss = new WebSocketServer({ server, path: "/ws" });
-const sockets = new Set<any>();
+const link = slowLinkConfig();
+const ackMode = smokeAckMode();
+console.log(`composer-input: ${describeLink(link)}, MIRROR_INPUT_ACKS=${ackMode}`);
+const sockets = new Set<{ raw: any; slow: SlowSocket }>();
 const chunks = new ChunkReassembler();
 const pending = new Map<number, (reply: CmdRes) => void>();
 const failures: string[] = [];
 let reqId = 0;
 const watchdog = setTimeout(() => process.exit(124), 480_000);
 const broadcast = (message: Down) => {
-  for (const socket of sockets) if (socket.readyState === 1) socket.send(JSON.stringify(message));
+  for (const socket of sockets) socket.slow.send(JSON.stringify(message));
 };
 
 interface Mirror {
@@ -137,7 +165,11 @@ interface Mirror {
   type(text: string, delay?: number): Promise<void>;
   compose(pinyin: string, text: string): Promise<void>;
   cdp: CDPSession;
+  acks: AckHarness;
 }
+
+/** What each run measured, for the summary at the end. */
+const measured: Array<Record<string, unknown>> = [];
 
 async function run(
   label: string,
@@ -153,7 +185,9 @@ async function run(
       pending.get(message.reqId)?.(message);
       return;
     }
-    for (const down of hub.ingest(message as AgentMsg)) broadcast(down);
+    const downs = hub.ingest(message as AgentMsg);
+    acks.observe(downs);
+    for (const down of downs) broadcast(down);
   });
   await remote.addInitScript({ content: createAgentBundle({ canvas: { enabled: false } }) });
   await remote.route(remoteUrl, (route) =>
@@ -184,8 +218,24 @@ async function run(
     }
   };
   hub.onNeedSnapshot(() => sendCmd("composer", { cmd: "snapshot" }));
+  const acks = createAckHarness({
+    mode: ackMode,
+    hub: () => hub,
+    sendCmd,
+    pageText: () =>
+      remote.evaluate(() => {
+        const active = document.activeElement as HTMLElement | null;
+        if (active?.id === "plain") return (active as HTMLTextAreaElement).value;
+        if (active?.closest("#composer")) {
+          const view = (window as any).composerView;
+          return view.state.doc.textBetween(0, view.state.doc.content.size, "\n") as string;
+        }
+        return null;
+      }),
+  });
   let viewport = { w: 390, h: 700 };
   const relay = createInputRelay({
+    ...acks.relayDeps,
     agentLink: { async *msgs() {}, sendCmd },
     send: async (_session, method, params) => remoteCdp.send(method as never, params as never),
     sessionFor: () => "fixture",
@@ -198,10 +248,17 @@ async function run(
       broadcast({ t: "input-status", tab, failed, ...(reason ? { reason } : {}) });
     },
   });
+  acks.attach(relay);
   let queue = Promise.resolve();
-  const onConnection = (socket: any) => {
-    sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
+  const onConnection = (raw: any) => {
+    const socket = slowSocket(raw, link);
+    const entry = { raw, slow: socket };
+    sockets.add(entry);
+    acks.route("viewer", (down) => socket.send(JSON.stringify(down)));
+    raw.on("close", () => {
+      sockets.delete(entry);
+      socket.close();
+    });
     socket.send(
       JSON.stringify({
         t: "hello",
@@ -209,6 +266,7 @@ async function run(
         role: "driver",
         sessionId: "client-1",
         serverTs: Date.now(),
+        ...(acks.caps.length > 0 ? { caps: acks.caps } : {}),
       }),
     );
     socket.send(
@@ -218,8 +276,8 @@ async function run(
       }),
     );
     for (const down of hub.joinPayload()) socket.send(JSON.stringify(down));
-    socket.on("message", (raw: any) => {
-      const message = JSON.parse(String(raw)) as Up;
+    socket.onMessage((text) => {
+      const message = JSON.parse(text) as Up;
       if (message.t === "ping")
         socket.send(
           JSON.stringify({
@@ -260,7 +318,7 @@ async function run(
   const page: Page = await context.newPage();
   page.on("pageerror", (error) => console.error(`${label} viewer error`, error.message));
   try {
-    await page.goto(origin + "/?sid=client-1");
+    await page.goto(origin + "/?sid=client-1&inputlab=1");
     await page.waitForFunction(
       () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
     );
@@ -288,10 +346,14 @@ async function run(
       }
       await cdp.send("Input.insertText", { text });
     };
-    await body({ label, softKeyboard, page, remote, mirrored, type, compose, cdp });
+    await body({ label, softKeyboard, page, remote, mirrored, type, compose, cdp, acks });
+    await checkAcks(label, body.name, page, acks);
   } finally {
     wss.off("connection", onConnection);
-    for (const socket of sockets) socket.terminate();
+    for (const socket of sockets) {
+      socket.slow.close();
+      socket.raw.terminate();
+    }
     sockets.clear();
     await context.close();
     hub.invalidateDocument();
@@ -551,17 +613,144 @@ async function sends(mirror: Mirror) {
   console.log(`${label}: every way of sending leaves both composers empty.`);
 }
 
-// COMPOSER_SMOKE_ONLY=Desktop,rounds (any of Desktop, Phone, rounds, sends) runs part of it.
+/**
+ * A page that applies IME text 400 ms late: what was typed reaches it exactly once, and both
+ * composers are empty after Enter.
+ */
+async function slowPage({ label, page, remote, mirrored, type, compose }: Mirror): Promise<void> {
+  await remote.evaluate(() => ((window as any).slowPage = true));
+  const before = await remote.evaluate(() => (window as any).sentMessages.length as number);
+  const expected: string[] = [];
+  for (const [index, [start, pinyin, text, end]] of [
+    ["slow ", "nihao", "你好", " one"],
+    ["late ", "zaijian", "再见", ""],
+  ].entries()) {
+    await type(start!);
+    await compose(pinyin!, text!);
+    if (end) await type(end);
+    // Enter once the page has applied what was typed (a person reads before sending).
+    await page.waitForTimeout(900 + index * 300);
+    await page.keyboard.press("Enter");
+    expected.push(`${start}${text}${end}`);
+    await page.waitForTimeout(1_500);
+  }
+  await remote.evaluate(() => ((window as any).slowPage = false));
+  await page.waitForTimeout(2_000);
+  const sent = await remote.evaluate(
+    (from) => ((window as any).sentMessages as string[]).slice(from),
+    before,
+  );
+  const pageText = await remote.evaluate(
+    () => (window as any).composerView.state.doc.textContent as string,
+  );
+  const here = (await mirrored.locator("#composer").textContent()) ?? "";
+  console.log(JSON.stringify({ label, case: "slow-page", sent, pageText, here }));
+  assert.deepEqual(sent, expected, `${label}: a slow page did not get each message exactly once`);
+  assert.equal(pageText, "", `${label}: the slow page's composer still holds text`);
+  assert.equal(here, "", `${label}: the composer here still shows text after a slow page`);
+  console.log(`${label}: a page that applies text late gets it exactly once.`);
+}
+
+/** Bursts into a plain textarea: the stream carries each burst's last value before its ack. */
+async function textarea({ label, page, remote, mirrored, type }: Mirror): Promise<void> {
+  await mirrored.locator("#plain").click();
+  await page.waitForTimeout(300);
+  const typed: string[] = [];
+  for (const burst of ["first burst", " and a second", " — third, with a dash", " fourth"]) {
+    await type(burst, 15);
+    typed.push(burst);
+    await page.waitForTimeout(500);
+  }
+  await page.waitForTimeout(1_000);
+  const value = await remote.evaluate(
+    () => (document.getElementById("plain") as HTMLTextAreaElement).value,
+  );
+  const here = await mirrored.locator("#plain").inputValue();
+  assert.equal(value, typed.join(""), `${label}: the textarea did not get what was typed`);
+  assert.equal(here, value, `${label}: the textarea here differs from the page's`);
+  console.log(`${label}: a plain textarea follows bursts of typing.`);
+}
+
+/** The ack checks for one run (nothing to check with MIRROR_INPUT_ACKS=off but that none came). */
+async function checkAcks(label: string, name: string, page: Page, acks: AckHarness) {
+  await page.waitForTimeout(500);
+  await acks.settle();
+  const report = await page.evaluate(readLabScript, "composer");
+  if (acks.mode === "off") {
+    assert.equal(report.acks.length, 0, `${label} ${name}: acks came with MIRROR_INPUT_ACKS=off`);
+    assert.equal(report.stamped, 0, `${label} ${name}: input was stamped without ack1`);
+    return;
+  }
+  const finals = report.settled.filter((settled) => settled.final);
+  const compared = finals.filter((settled) => settled.localHash !== undefined && settled.edit);
+  const matched = compared.filter((settled) => settled.localHash === settled.edit!.hash).length;
+  const finalRtt = finals.flatMap((settled) => (settled.rtt === undefined ? [] : [settled.rtt]));
+  const result = {
+    label,
+    run: name,
+    link: describeLink(link),
+    mode: acks.mode,
+    stamped: report.stamped,
+    acks: acks.sent.length,
+    fences: acks.scheduler()?.fenceCount() ?? 0,
+    finals: finals.length,
+    fencesPerBurst:
+      finals.length === 0
+        ? null
+        : Number(((acks.scheduler()?.fenceCount() ?? 0) / finals.length).toFixed(2)),
+    maxAckBytes: Math.max(0, ...acks.sent.map((entry) => entry.bytes)),
+    pageHash: `${acks.pageHash.match}/${acks.pageHash.match + acks.pageHash.mismatch}`,
+    replayHash: `${matched}/${compared.length}`,
+    textareaOrder: acks.ordering,
+    windowCloseP95: percentile(finalRtt, 0.95),
+    fenceP95: percentile(acks.fenceTimes, 0.95),
+    guard: acks.guard,
+    dispatchOnly: report.stats.dispatchOnlyAcks,
+    decayWhileOutstanding: report.stats.decayWhileOutstanding,
+    ackRtt: [report.stats.ackRttP50, report.stats.ackRttP95],
+  };
+  measured.push(result);
+  console.log(`acks ${JSON.stringify(result)}`);
+  assert.deepEqual(coverageProblems(report), [], `${label} ${name}: inputs not acknowledged once`);
+  assert.equal(report.stats.dispatchOnlyAcks, 0, `${label} ${name}: acks without a fence`);
+
+  assert.deepEqual(
+    acks.sent.filter((entry) => entry.viewerId !== "viewer"),
+    [],
+    `${label} ${name}: acks went to another viewer`,
+  );
+  assert.equal(acks.ordering.outOfOrder, 0, `${label} ${name}: a value came after its ack`);
+  // At the end of each burst the page reports its own field's text: all of it for the textarea,
+  // at least 99 % for ProseMirror (which may still be rendering).
+  const hashed = acks.pageHash.match + acks.pageHash.mismatch;
+  if (hashed > 0)
+    assert.ok(
+      acks.pageHash.match / hashed >= (name === "textarea" ? 1 : 0.99),
+      `${label} ${name}: the page's final hashes matched its text ${result.pageHash}`,
+    );
+  const budget = link.rttMs + link.jitterMs + 150;
+  if (link.stallRate === 0 && result.windowCloseP95 !== null)
+    assert.ok(
+      result.windowCloseP95 <= budget,
+      `${label} ${name}: the echo window closed after ${result.windowCloseP95} ms (p95)`,
+    );
+}
+
+// COMPOSER_SMOKE_ONLY=Desktop,rounds (any of Desktop, Phone, rounds, sends, slow-page, textarea)
+// runs part of it.
 const only = (process.env.COMPOSER_SMOKE_ONLY ?? "").split(",").filter(Boolean);
 const runs: Array<[string, boolean, (mirror: Mirror) => Promise<void>, string]> = [
   ["Desktop", false, rounds, "rounds"],
   ["Phone", true, rounds, "rounds"],
   ["Desktop", false, sends, "sends"],
   ["Phone", true, sends, "sends"],
+  ["Desktop", false, slowPage, "slow-page"],
+  ["Desktop", false, textarea, "textarea"],
 ];
 try {
   for (const [label, soft, body, name] of runs)
     if (only.every((part) => part === label || part === name)) await run(label, soft, body);
+  console.log(`composer-input acks: ${JSON.stringify(measured)}`);
 } finally {
   clearTimeout(watchdog);
   await browser.close();

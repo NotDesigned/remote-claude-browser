@@ -243,41 +243,47 @@ describe.each([
     return { echo, editor, focus, reconcile, at, settle, send: () => ++stamped };
   }
 
-  it("shows the page's empty composer at once, before typing settles", () => {
-    vi.useFakeTimers();
-    try {
-      const { echo, editor, focus, reconcile, at, settle, send } = ackSetup();
-      settle(1, 14, true);
-      at(200);
-      echo.keyDown({ key: "Enter" } as KeyboardEvent, focus);
-      send(); // Enter down
-      send(); // Enter up
-      // Typing goes straight on while the page's clear is on its way.
-      at(250);
-      editor.textContent = "first questionn";
-      send();
-      echo.input(focus);
-      // The clear arrives, in nodes the page made anew.
-      echo(
-        batch({
-          removes: [{ parentId: 21, id: 22 }],
-          adds: [
-            {
-              parentId: 21,
-              nextId: null,
-              node: { id: 30, type: 2, tagName: "br", childNodes: [] },
-            },
-          ],
-        }),
-        at(300),
-      );
-      // Legacy mode knows from the removed text; ack mode waits for the page's own word.
-      expect(reconcile).toHaveBeenCalledTimes(ackMode ? 0 : 1);
-      // Its ack: the page's composer is empty, past Enter, while this one shows text.
-      settle(3, 0);
-      expect(reconcile).toHaveBeenCalledOnce();
-    } finally {
-      vi.useRealTimers();
-    }
+  const typeOnAfterEnter = (setup: ReturnType<typeof ackSetup>) => {
+    const { echo, editor, focus, at, settle, send } = setup;
+    settle(1, 14, true);
+    at(200);
+    echo.keyDown({ key: "Enter" } as KeyboardEvent, focus);
+    send(); // Enter down
+    send(); // Enter up
+    // Typing goes straight on while the page's clear is on its way.
+    at(250);
+    editor.textContent = "first questionn";
+    send();
+    echo.input(focus);
+  };
+
+  it("shows the page's empty composer as soon as its clear arrives", () => {
+    const setup = ackSetup();
+    typeOnAfterEnter(setup);
+    const { echo, reconcile, at, settle } = setup;
+    echo(
+      batch({
+        removes: [{ parentId: 21, id: 22 }],
+        adds: [
+          { parentId: 21, nextId: null, node: { id: 30, type: 2, tagName: "br", childNodes: [] } },
+        ],
+      }),
+      at(300),
+    );
+    expect(reconcile).toHaveBeenCalledOnce();
+    // The ack that says so too asks for nothing more.
+    settle(3, 0);
+    settle(4, 1, true);
+    expect(reconcile).toHaveBeenCalledOnce();
+  });
+
+  it("knows from the page's ack alone that it sent and cleared the composer", () => {
+    const setup = ackSetup();
+    typeOnAfterEnter(setup);
+    const { reconcile, settle } = setup;
+    // The clear is not seen as such here (the page made the composer anew elsewhere), but the
+    // ack past Enter says the page's composer is empty while this one shows text.
+    settle(3, 0);
+    expect(reconcile).toHaveBeenCalledTimes(ackMode ? 1 : 0);
   });
 });

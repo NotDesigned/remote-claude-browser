@@ -113,6 +113,7 @@ describe("acknowledgements", () => {
         failed: [],
         failedValue: false,
         final: true,
+        rtt: 40,
       },
     ]);
     expect(sequencer.outstanding("T1")).toBe(0);
@@ -145,6 +146,24 @@ describe("acknowledgements", () => {
       [2, "page"],
       [3, "dispatch"],
     ]);
+  });
+
+  it("marks every ack the replay has applied at once, and settles them in order", () => {
+    const { sequencer, settled, marks } = setup();
+    for (let index = 0; index < 3; index++) sequencer.stamp(key());
+    sequencer.applied("T1", 1, 2);
+    sequencer.onAck(pageAck(1, 3));
+    sequencer.onAck(pageAck(2, 4));
+    sequencer.onAck(pageAck(3, 9));
+    sequencer.applied("T1", 1, 6);
+    // Both acks the replay has: two markers, not one after the other.
+    expect(marks).toHaveLength(2);
+    marks[1]!.played(true);
+    expect(settled).toHaveLength(0);
+    marks[0]!.played(true);
+    expect(settled.map((ack) => ack.iseq)).toEqual([1, 2]);
+    sequencer.applied("T1", 1, 10);
+    expect(marks).toHaveLength(3);
   });
 
   it("settles as dispatch only when the replay is replaced before it plays the marker", () => {

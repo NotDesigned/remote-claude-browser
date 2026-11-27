@@ -377,13 +377,15 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       });
       // The page took away the text Enter sent: it sent it and cleared the editor. Typing goes
       // on, so waiting for it to settle would show the sent text for as long as it does.
-      for (const [state, { removed, added }] of ackMode() ? new Map() : changed) {
+      // With acks, Enter's text counts until the final ack after it, not for SENT_CLEAR_MS.
+      for (const [state, { removed, added }] of changed) {
         const sent = sentTexts.get(state.element);
-        if (sent === undefined || now() - sent.at > SENT_CLEAR_MS) continue;
+        if (sent === undefined || (!ackMode() && now() - sent.at > SENT_CLEAR_MS)) continue;
         const text = compact(sent.text);
         if (text === "" || !compact(removed).includes(text) || compact(added).includes(text))
           continue;
         sentTexts.delete(state.element);
+        if (sentAck?.element === state.element) sentAck = null;
         requestReconcile();
       }
       // A change held back now is not in a catch-up that may already be on its way.
@@ -521,8 +523,11 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
 
   filter.getFocused = () => focused;
   filter.typingWithin = (ms) => {
-    if (ackMode() && (acks?.outstanding() ?? 0) > 0) return true;
     const at = now();
+    // Unacknowledged input is still typing, up to the liveness ceiling: a replay that lags (a busy
+    // viewer) must not hold an editor's catch-up off for good.
+    if (ackMode() && (acks?.outstanding() ?? 0) > 0)
+      for (const state of nodes.values()) if (at - state.lastKeyTs < ACK_LIVENESS_MS) return true;
     for (const state of nodes.values()) if (at - state.lastKeyTs < ms) return true;
     return false;
   };
@@ -608,7 +613,10 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
           clearState(sent.nodeId);
           requestReconcile();
         }
-      } else if (settled.final) sentAck = null;
+      } else if (settled.final) {
+        sentTexts.delete(sent.element);
+        sentAck = null;
+      }
     }
     if (!settled.final || (acks?.outstanding() ?? 0) > 0) return;
     for (const [nodeId, state] of [...nodes]) {

@@ -35,6 +35,8 @@ export interface SettledAck {
   failed: readonly number[];
   /** One of `failed` was a `value` (a whole-field sync). */
   failedValue: boolean;
+  /** How long ago the input `iseq` was sent, when it was sent on this connection. */
+  rtt?: number;
   final: boolean;
 }
 
@@ -102,7 +104,8 @@ export function createInputSequencer(options: InputSequencerOptions = {}): Input
     { stamped: number; settled: number; sentAt: Map<number, number>; values: Set<number> }
   >();
   /** Per tab: acks waiting for the replay, in the order they came. */
-  const held = new Map<TabId, Array<{ ack: InputAckMsg; marking: boolean }>>();
+  /** `done`: settled once it reaches the head; true when its marker played. */
+  const held = new Map<TabId, Array<{ ack: InputAckMsg; marking: boolean; done?: boolean }>>();
   const applied = new Map<TabId, { epoch: number; nextSeq: number }>();
   const listeners = new Set<(settled: SettledAck) => void>();
   /** Bumped per connection: markers of an earlier one settle nothing. */
@@ -131,13 +134,18 @@ export function createInputSequencer(options: InputSequencerOptions = {}): Input
     const state = tabState(ack.tab);
     if (ack.iseq < state.settled) return;
     const sent = state.sentAt.get(ack.iseq);
+    let sample: number | undefined;
     if (sent !== undefined) {
-      const sample = Math.max(0, now() - sent);
+      sample = Math.max(0, now() - sent);
+    }
+    // A final ack repeating an iseq already settled is no round trip: it waited for quiet.
+    if (sample !== undefined && ack.iseq > state.settled) {
       smoothedRtt = smoothedRtt === null ? sample : smoothedRtt * 0.875 + sample * 0.125;
       rttSamples.push(sample);
       if (rttSamples.length > RTT_SAMPLES) rttSamples.shift();
     }
-    for (const iseq of state.sentAt.keys()) if (iseq <= ack.iseq) state.sentAt.delete(iseq);
+    // The newest one stays: a final ack for the same iseq then says how long since that input.
+    for (const iseq of state.sentAt.keys()) if (iseq < ack.iseq) state.sentAt.delete(iseq);
     const failed = ack.failed ?? [];
     const failedValue = failed.some((iseq) => state.values.has(iseq));
     for (const iseq of state.values) if (iseq <= ack.iseq) state.values.delete(iseq);
@@ -151,54 +159,53 @@ export function createInputSequencer(options: InputSequencerOptions = {}): Input
       failed,
       failedValue,
       final: ack.final === true,
+      ...(sample === undefined ? {} : { rtt: sample }),
     };
     for (const listener of [...listeners]) listener(settled);
   };
 
-  /** Settles what heads the tab's queue, as far as the replay allows. */
+  /**
+   * Starts a marker for every ack the replay has applied, and settles acks in the order they came
+   * as their markers play: markers of acks that came together play in one frame, not one by one.
+   */
   const drain = (tab: TabId) => {
     const queue = held.get(tab);
     if (queue === undefined) return;
-    while (queue.length > 0) {
-      const head = queue[0]!;
-      if (head.marking) return;
-      const { ack } = head;
+    const settleDone = () => {
+      while (queue.length > 0 && queue[0]!.done !== undefined) {
+        const head = queue.shift()!;
+        settle(head.ack, head.done!);
+      }
+    };
+    settleDone();
+    for (const entry of queue) {
+      if (entry.done !== undefined || entry.marking) continue;
+      const { ack } = entry;
       if (ack.mode !== "page" || ack.seq === undefined || ack.epoch === undefined) {
-        queue.shift();
-        settle(ack, false);
+        entry.done = false;
         continue;
       }
       const shown = applied.get(tab);
       if (shown === undefined || shown.epoch !== ack.epoch) {
         // Another document, or none shown: the page's report is about something not on screen.
-        queue.shift();
-        settle(ack, false);
+        entry.done = false;
         continue;
       }
-      if (shown.nextSeq <= ack.seq) {
-        if (queue.length > MAX_HELD) {
-          queue.shift();
-          settle(ack, false);
-          continue;
-        }
-        return;
-      }
-      head.marking = true;
+      // Later acks are further on in the stream: they wait too.
+      if (shown.nextSeq <= ack.seq) break;
+      entry.marking = true;
       const current = connection;
       const marked =
         options.mark?.(tab, (played) => {
-          if (current !== connection || queue[0] !== head) return;
-          queue.shift();
-          settle(ack, played);
+          if (current !== connection || entry.done !== undefined) return;
+          entry.done = played;
           drain(tab);
         }) ?? false;
-      if (!marked) {
-        queue.shift();
-        settle(ack, options.mark === undefined);
-        continue;
-      }
-      return;
+      if (!marked && entry.done === undefined) entry.done = options.mark === undefined;
     }
+    // A tab whose replay is not live does not keep acks forever.
+    while (queue.length > MAX_HELD && queue[0]!.done === undefined) queue[0]!.done = false;
+    settleDone();
   };
 
   const dropAll = () => {
