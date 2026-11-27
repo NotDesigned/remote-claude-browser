@@ -169,6 +169,26 @@ describe("proxy input", () => {
     expect(sent).toEqual([{ t: "text", tab: "t", insert: "the" }]);
   });
 
+  it("lets go of its text on release (a click on a send button)", () => {
+    const { proxy, field, sent } = setup();
+    typeInto(field(), "see teh");
+    proxy.release();
+    sent.length = 0;
+    typeInto(field(), "the");
+    expect(sent).toEqual([{ t: "text", tab: "t", insert: "the" }]);
+  });
+
+  it("is not refilled from the replay after release until a field is focused again", () => {
+    const { proxy, field, replayText, settle } = setup();
+    typeInto(field(), "see teh");
+    proxy.release();
+    replayText.value = "see teh";
+    settle("see teh");
+    expect(field().value).toBe("");
+    proxy.focus();
+    expect(field().value).toBe("see teh");
+  });
+
   it("keeps the text on Shift+Enter, which adds a line", () => {
     const { field } = setup();
     typeInto(field(), "line");

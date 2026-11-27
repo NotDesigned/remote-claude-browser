@@ -26,6 +26,7 @@ function setup(active = true) {
     flush: () => calls.push("flush"),
     focus,
     pressed: (field) => calls.push(`pressed ${field.tagName}`),
+    clickedElsewhere: () => calls.push("released"),
     toViewer: (point) => ({ clientX: point.clientX * 2 + 1, clientY: point.clientY * 2 + 1 }),
   });
   const fire = (type: string, target: FakeElement, init: Record<string, unknown> = {}) =>
@@ -81,6 +82,14 @@ describe("read-only replay fields", () => {
     detach();
     expect(fire("mousedown", textarea).defaultPrevented).toBe(false);
     expect(calls).toEqual([]);
+  });
+
+  it("lets the proxy go of its text on a click elsewhere, never on a text field", () => {
+    const { button, textarea, calls, fire } = setup();
+    fire("click", textarea);
+    expect(calls).toEqual([]);
+    fire("click", button);
+    expect(calls).toEqual(["released"]);
   });
 
   it("finds the field around a target", () => {

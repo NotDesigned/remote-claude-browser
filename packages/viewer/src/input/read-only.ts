@@ -21,6 +21,8 @@ export interface ReadOnlyOptions {
   focus(point?: { clientX: number; clientY: number }): void;
   /** The field pressed, before the proxy is focused for it. */
   pressed?(field: Element): void;
+  /** A click anywhere but a text field (a send button, say). */
+  clickedElsewhere?(): void;
   /** Maps a point in `doc` to the viewer document (the replay may be scaled or nested). */
   toViewer?(point: { clientX: number; clientY: number }): { clientX: number; clientY: number };
 }
@@ -74,6 +76,11 @@ export function attachReadOnly(options: ReadOnlyOptions): () => void {
   doc.addEventListener("beforeinput", prevent, true);
   doc.addEventListener("drop", prevent, true);
   doc.addEventListener("cut", prevent, true);
+  const onClick = (event: MouseEvent) => {
+    if (!event.isTrusted || !options.active() || textFieldOf(event.target) !== null) return;
+    options.clickedElsewhere?.();
+  };
+  doc.addEventListener("click", onClick, true);
   return () => {
     doc.removeEventListener("mousedown", onMouseDown, true);
     doc.removeEventListener("touchend", onTouchEnd, true);
@@ -81,5 +88,6 @@ export function attachReadOnly(options: ReadOnlyOptions): () => void {
     doc.removeEventListener("beforeinput", prevent, true);
     doc.removeEventListener("drop", prevent, true);
     doc.removeEventListener("cut", prevent, true);
+    doc.removeEventListener("click", onClick, true);
   };
 }

@@ -80,6 +80,12 @@ export interface ProxyInput extends HiddenKeyboard {
   replayApplied(): void;
   /** Writes the window of `text` around `sel` into the proxy, if it differs. */
   seed(text: string, sel: [number, number]): void;
+  /**
+   * A click elsewhere in the page (a send button): what the proxy holds may be gone from the page
+   * the moment it lands, so a keyboard's late correction must not edit it there. The next ack
+   * reseeds the proxy.
+   */
+  release(): void;
   /** 「放回」: text back into the proxy at its caret, to be sent with the next edit. */
   putBack(text: string): void;
   composing(): boolean;
@@ -149,6 +155,8 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
   let caretUnknown = true;
   let blurTimer: unknown = null;
   let intendedBlur = false;
+  /** Let go of by a click elsewhere: no reseed until a field is focused again. */
+  let released = false;
 
   function make(isPassword: boolean): HTMLTextAreaElement | HTMLInputElement {
     const field = isPassword ? doc.createElement("input") : doc.createElement("textarea");
@@ -312,7 +320,7 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
 
   /** Reseeds from the replay when nothing is on its way and the replay's field differs. */
   const reseedFromReplay = (sel?: [number, number], hash?: string) => {
-    if (!idle()) return;
+    if (!idle() || released) return;
     const node = replayNode();
     if (node === null) return;
     const text = replayFieldText(node);
@@ -613,14 +621,13 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
     },
     focus(point) {
       if (disposed) return;
+      released = false;
       if (blurTimer !== null) clearTimer(blurTimer);
       blurTimer = null;
       mirrorAttributes();
       place(point);
-      if (!hasFocus()) {
-        element.focus({ preventScroll: true });
-        if (caretUnknown) reseedFromReplay();
-      }
+      if (!hasFocus()) element.focus({ preventScroll: true });
+      if (caretUnknown) reseedFromReplay();
     },
     hasFocus,
     blur,
@@ -691,6 +698,12 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
         element.selectionEnd ?? element.value.length,
         "end",
       );
+    },
+    release() {
+      if (disposed) return;
+      forgetAfterSend();
+      // Not refilled from the replay until the person comes back to a field.
+      released = true;
     },
     composing: () => guard.composing,
     model: () => model,
