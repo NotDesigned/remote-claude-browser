@@ -10,7 +10,9 @@ import { RETAINED_DOCUMENTS, retainCheckoutIds, type ResettableIframeMirror } fr
  * rrweb's own (patched) IframeManager and CrossOriginIframeMirror, taken from the dist the agent
  * bundles: what matters is how they remap a child frame's ids, which a stand-in would only assume.
  */
-function loadIframeManager(): new (options: unknown) => IframeManagerLike {
+function loadIframeManager(
+  hardening: { messageKey: string | null } = { messageKey: null },
+): new (options: unknown) => IframeManagerLike {
   const require = createRequire(import.meta.url);
   const dist = join(dirname(require.resolve("@rrweb/record")), "record.js");
   const source = readFileSync(dist, "utf8");
@@ -27,10 +29,18 @@ function loadIframeManager(): new (options: unknown) => IframeManagerLike {
     "NodeType",
     "genId",
     "window",
+    "hardening",
     `const __publicField = (obj, key, value) => { obj[key] = value; return value; };
 ${classes}
 return IframeManager;`,
-  )(EventType, IncrementalSource, { Document: 0 }, () => nextId++, { addEventListener() {} });
+  )(
+    EventType,
+    IncrementalSource,
+    { Document: 0 },
+    () => nextId++,
+    { addEventListener() {} },
+    hardening,
+  );
 }
 
 interface IframeManagerLike {
@@ -54,8 +64,8 @@ function childDocument(): SerializedNode {
   };
 }
 
-function harness() {
-  const IframeManager = loadIframeManager();
+function harness(messageKey: string | null = null) {
+  const IframeManager = loadIframeManager({ messageKey });
   const emitted: Array<{ data: { adds: Array<{ node: SerializedNode }> } }> = [];
   const manager = new IframeManager({
     mutationCb() {},
@@ -69,17 +79,20 @@ function harness() {
   manager.addIframe(iframe);
   const mirror = retainCheckoutIds(manager.crossOriginIframeMirror);
   /** The child sends its whole document, as a checkout of the same one or as a new one. */
-  const send = (isCheckout: boolean): number => {
+  const send = (isCheckout: boolean, keyed = messageKey !== null): number => {
+    const payload = {
+      origin: "null",
+      isCheckout,
+      event: { type: EventType.FullSnapshot, timestamp: 1, data: { node: childDocument() } },
+    };
+    const before = emitted.length;
     manager.handleMessage({
       origin: "null",
       source: childWindow,
-      data: {
-        type: "rrweb",
-        origin: "null",
-        isCheckout,
-        event: { type: EventType.FullSnapshot, timestamp: 1, data: { node: childDocument() } },
-      },
+      data: keyed ? { [messageKey ?? "k"]: payload } : { type: "rrweb", ...payload },
     });
+    // Nothing taken from the message.
+    if (emitted.length === before) return -1;
     const node = emitted.at(-1)!.data.adds[0]!.node;
     return node.childNodes![0]!.childNodes![0]!.id;
   };
@@ -120,5 +133,22 @@ describe("retainCheckoutIds", () => {
     const first = send(false);
     send(true);
     expect(mirror.getRemoteId(iframe, first, new Map())).toBe(-1);
+  });
+});
+
+describe("frame messages with the session's key (hardening)", () => {
+  it("takes a child's events only under the key, never by type: rrweb", () => {
+    const { iframe, mirror, send } = harness("k7x2");
+    const id = send(false);
+    expect(id).toBeGreaterThan(0);
+    expect(mirror.getRemoteId(iframe, id)).toBe(3);
+    // The literal shape a page could also post is ignored once there is a key.
+    expect(send(false, false)).toBe(-1);
+  });
+
+  it("without a key, ignores keyed messages and takes the literal shape as before", () => {
+    const { send } = harness(null);
+    expect(send(false, true)).toBe(-1);
+    expect(send(false, false)).toBeGreaterThan(0);
   });
 });

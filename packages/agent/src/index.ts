@@ -25,6 +25,7 @@ import {
   type AgentBridgeConfig,
 } from "./config";
 import { installNativeMask } from "./native-mask";
+import { captureUntainted } from "./untainted";
 import { captureRtcConstructors, installCanvasRtcRecord } from "./canvas-rtc";
 import { installVoiceBridge } from "./voice";
 import { installNotificationShim } from "./notifications";
@@ -37,7 +38,7 @@ import {
   startCanvasSampler,
   type CanvasSampler,
 } from "./canvas-sampler";
-import { record } from "@rrweb/record";
+import { record, setRecordHardening } from "@rrweb/record";
 import { addFontsToSnapshot, installFontCapture } from "./font-capture";
 import { retainCheckoutIds, type ResettableIframeMirror } from "./frame-ids";
 import { captureDocumentContext } from "./document-context";
@@ -157,6 +158,11 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   // Every replaced built-in, the agent's and rrweb's, looks like the browser's own (hardening).
   const mask = config.hardening ? installNativeMask(window) : undefined;
   setHardened(config.hardening);
+  // rrweb's own wrappers go through the same mask (patches/@rrweb__record@2.1.1.patch), and it
+  // reads the DOM through the browser's accessors taken here, before the shim below replaces any,
+  // instead of borrowing them from a hidden iframe it would add to the page.
+  if (mask !== undefined)
+    setRecordHardening({ enabled: true, mask: mask.mask, untainted: captureUntainted(window) });
 
   // Must precede record() so rrweb's shadow observer and initial snapshot use the retained roots.
   installClosedShadowShim(mask);

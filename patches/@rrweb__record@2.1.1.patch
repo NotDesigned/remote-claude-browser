@@ -1,17 +1,335 @@
+diff --git a/dist/index.d.cts b/dist/index.d.cts
+index b143dd4af725e383dee82b164275c6c78cfbd5c7..2622b9dcc6b59ea23e79cea9214ecffa08f229b1 100644
+--- a/dist/index.d.cts
++++ b/dist/index.d.cts
+@@ -2,4 +2,18 @@ import { record } from 'rrweb';
+ 
+ export { record }
+ 
++/**
++ * What a page can see of the recorder (remote-browser patch). Off by default, and off restores
++ * rrweb's own behaviour. On: wrappers are passed to `mask` and carry no marker, setters schedule
++ * microtasks instead of timers, adoptedStyleSheets is observed on the prototype, no hidden iframe
++ * is made (`untainted` supplies the prototypes to read from), and a child frame posts its events
++ * under `messageKey` instead of `type: "rrweb"`.
++ */
++export declare function setRecordHardening(options: {
++  enabled: boolean;
++  mask?: (wrapper: object, original: object) => void;
++  untainted?: Partial<Record<"Node" | "ShadowRoot" | "Element" | "MutationObserver", object>>;
++  messageKey?: string;
++}): void;
++
+ export { }
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index b143dd4af725e383dee82b164275c6c78cfbd5c7..2622b9dcc6b59ea23e79cea9214ecffa08f229b1 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -2,4 +2,18 @@ import { record } from 'rrweb';
+ 
+ export { record }
+ 
++/**
++ * What a page can see of the recorder (remote-browser patch). Off by default, and off restores
++ * rrweb's own behaviour. On: wrappers are passed to `mask` and carry no marker, setters schedule
++ * microtasks instead of timers, adoptedStyleSheets is observed on the prototype, no hidden iframe
++ * is made (`untainted` supplies the prototypes to read from), and a child frame posts its events
++ * under `messageKey` instead of `type: "rrweb"`.
++ */
++export declare function setRecordHardening(options: {
++  enabled: boolean;
++  mask?: (wrapper: object, original: object) => void;
++  untainted?: Partial<Record<"Node" | "ShadowRoot" | "Element" | "MutationObserver", object>>;
++  messageKey?: string;
++}): void;
++
+ export { }
 diff --git a/dist/record.js b/dist/record.js
-index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..b76814da38a44a384c954945848b1ecb1e3d9b63 100644
+index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..8e26986d2ffc95631e0d5ce7ddb91931f39917bf 100644
 --- a/dist/record.js
 +++ b/dist/record.js
-@@ -3568,6 +3568,8 @@ class CrossOriginIframeMirror {
+@@ -96,6 +96,59 @@ const testableMethods = {
+ };
+ const untaintedBasePrototype = {};
+ const untaintedBaseIframeCleanup = {};
++// Hardening (setRecordHardening): what a page can see of the recorder. Wrappers look like the
++// browser's own functions and carry no marker, setters schedule no timers, nothing is defined on
++// the page's own objects, no hidden frame is made, and frames message without a fixed name. Off,
++// every path is the one rrweb ships.
++const hardening = { enabled: false, mask: null, messageKey: null };
++const originals = /* @__PURE__ */ new WeakMap();
++const reflectApply = Reflect.apply;
++const hardenedQueueMicrotask = typeof queueMicrotask === "function" ? queueMicrotask : null;
++const HardenedMessageChannel = typeof MessageChannel === "function" ? MessageChannel : null;
++const portPostMessage = typeof MessagePort === "function" ? MessagePort.prototype.postMessage : null;
++let taskPort = null;
++const taskQueue = [];
++function setRecordHardening(options) {
++  hardening.enabled = Boolean(options && options.enabled);
++  hardening.mask = hardening.enabled && typeof options.mask === "function" ? options.mask : null;
++  hardening.messageKey = hardening.enabled && typeof options.messageKey === "string" && options.messageKey !== "" ? options.messageKey : null;
++  if (!hardening.enabled) return;
++  const untainted = options.untainted;
++  if (untainted && typeof untainted === "object")
++    for (const key of Object.keys(testableAccessors))
++      if (untainted[key] && typeof untainted[key] === "object")
++        untaintedBasePrototype[key] = untainted[key];
++  if (taskPort === null && HardenedMessageChannel && portPostMessage) {
++    const channel = new HardenedMessageChannel();
++    channel.port1.onmessage = () => {
++      const callback = taskQueue.shift();
++      if (callback) callback();
++    };
++    taskPort = channel.port2;
++  }
++}
++function maskAs(wrapper, original) {
++  if (hardening.mask && typeof original === "function") {
++    try {
++      hardening.mask(wrapper, original);
++    } catch {
++    }
++  }
++  return wrapper;
++}
++function methodLike(name, impl, original) {
++  const wrapper = {
++    [name](...args) {
++      return reflectApply(impl, this, args);
++    }
++  }[name];
++  return maskAs(wrapper, original);
++}
++function nextTask(callback) {
++  if (!hardening.enabled || taskPort === null) return setTimeout(callback, 0);
++  taskQueue.push(callback);
++  reflectApply(portPostMessage, taskPort, [0]);
++}
+ const isAngularZonePresent = () => {
+   return !!globalThis.Zone;
+ };
+@@ -130,6 +183,7 @@ function getUntaintedPrototype(key) {
+     untaintedBasePrototype[key] = defaultObj.prototype;
+     return defaultObj.prototype;
+   }
++  if (hardening.enabled) return defaultPrototype;
+   try {
+     const iframeEl = document.createElement("iframe");
+     iframeEl.style.display = "none";
+@@ -241,6 +295,20 @@ function patch(source, name, replacement) {
+     }
+     const original = source[name];
+     const wrapped = replacement(original);
++    if (hardening.enabled && typeof wrapped === "function" && typeof original === "function") {
++      // A method made the way the browser makes its own, kept where the browser keeps it: never an
++      // own property of an instance (customElements, document.fonts), no prototype, no marker.
++      const masked = methodLike(name, wrapped, original);
++      originals.set(masked, original);
++      let owner = source;
++      while (owner && !Object.prototype.hasOwnProperty.call(owner, name))
++        owner = Object.getPrototypeOf(owner);
++      const target = owner || source;
++      target[name] = masked;
++      return () => {
++        target[name] = original;
++      };
++    }
+     if (typeof wrapped === "function") {
+       wrapped.prototype = wrapped.prototype || {};
+       Object.defineProperties(wrapped, {
+@@ -461,7 +529,7 @@ function is2DCanvasBlank(canvas) {
+   for (let x = 0; x < canvas.width; x += chunkSize) {
+     for (let y = 0; y < canvas.height; y += chunkSize) {
+       const getImageData = ctx.getImageData;
+-      const originalGetImageData = ORIGINAL_ATTRIBUTE_NAME in getImageData ? getImageData[ORIGINAL_ATTRIBUTE_NAME] : getImageData;
++      const originalGetImageData = originals.get(getImageData) ?? (ORIGINAL_ATTRIBUTE_NAME in getImageData ? getImageData[ORIGINAL_ATTRIBUTE_NAME] : getImageData);
+       const pixelBuffer = new Uint32Array(
+         // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
+         originalGetImageData.call(
+@@ -1672,6 +1740,23 @@ function throttle(func, wait, options = {}) {
+ }
+ function hookSetter(target, key, d, isRevoked, win = window) {
+   const original = win.Object.getOwnPropertyDescriptor(target, key);
++  if (!isRevoked && hardening.enabled && hardenedQueueMicrotask) {
++    // A setter named and printed as the browser's, that takes no timer id the page would miss.
++    const setter = Object.getOwnPropertyDescriptor(
++      {
++        set [key](value) {
++          hardenedQueueMicrotask(() => {
++            reflectApply(d.set, this, [value]);
++          });
++          if (original && original.set) reflectApply(original.set, this, [value]);
++        }
++      },
++      key
++    ).set;
++    if (original && original.set) maskAs(setter, original.set);
++    win.Object.defineProperty(target, key, { set: setter });
++    return () => hookSetter(target, key, original || {}, true);
++  }
+   win.Object.defineProperty(
+     target,
+     key,
+@@ -2913,10 +2998,13 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
+       }
+     )
+   });
+-  win.CSSStyleSheet.prototype.addRule = function(selector, styleBlock, index2 = this.cssRules.length) {
++  maskAs(win.CSSStyleSheet.prototype.insertRule, insertRule);
++  const nativeAddRule = win.CSSStyleSheet.prototype.addRule;
++  const addRule = function(selector, styleBlock, index2 = this.cssRules.length) {
+     const rule = `${selector} { ${styleBlock} }`;
+     return win.CSSStyleSheet.prototype.insertRule.apply(this, [rule, index2]);
+   };
++  win.CSSStyleSheet.prototype.addRule = hardening.enabled && typeof nativeAddRule === "function" ? methodLike("addRule", addRule, nativeAddRule) : addRule;
+   const deleteRule = win.CSSStyleSheet.prototype.deleteRule;
+   win.CSSStyleSheet.prototype.deleteRule = new Proxy(deleteRule, {
+     apply: callbackWrapper(
+@@ -2938,9 +3026,12 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
+       }
+     )
+   });
+-  win.CSSStyleSheet.prototype.removeRule = function(index2) {
++  maskAs(win.CSSStyleSheet.prototype.deleteRule, deleteRule);
++  const nativeRemoveRule = win.CSSStyleSheet.prototype.removeRule;
++  const removeRule = function(index2) {
+     return win.CSSStyleSheet.prototype.deleteRule.apply(this, [index2]);
+   };
++  win.CSSStyleSheet.prototype.removeRule = hardening.enabled && typeof nativeRemoveRule === "function" ? methodLike("removeRule", removeRule, nativeRemoveRule) : removeRule;
+   let replace;
+   if (win.CSSStyleSheet.prototype.replace) {
+     replace = win.CSSStyleSheet.prototype.replace;
+@@ -2964,6 +3055,7 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
+         }
+       )
+     });
++    maskAs(win.CSSStyleSheet.prototype.replace, replace);
+   }
+   let replaceSync;
+   if (win.CSSStyleSheet.prototype.replaceSync) {
+@@ -2988,6 +3080,7 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
+         }
+       )
+     });
++    maskAs(win.CSSStyleSheet.prototype.replaceSync, replaceSync);
+   }
+   const supportedNestedCSSRuleTypes = {};
+   if (canMonkeyPatchNestedCSSRule("CSSGroupingRule")) {
+@@ -3068,6 +3161,8 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
+         )
+       }
+     );
++    maskAs(type.prototype.insertRule, unmodifiedFunctions[typeKey].insertRule);
++    maskAs(type.prototype.deleteRule, unmodifiedFunctions[typeKey].deleteRule);
+   });
+   return callbackWrapper(() => {
+     win.CSSStyleSheet.prototype.insertRule = insertRule;
+@@ -3080,6 +3175,48 @@ function initStyleSheetObserver({ styleSheetRuleCb, mirror: mirror2, stylesheetM
+     });
+   });
+ }
++const adoptedHosts = /* @__PURE__ */ new WeakMap();
++const adoptedPrototypes = /* @__PURE__ */ new WeakSet();
++/**
++ * Hardening: the setter is replaced once on Document.prototype or ShadowRoot.prototype, looking
++ * like the browser's, and reports only for the hosts being recorded. A document or shadow root
++ * never gets an own adoptedStyleSheets.
++ */
++function observeAdoptedStyleSheets(proto, descriptor, host2, hostId, stylesheetManager) {
++  if (!adoptedPrototypes.has(proto)) {
++    adoptedPrototypes.add(proto);
++    const nativeSet = descriptor.set;
++    if (typeof nativeSet === "function") {
++      const set = Object.getOwnPropertyDescriptor(
++        {
++          set adoptedStyleSheets(sheets) {
++            reflectApply(nativeSet, this, [sheets]);
++            const observed = adoptedHosts.get(this);
++            if (observed) {
++              try {
++                observed.stylesheetManager.adoptStyleSheets(sheets, observed.hostId);
++              } catch (e) {
++              }
++            }
++          }
++        },
++        "adoptedStyleSheets"
++      ).set;
++      maskAs(set, nativeSet);
++      Object.defineProperty(proto, "adoptedStyleSheets", {
++        configurable: descriptor.configurable,
++        enumerable: descriptor.enumerable,
++        get: descriptor.get,
++        set
++      });
++    }
++  }
++  const entry = { hostId, stylesheetManager };
++  adoptedHosts.set(host2, entry);
++  return callbackWrapper(() => {
++    if (adoptedHosts.get(host2) === entry) adoptedHosts.delete(host2);
++  });
++}
+ function initAdoptedStyleSheetObserver({
+   mirror: mirror2,
+   stylesheetManager
+@@ -3096,6 +3233,14 @@ function initAdoptedStyleSheetObserver({
+   if (hostId === null || hostId === -1 || !patchTarget || !originalPropertyDescriptor)
+     return () => {
+     };
++  if (hardening.enabled)
++    return observeAdoptedStyleSheets(
++      patchTarget.prototype,
++      originalPropertyDescriptor,
++      host2,
++      hostId,
++      stylesheetManager
++    );
+   Object.defineProperty(host2, "adoptedStyleSheets", {
+     configurable: originalPropertyDescriptor.configurable,
+     enumerable: originalPropertyDescriptor.enumerable,
+@@ -3163,6 +3308,7 @@ function initStyleDeclarationObserver({
+       }
+     )
+   });
++  maskAs(win.CSSStyleDeclaration.prototype.setProperty, setProperty);
+   const removeProperty = win.CSSStyleDeclaration.prototype.removeProperty;
+   win.CSSStyleDeclaration.prototype.removeProperty = new Proxy(removeProperty, {
+     apply: callbackWrapper(
+@@ -3192,6 +3338,7 @@ function initStyleDeclarationObserver({
+       }
+     )
+   });
++  maskAs(win.CSSStyleDeclaration.prototype.removeProperty, removeProperty);
+   return callbackWrapper(() => {
+     win.CSSStyleDeclaration.prototype.setProperty = setProperty;
+     win.CSSStyleDeclaration.prototype.removeProperty = removeProperty;
+@@ -3568,6 +3715,24 @@ class CrossOriginIframeMirror {
      return remoteIdToIdMap;
    }
  }
 +const handledIframeMessages = new WeakSet();
++/** Hardening: a child's message carries its payload under the session's key, and nothing else. */
++function keyedIframeMessage(message) {
++  const data = message.data;
++  const payload = data !== null && typeof data === "object" ? data[hardening.messageKey] : void 0;
++  if (payload === null || typeof payload !== "object") return null;
++  return {
++    origin: message.origin,
++    source: message.source,
++    data: {
++      type: "rrweb",
++      event: payload.event,
++      origin: payload.origin,
++      isCheckout: payload.isCheckout
++    }
++  };
++}
 +let activeIframeManager = null;
  class IframeManager {
    constructor(options) {
      __publicField(this, "iframes", /* @__PURE__ */ new WeakMap());
-@@ -3591,6 +3593,7 @@ class IframeManager {
+@@ -3591,6 +3756,7 @@ class IframeManager {
        )
      );
      this.mirror = options.mirror;
@@ -19,7 +337,13 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..b76814da38a44a384c954945848b1ecb
      if (this.recordCrossOriginIframes) {
        window.addEventListener("message", this.handleMessage.bind(this));
      }
-@@ -3635,13 +3638,18 @@ class IframeManager {
+@@ -3631,17 +3797,23 @@ class IframeManager {
+       );
+   }
+   handleMessage(message) {
+-    const crossOriginMessageEvent = message;
++    const crossOriginMessageEvent = hardening.messageKey ? keyedIframeMessage(message) : message;
++    if (crossOriginMessageEvent === null) return;
      if (crossOriginMessageEvent.data.type !== "rrweb" || // To filter out the rrweb messages which are forwarded by some sites.
      crossOriginMessageEvent.origin !== crossOriginMessageEvent.data.origin)
        return;
@@ -39,7 +363,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..b76814da38a44a384c954945848b1ecb
      );
      if (transformedEvent)
        this.wrappedEmit(
-@@ -3649,11 +3657,13 @@ class IframeManager {
+@@ -3649,11 +3821,13 @@ class IframeManager {
          crossOriginMessageEvent.data.isCheckout
        );
    }
@@ -55,3 +379,48 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..b76814da38a44a384c954945848b1ecb
          this.crossOriginIframeStyleMirror.reset(iframeEl);
          this.replaceIdOnNode(e.data.node, iframeEl);
          const rootId = e.data.node.id;
+@@ -3845,7 +4019,7 @@ class ShadowDomManager {
+         mirror: this.mirror
+       })
+     );
+-    setTimeout(() => {
++    nextTask(() => {
+       if (shadowRoot2.adoptedStyleSheets && shadowRoot2.adoptedStyleSheets.length > 0)
+         this.bypassOptions.stylesheetManager.adoptStyleSheets(
+           shadowRoot2.adoptedStyleSheets,
+@@ -3860,7 +4034,7 @@ class ShadowDomManager {
+           shadowRoot2
+         )
+       );
+-    }, 0);
++    });
+   }
+   /**
+    * Monkey patch 'attachShadow' of an IFrameElement to observe newly added shadow doms.
+@@ -4644,6 +4818,17 @@ function record(options = {}) {
+     }
+     if (inEmittingFrame) {
+       emit == null ? void 0 : emit(eventProcessor(e), isCheckout);
++    } else if (passEmitsToParent && hardening.messageKey) {
++      window.parent.postMessage(
++        {
++          [hardening.messageKey]: {
++            event: eventProcessor(e),
++            origin: window.location.origin,
++            isCheckout
++          }
++        },
++        "*"
++      );
+     } else if (passEmitsToParent) {
+       const message = {
+         type: "rrweb",
+@@ -5030,6 +5215,7 @@ record.takeFullSnapshot = (isCheckout) => {
+ };
+ record.mirror = mirror;
+ export {
+-  record
++  record,
++  setRecordHardening
+ };
+ //# sourceMappingURL=record.js.map

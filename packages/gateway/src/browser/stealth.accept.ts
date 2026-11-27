@@ -259,12 +259,15 @@ async function runMode(
     const hellos: string[] = [];
     const snapshots: unknown[] = [];
     const fontEvents: string[] = [];
+    const incremental: Array<{ source: number; json: string }> = [];
     if (link !== undefined)
       void (async () => {
         for await (const message of link.msgs(page.targetId) as AsyncIterable<AgentMsg>) {
           if (message.kind === "hello") hellos.push(message.url);
           if (message.kind !== "rrweb") continue;
           if (message.e.type === EventType.FullSnapshot) snapshots.push(message.e);
+          if (message.e.type === EventType.IncrementalSnapshot)
+            incremental.push({ source: message.e.data.source, json: JSON.stringify(message.e) });
           // rrweb's own font events (collectFonts), which the replayer adds to its document.
           if (
             message.e.type === EventType.IncrementalSnapshot &&
@@ -307,6 +310,14 @@ async function runMode(
       }
       if (link !== undefined && name === "typing")
         checks.push(...(await driveTyping(browser, link, page, snapshots, evaluate)));
+      // Changes made by script once recording runs, in every run so the pages stay alike. The
+      // hardened recorder observes them in other ways (prototype setters, microtasks), and they
+      // must still reach the replay.
+      if (name === "cssom") {
+        const before = incremental.length;
+        await evaluate(page.sessionId, SCRIPTED_CHANGES);
+        if (link !== undefined) checks.push(await scriptedChangesArrived(incremental, before));
+      }
 
       const result = await evaluate<{ own: Fingerprint; frames: Record<string, Fingerprint> }>(
         page.sessionId,
@@ -356,6 +367,49 @@ async function runMode(
     await browser.close();
     await rm(profile, { force: true, recursive: true, maxRetries: 5, retryDelay: 100 });
   }
+}
+
+/** After load: sheets adopted by the document and by a shadow root, and a value set by script. */
+const SCRIPTED_CHANGES = `(async () => {
+  const pause = (ms) => new Promise((done) => setTimeout(done, ms));
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync("p { word-spacing: 3px; }");
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = host.attachShadow({ mode: "open" });
+  const inner = new CSSStyleSheet();
+  inner.replaceSync("b { word-spacing: 4px; }");
+  const input = document.createElement("input");
+  document.body.append(input);
+  await pause(100);
+  root.adoptedStyleSheets = [inner];
+  input.value = "set by script";
+  await pause(50);
+  return true;
+})()`;
+
+async function scriptedChangesArrived(
+  incremental: ReadonlyArray<{ source: number; json: string }>,
+  from: number,
+): Promise<string> {
+  const wanted = [
+    ["the document's adopted sheet", IncrementalSource.AdoptedStyleSheet, "word-spacing: 3px"],
+    ["a shadow root's adopted sheet", IncrementalSource.AdoptedStyleSheet, "word-spacing: 4px"],
+    ["a value set by script", IncrementalSource.Input, "set by script"],
+  ] as const;
+  const missing = () =>
+    wanted.filter(
+      ([, source, text]) =>
+        !incremental
+          .slice(from)
+          .some((event) => event.source === source && event.json.includes(text)),
+    );
+  await waitFor("scripted changes", () => missing().length === 0).catch(() => undefined);
+  const left = missing();
+  return left.length === 0
+    ? "scripted sheets and values recorded"
+    : `FAIL: not recorded: ${left.map(([label]) => label).join(", ")}`;
 }
 
 /** Typing, value sync, scrolling and a click, as a viewer sends them, through the real relay. */
