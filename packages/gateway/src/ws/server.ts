@@ -23,7 +23,12 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer } from "ws";
 import type WebSocket from "ws";
 import { serializedDown, type TabHub } from "../hub/tabhub";
-import { ViewerConn, type ViewerConnOpts, type ViewerSocket } from "./viewerconn";
+import {
+  ViewerConn,
+  type ReplayCursor,
+  type ViewerConnOpts,
+  type ViewerSocket,
+} from "./viewerconn";
 
 export const DEFAULT_BATCH_MS = 16;
 export const VIEWER_REPLACED_CODE = 4009;
@@ -271,6 +276,8 @@ export interface WsServerOpts {
   /** Off to make every delta wait out the batch window. */
   sendFirstDeltaAtOnce?: boolean;
   viewerConn?: ViewerConnOpts;
+  /** The hubs keep live trees: a drained viewer gets the tail it lacks, not a whole snapshot. */
+  liveTree?: boolean;
   /** Test-only application-frame RTT shim; half is applied in each WS direction. */
   simulatedRttMs?: number;
   /** Test-only per-viewer delta loss. Omitted in every production composition. */
@@ -441,19 +448,25 @@ export function createWsServer(opts: WsServerOpts): WsServer {
     }
     const sessionHubs = (): TabHub[] => [...opts.hubsForSession(sessionId)];
     // A reconnecting viewer may continue from its resume cursors, but only on its first join:
-    // drain recovery after a stall always rebuilds from a fresh snapshot. Whether it resumes is
+    // drain recovery after a stall continues from this connection's own cursors (live tree) or
+    // rebuilds from a fresh snapshot. Whether it resumes is
     // decided once, here and in onConnection, and nothing between that and the join can change it.
     let resumeCursors: readonly ResumeCursor[] = resumeCursorsFor(request).filter((cursor) =>
       sessionHubs().some(
         (hub) => hub.tabId === cursor.tab && hub.canResume(cursor.epoch, cursor.nextSeq),
       ),
     );
-    const joinPayload = (): Down[] => {
+    // Later (drain recovery) with this connection's own cursors when the live tree serves tails:
+    // only what the viewer lacks. Every tab is in it, as old viewers expect.
+    const joinPayload = (own?: ReadonlyMap<string, ReplayCursor>): Down[] => {
       const cursors = resumeCursors;
       resumeCursors = [];
-      return sessionHubs().flatMap((hub) =>
-        hub.joinPayload(cursors.find((cursor) => cursor.tab === hub.tabId)),
-      );
+      return sessionHubs().flatMap((hub) => {
+        const resume =
+          cursors.find((cursor) => cursor.tab === hub.tabId) ??
+          (opts.liveTree && own?.has(hub.tabId) ? own.get(hub.tabId) : undefined);
+        return hub.joinPayload(resume);
+      });
     };
     const viewerSocket: ViewerSocket =
       oneWayDelayMs === 0 ? socket : new DelayedViewerSocket(socket, oneWayDelayMs);

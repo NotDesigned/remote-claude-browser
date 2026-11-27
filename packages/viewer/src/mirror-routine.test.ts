@@ -396,8 +396,16 @@ describe("D10 recovery triggers", () => {
       expect(replayers()).toHaveLength(2);
 
       applied.mockClear();
+      // An older gateway answers with the snapshot where the page stands, then the deltas since,
+      // repeating some the page already has.
       mirror.handle({ t: "resync", tab: "T1" });
-      mirror.handle({ t: "snapshot", tab: "T1", epoch: 1, seq: 1, data: [full(1000)] });
+      mirror.handle({
+        t: "snapshot",
+        tab: "T1",
+        epoch: 1,
+        seq: 2,
+        data: [full(1000), delta(1001)],
+      });
       mirror.handle({
         t: "delta",
         tab: "T1",
@@ -414,6 +422,113 @@ describe("D10 recovery triggers", () => {
       expect(replayers()[0]?.added).toHaveLength(4);
       vi.advanceTimersByTime(5_000);
       expect(requestResync).not.toHaveBeenCalled();
+      mirror.teardown();
+    });
+
+    it("rebuilds rather than keep a stale page when the catch-up's snapshot is ahead of it", () => {
+      const { mirror, requestResync, open } = tabs();
+      open("T1");
+      mirror.handle({ t: "delta", tab: "T1", epoch: 1, seq: 2, data: [delta(1001)] });
+      open("T2");
+      mirror.selectTab("T1");
+      // The gateway's catch-up: its snapshot carries the deltas since, and seq is the last of them.
+      mirror.handle({ t: "resync", tab: "T1" });
+      mirror.handle({
+        t: "snapshot",
+        tab: "T1",
+        epoch: 1,
+        seq: 4,
+        data: [full(1000), delta(1001), delta(1002), delta(1003)],
+      });
+      // Not the page left behind at seq 2: a new replay of everything up to seq 4.
+      expect(replayers()).toHaveLength(3);
+      expect(mirror.resumeCursor()).toEqual({ tab: "T1", epoch: 1, nextSeq: 5 });
+      mirror.handle({ t: "delta", tab: "T1", epoch: 1, seq: 5, data: [delta(1004)] });
+      expect(replayers()[2]?.added.map((event) => event.timestamp)).toEqual([1004]);
+      vi.advanceTimersByTime(5_000);
+      expect(requestResync).not.toHaveBeenCalled();
+      mirror.teardown();
+    });
+
+    it("confirms the page it kept when the catch-up's snapshot is exactly where it stands", () => {
+      const { mirror, requestResync, open } = tabs();
+      open("T1");
+      mirror.handle({ t: "delta", tab: "T1", epoch: 1, seq: 2, data: [delta(1001)] });
+      open("T2");
+      mirror.selectTab("T1");
+      mirror.handle({ t: "resync", tab: "T1" });
+      mirror.handle({
+        t: "snapshot",
+        tab: "T1",
+        epoch: 1,
+        seq: 2,
+        data: [full(1000), delta(1001)],
+      });
+      expect(replayers()).toHaveLength(2);
+      expect(mirror.getReplayer()).toBe(replayers()[0]);
+      mirror.handle({ t: "delta", tab: "T1", epoch: 1, seq: 3, data: [delta(1002)] });
+      expect(replayers()[0]?.added.map((event) => event.timestamp)).toEqual([1001, 1002]);
+      vi.advanceTimersByTime(5_000);
+      expect(requestResync).not.toHaveBeenCalled();
+      mirror.teardown();
+    });
+
+    it("catches a kept page up from its tail and caught-up, rebuilding nothing", () => {
+      vi.useFakeTimers();
+      fakeRrweb.FakeReplayer.instances.length = 0;
+      const container = new FakeElement(new FakeDocument());
+      const requestResync = vi.fn();
+      const held: string[] = [];
+      const mirror = createMirror({
+        container: container as unknown as HTMLElement,
+        pipeline: new EventPipeline(),
+        requestResync,
+        parkedTabs: 2,
+        onHeldChange: (cursors) =>
+          held.push(cursors.map((c) => `${c.tab}@${c.epoch}:${c.nextSeq}`).join(" ")),
+      });
+      const open = (tab: string) => {
+        mirror.selectTab(tab);
+        mirror.handle({ t: "resync", tab });
+        mirror.handle({ t: "snapshot", tab, epoch: 1, seq: 1, data: [full(1000)] });
+      };
+      open("T1");
+      mirror.handle({ t: "delta", tab: "T1", epoch: 1, seq: 2, data: [delta(1001)] });
+      open("T2");
+      held.length = 0;
+      const stage = container.children[0] as unknown as { inert?: boolean };
+
+      mirror.selectTab("T1");
+      // What it holds is said before the switch goes out, with T1 where it was left.
+      expect(held.at(-1)).toBe("T2@1:2 T1@1:3");
+      // The tail it lacks, then caught-up.
+      mirror.handle({
+        t: "delta",
+        tab: "T1",
+        epoch: 1,
+        seq: 3,
+        data: [delta(1002), delta(1003)],
+      });
+      expect(stage.inert).toBe(true);
+      mirror.handle({ t: "caught-up", tab: "T1", epoch: 1, seq: 4 });
+
+      expect(replayers()).toHaveLength(2);
+      expect(mirror.getReplayer()).toBe(replayers()[0]);
+      expect(replayers()[0]?.added.map((event) => event.timestamp)).toEqual([1001, 1002, 1003]);
+      expect(stage.inert).toBe(false);
+      expect(mirror.resumeCursor()).toEqual({ tab: "T1", epoch: 1, nextSeq: 5 });
+      vi.advanceTimersByTime(10_000);
+      expect(requestResync).not.toHaveBeenCalled();
+      mirror.teardown();
+    });
+
+    it("asks for the tab when caught-up says the page is not where it stands", () => {
+      const { mirror, requestResync, open } = tabs();
+      open("T1");
+      open("T2");
+      mirror.selectTab("T1");
+      mirror.handle({ t: "caught-up", tab: "T1", epoch: 1, seq: 7 });
+      expect(requestResync).toHaveBeenCalledExactlyOnceWith("T1", "caught-up out of step");
       mirror.teardown();
     });
 

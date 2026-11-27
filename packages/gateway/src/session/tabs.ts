@@ -13,7 +13,7 @@ import type { Down, Up } from "@mirror/protocol";
 
 import { sealAssetToken } from "../assets/token";
 import { createRewriteStage } from "../assets/rewrite";
-import { TabHub, type RewriteStage } from "../hub/tabhub";
+import { TabHub, type LiveTreeOptions, type RewriteStage } from "../hub/tabhub";
 import type { TargetRef } from "../types";
 import type { BrowserHandle, BrowserTargetInfo } from "../browser/launch";
 
@@ -39,6 +39,13 @@ export interface TabLifecycleOpts {
   debounceMs?: number;
   createHub?: (target: TargetRef) => TabHub;
   onError?: (error: unknown) => void;
+  /** Each tab's live tree (MIRROR_LIVE_TREE); absent or false keeps the legacy store. */
+  liveTree?: LiveTreeOptions | false;
+  /**
+   * A tab became active: catch each viewer up on it (viewer-hub's catchUpViewers). Without it,
+   * the tab's join payload is broadcast.
+   */
+  catchUp?(tab: string, hub: TabHub): void;
 }
 
 export interface TabLifecycle {
@@ -164,7 +171,7 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
   // A page whose stream lost an event has to be replayed again from a snapshot.
   const removeLossListener =
     opts.agentLink.onStreamLoss?.((targetId) => {
-      if (!disposed) tabs.get(targetId)?.hub.requestSnapshot("resync");
+      if (!disposed) tabs.get(targetId)?.hub.noteStreamLoss();
     }) ?? (() => undefined);
 
   const removeTitleNavigationListener = opts.browser.onSessionEvent(
@@ -283,7 +290,16 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
   };
 
   const publishCatchUp = (state: TabState): void => {
+    if (opts.catchUp !== undefined && state.hub.treeState !== "off") {
+      opts.catchUp(state.target.targetId, state.hub);
+      return;
+    }
     for (const down of state.hub.joinPayload()) opts.publish(down);
+  };
+
+  /** The tab shown is in the foreground; the others are the first to go dormant. */
+  const syncForeground = (): void => {
+    for (const [id, state] of tabs) state.hub.setForeground(id === activeTabId);
   };
 
   const activate = async (tabId: string): Promise<void> => {
@@ -294,6 +310,7 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
     backgroundTabs.delete(tabId);
     const changed = activeTabId !== tabId;
     activeTabId = tabId;
+    syncForeground();
     scheduleTabsBroadcast();
     if (!changed) return;
     announceActive(state);
@@ -352,6 +369,7 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
       if (disposed) return result.targetId;
       const changed = activeTabId !== result.targetId;
       activeTabId = result.targetId;
+      syncForeground();
       backgroundTabs.delete(result.targetId);
       // As activate() does: viewers learn of the switch now, not after the debounced broadcast.
       if (changed) announceActive(tabs.get(result.targetId));
@@ -401,6 +419,7 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
         // Asset isolation is part of constructing a browser tab, not optional wiring in
         // an entrypoint. Each tab also owns its rewriter's document URL lifetime.
         rewrite: opts.rewrite ?? createRewriteStage(assetTokenKey),
+        liveTree: opts.liveTree ?? false,
       });
     const state = { target, hub };
     tabs.set(target.targetId, state);
@@ -412,6 +431,12 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
       if (backgroundTabs.has(target.openerTabId)) backgroundTabs.add(target.targetId);
       else void activate(target.targetId).catch(report);
     }
+    hub.setForeground(activeTabId === target.targetId);
+    // A verify snapshot that showed the tree was wrong is sent as ingest's messages are.
+    hub.onDown((down) => {
+      if (disposed || tabs.get(target.targetId) !== state) return;
+      if (activeTabId === target.targetId && hub.mode === "dom") opts.publish(down);
+    });
     hub.onNeedSnapshot(() =>
       opts.agentLink.sendCmd(target.targetId, { cmd: "snapshot" }).then((result) => {
         if (!result.ok) throw new Error(result.err ?? "snapshot command failed");

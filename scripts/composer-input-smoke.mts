@@ -18,6 +18,11 @@
 // SMOKE_DEVICE=desktop|iphone|pixel picks the viewer device (Playwright's descriptors, on
 // Chromium); COMPOSER_SMOKE_ONLY=gate runs the P1 gate (scripts/lib/proxy-gate.mts) on it and
 // writes its measurements to SMOKE_GATE_OUT when set.
+// Unless MIRROR_LIVE_TREE=0, the hub keeps the page's live tree, as the gateway does: hello says
+// tree1, an editor's catch-up names its node and is answered with that node's subtree, any other
+// resync-req with the tab's state for this viewer alone. Each subtree must be at most 5 % of the
+// whole snapshot's bytes; the runs report how many subtrees, catch-ups and rebuilds there were.
+// MIRROR_LIVE_TREE_VERIFY=1 also checks the tree against the page after every run.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
@@ -43,7 +48,9 @@ import {
   type Down,
   type Up,
 } from "../packages/protocol/src/index";
-import { TabHub } from "../packages/gateway/src/hub/tabhub";
+import { TabHub, type LiveTreeOptions } from "../packages/gateway/src/hub/tabhub";
+import { TreeBudget } from "../packages/gateway/src/hub/live-tree/budget";
+import { pageSyncMetrics } from "../packages/gateway/src/hub/live-tree/metrics";
 import { createInputRelay, type InputMsg } from "../packages/gateway/src/input/relay";
 import { viewerDist } from "./viewer-dist.mjs";
 import { describeLink, slowLinkConfig, slowSocket, type SlowSocket } from "./lib/slow-link.mts";
@@ -67,7 +74,7 @@ const remoteHtml = `<!doctype html><meta charset="utf-8"><meta name="viewport" c
 <style>body{margin:0;font:16px sans-serif}#bar{position:fixed;bottom:0;left:0;right:0;padding:8px;background:#eee}
 .ProseMirror{min-height:40px;border:1px solid #888;padding:6px;background:#fff;white-space:pre-wrap}
 .ProseMirror p{margin:0}.is-empty::before{content:attr(data-placeholder);color:#999;float:left;height:0}
-#thread{padding:8px 8px 120px}</style>
+#thread{padding:8px 8px 120px;max-height:45vh;overflow:auto}</style>
 <input id="secret" type="password" autocomplete="off" style="margin:8px"><div id="thread"></div><textarea id="plain" rows="3" style="width:90%;margin:8px"></textarea><div id="bar"></div>
 <script>${composerScript.replaceAll("</script", "<\\/script")}</script>
 <script>
@@ -91,6 +98,13 @@ for (const type of ["keydown", "keypress", "beforeinput", "input", "compositions
     if (window.inputLog.length > 20000) window.inputLog.shift();
   }, true);
 const thread = document.getElementById("thread");
+// A conversation already on the page, as a real one has: what a whole snapshot carries.
+for (let turn = 0; turn < 120; turn++) {
+  const earlier = document.createElement("p");
+  earlier.className = "earlier";
+  earlier.textContent = "An earlier turn of this conversation, number " + turn + ", with a few lines of text in it so that the page weighs what a real one does.";
+  thread.append(earlier);
+}
 window.sentMessages = [];
 const send = (text) => {
     window.sentMessages.push(text);
@@ -202,6 +216,23 @@ const contextFor = (softKeyboard: boolean): BrowserContextOptions => {
     ? { viewport: { width: 390, height: 760 }, isMobile: true, hasTouch: true }
     : { viewport: { width: 1100, height: 800 } };
 };
+const liveTree: LiveTreeOptions | false =
+  process.env.MIRROR_LIVE_TREE !== "0"
+    ? {
+        ringEvents: 2_000,
+        ringBytes: 2 * 1024 * 1024,
+        maxNodes: 400_000,
+        maxBytes: 48 * 1024 * 1024,
+        maxSidecar: 20_000,
+        verify: process.env.MIRROR_LIVE_TREE_VERIFY === "1",
+        budget: new TreeBudget(256 * 1024 * 1024),
+      }
+    : false;
+console.log(
+  `composer-input: ${describeLink(link)}, MIRROR_INPUT_ACKS=${ackMode}, MIRROR_LIVE_TREE=${liveTree ? 1 : 0}`,
+);
+/** Per run with the live tree: subtree answers and their size against the whole snapshot. */
+const treeRuns: Array<Record<string, unknown>> = [];
 const sockets = new Set<{ raw: any; slow: SlowSocket }>();
 const chunks = new ChunkReassembler();
 const pending = new Map<number, (reply: CmdRes) => void>();
@@ -248,7 +279,8 @@ async function run(
   softKeyboard: boolean,
   body: (mirror: Mirror) => Promise<void>,
 ): Promise<void> {
-  const hub = new TabHub({ sessionId: "client-1", tabId: "composer" });
+  const hub = new TabHub({ sessionId: "client-1", tabId: "composer", liveTree });
+  const tree = { subtrees: 0, subtreeBytes: [] as number[], fullBytes: 0, catchUps: 0 };
   const remote = await browser.newPage({ viewport: { width: 390, height: 700 } });
   await remote.exposeFunction("__mirror_emit", (payload: string) => {
     const message = chunks.add(payload);
@@ -346,8 +378,8 @@ async function run(
         role: "driver",
         sessionId: "client-1",
         serverTs: Date.now(),
-        ...(acks.caps.length > 0
-          ? { caps: proxyInput ? [...acks.caps, "proxyin1"] : acks.caps }
+        ...(acks.caps.length > 0 || liveTree
+          ? { caps: [...acks.caps, ...(proxyInput ? ["proxyin1"] : []), ...(liveTree ? ["tree1"] : [])] }
           : {}),
       }),
     );
@@ -378,7 +410,23 @@ async function run(
           hub.requestSnapshot("viewport");
         });
       // As the gateway does: an editor's catch-up is this viewer's alone, from the cached state.
-      if (message.t === "resync-req") {
+      // With the live tree every resync-req is, and one naming a node gets just its subtree
+      // (this viewer has every delta the hub produced: they are sent as produced).
+      if (message.t === "resync-req" && liveTree) {
+        if (message.reason === LOCAL_RESYNC_REASON) counters.editableResyncs += 1;
+        const subtree = message.node === undefined ? null : hub.subtreeDown(message.node);
+        const whole = hub.joinPayload();
+        tree.fullBytes = Math.max(tree.fullBytes, JSON.stringify(whole).length);
+        if (subtree !== null) {
+          const text = JSON.stringify(subtree);
+          tree.subtrees += 1;
+          tree.subtreeBytes.push(text.length);
+          socket.send(text);
+        } else {
+          tree.catchUps += 1;
+          for (const down of whole) socket.send(JSON.stringify(down));
+        }
+      } else if (message.t === "resync-req") {
         if (message.reason === LOCAL_RESYNC_REASON) {
           counters.editableResyncs += 1;
           for (const down of hub.joinPayload()) socket.send(JSON.stringify(down));
@@ -442,6 +490,40 @@ async function run(
     });
     // The gate records the ack checks with its measurements instead of stopping on them.
     if (body !== gate) await checkAcks(label, body.name, page, acks);
+    const rebuilds = await page.evaluate(
+      () => performance.getEntriesByName("mirror-rebuild").length,
+    );
+    if (liveTree) {
+      if (liveTree.verify) {
+        // The page's own snapshot of its document, against the tree.
+        const before = pageSyncMetrics.verify.mismatch + pageSyncMetrics.verify.match;
+        hub.suspect();
+        await page.waitForTimeout(1_500);
+        // The verify snapshot is decided by the next event or its settle timer.
+        assert.ok(
+          pageSyncMetrics.verify.mismatch + pageSyncMetrics.verify.match > before,
+          `${label} ${body.name}: no verify snapshot was taken`,
+        );
+        assert.equal(pageSyncMetrics.verify.mismatch, 0, `${label} ${body.name}: verify mismatch`);
+      }
+      const largest = Math.max(0, ...tree.subtreeBytes);
+      const result = {
+        label,
+        run: body.name,
+        rebuilds,
+        subtrees: tree.subtrees,
+        catchUps: tree.catchUps,
+        largestSubtree: largest,
+        fullSnapshot: tree.fullBytes,
+        share: tree.fullBytes === 0 ? null : Number((largest / tree.fullBytes).toFixed(4)),
+      };
+      treeRuns.push(result);
+      console.log(`live-tree ${JSON.stringify(result)}`);
+      assert.ok(
+        tree.subtreeBytes.every((bytes) => bytes <= tree.fullBytes * 0.05),
+        `${label} ${body.name}: a subtree was more than 5 % of the whole snapshot`,
+      );
+    } else console.log(`rebuilds ${JSON.stringify({ label, run: body.name, rebuilds })}`);
   } finally {
     wss.off("connection", onConnection);
     for (const socket of sockets) {
@@ -952,6 +1034,22 @@ try {
     for (const [label, soft, body, name] of runs)
       if (only.every((part) => part === label || part === name)) await run(label, soft, body);
   console.log(`composer-input acks: ${JSON.stringify(measured)}`);
+  if (liveTree) {
+    console.log(`composer-input live tree: ${JSON.stringify(treeRuns)}`);
+    console.log(
+      `composer-input page sync: ${JSON.stringify({
+        pageSnapshots: pageSyncMetrics.pageSnapshots,
+        verify: pageSyncMetrics.verify,
+        treeBroken: pageSyncMetrics.treeBroken,
+        anomalies: pageSyncMetrics.anomalies,
+      })}`,
+    );
+    const unexpected = Object.entries(pageSyncMetrics.pageSnapshots).filter(
+      ([cause, count]) =>
+        count > 0 && !["nav", "viewport", "page-initiated", "verify"].includes(cause),
+    );
+    assert.deepEqual(unexpected, [], "page snapshots the live tree should have made unnecessary");
+  }
   if (!strictText)
     console.log(
       `composer-input text over ${describeLink(link)} (measured, not enforced): ${

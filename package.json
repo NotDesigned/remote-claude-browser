@@ -43,6 +43,8 @@
     "test:pixel-ui": "bash scripts/limited-run.sh node scripts/pixel-smoke.mjs",
     "test:mobile-input": "bash scripts/limited-run.sh tsx scripts/mobile-input-smoke.mts",
     "test:composer-input": "bash scripts/limited-run.sh tsx scripts/composer-input-smoke.mts",
+    "bench:live-tree": "bash scripts/limited-run.sh tsx scripts/live-tree-bench.mts",
+    "test:live-tree-accept": "bash scripts/limited-run.sh pnpm -F @mirror/gateway exec tsx src/hub/live-tree.accept.ts",
     "probe:oopif": "bash scripts/limited-run.sh tsx scripts/probe-oopif.ts",
     "test:stealth": "bash scripts/limited-run.sh tsx packages/gateway/src/browser/stealth.accept.ts",
     "smoke:compose": "bash scripts/limited-run.sh bash -c 'bash scripts/compose-smoke.sh'",

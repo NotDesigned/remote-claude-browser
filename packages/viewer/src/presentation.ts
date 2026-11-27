@@ -49,7 +49,7 @@ function editingIn(host: HTMLElement): boolean {
 
 type Snapshot = Extract<Down, { t: "snapshot" }>;
 type Viewport = Extract<Up, { t: "view" }>;
-type DomUpdate = Extract<Down, { t: "snapshot" | "delta" | "resync" }>;
+type DomUpdate = Extract<Down, { t: "snapshot" | "delta" | "resync" | "caught-up" | "subtree" }>;
 
 interface PresentationOptions {
   host: HTMLElement;
@@ -66,7 +66,13 @@ interface PresentationOptions {
 }
 
 function isDomUpdate(message: Down): message is DomUpdate {
-  return message.t === "snapshot" || message.t === "delta" || message.t === "resync";
+  return (
+    message.t === "snapshot" ||
+    message.t === "delta" ||
+    message.t === "resync" ||
+    message.t === "caught-up" ||
+    message.t === "subtree"
+  );
 }
 
 /** One remote tab and one input agreement own the display, independent of the shell UI. */

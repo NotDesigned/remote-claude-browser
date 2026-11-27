@@ -10,7 +10,7 @@ import {
   type eventWithTime,
 } from "@mirror/protocol";
 
-const MIN_EXTERNAL_SHEET_LENGTH = 16 * 1024;
+export const MIN_EXTERNAL_SHEET_LENGTH = 16 * 1024;
 
 type SnapshotDown = Extract<Down, { t: "snapshot" }>;
 interface SheetNode {
@@ -22,12 +22,22 @@ interface SheetNode {
 
 const sheetsByEvent = new WeakMap<object, Map<string, string>>();
 
+/** The content hash a stylesheet is referred to by. */
+export function sheetHash(text: string): string {
+  return createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+
+/** Records the stylesheets an event (a FullSnapshot built elsewhere) refers to by hash. */
+export function registerSheets(event: eventWithTime, sheets: Map<string, string>): void {
+  if (sheets.size > 0) sheetsByEvent.set(event, sheets);
+}
+
 /** Moves large stylesheets out of a FullSnapshot, leaving content-hash references behind. */
 export function externalizeSheets(event: eventWithTime): eventWithTime {
   if (event.type !== EventType.FullSnapshot) return event;
   const sheets = new Map<string, string>();
   const hashOf = (text: string) => {
-    const hash = createHash("sha256").update(text).digest("hex").slice(0, 16);
+    const hash = sheetHash(text);
     sheets.set(hash, text);
     return hash;
   };

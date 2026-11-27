@@ -12,11 +12,14 @@
  * reuse a Replayer instance across resyncs).
  *
  * ## epoch semantics (D4, D7)
- * `epoch` is gateway-assigned per tab. A new one opens on: agent docId change (navigation), a
- * resync snapshot (a lost agent message, or a join the delta buffer can no longer serve), and
- * viewport change. Epochs are unique across the gateway's tab hubs, so a different one means a
- * different document and never "older" or "newer". Every epoch
- * opens with a fresh `snapshot` message. Input gating (D7): the gateway DROPS input from any
+ * `epoch` is gateway-assigned per tab: an epoch is a document as the page last gave it whole. A
+ * new one opens on: agent docId change (navigation), a page snapshot that replaces what the
+ * gateway held (a lost agent message, a broken live tree, or, without the live tree, a join the
+ * delta buffer can no longer serve), and viewport change. Epochs are unique across the gateway's
+ * tab hubs, so a different one means a different document and never "older" or "newer". Every
+ * epoch opens with a fresh `snapshot` message. A gateway with the live tree (`tree1`) also sends
+ * one viewer a `snapshot` it synthesized from its copy of the page, in the current epoch: its
+ * `seq` is the last event it reflects. Input gating (D7): the gateway DROPS input from any
  * viewer whose last `view-ack` epoch != the tab's current epoch — this single rule prevents
  * every "clicked on stale layout" bug.
  *
@@ -67,6 +70,8 @@ export type SnapshotReason = "nav" | "viewport" | "resync";
  * without asking the page for a new snapshot that every viewer would have to rebuild from.
  */
 export const LOCAL_RESYNC_REASON = "editable";
+// Kept for gateways without the live tree; with `tree1`, every resync-req is answered for the
+// asking viewer alone.
 
 /**
  * What the page's focused editable holds, never its text: its recorder id (-1 inside a
@@ -119,6 +124,25 @@ export const CAP_PROXY_INPUT = "proxyin1";
 
 /** The most code units a `key` message's `text` may carry (one grapheme, as a key types it). */
 export const MAX_KEY_TEXT = 8;
+
+/**
+ * The gateway keeps each tab's current DOM (its live tree) and serves joins, catch-ups and one
+ * viewer's recovery from it: it understands `held` and `resync-req.node`, and sends `caught-up`
+ * and `subtree`.
+ */
+export const CAP_LIVE_TREE = "tree1";
+
+/**
+ * Custom events whose latest one is part of a page's state: a synthesized snapshot carries the
+ * latest of each (per payload id for the working mark).
+ */
+export const STICKY_CUSTOM_TAGS: readonly string[] = [
+  "mirror:focus", // REMOTE_FOCUS_EVENT (focus.ts)
+  "mirror:working-mark-animation", // WORKING_MARK_ANIMATION (working-mark.ts)
+];
+
+/** At most this many tabs in a `held` message (as many as resume cursors). */
+export const MAX_HELD_TABS = 8;
 
 /** An `input-ack` lists at most this many refused inputs. */
 export const MAX_ACK_FAILED = 32;
@@ -217,6 +241,24 @@ export type Down =
   | { t: "delta"; tab: TabId; epoch: number; seq: number; data: eventWithTime[] }
   /** Gateway-initiated: discard all state for the tab; a fresh snapshot follows. */
   | { t: "resync"; tab: TabId }
+  /**
+   * With `tree1`: the replay of `tab` this viewer holds (its `held` cursor) is now complete up
+   * to `seq` of `epoch`; any delta it lacked was sent just before.
+   */
+  | { t: "caught-up"; tab: TabId; epoch: number; seq: number }
+  /**
+   * With `tree1`, to one viewer: the current content of node `node` as of `seq` of `epoch` (this
+   * viewer has every delta up to `seq` and none after): Meta, a FullSnapshot of only the path to
+   * the node and its subtree, and the attach events of frames on the path.
+   */
+  | {
+      t: "subtree";
+      tab: TabId;
+      epoch: number;
+      seq: number;
+      node: number;
+      data: eventWithTime[];
+    }
   /**
    * Whether the tab's last field sync failed. While it has, the gateway drops Enter (it would
    * submit stale text); clicks still pass. `reason` is short user-facing Chinese text, never page
@@ -406,7 +448,18 @@ export type Up =
    * instead of a growing queue hidden in proxy and TCP buffers.
    */
   | { t: "px-ack"; tab: TabId }
-  | { t: "resync-req"; tab: TabId; reason: string }
+  | {
+      t: "resync-req";
+      tab: TabId;
+      reason: string;
+      /** With `tree1`: the node that went apart; answered with its subtree when the gateway can. */
+      node?: number;
+    }
+  /**
+   * With `tree1`: every replay this viewer still holds, shown or parked, as [tab, epoch,
+   * nextSeq]; it replaces the previous set. At most MAX_HELD_TABS.
+   */
+  | { t: "held"; tabs: [TabId, number, number][] }
   | { t: "driver-transfer"; to: string }
   /**
    * Viewer -> agent WebRTC signaling. The gateway attaches the authenticated viewer identity;
@@ -466,6 +519,8 @@ const DOWN_TAGS: ReadonlySet<string> = new Set([
   "notify-ask",
   "notify-ask-end",
   "input-ack",
+  "caught-up",
+  "subtree",
 ]);
 
 const UP_TAGS: ReadonlySet<string> = new Set([
@@ -483,6 +538,7 @@ const UP_TAGS: ReadonlySet<string> = new Set([
   "px-ack",
   "vid-key",
   "resync-req",
+  "held",
   "driver-transfer",
   "rtc-sig",
   "mic-pcm",
@@ -606,9 +662,17 @@ export function decodeResumeCursors(raw: string | null | undefined): ResumeCurso
   } catch {
     return [];
   }
-  if (!Array.isArray(parsed)) return [];
+  return decodeCursorTriples(parsed);
+}
+
+/**
+ * [tab, epoch, nextSeq] triples from untrusted input (a resume parameter, a `held` message):
+ * well-formed entries only, at most MAX_RESUME_CURSORS of them.
+ */
+export function decodeCursorTriples(value: unknown): ResumeCursor[] {
+  if (!Array.isArray(value)) return [];
   const cursors: ResumeCursor[] = [];
-  for (const entry of parsed.slice(0, MAX_RESUME_CURSORS)) {
+  for (const entry of value.slice(0, MAX_RESUME_CURSORS)) {
     if (!Array.isArray(entry) || entry.length !== 3) continue;
     const [tab, epoch, nextSeq] = entry as unknown[];
     if (
@@ -622,6 +686,11 @@ export function decodeResumeCursors(raw: string | null | undefined): ResumeCurso
       cursors.push({ tab, epoch: epoch as number, nextSeq: nextSeq as number });
   }
   return cursors;
+}
+
+/** A `resync-req` node: a positive safe integer, or nothing. */
+export function resyncNode(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
 /**

@@ -87,10 +87,11 @@ jobs:
         run: |
           pnpm run test:pixel-ui
           pnpm run test:mobile-input
-          pnpm run test:composer-input
+          MIRROR_LIVE_TREE_VERIFY=1 pnpm run test:composer-input
           SMOKE_RTT_MS=300 SMOKE_JITTER_MS=50 SMOKE_STALL_RATE=0.02 pnpm run test:composer-input
           SMOKE_RTT_MS=300 SMOKE_JITTER_MS=50 COMPOSER_SMOKE_ONLY=rounds pnpm run test:composer-input
           MIRROR_INPUT_ACKS=off pnpm run test:composer-input
+          MIRROR_LIVE_TREE=0 pnpm run test:composer-input
       - name: Test single-writer input over a lossy link (desktop and phone)
         run: |
           SMOKE_INPUT=proxy SMOKE_RTT_MS=150 SMOKE_LOSS_RATE=0.02 pnpm run test:composer-input
@@ -101,6 +102,32 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends ffmpeg
           xvfb-run --auto-servernum pnpm run test:rtc-media
+
+  # The gateway's live tree against real Chromium: scripted changes on a long conversation and
+  # seeded fuzz, each checkpoint compared with the page's own snapshot and with a replay of the
+  # stream. Then the bench, for its numbers only.
+  live-tree:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    needs: quality
+    env:
+      CHROME_PATH: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - name: Test the live tree against Chromium (20 seeds of 2000 operations)
+        run: pnpm run test:live-tree-accept
+      - name: Measure the live tree (informational)
+        continue-on-error: true
+        run: BENCH_STREAM_MS=20000 BENCH_FAST_TOKENS=5000 pnpm run bench:live-tree
 
   containers:
     runs-on: ubuntu-24.04

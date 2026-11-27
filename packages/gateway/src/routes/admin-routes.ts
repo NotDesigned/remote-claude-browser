@@ -10,6 +10,7 @@ import { UserStoreError } from "../auth/users";
 import { accountChangeRevokesRemoteCc } from "../remote-cc/routes";
 import { ClientSessionError } from "../session/clients";
 import type { GatewayContext } from "./context";
+import { pageSyncDiagnostics } from "../hub/live-tree/metrics";
 import type { ProfileActions } from "./profile-routes";
 
 export function registerAdminRoutes(
@@ -146,6 +147,12 @@ export function registerAdminRoutes(
       resources: ctx.status(),
       assetLanes: ctx.assetLanes(),
       runningProfiles: accounts.size,
+      // How page sync goes: page snapshots by cause, catch-ups, each running tab's live tree.
+      pageSync: pageSyncDiagnostics(
+        [...registry.sids()]
+          .flatMap((sid) => [...(registry.get(sid)?.tabs.hubs() ?? [])])
+          .map((hub) => hub.treeStats()),
+      ),
     });
   });
   app.delete<{ Params: { sid: string } }>(

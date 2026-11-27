@@ -19,15 +19,27 @@ import { EventType, MIRROR_RECORD_CLASSES, type eventWithTime } from "@mirror/pr
 
 type ReplayMirror = ReturnType<Replayer["getMirror"]>;
 
-export interface EditablePatchOptions {
+export interface SubtreePatchOptions {
   /** The live replay that keeps the editor. */
   replayer: Pick<Replayer, "getMirror">;
-  /** The editing host's rrweb id. */
+  /** The patched element's rrweb id. */
   nodeId: number;
-  /** A snapshot's events: Meta, FullSnapshot and the deltas after it. */
+  /**
+   * A snapshot's events (Meta, FullSnapshot and the deltas after it), or a gateway's `subtree`
+   * (Meta and a FullSnapshot of the path to the node).
+   */
   events: readonly eventWithTime[];
   /** Where the hidden replay is built for the moment it takes. */
   host: HTMLElement;
+  /** Put the caret back where it was when it was inside the element. */
+  restoreCaret: boolean;
+}
+
+export type EditablePatchOptions = Omit<SubtreePatchOptions, "restoreCaret">;
+
+/** True when the editor now holds what the page's editor holds. */
+export function patchEditable(options: EditablePatchOptions): boolean {
+  return patchSubtree({ ...options, restoreCaret: true });
 }
 
 /** Text offset of the caret, counted from the end of the editor's text; null when not inside. */
@@ -104,8 +116,12 @@ function sameAttributes(a: Element, b: Element): boolean {
   return true;
 }
 
-/** True when the editor now holds what the page's editor holds. */
-export function patchEditable(options: EditablePatchOptions): boolean {
+/**
+ * True when the element now holds what the page's holds: its own attributes and its children,
+ * taken with their ids from a hidden replay of `events`. The element itself stays, and with it
+ * focus and a phone's keyboard.
+ */
+export function patchSubtree(options: SubtreePatchOptions): boolean {
   const live = options.replayer.getMirror();
   const editor = live.getNode(options.nodeId);
   if (editor === null || editor.nodeType !== Node.ELEMENT_NODE || !editor.isConnected) return false;
@@ -161,7 +177,7 @@ export function patchEditable(options: EditablePatchOptions): boolean {
         if (target.getAttribute(attribute.name) !== attribute.value)
           target.setAttribute(attribute.name, attribute.value);
     }
-    if (fromEnd !== null) placeCaret(target, fromEnd);
+    if (options.restoreCaret && fromEnd !== null) placeCaret(target, fromEnd);
     return true;
   } catch {
     return false;
