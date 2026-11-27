@@ -312,7 +312,9 @@ export function createAgentLink(browser: BrowserHandle, options: AgentLinkOption
       return;
     }
 
-    if (msg.kind === "rrweb") {
+    // A fence answers for the input before it, so it keeps its place among the recorder's events
+    // instead of resolving a command the moment it arrives.
+    if (msg.kind === "rrweb" || msg.kind === "fence") {
       if (msg.docId !== chunk.docId || state.docId === undefined || msg.docId !== state.docId)
         return;
       state.stream.push(msg);

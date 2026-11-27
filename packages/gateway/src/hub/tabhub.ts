@@ -20,10 +20,26 @@ import {
   EventType,
   type AgentMsg,
   type Down,
+  type EditState,
   type eventWithTime,
   type SnapshotReason,
   type TabId,
 } from "@mirror/protocol";
+
+/**
+ * A fence the page answered: everything it reported before the fence is in this hub's stream up
+ * to `seq` of `epoch`. `text` is the submit guard's and never leaves the gateway.
+ */
+export interface FenceResult {
+  n: number;
+  epoch: number;
+  seq: number;
+  edit: EditState | null;
+  text?: string;
+}
+
+/** Fences answered before anyone waited for them, kept this many deep. */
+const FENCE_MEMORY = 32;
 
 /**
  * P2-REWRITE hook (assets domain). The assets domain implements this in ../assets/rewrite.ts
@@ -116,6 +132,9 @@ export class TabHub {
   private nextMeta: eventWithTime | null = null;
   private pendingFullSnapshot: eventWithTime | null = null;
   private disposed = false;
+  private readonly fenceListeners = new Set<(fence: FenceResult) => void>();
+  /** Recent fences by number, oldest first. */
+  private readonly fences = new Map<number, FenceResult>();
 
   constructor(opts: TabHubOpts) {
     assertLimit("maxDeltaEvents", opts.maxDeltaEvents);
@@ -168,6 +187,23 @@ export class TabHub {
     // AgentLink normally enforces this boundary. Keeping it here too makes the pure hub safe
     // under navigation races and synthetic stream tests.
     if (!this.hasDocument || msg.docId !== this.docId) return [];
+
+    // A fence marks a place in the stream for the input relay; viewers never see it, and it is
+    // not part of the page, so it is never buffered.
+    if (msg.kind === "fence") {
+      const fence: FenceResult = {
+        n: msg.n,
+        epoch: this.epoch,
+        seq: this.seq,
+        edit: msg.edit,
+        ...(typeof msg.text === "string" ? { text: msg.text } : {}),
+      };
+      this.fences.delete(fence.n);
+      this.fences.set(fence.n, fence);
+      if (this.fences.size > FENCE_MEMORY) this.fences.delete(this.fences.keys().next().value!);
+      for (const listener of [...this.fenceListeners]) listener(fence);
+      return [];
+    }
 
     const event = this.rewrite(msg.e, { sessionId: this.sessionId, tabId: this.tabId });
 
@@ -264,6 +300,35 @@ export class TabHub {
   /** Fired when thresholds/docId change require a fresh FullSnapshot (caller sends the cmd). */
   onNeedSnapshot(cb: NeedSnapshotListener): void {
     this.needSnapshotListeners.add(cb);
+  }
+
+  /** Every fence the page answers, at its place in the stream. */
+  onFence(listener: (fence: FenceResult) => void): () => void {
+    this.fenceListeners.add(listener);
+    return () => this.fenceListeners.delete(listener);
+  }
+
+  /**
+   * Fence `n`, when the page answers it, even if it already did before anyone waited; "timeout"
+   * after `timeoutMs`, or at once once the hub is disposed.
+   */
+  whenFenced(n: number, timeoutMs: number): Promise<FenceResult | "timeout"> {
+    const known = this.fences.get(n);
+    if (known !== undefined) return Promise.resolve(known);
+    if (this.disposed) return Promise.resolve("timeout");
+    return new Promise((resolve) => {
+      const stop = this.onFence((fence) => {
+        if (fence.n !== n) return;
+        clearTimeout(timer);
+        stop();
+        resolve(fence);
+      });
+      const timer = setTimeout(() => {
+        stop();
+        resolve("timeout");
+      }, timeoutMs);
+      timer.unref?.();
+    });
   }
 
   /** A dead renderer's cached document must never be offered as current page content. */

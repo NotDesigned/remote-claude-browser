@@ -137,6 +137,34 @@ describe("createAgentLink", () => {
     ]);
   });
 
+  it("keeps a fence in its place among the recorder's events, and drops a stale one", async () => {
+    const target: TargetRef = { targetId: "page-1", sessionId: "session-1", type: "page" };
+    const browser = new MockBrowser(target);
+    const link = createAgentLink(browser);
+    const stream = link.msgs(target.targetId);
+    const fence = (docId: number, n: number): AgentMsg => ({ kind: "fence", docId, n, edit: null });
+
+    browser.emit(10, 0, hello(10), 100);
+    browser.emit(10, 1, rrweb(10, "a"), 100);
+    browser.emit(10, 2, rrweb(10, "b"), 100);
+    browser.emit(10, 3, fence(10, 1), 100);
+    browser.emit(10, 4, rrweb(10, "c"), 100);
+    // A fence whose chunk header names another document is not this stream's.
+    browser.emit(11, 0, fence(10, 2), 100);
+    browser.emit(20, 0, hello(20), 200);
+    browser.emit(10, 5, fence(10, 3), 100);
+    browser.detach();
+
+    expect(await collect(stream)).toEqual([
+      hello(10),
+      rrweb(10, "a"),
+      rrweb(10, "b"),
+      fence(10, 1),
+      rrweb(10, "c"),
+      hello(20),
+    ]);
+  });
+
   it("accepts a new document when an SPA navigation reuses the context and resets msgId", async () => {
     const target: TargetRef = { targetId: "page-1", sessionId: "session-1", type: "page" };
     const browser = new MockBrowser(target);

@@ -541,3 +541,84 @@ describe("TabHub", () => {
     expect(hub.ingest({ kind: "cmdres", reqId: 1, ok: true })).toEqual([]);
   });
 });
+
+describe("TabHub fences", () => {
+  const edit = { node: 4, len: 2, hash: "0000abcd", sel: [2, 2] as [number, number] };
+  const fence = (docId: number, n: number, text?: string): AgentMsg => ({
+    kind: "fence",
+    docId,
+    n,
+    edit,
+    ...(text === undefined ? {} : { text }),
+  });
+  const opened = () => {
+    const hub = new TabHub({ sessionId: "s", tabId: "t" });
+    hub.ingest(hello(7));
+    hub.ingest(rrweb(7, meta(7)));
+    hub.ingest(rrweb(7, full(7)));
+    return hub;
+  };
+
+  it("records the stream position a fence reached, and never sends or buffers it", () => {
+    const hub = opened();
+    const heard: unknown[] = [];
+    hub.onFence((result) => heard.push(result));
+    hub.ingest(rrweb(7, delta(7, 0)));
+    hub.ingest(rrweb(7, delta(7, 1)));
+    const before = hub.joinPayload();
+    expect(hub.ingest(fence(7, 1, "secret text"))).toEqual([]);
+    expect(heard).toEqual([{ n: 1, epoch: 1, seq: 3, edit, text: "secret text" }]);
+    expect(hub.joinPayload()).toEqual(before);
+    expect(JSON.stringify(hub.joinPayload())).not.toContain("secret");
+    expect(hub.deltas).toHaveLength(2);
+    // The next event's seq follows on: the fence used none.
+    expect(hub.ingest(rrweb(7, delta(7, 2)))[0]).toMatchObject({ seq: 4 });
+  });
+
+  it("drops a fence from another document", () => {
+    const hub = opened();
+    const heard: unknown[] = [];
+    hub.onFence((result) => heard.push(result));
+    expect(hub.ingest(fence(8, 1))).toEqual([]);
+    expect(heard).toEqual([]);
+  });
+
+  it("finds a fence answered before anyone waited, and waits for one that is not", async () => {
+    const hub = opened();
+    hub.ingest(fence(7, 1));
+    await expect(hub.whenFenced(1, 1_000)).resolves.toMatchObject({ n: 1, seq: 1 });
+    const later = hub.whenFenced(2, 1_000);
+    hub.ingest(rrweb(7, delta(7, 0)));
+    hub.ingest(fence(7, 2));
+    await expect(later).resolves.toMatchObject({ n: 2, seq: 2 });
+  });
+
+  it("keeps the last 32 fences only", async () => {
+    const hub = opened();
+    for (let n = 1; n <= 40; n++) hub.ingest(fence(7, n));
+    await expect(hub.whenFenced(40, 1_000)).resolves.toMatchObject({ n: 40 });
+    await expect(hub.whenFenced(9, 1_000)).resolves.toMatchObject({ n: 9 });
+    vi.useFakeTimers();
+    try {
+      const forgotten = hub.whenFenced(8, 50);
+      vi.advanceTimersByTime(50);
+      await expect(forgotten).resolves.toBe("timeout");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("times out a fence that never comes", async () => {
+    vi.useFakeTimers();
+    try {
+      const hub = opened();
+      const waiting = hub.whenFenced(3, 1_000);
+      vi.advanceTimersByTime(999);
+      hub.ingest(fence(7, 4));
+      vi.advanceTimersByTime(1);
+      await expect(waiting).resolves.toBe("timeout");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
