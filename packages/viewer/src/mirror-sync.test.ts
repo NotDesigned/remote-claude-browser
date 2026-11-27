@@ -3,6 +3,7 @@ import type { eventWithTime } from "@mirror/protocol";
 import { describe, expect, it } from "vitest";
 import {
   catchUpAnswered,
+  caughtUp,
   planDelta,
   resyncDecision,
   snapshotDecision,
@@ -98,6 +99,23 @@ describe("mirror snapshot decisions", () => {
         "rebuild",
       );
     }
+  });
+});
+
+describe("mirror caught-up decisions", () => {
+  it("resumes the page in view when it is exactly where the tab stands", () => {
+    for (const catchUp of ["waiting", "answered", null] as const)
+      expect(caughtUp(sync({ catchUp }), shown(), { tab: "t1", epoch: 3, seq: 9 })).toBe("resume");
+  });
+
+  it("asks for the tab again when the page is anywhere else", () => {
+    const sent = { tab: "t1", epoch: 3, seq: 9 };
+    expect(caughtUp(sync(), shown({ nextSeq: 8 }), sent)).toBe("rebuild-request");
+    expect(caughtUp(sync(), shown({ nextSeq: 12 }), sent)).toBe("rebuild-request");
+    expect(caughtUp(sync(), shown({ epoch: 4 }), sent)).toBe("rebuild-request");
+    expect(caughtUp(sync(), shown({ needsSnapshot: true }), sent)).toBe("rebuild-request");
+    expect(caughtUp(sync(), null, sent)).toBe("rebuild-request");
+    expect(caughtUp(sync(), shown(), { ...sent, tab: "t2" })).toBe("ignore");
   });
 });
 

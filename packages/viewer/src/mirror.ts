@@ -40,6 +40,7 @@ import {
 } from "./mirror-replayer";
 import {
   catchUpAnswered,
+  caughtUp,
   planDelta,
   resyncDecision,
   snapshotDecision,
@@ -72,6 +73,7 @@ const APPLIED_MARK = "mirror:applied";
 
 type Snapshot = Extract<Down, { t: "snapshot" }>;
 type Delta = Extract<Down, { t: "delta" }>;
+type Subtree = Extract<Down, { t: "subtree" }>;
 
 export interface Mirror {
   handle(msg: Down): void;
@@ -87,6 +89,8 @@ export interface Mirror {
   connectionRestored(resumed?: boolean): void;
   /** Where the live replay stands, for resuming after a reconnect; null when it must rebuild. */
   resumeCursor(): ResumeCursor | null;
+  /** Every replay this page still holds, shown or parked (a `held` message lists them). */
+  heldCursors(): ResumeCursor[];
   selectTab(tab: TabId): void;
   getActiveTab(): TabId | null;
   getIframe(): HTMLIFrameElement | null;
@@ -122,9 +126,12 @@ export interface MirrorOpts {
   onSnapshotApplied?(snapshot: Snapshot): void;
   /**
    * Asks the gateway for this page alone to be caught up (an editor's catch-up); false when it
-   * could not be sent. Without it, requestResync is used.
+   * could not be sent. Without it, requestResync is used. `node` is the editor: a gateway with
+   * the live tree answers with just its subtree.
    */
-  requestCatchUp?(tab: TabId, reason: string): boolean;
+  requestCatchUp?(tab: TabId, reason: string, node?: number): boolean;
+  /** The replays this page holds changed (heldCursors): sent at once, before anything else. */
+  onHeldChange?(cursors: ResumeCursor[]): void;
   /** The person typed so recently that the editor's text is still on its way to the page. */
   editableBusy?(): boolean;
   /** An editor was brought back in step in place: what held it apart is settled. */
@@ -193,7 +200,14 @@ export function createMirror(opts: MirrorOpts): Mirror {
     abandonMarks(live);
     destroyGeneration(opts.rtc, live);
   };
-  const parked = createParkedPages(opts.parkedTabs ?? 0, destroyLive);
+  const heldCursors = (): ResumeCursor[] => {
+    const held = parked.cursors();
+    if (state !== null && !state.needsSnapshot && !held.some((cursor) => cursor.tab === state!.tab))
+      held.push({ tab: state.tab, epoch: state.epoch, nextSeq: state.nextSeq });
+    return held;
+  };
+  const notifyHeld = () => opts.onHeldChange?.(heldCursors());
+  const parked = createParkedPages(opts.parkedTabs ?? 0, destroyLive, () => notifyHeld());
 
   const applyViewportLayout = () => {
     const live = state;
@@ -493,8 +507,9 @@ export function createMirror(opts: MirrorOpts): Mirror {
       return;
     }
     if (editablePatch !== null) return;
-    // Answered for this page alone, with the cached snapshot and the deltas since.
-    if (opts.requestCatchUp?.(tab, reason) === false) {
+    // Answered for this page alone: with the live tree, the editor's own subtree, otherwise the
+    // cached snapshot and the deltas since.
+    if (opts.requestCatchUp?.(tab, reason, editor.nodeId) === false) {
       requestFreshSnapshot(tab, reason);
       return;
     }
@@ -515,13 +530,14 @@ export function createMirror(opts: MirrorOpts): Mirror {
    * The catch-up for an editor: once the live replay has applied every event the catch-up covers,
    * the editor's content is taken from it. The rest of the page is the same in both.
    */
-  const applyEditablePatch = (message: Snapshot) => {
+  const applyEditablePatch = (message: Snapshot | Subtree) => {
     const live = state!;
     const pending = editablePatch!;
     cancelEditablePatch();
     // The page in view has applied exactly what the catch-up covers, or it is not comparable.
     if (message.seq !== live.nextSeq - 1) {
-      rebuild(message);
+      if (message.t === "snapshot") rebuild(message);
+      else requestFreshSnapshot(pending.tab, `${pending.reason}: subtree out of step`);
       return;
     }
     const lastTs = message.data.at(-1)?.timestamp ?? 0;
@@ -558,6 +574,77 @@ export function createMirror(opts: MirrorOpts): Mirror {
     };
     replayer.on("custom-event", onMark as never);
     replayer.addEvent(marker);
+  };
+
+  const selectTab = (tab: TabId) => {
+    if (tab === sync.activeTab) return;
+    cancelEditablePatch();
+    sync.activeTab = tab;
+    pendingRestore = null;
+    setSnapshotPending(false);
+    endTabSwitch();
+    // Picture mode clears the shared surface, and an iframe does not survive leaving the page.
+    if (parked.peek(tab)?.stage.isConnected === false) parked.drop(tab);
+    const saved = parked.take(tab);
+    if (saved !== undefined) {
+      const leaving = state;
+      state = saved;
+      opts.pipeline.reset();
+      if (leaving !== null) {
+        if (parked.canPark(leaving)) park(leaving);
+        else destroyLive(leaving);
+      }
+      clearForeground(saved.stage);
+      delete saved.stage.dataset.parked;
+      saved.detachInteraction = opts.attachInteraction?.(tab, saved.replayer) ?? (() => {});
+      opts.container.dataset.mirrorState = "live";
+      applyViewportLayout();
+      awaitCatchUp(tab);
+      return;
+    }
+    if (state?.tab === tab) {
+      if (parked.canPark(state)) awaitCatchUp(tab);
+      return;
+    }
+    // The gateway answers an activated tab with its snapshot, and the page in view stays until
+    // that replaces it. It can no longer be used, as input would reach the tab being left.
+    if (state === null) renderStatus("Switching tabs…");
+    else {
+      const rtc = state.rtc;
+      state.rtc = null;
+      disposeRtc(state.tab, rtc);
+      state.stage.inert = true;
+      opts.container.dataset.switching = "true";
+    }
+    switchTimer = setTimeout(() => {
+      switchTimer = null;
+      delete opts.container.dataset.switching;
+      if (sync.activeTab !== tab || state?.tab === tab) return;
+      setAside("Switching tabs…");
+      // Already set when the gateway has answered and its snapshot is on the way.
+      requestFreshSnapshot(tab, "tab selected");
+    }, TAB_SWITCH_WAIT_MS);
+  };
+
+  /** A `caught-up` (live tree): the tail the page lacked came just before it. */
+  const handleCaughtUp = (message: Extract<Down, { t: "caught-up" }>) => {
+    switch (caughtUp(sync, state, message)) {
+      case "resume": {
+        const live = state!;
+        // As a confirming snapshot would: the page in view is current, and takes input again.
+        endTabSwitch();
+        setSnapshotPending(false);
+        opts.container.dataset.mirrorState = "live";
+        applyViewportLayout();
+        opts.onApplied?.(live.tab, live.epoch, live.nextSeq);
+        notifyHeld();
+        break;
+      }
+      case "rebuild-request":
+        endTabSwitch();
+        requestFreshSnapshot(message.tab, "caught-up out of step");
+        break;
+    }
   };
 
   renderStatus("Waiting for a snapshot…");
@@ -604,6 +691,22 @@ export function createMirror(opts: MirrorOpts): Mirror {
           break;
         case "delta":
           applyDelta(msg);
+          break;
+        case "caught-up":
+          handleCaughtUp(msg);
+          break;
+        case "subtree":
+          // The editor's catch-up from the gateway's live tree: patched in place, as from a snapshot.
+          if (
+            editablePatch !== null &&
+            editablePatch.tab === msg.tab &&
+            state?.tab === msg.tab &&
+            state.epoch === msg.epoch &&
+            !state.needsSnapshot &&
+            !sync.snapshotPending &&
+            sync.catchUp === null
+          )
+            applyEditablePatch(msg);
           break;
         case "resync":
           // An editor's catch-up opens with this: the page in view stays as it is, usable.
@@ -696,54 +799,11 @@ export function createMirror(opts: MirrorOpts): Mirror {
       if (state === null || state.needsSnapshot || state.tab !== sync.activeTab) return null;
       return { tab: state.tab, epoch: state.epoch, nextSeq: state.nextSeq };
     },
+    heldCursors,
     selectTab(tab) {
-      if (tab === sync.activeTab) return;
-      cancelEditablePatch();
-      sync.activeTab = tab;
-      pendingRestore = null;
-      setSnapshotPending(false);
-      endTabSwitch();
-      // Picture mode clears the shared surface, and an iframe does not survive leaving the page.
-      if (parked.peek(tab)?.stage.isConnected === false) parked.drop(tab);
-      const saved = parked.take(tab);
-      if (saved !== undefined) {
-        const leaving = state;
-        state = saved;
-        opts.pipeline.reset();
-        if (leaving !== null) {
-          if (parked.canPark(leaving)) park(leaving);
-          else destroyLive(leaving);
-        }
-        clearForeground(saved.stage);
-        delete saved.stage.dataset.parked;
-        saved.detachInteraction = opts.attachInteraction?.(tab, saved.replayer) ?? (() => {});
-        opts.container.dataset.mirrorState = "live";
-        applyViewportLayout();
-        awaitCatchUp(tab);
-        return;
-      }
-      if (state?.tab === tab) {
-        if (parked.canPark(state)) awaitCatchUp(tab);
-        return;
-      }
-      // The gateway answers an activated tab with its snapshot, and the page in view stays until
-      // that replaces it. It can no longer be used, as input would reach the tab being left.
-      if (state === null) renderStatus("Switching tabs…");
-      else {
-        const rtc = state.rtc;
-        state.rtc = null;
-        disposeRtc(state.tab, rtc);
-        state.stage.inert = true;
-        opts.container.dataset.switching = "true";
-      }
-      switchTimer = setTimeout(() => {
-        switchTimer = null;
-        delete opts.container.dataset.switching;
-        if (sync.activeTab !== tab || state?.tab === tab) return;
-        setAside("Switching tabs…");
-        // Already set when the gateway has answered and its snapshot is on the way.
-        requestFreshSnapshot(tab, "tab selected");
-      }, TAB_SWITCH_WAIT_MS);
+      selectTab(tab);
+      // Before the activation this page sends next: the gateway then sends only what is missing.
+      notifyHeld();
     },
     getActiveTab: () => sync.activeTab,
     getIframe: () => state?.replayer.iframe ?? null,

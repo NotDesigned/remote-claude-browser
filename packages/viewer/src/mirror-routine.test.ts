@@ -473,6 +473,65 @@ describe("D10 recovery triggers", () => {
       mirror.teardown();
     });
 
+    it("catches a kept page up from its tail and caught-up, rebuilding nothing", () => {
+      vi.useFakeTimers();
+      fakeRrweb.FakeReplayer.instances.length = 0;
+      const container = new FakeElement(new FakeDocument());
+      const requestResync = vi.fn();
+      const held: string[] = [];
+      const mirror = createMirror({
+        container: container as unknown as HTMLElement,
+        pipeline: new EventPipeline(),
+        requestResync,
+        parkedTabs: 2,
+        onHeldChange: (cursors) =>
+          held.push(cursors.map((c) => `${c.tab}@${c.epoch}:${c.nextSeq}`).join(" ")),
+      });
+      const open = (tab: string) => {
+        mirror.selectTab(tab);
+        mirror.handle({ t: "resync", tab });
+        mirror.handle({ t: "snapshot", tab, epoch: 1, seq: 1, data: [full(1000)] });
+      };
+      open("T1");
+      mirror.handle({ t: "delta", tab: "T1", epoch: 1, seq: 2, data: [delta(1001)] });
+      open("T2");
+      held.length = 0;
+      const stage = container.children[0] as unknown as { inert?: boolean };
+
+      mirror.selectTab("T1");
+      // What it holds is said before the switch goes out, with T1 where it was left.
+      expect(held.at(-1)).toBe("T2@1:2 T1@1:3");
+      // The tail it lacks, then caught-up.
+      mirror.handle({
+        t: "delta",
+        tab: "T1",
+        epoch: 1,
+        seq: 3,
+        data: [delta(1002), delta(1003)],
+      });
+      expect(stage.inert).toBe(true);
+      mirror.handle({ t: "caught-up", tab: "T1", epoch: 1, seq: 4 });
+
+      expect(replayers()).toHaveLength(2);
+      expect(mirror.getReplayer()).toBe(replayers()[0]);
+      expect(replayers()[0]?.added.map((event) => event.timestamp)).toEqual([1001, 1002, 1003]);
+      expect(stage.inert).toBe(false);
+      expect(mirror.resumeCursor()).toEqual({ tab: "T1", epoch: 1, nextSeq: 5 });
+      vi.advanceTimersByTime(10_000);
+      expect(requestResync).not.toHaveBeenCalled();
+      mirror.teardown();
+    });
+
+    it("asks for the tab when caught-up says the page is not where it stands", () => {
+      const { mirror, requestResync, open } = tabs();
+      open("T1");
+      open("T2");
+      mirror.selectTab("T1");
+      mirror.handle({ t: "caught-up", tab: "T1", epoch: 1, seq: 7 });
+      expect(requestResync).toHaveBeenCalledExactlyOnceWith("T1", "caught-up out of step");
+      mirror.teardown();
+    });
+
     it("asks for a snapshot when the gateway's answer brings none", () => {
       const { container, mirror, requestResync, open } = tabs();
       open("T1");

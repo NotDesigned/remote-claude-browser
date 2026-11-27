@@ -2,7 +2,7 @@
  * Pages of tabs left behind, kept built but hidden so returning to them is immediate. Their
  * stages never move in the DOM, which would reload their iframes.
  */
-import type { TabId } from "@mirror/protocol";
+import type { ResumeCursor, TabId } from "@mirror/protocol";
 import type { LiveState } from "./mirror-replayer";
 
 export interface ParkedPages {
@@ -20,16 +20,37 @@ export interface ParkedPages {
   keep(tabs: readonly TabId[]): void;
   /** The parked stages, which the visible surface must leave in place. */
   stages(): Set<Element>;
+  /** Where each parked page's replay stands (what a `held` message lists). */
+  cursors(): ResumeCursor[];
 }
 
-export function createParkedPages(limit: number, destroy: (live: LiveState) => void): ParkedPages {
+/**
+ * `onChange` hears of every change to the set of parked pages (park, take, drop, keep), with
+ * their cursors.
+ */
+export function createParkedPages(
+  limit: number,
+  destroy: (live: LiveState) => void,
+  onChange?: (cursors: ResumeCursor[]) => void,
+): ParkedPages {
   /** Oldest first. */
   const parked = new Map<TabId, LiveState>();
-  const drop = (tab: TabId) => {
+  const cursors = (): ResumeCursor[] =>
+    [...parked.values()].map((live) => ({
+      tab: live.tab,
+      epoch: live.epoch,
+      nextSeq: live.nextSeq,
+    }));
+  const changed = () => onChange?.(cursors());
+  const remove = (tab: TabId): boolean => {
     const live = parked.get(tab);
-    if (live === undefined) return;
+    if (live === undefined) return false;
     parked.delete(tab);
     destroy(live);
+    return true;
+  };
+  const drop = (tab: TabId) => {
+    if (remove(tab)) changed();
   };
   return {
     canPark(live) {
@@ -44,26 +65,35 @@ export function createParkedPages(limit: number, destroy: (live: LiveState) => v
     park(live) {
       live.stage.inert = true;
       live.stage.dataset.parked = "true";
-      drop(live.tab);
+      remove(live.tab);
       parked.set(live.tab, live);
       for (const tab of parked.keys()) {
         if (parked.size <= limit) break;
-        drop(tab);
+        remove(tab);
       }
+      changed();
     },
     take(tab) {
       const live = parked.get(tab);
-      if (live !== undefined) parked.delete(tab);
+      if (live !== undefined) {
+        parked.delete(tab);
+        changed();
+      }
       return live;
     },
     peek: (tab) => parked.get(tab),
     drop,
     dropAll() {
-      for (const tab of [...parked.keys()]) drop(tab);
+      let any = false;
+      for (const tab of [...parked.keys()]) any = remove(tab) || any;
+      if (any) changed();
     },
     keep(tabs) {
-      for (const tab of [...parked.keys()]) if (!tabs.includes(tab)) drop(tab);
+      let any = false;
+      for (const tab of [...parked.keys()]) if (!tabs.includes(tab)) any = remove(tab) || any;
+      if (any) changed();
     },
     stages: () => new Set<Element>([...parked.values()].map((live) => live.stage)),
+    cursors,
   };
 }

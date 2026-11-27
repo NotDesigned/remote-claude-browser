@@ -6,6 +6,8 @@ import type { LiveState } from "./mirror-replayer";
 const page = (tab: string, options: { media?: boolean; needsSnapshot?: boolean } = {}) =>
   ({
     tab,
+    epoch: 3,
+    nextSeq: tab.length + 10,
     needsSnapshot: options.needsSnapshot ?? false,
     stage: { inert: false, dataset: {} as DOMStringMap },
     replayer: {
@@ -52,5 +54,30 @@ describe("parked pages", () => {
     parked.dropAll();
     expect(destroyed).toEqual(["a", "c"]);
     expect(parked.stages().size).toBe(0);
+  });
+
+  it("tells which pages it holds whenever that changes", () => {
+    const changes: string[][] = [];
+    const parked = createParkedPages(
+      2,
+      () => {},
+      (cursors) =>
+        changes.push(cursors.map((cursor) => `${cursor.tab}@${cursor.epoch}:${cursor.nextSeq}`)),
+    );
+    parked.park(page("a"));
+    parked.park(page("bb"));
+    parked.park(page("c"));
+    parked.take("bb");
+    parked.take("zz");
+    parked.drop("zz");
+    parked.keep(["c"]);
+    parked.dropAll();
+    expect(changes).toEqual([
+      ["a@3:11"],
+      ["a@3:11", "bb@3:12"],
+      ["bb@3:12", "c@3:11"],
+      ["c@3:11"],
+      [],
+    ]);
   });
 });

@@ -42,6 +42,7 @@ function fixture(entryTab: string | null = null) {
     connectionLost: vi.fn(),
     connectionRestored: vi.fn(),
     resumeCursor: vi.fn<Mirror["resumeCursor"]>(() => ({ tab: "a", epoch: 2, nextSeq: 4 })),
+    heldCursors: vi.fn<Mirror["heldCursors"]>(() => []),
     selectTab: vi.fn(),
     getActiveTab: () => "a",
     getIframe: () => null,
@@ -102,6 +103,20 @@ describe("viewer presentation", () => {
     vi.runOnlyPendingTimers();
     expect(send).not.toHaveBeenCalled();
     expect(controller.canInput("a", "dom")).toBe(true);
+  });
+
+  it("switches the mirror before it sends the activation, so held cursors go first", () => {
+    const { controller, mirror, send } = fixture();
+    controller.snapshotApplied(snapshot());
+    send.mockClear();
+    controller.activate("b");
+    const select = mirror.selectTab.mock.invocationCallOrder.at(-1)!;
+    const activation = send.mock.calls.findIndex(([message]) => message.t === "nav");
+    expect(mirror.selectTab).toHaveBeenLastCalledWith("b");
+    expect(send.mock.invocationCallOrder[activation]!).toBeGreaterThan(select);
+    // Live deltas, caught-up and subtrees reach the mirror as snapshots do.
+    controller.handle({ t: "caught-up", tab: "b", epoch: 1, seq: 4 });
+    expect(mirror.handle).toHaveBeenLastCalledWith({ t: "caught-up", tab: "b", epoch: 1, seq: 4 });
   });
 
   it("blocks input during a tab change and negotiates again on a quick return", () => {

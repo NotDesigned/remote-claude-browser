@@ -3,8 +3,22 @@
  * downloads, clipboard, voice and build-skew reloads. It reports everything the shell shows as
  * RuntimeActions; useMirrorRuntime keeps those in a reducer and starts one of these per session.
  */
-import type { AgentMsg, Down, eventWithTime, InputAckMsg, TabId } from "@mirror/protocol";
-import { EventType, IncrementalSource, LOCAL_RESYNC_REASON, editHash } from "@mirror/protocol";
+import type {
+  AgentMsg,
+  Down,
+  eventWithTime,
+  InputAckMsg,
+  ResumeCursor,
+  TabId,
+} from "@mirror/protocol";
+import {
+  CAP_LIVE_TREE,
+  EventType,
+  IncrementalSource,
+  LOCAL_RESYNC_REASON,
+  MAX_HELD_TABS,
+  editHash,
+} from "@mirror/protocol";
 import { apiRequest } from "../api";
 import { DOWNLOAD_NOTICE_MS, startClientDownload } from "../auto-download";
 import { createBuildSkew } from "../build-skew";
@@ -349,6 +363,17 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
       dispatch({ type: "resync", state });
     },
   });
+  /** The gateway keeps each tab's current DOM (hello.caps tree1). */
+  let liveTree = false;
+  const sendHeld = (cursors: readonly ResumeCursor[]) => {
+    if (!liveTree) return;
+    socket?.send({
+      t: "held",
+      tabs: cursors
+        .slice(0, MAX_HELD_TABS)
+        .map((cursor) => [cursor.tab, cursor.epoch, cursor.nextSeq] as [string, number, number]),
+    });
+  };
   const mirror = createMirror({
     container: host,
     pipeline,
@@ -377,8 +402,17 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     requestResync(tab, reason) {
       resync.request(tab, reason);
     },
-    // The gateway spaces these out itself, and they rebuild nothing.
-    requestCatchUp: (tab, reason) => socket?.send({ t: "resync-req", tab, reason }) ?? false,
+    // The gateway spaces these out itself, and they rebuild nothing. With the live tree, naming
+    // the editor gets just its subtree back.
+    requestCatchUp: (tab, reason, node) =>
+      socket?.send({
+        t: "resync-req",
+        tab,
+        reason,
+        ...(liveTree && node !== undefined ? { node } : {}),
+      }) ?? false,
+    // Synchronous, so that it always comes before the tab activation it may precede.
+    onHeldChange: (cursors) => sendHeld(cursors),
     editableBusy: () => echo.typingWithin(EDITABLE_TYPING_MS),
     onApplied: (tab, epoch, nextSeq) => sequencer.applied(tab, epoch, nextSeq),
     onEditablePatched: () => echo.settled(),
@@ -618,11 +652,14 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     // A new connection numbers its input from 1 again, and says whether acks are on.
     if (message.t === "hello") {
       sequencer.hello(message.caps);
+      liveTree = message.caps?.includes(CAP_LIVE_TREE) ?? false;
       // The inputlab keeps one connection's acks: their numbers start again with it.
       inputLab.acks.length = 0;
       inputLab.settled.length = 0;
     }
     presentation.handle(message);
+    // What this page still holds, for a connection that has just begun.
+    if (message.t === "hello") sendHeld(mirror.heldCursors());
     if (message.t === "hello") {
       buildSkew.observe(message.build);
       sessionId = message.sessionId;

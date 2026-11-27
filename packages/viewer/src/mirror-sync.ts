@@ -82,6 +82,33 @@ export function snapshotDecision(
   return "ignore";
 }
 
+export type CaughtUpDecision =
+  /** The page in view is exactly where the gateway says the tab is: use it. */
+  | "resume"
+  /** It is not: the tab has to be asked for again. */
+  | "rebuild-request"
+  | "ignore";
+
+/**
+ * `caught-up` (live tree): the tail the viewer lacked was sent just before it, so the page in
+ * view must now stand at `seq` of `epoch`.
+ */
+export function caughtUp(
+  sync: SyncState,
+  shown: ShownPage | null,
+  message: Pick<Extract<Down, { t: "caught-up" }>, "tab" | "epoch" | "seq">,
+): CaughtUpDecision {
+  if (!concernsActiveTab(sync, message.tab)) return "ignore";
+  if (
+    shown?.tab === message.tab &&
+    !shown.needsSnapshot &&
+    message.epoch === shown.epoch &&
+    message.seq + 1 === shown.nextSeq
+  )
+    return "resume";
+  return "rebuild-request";
+}
+
 export type ResyncDecision =
   /** The gateway answered a catch-up: its snapshot or catch-up delta follows. */
   | "catch-up-answered"
