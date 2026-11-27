@@ -155,7 +155,25 @@ describe("proxy input", () => {
     });
     field().emit(fakeEvent("keyup", { key: "Enter", code: "Enter" }));
     expect(sent[1]).toMatchObject({ t: "key", kind: "up", key: "Enter" });
-    expect(field().value).toBe("hi");
+    expect(field().value).toBe("");
+  });
+
+  it("lets go of a sent message, so an autocorrect just after Enter edits nothing on the page", () => {
+    const { field, sent } = setup();
+    typeInto(field(), "meet teh");
+    field().emit(fakeEvent("keydown", { key: "Enter", code: "Enter" }));
+    expect(field().value).toBe("");
+    sent.length = 0;
+    // The keyboard replaces "teh" in what it still had: the proxy holds nothing to replace.
+    typeInto(field(), "the");
+    expect(sent).toEqual([{ t: "text", tab: "t", insert: "the" }]);
+  });
+
+  it("keeps the text on Shift+Enter, which adds a line", () => {
+    const { field } = setup();
+    typeInto(field(), "line");
+    field().emit(fakeEvent("keydown", { key: "Enter", code: "Enter", shiftKey: true }));
+    expect(field().value).toBe("line");
   });
 
   it("sends Shift+Enter with its modifier", () => {

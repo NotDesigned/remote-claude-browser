@@ -16,6 +16,7 @@
 - 预构建镜像增加 `remote-claude-browser-cpa-broker` 和 `remote-claude-browser-cpa`，四个镜像都按版本标签发布（例如 `v0.5.0`），只发布 CI 通过的那个提交，并附带构建来源证明。见 [docs/deployment.md](docs/deployment.md#安装)。
 - 部署文档新增「日志和磁盘」，备份一节给出包括 CPA 卷和 Caddy 证书在内的完整命令和还原方法。命令只处理本部署的 CPA 容器和卷（按部署标签和实例 ID 筛选），同一台 Docker 主机上别的部署不受影响。
 - `MIRROR_ASSET_MAX_BYTES`：经代理的单个网页资源的字节上限，默认 64 MB。见 [docs/configuration.md](docs/configuration.md#写在-compose-文件里的变量)。
+- 页面模式单写者输入（实验，`MIRROR_PROXY_INPUT=on` 开启，默认关闭）：输入框获得焦点时，打字进入工作台本地的输入层，以可信键盘事件送到远程页面，未确认的文字先在光标处显示，确认后消失。没送到的字在工作台底部显示「未送达」，可以重发或放回。见 [docs/configuration.md](docs/configuration.md#写在-compose-文件里的变量) 和 [docs/troubleshooting.md](docs/troubleshooting.md#文字未送达)。
 - `MIRROR_INPUT_ACKS`（输入确认：`off`、`shadow` 只统计、`on` 按确认判断）、`MIRROR_SUBMIT_GUARD`（按回车前核对远程输入框的文字，目前只统计）。见 [docs/configuration.md](docs/configuration.md#写在-compose-文件里的变量)。
 
 ### 变更

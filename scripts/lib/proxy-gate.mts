@@ -121,7 +121,11 @@ const installProbe = (legacy: boolean) => {
     const lab = w.__mirrorInputLab;
     const proxy = lab?.proxy;
     const state = proxy?.state();
-    if (probe.watchFocus && proxy && document.activeElement !== proxy.element()) {
+    // Where typing goes: the proxy, or without single-writer input the replay's composer.
+    const typingHere = legacy
+      ? composer() !== null && composer()!.ownerDocument.activeElement === composer()
+      : proxy !== undefined && document.activeElement === proxy.element();
+    if (probe.watchFocus && !typingHere) {
       probe.activeMisses += 1;
       if (probe.missSamples.length < 5)
         probe.missSamples.push(

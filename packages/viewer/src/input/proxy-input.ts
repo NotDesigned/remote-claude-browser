@@ -391,7 +391,20 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
     if (kind === "down" && event.key === "Enter" && message.t === "key") {
       const expect = overlay.expectFor();
       options.send(expect === null ? message : { ...message, expect });
+      if (!event.shiftKey && !event.altKey) forgetAfterSend();
     } else options.send(message);
+  };
+  /**
+   * Enter most likely sent what the field held, and the page empties it: the proxy lets go of
+   * that text now, so a keyboard's late autocorrect or a Backspace cannot edit a message that is
+   * gone (on the page they would land in the next one). The page's acknowledgement reseeds the
+   * proxy with whatever the field holds afterwards (the same text, for a field Enter does not send).
+   */
+  const forgetAfterSend = () => {
+    if (password || (element.value === "" && model.value === "")) return;
+    element.value = "";
+    model = { value: "", selStart: 0, selEnd: 0, start: 0 };
+    caretUnknown = true;
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
@@ -478,6 +491,7 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
       const down = keyMessage("down", "Enter", "Enter", 0);
       options.send(expect === null ? down : ({ ...down, expect } as Up));
       options.send(keyMessage("up", "Enter", "Enter", 0));
+      forgetAfterSend();
     }
   };
   const onInput = (event: Event) => {

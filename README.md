@@ -88,6 +88,7 @@ echo 'COMPOSE_FILE=compose.yml:compose.runtime.yml' >> .env
 | 维护者       | [docs/records/2026-11-06-systemd-operations.md](docs/records/2026-11-06-systemd-operations.md)     | 双机 systemd 部署运维记录                                 |
 | 维护者       | [docs/records/2026-11-16-aliasmode-evaluation.md](docs/records/2026-11-16-aliasmode-evaluation.md) | AliasMode 评测                                            |
 | 维护者       | [docs/records/2026-11-16-windows-runtime.md](docs/records/2026-11-16-windows-runtime.md)           | Windows 浏览器运行端计划                                  |
+| 维护者       | [docs/records/2026-11-27-page-mode-p1-gate.md](docs/records/2026-11-27-page-mode-p1-gate.md)       | 页面模式单写者输入门槛                                    |
 
 ## 许可
 

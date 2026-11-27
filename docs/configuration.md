@@ -143,6 +143,7 @@
 | `MIRROR_PROXY_SUBSCRIPTION_ALLOW_PRIVATE` | 不设置                            | `1` 允许订阅地址指向私有、回环、链路本地和其他保留地址。不设置时，导入和刷新订阅只连接公网地址（`net/public-target.ts`），任何登录的用户都不能借订阅让网关访问内网 |
 | `MIRROR_CANVAS_SNAPSHOTS` | `0`（`compose.yml`）             | 页面模式是否采样 canvas。`0` 不采样；不设置时按 `MIRROR_CANVAS_SITES` 采样 |
 | `MIRROR_INPUT_ACKS`      | `shadow`                          | 页面模式的输入确认。`off` 不发确认；`shadow` 发确认，工作台只统计（见[排查 · 输入未同步](troubleshooting.md#输入未同步)）；`on` 工作台按确认判断远程输入框是否跟上，不再按固定的约 1 秒。其他值时网关拒绝启动 |
+| `MIRROR_PROXY_INPUT`     | `off`                             | 页面模式的单写者输入（实验）。`on` 时，输入框获得焦点后，打字先进入工作台本地的输入层，再以可信的按键和文字送到远程页面，回放里的输入框不在本地编辑（见[架构](architecture.md#页面模式和资源)）。需要输入确认：和 `MIRROR_INPUT_ACKS=off` 一起设置时，或取其他值时，网关拒绝启动。排查时可在工作台地址后加 `?input=legacy` 或 `?input=proxy`，只对这个标签页切换；`?inputlab=1` 显示它的诊断 |
 | `MIRROR_SUBMIT_GUARD`    | `shadow`                          | 按回车前核对远程输入框的文字和工作台显示的是否一致。`off` 不核对；`shadow` 只统计结果（日志 `submit guard:`）；`on` 不一致时不发送回车（尚未默认开启）。其他值时网关拒绝启动 |
 | `MIRROR_FFMPEG`          | `ffmpeg`                          | 画面模式截取显示用的 ffmpeg 程序 |
 | `MIRROR_DIAGNOSTIC_STDERR` | 不设置                          | `1` 把 Chromium 的标准错误输出写进服务端日志，排查浏览器启动失败时用；日志会变多 |
