@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
 import { compile } from "html-to-text";
+import { sanitizeEmailHtml } from "./sanitize";
 
 const emailText = compile({
   wordwrap: false,
@@ -122,10 +123,11 @@ export function createResendReceiving(
           from?: string;
           authentication?: { dmarc: string } | null;
         };
-        const html = body.html ?? undefined;
+        const rawHtml = body.html ?? undefined;
+        const html = sanitizeEmailHtml(rawHtml);
         return {
-          text: body.text?.trim() ? body.text : emailText(html ?? ""),
-          html,
+          text: body.text?.trim() ? body.text : emailText(rawHtml ?? ""),
+          ...(html ? { html } : {}),
           from: body.from,
           authenticated: typeof body.from === "string" && body.authentication?.dmarc === "pass",
         };

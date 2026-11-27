@@ -132,7 +132,11 @@ it("routes verified delivery to matching addresses and serves message bodies onl
     const detail = await app.inject({ url: `${messages}/test-email`, headers: owner });
     expect(detail.headers["cache-control"]).toBe("no-store");
     expect(detail.json()).toEqual({
-      message: { ...summary, text: "Code: 123456 Verify [https://example.com/verify]" },
+      message: {
+        ...summary,
+        text: "Code: 123456 Verify [https://example.com/verify]",
+        html: '<div class="mail-canvas"><p>Code: <strong>123456</strong> <button type="button" class="mail-remote-link" data-mail-url="https://example.com/verify">Verify</button></p></div>',
+      },
     });
     expect(await store.readMessage("owner", first.id, "test-email")).toMatchObject({
       authenticated: true,

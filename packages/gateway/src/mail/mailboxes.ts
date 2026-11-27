@@ -498,8 +498,8 @@ export function registerMailboxRoutes(
       requireAddress(userId, addressId);
       const message = await service.readMessage(userId, addressId, messageId);
       if (!message) throw new MailboxError(404, "没有这封邮件");
-      const { id, from, subject, receivedAt, text } = message;
-      return { message: { id, from, subject, receivedAt, text } };
+      const { id, from, subject, receivedAt, text, html } = message;
+      return { message: { id, from, subject, receivedAt, text, ...(html ? { html } : {}) } };
     },
   );
   if (service.enabled)

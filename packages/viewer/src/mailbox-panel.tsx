@@ -9,6 +9,7 @@ import {
   type MailboxContents,
   type MailboxMessage,
 } from "./mailboxes";
+import { extractSanitizedHtmlLinks, MailHtmlView } from "./mail-view";
 import "./user-panel.css";
 import "./mailbox-panel.css";
 
@@ -78,6 +79,7 @@ export function MailboxPanel({
   const [copied, setCopied] = useState(false);
   const [selectedMessage, setSelectedMessage] = useState<MailboxMessage>();
   const [contents, setContents] = useState<MailboxContents>();
+  const [bodyView, setBodyView] = useState<"html" | "text">("html");
   const [error, setError] = useState("");
   const address = mailboxes?.addresses.find((item) => item.id === addressId);
   const domains = mailboxes?.domains ?? [];
@@ -111,9 +113,13 @@ export function MailboxPanel({
     (button ?? listHeading.current)?.focus();
   }, [selectedMessage]);
   const openMessage = (message: MailboxMessage | undefined) => {
-    if (message) returnTo.current = message.id;
+    if (message) {
+      returnTo.current = message.id;
+      setBodyView("html");
+    }
     focusMoved.current = true;
     setSelectedMessage(message);
+    setError("");
   };
   const selectAddress = (selected: string) => {
     setAddressId(selected);
@@ -461,10 +467,30 @@ export function MailboxPanel({
         <section class="user-panel-form mailbox-messages" aria-label="邮件">
           {selectedMessage ? (
             <>
-              <div class="user-panel-actions">
+              <div class="user-panel-actions mailbox-message-toolbar">
                 <button type="button" onClick={() => openMessage(undefined)}>
                   返回邮件列表
                 </button>
+                {contents?.html && (
+                  <div class="mailbox-view-switch" role="group" aria-label="邮件显示方式">
+                    <button
+                      type="button"
+                      class={bodyView === "html" ? "user-panel-save" : undefined}
+                      aria-pressed={bodyView === "html"}
+                      onClick={() => setBodyView("html")}
+                    >
+                      排版视图
+                    </button>
+                    <button
+                      type="button"
+                      class={bodyView === "text" ? "user-panel-save" : undefined}
+                      aria-pressed={bodyView === "text"}
+                      onClick={() => setBodyView("text")}
+                    >
+                      纯文本
+                    </button>
+                  </div>
+                )}
               </div>
               <h3 ref={messageHeading} tabIndex={-1}>
                 {selectedMessage.subject || "无主题"}
@@ -475,16 +501,28 @@ export function MailboxPanel({
               {contents ? (
                 <>
                   {(() => {
-                    const links = extractMailLinks(contents.text);
-                    if (links.length === 0) return null;
+                    const showHtml = Boolean(contents.html) && bodyView === "html";
+                    const links = [
+                      ...new Set([
+                        ...extractSanitizedHtmlLinks(contents.html),
+                        ...extractMailLinks(contents.text),
+                      ]),
+                    ].slice(0, MAX_MAIL_LINKS);
+                    const activateMailUrl = (url: string) => {
+                      if (!onOpenUrlInBrowser) {
+                        setError("当前未连接远程浏览器；请先选择远程浏览器后再打开邮件链接。");
+                        return;
+                      }
+                      onOpenUrlInBrowser(url);
+                    };
                     return (
-                      <div class="mailbox-links" role="region" aria-label="邮件内链接">
-                        <p class="user-panel-muted mailbox-links-hint">
-                          {onOpenUrlInBrowser
-                            ? `为避免暴露本机网络地址，请通过远程浏览器${browserProfileName ? `（${browserProfileName}）` : ""}打开邮件链接：`
-                            : "当前未连接远程浏览器；请勿复制到本机浏览器打开邮件链接。"}
-                        </p>
-                        {!onOpenUrlInBrowser && onChooseBrowser && (
+                      <>
+                        {showHtml && (
+                          <p class="user-panel-muted mailbox-privacy-note">
+                            已屏蔽外部图片以防追踪；点击邮件内按钮或链接将在远程浏览器打开。
+                          </p>
+                        )}
+                        {!onOpenUrlInBrowser && links.length > 0 && onChooseBrowser && (
                           <div class="user-panel-actions">
                             <button
                               type="button"
@@ -495,25 +533,38 @@ export function MailboxPanel({
                             </button>
                           </div>
                         )}
-                        <ul class="mailbox-link-list">
-                          {links.map((url) => (
-                            <li key={url} class="mailbox-link-item">
-                              <code class="mailbox-link-url">{url}</code>
-                              <button
-                                type="button"
-                                class="user-panel-save"
-                                disabled={!onOpenUrlInBrowser}
-                                onClick={() => onOpenUrlInBrowser?.(url)}
-                              >
-                                在远程浏览器打开
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
+                        {showHtml ? (
+                          <MailHtmlView html={contents.html!} onActivateLink={activateMailUrl} />
+                        ) : (
+                          <pre class="mailbox-body">{contents.text || "邮件没有正文。"}</pre>
+                        )}
+                        {links.length > 0 && (
+                          <div class="mailbox-links" role="region" aria-label="邮件内链接">
+                            <p class="user-panel-muted mailbox-links-hint">
+                              {onOpenUrlInBrowser
+                                ? `为避免暴露本机网络地址，请通过远程浏览器${browserProfileName ? `（${browserProfileName}）` : ""}打开邮件链接：`
+                                : "当前未连接远程浏览器；请勿复制到本机浏览器打开邮件链接。"}
+                            </p>
+                            <ul class="mailbox-link-list">
+                              {links.map((url) => (
+                                <li key={url} class="mailbox-link-item">
+                                  <code class="mailbox-link-url">{url}</code>
+                                  <button
+                                    type="button"
+                                    class="user-panel-save"
+                                    disabled={!onOpenUrlInBrowser}
+                                    onClick={() => activateMailUrl(url)}
+                                  >
+                                    在远程浏览器打开
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </>
                     );
                   })()}
-                  <pre class="mailbox-body">{contents.text || "邮件没有正文。"}</pre>
                 </>
               ) : (
                 <p class="user-panel-muted" role="status">

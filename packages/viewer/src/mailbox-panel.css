@@ -58,6 +58,20 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.mailbox-message-toolbar {
+  justify-content: space-between;
+}
+.mailbox-view-switch {
+  display: inline-flex;
+  gap: 6px;
+}
+.mailbox-privacy-note {
+  margin: 0;
+  font-size: 0.85em;
+}
+.mailbox-html-host {
+  min-width: 0;
+}
 .mailbox-links {
   display: grid;
   gap: 8px;

@@ -25,6 +25,7 @@ export interface MailboxMessage {
 
 export interface MailboxContents extends MailboxMessage {
   text: string;
+  html?: string;
 }
 
 export function mailboxLabel(address: MailboxAddress): string {
