@@ -41,7 +41,8 @@
       __fx.extra = () => ({
         canvas2d: Reflect.ownKeys(c2d).map(String).sort().join(","),
         canvasgl: Reflect.ownKeys(cgl).map(String).sort().join(","),
-        preserveDrawingBuffer: gl ? gl.getContextAttributes().preserveDrawingBuffer : "no-webgl",
+        // A lost context (software GL on CI runners) has no attributes.
+        preserveDrawingBuffer: gl?.getContextAttributes()?.preserveDrawingBuffer ?? "no-webgl",
       });
     </script>
   </body>
