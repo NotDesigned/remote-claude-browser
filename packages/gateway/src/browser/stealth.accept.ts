@@ -480,12 +480,13 @@ async function driveTyping(
   // end on its own, and the person scrolls up 400 px from there in one message: the page's live
   // position, not the viewer's last report, makes that a scroll up.
   type ScrollState = { stuck: boolean; top: number; bottom: number; code: number };
-  const before = await evaluate<ScrollState>(page.sessionId, "__fx.scroll()");
+  const reported = await evaluate<ScrollState>(page.sessionId, "__fx.scroll()");
   const scroller = ids.get("scroller")!;
-  await send({ t: "scroll", tab, nodeId: scroller, x: 0, y: before.top });
+  await send({ t: "scroll", tab, nodeId: scroller, x: 0, y: reported.top });
   await evaluate<number>(page.sessionId, "__fx.grow()");
   const start = await evaluate<ScrollState>(page.sessionId, "__fx.scroll()");
-  if (start.top <= before.top) checks.push("FAIL: the fixture's transcript did not follow its end");
+  if (start.top <= reported.top)
+    checks.push("FAIL: the fixture's transcript did not follow its end");
   await send({ t: "scroll", tab, nodeId: scroller, x: 0, y: start.top - 400 });
   let last = start;
   const end = await waitFor("scroll to settle", async () => {
