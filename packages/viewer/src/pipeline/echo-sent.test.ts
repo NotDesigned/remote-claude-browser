@@ -277,6 +277,21 @@ describe.each([
     expect(reconcile).toHaveBeenCalledOnce();
   });
 
+  it("sees a page clear its composer long after the final ack", () => {
+    const { echo, focus, reconcile, at, settle, send } = ackSetup();
+    settle(1, 14, true);
+    at(200);
+    echo.keyDown({ key: "Enter" } as KeyboardEvent, focus);
+    send();
+    send();
+    // The page sent the message but keeps it in its composer for now: the window closes.
+    settle(3, 14, true);
+    expect(reconcile).not.toHaveBeenCalled();
+    // 1.5 s later, with nothing typed since, it clears the composer.
+    expect(echo(batch({ removes: [{ parentId: 21, id: 22 }] }), at(1_700))).not.toBeNull();
+    expect(reconcile).toHaveBeenCalledTimes(ackMode ? 1 : 0);
+  });
+
   it("knows from the page's ack alone that it sent and cleared the composer", () => {
     const setup = ackSetup();
     typeOnAfterEnter(setup);

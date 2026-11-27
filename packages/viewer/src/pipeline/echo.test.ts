@@ -875,10 +875,10 @@ describe.each([
       expect(echo.typingWithin(400)).toBe(false);
     } else clock.to(1_200);
     expect(reconcile).not.toHaveBeenCalled();
-    // A later change to that node: ack mode knows the replay is in step and lets it be; the timer
-    // only knows it never got the node.
+    // A later change to that node still asks: this replay never got it (the page clearing its
+    // composer long after the last ack, for one).
     echo(mutationEvent([{ id: 40, value: "hello!" }]), clock.to(1_300));
-    expect(reconcile).toHaveBeenCalledTimes(ackMode ? 0 : 1);
+    expect(reconcile).toHaveBeenCalledOnce();
   });
 
   it("holds the field while input is unacknowledged, whatever the time, and counts the old bug", () => {

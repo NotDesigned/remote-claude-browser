@@ -576,7 +576,12 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
       return;
     }
     // A new connection numbers its input from 1 again, and says whether acks are on.
-    if (message.t === "hello") sequencer.hello(message.caps);
+    if (message.t === "hello") {
+      sequencer.hello(message.caps);
+      // The inputlab keeps one connection's acks: their numbers start again with it.
+      inputLab.acks.length = 0;
+      inputLab.settled.length = 0;
+    }
     presentation.handle(message);
     if (message.t === "hello") {
       buildSkew.observe(message.build);

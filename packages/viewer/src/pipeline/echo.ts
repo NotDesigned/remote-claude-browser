@@ -181,6 +181,12 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
   const sentTexts = new WeakMap<Element, { text: string; at: number }>();
   /** Ack mode: Enter pressed in a field, and the newest iseq sent before it. */
   let sentAck: { element: HTMLElement; nodeId: number; after: number } | null = null;
+  /**
+   * Ack mode: the editor Enter last sent from, and its text then. Acks close the editing window
+   * soon after Enter, but a page may clear its composer much later, with no input to answer: that
+   * clear is looked for in every change to the editor, held back or not.
+   */
+  let lastEnter: { element: HTMLElement; text: string } | null = null;
 
   const requestReconcile = () => {
     if (reconcileRequested) reconcileAgain = true;
@@ -315,6 +321,13 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
         const state = nodes.get(mutation.id);
         if (state !== undefined && state.subtreeNodeIds !== undefined) clearState(mutation.id);
       }
+      if (ackMode() && lastEnter !== null) {
+        if (lastEnter.element.isConnected === false) lastEnter = null;
+        else if (clearsSentText(lastEnter, data, nodeFor)) {
+          lastEnter = null;
+          requestReconcile();
+        }
+      }
       // Suppression lasts only the echo window after local typing, focus or not: past it, the
       // page's own changes to the editor must show.
       const held: EditingState[] = [];
@@ -377,7 +390,8 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       });
       // The page took away the text Enter sent: it sent it and cleared the editor. Typing goes
       // on, so waiting for it to settle would show the sent text for as long as it does.
-      // With acks, Enter's text counts until the final ack after it, not for SENT_CLEAR_MS.
+      // With acks, Enter's text counts until the next Enter, not for SENT_CLEAR_MS: a page may
+      // clear its composer well after its last ack.
       for (const [state, { removed, added }] of changed) {
         const sent = sentTexts.get(state.element);
         if (sent === undefined || (!ackMode() && now() - sent.at > SENT_CLEAR_MS)) continue;
@@ -386,6 +400,7 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
           continue;
         sentTexts.delete(state.element);
         if (sentAck?.element === state.element) sentAck = null;
+        if (lastEnter?.element === state.element) lastEnter = null;
         requestReconcile();
       }
       // A change held back now is not in a catch-up that may already be on its way.
@@ -517,8 +532,11 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       focus !== null &&
       isEchoField(focus.element) &&
       ackMode()
-    )
+    ) {
       sentAck = { element: focus.element, nodeId: focus.nodeId, after: acks!.lastStamped() };
+      if (isContenteditableEchoField(focus.element))
+        lastEnter = { element: focus.element, text: focus.element.textContent ?? "" };
+    }
   };
 
   filter.getFocused = () => focused;
@@ -555,6 +573,7 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
     reconcileAgain = false;
     reconcileDeferred = false;
     sentAck = null;
+    lastEnter = null;
     if (reconcileRetry !== null) cancel(reconcileRetry);
     reconcileRetry = null;
     reconcileRetries = 0;
@@ -575,10 +594,10 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       return;
     }
     if (editHash(localFieldText(state.element)) === edit.hash) {
-      // Provably in step: what was held back changes nothing this field shows.
+      // The same text: what was held back changes nothing this field shows. Nodes the page made
+      // that this replay never got stay known, so a later change to them is still caught.
       clearState(nodeId);
       state.suppressed = undefined;
-      unmapped.clear();
       passedTexts.clear();
       return;
     }
@@ -609,14 +628,12 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
         normalizeEditableText(localFieldText(sent.element)).trim() !== ""
       ) {
         sentAck = null;
+        if (lastEnter?.element === sent.element) lastEnter = null;
         if (!isValueEchoField(sent.element)) {
           clearState(sent.nodeId);
           requestReconcile();
         }
-      } else if (settled.final) {
-        sentTexts.delete(sent.element);
-        sentAck = null;
-      }
+      } else if (settled.final) sentAck = null;
     }
     if (!settled.final || (acks?.outstanding() ?? 0) > 0) return;
     for (const [nodeId, state] of [...nodes]) {
@@ -723,6 +740,41 @@ function subtreeText(edits: SuppressedEdits, id: number): string {
     }
   }
   return text;
+}
+
+/**
+ * Whether a mutation batch takes the text Enter sent out of the editor (and does not put it back):
+ * the page clearing its composer after sending, seen in this replay's own nodes.
+ */
+function clearsSentText(
+  sent: { element: HTMLElement; text: string },
+  data: {
+    removes: Array<{ id: number }>;
+    texts: Array<{ id: number; value: string | null }>;
+    adds: Array<{ parentId: number; node: unknown }>;
+  },
+  nodeFor: (id: number) => Node | null,
+): boolean {
+  const wanted = compact(sent.text);
+  if (wanted === "") return false;
+  const inside = (node: Node | null): node is Node =>
+    node !== null && (node === (sent.element as Node) || sent.element.contains(node));
+  let removed = "";
+  let added = "";
+  for (const mutation of data.removes) {
+    const node = nodeFor(mutation.id);
+    if (inside(node)) removed += node.textContent ?? "";
+  }
+  for (const mutation of data.texts) {
+    const node = nodeFor(mutation.id);
+    if (!inside(node)) continue;
+    removed += node.textContent ?? "";
+    added += mutation.value ?? "";
+  }
+  for (const mutation of data.adds)
+    if (inside(nodeFor(mutation.parentId)))
+      added += serializedText(mutation.node as SerializedNode);
+  return compact(removed).includes(wanted) && !compact(added).includes(wanted);
 }
 
 /** Text without its whitespace, which editors spread over blocks and spaces as they like. */

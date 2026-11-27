@@ -1,4 +1,7 @@
 // One temporary Chrome with real recorder, replay, touch events, and gateway input dispatch.
+// Input acks run as the gateway runs them (MIRROR_INPUT_ACKS, "on" unless set), optionally over a
+// slow link (scripts/lib/slow-link.mts), and the last connection's inputs must each be
+// acknowledged once, in order, none refused.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
@@ -19,6 +22,13 @@ import {
 import { TabHub } from "../packages/gateway/src/hub/tabhub";
 import { createInputRelay, type InputMsg } from "../packages/gateway/src/input/relay";
 import { viewerDist } from "./viewer-dist.mjs";
+import { describeLink, slowLinkConfig, slowSocket, type SlowSocket } from "./lib/slow-link.mts";
+import {
+  coverageProblems,
+  createAckHarness,
+  readLabScript,
+  smokeAckMode,
+} from "./lib/ack-harness.mts";
 if (process.env.CLAUDE_LIMITED_TASK !== "1") throw new Error("Use limited-run.sh");
 const baseline = process.env.MOBILE_TOUCH_BASELINE === "1";
 const webkitViewer = process.env.MOBILE_TOUCH_ENGINE === "webkit";
@@ -93,7 +103,10 @@ const browser = await chromium.launch({
 });
 let viewerBrowser = browser;
 const wss = new WebSocketServer({ server, path: "/ws" });
-const sockets = new Set<any>();
+const link = slowLinkConfig();
+const ackMode = smokeAckMode();
+console.log(`mobile-input: ${describeLink(link)}, MIRROR_INPUT_ACKS=${ackMode}`);
+const sockets = new Set<{ raw: any; slow: SlowSocket }>();
 const hub = new TabHub({ sessionId: "client-1", tabId: "mobile" });
 const chunks = new ChunkReassembler();
 const pending = new Map<number, (reply: CmdRes) => void>();
@@ -116,9 +129,10 @@ let silentConnection = false;
 let mode: "dom" | "px" = "dom";
 let viewport = { w: 375, h: 640 };
 const watchdog = setTimeout(() => process.exit(124), 240000);
+let acks: ReturnType<typeof createAckHarness> | undefined;
 const broadcast = (message: Down) => {
   if (silentConnection) return;
-  for (const socket of sockets) if (socket.readyState === 1) socket.send(JSON.stringify(message));
+  for (const socket of sockets) socket.slow.send(JSON.stringify(message));
 };
 try {
   const remote = await browser.newPage({ viewport: { width: 375, height: 640 } });
@@ -140,8 +154,9 @@ try {
       pending.get(message.reqId)?.(message);
       return;
     }
-    for (const down of hub.ingest(message as AgentMsg))
-      if (mode === "dom" || down.t === "snapshot") broadcast(down);
+    const downs = hub.ingest(message as AgentMsg);
+    acks.observe(downs);
+    for (const down of downs) if (mode === "dom" || down.t === "snapshot") broadcast(down);
   });
   await remote.addInitScript({ content: createAgentBundle({ canvas: { enabled: false } }) });
   await remote.route(remoteUrl, (route) =>
@@ -176,7 +191,9 @@ try {
     }
   };
   hub.onNeedSnapshot(() => sendCmd("mobile", { cmd: "snapshot" }));
+  acks = createAckHarness({ mode: ackMode, hub: () => hub, sendCmd });
   const relay = createInputRelay({
+    ...acks.relayDeps,
     agentLink: { async *msgs() {}, sendCmd },
     send: async (_session, method, params) => remoteCdp.send(method as never, params as never),
     sessionFor: () => "fixture",
@@ -193,19 +210,30 @@ try {
       w: viewport.w,
       h: viewport.h,
     });
+  acks.attach(relay);
   let controlWork = Promise.resolve();
-  wss.on("connection", (socket: any) => {
+  wss.on("connection", (raw: any) => {
     connectionCount++;
     silentConnection = false;
-    sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
+    const socket = slowSocket(raw, link);
+    const entry = { raw, slow: socket };
+    sockets.add(entry);
+    // Each connection is a new viewer to the gateway, and numbers its input from 1 again.
+    const viewerId = `mobile-viewer-${connectionCount}`;
+    acks!.route(viewerId, (down) => socket.send(JSON.stringify(down)));
+    raw.on("close", () => {
+      sockets.delete(entry);
+      socket.close();
+      acks!.route(viewerId, null);
+    });
     socket.send(
       JSON.stringify({
         t: "hello",
-        viewerId: "mobile-viewer",
+        viewerId,
         role: "driver",
         sessionId: "client-1",
         serverTs: Date.now(),
+        ...(acks!.caps.length > 0 ? { caps: acks!.caps } : {}),
       }),
     );
     socket.send(
@@ -215,9 +243,9 @@ try {
       }),
     );
     for (const down of hub.joinPayload()) socket.send(JSON.stringify(down));
-    socket.on("message", (raw: any) => {
+    socket.onMessage((text) => {
       if (silentConnection) return;
-      const message = JSON.parse(String(raw)) as Up;
+      const message = JSON.parse(text) as Up;
       received.push(message);
       if (message.t === "ping")
         socket.send(
@@ -247,7 +275,7 @@ try {
       // Reproduce the old mouse-only relay without interacting with a real verification service.
       if (baseline && message.t === "ptr") delete message.pointerType;
       if (["ptr", "key", "text", "value", "scroll", "ime"].includes(message.t))
-        dispatches.push(relay("mobile-viewer", message as InputMsg));
+        dispatches.push(relay(viewerId, message as InputMsg));
     });
   });
   if (webkitViewer)
@@ -275,7 +303,7 @@ try {
   });
   const page = await context.newPage();
   page.on("pageerror", (error) => console.error("mobile fixture viewer error", error.message));
-  await page.goto(origin + "/?sid=client-1");
+  await page.goto(origin + "/?sid=client-1&inputlab=1");
   await page.waitForFunction(
     () => document.querySelector("#mirror-host")?.getAttribute("data-input-ready") === "true",
   );
@@ -686,8 +714,33 @@ try {
       () => (window as any).__sameViewerDocument === true,
     );
   }
+  // The last connection's input: each acknowledged once, in order, none refused.
+  await page.waitForTimeout(1_000);
+  await acks!.settle();
+  const lab = await page.evaluate(readLabScript, "mobile");
+  const ackProblems = ackMode === "off" ? [] : coverageProblems(lab);
+  if (ackMode === "off") checks.noAcksWhenOff = lab.acks.length === 0 && lab.stamped === 0;
+  else {
+    checks.inputAcksCoverEveryInputOnce = ackProblems.length === 0;
+    checks.inputAcksOnlyToTheirViewer = acks!.sent.every((entry) =>
+      entry.viewerId.startsWith("mobile-viewer-"),
+    );
+  }
+  const ackResult = {
+    mode: ackMode,
+    link: describeLink(link),
+    stamped: lab.stamped,
+    acks: lab.acks.length,
+    problems: ackProblems.slice(0, 5),
+    dispatchOnly: lab.stats.dispatchOnlyAcks,
+    decayWhileOutstanding: lab.stats.decayWhileOutstanding,
+    ackRtt: [lab.stats.ackRttP50, lab.stats.ackRttP95],
+    guard: acks!.guard,
+  };
+  console.log(`acks ${JSON.stringify(ackResult)}`);
   const result = {
     fixtureOnly: true,
+    acks: ackResult,
     engine: webkitViewer ? "webkit" : "chromium",
     realTouchEvents: true,
     baseline,
@@ -718,7 +771,10 @@ try {
   hub.invalidateDocument();
   if (viewerBrowser !== browser) await viewerBrowser.close();
   await browser.close();
-  for (const socket of sockets) socket.terminate();
+  for (const socket of sockets) {
+    socket.slow.close();
+    socket.raw.terminate();
+  }
   await new Promise<void>((done) => wss.close(() => done()));
   await new Promise<void>((done) => server.close(() => done()));
 }
