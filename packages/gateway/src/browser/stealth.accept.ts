@@ -484,17 +484,18 @@ async function driveTyping(
   const scroller = ids.get("scroller")!;
   await send({ t: "scroll", tab, nodeId: scroller, x: 0, y: start.top });
   await send({ t: "scroll", tab, nodeId: scroller, x: 0, y: start.top - 400 });
+  let last = start;
   const end = await waitFor("scroll to settle", async () => {
     await sleep(300);
-    const state = await evaluate<{ stuck: boolean; top: number; bottom: number }>(
+    last = await evaluate<{ stuck: boolean; top: number; bottom: number }>(
       page.sessionId,
       "__fx.scroll()",
     );
-    return Math.abs(state.top - (start.top - 400)) <= 2 ? state : undefined;
+    return Math.abs(last.top - (start.top - 400)) <= 2 ? last : undefined;
   }).catch(() => undefined);
   checks.push(
     end === undefined
-      ? "FAIL: the scroller did not land 400 px up"
+      ? `FAIL: the scroller did not land 400 px up (from ${start.top} to ${last.top}, stuck ${last.stuck})`
       : end.stuck
         ? "FAIL: the page still follows its end after a person scrolled up"
         : "scrolled up and the page let go of its end",

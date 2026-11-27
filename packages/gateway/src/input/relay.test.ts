@@ -917,3 +917,69 @@ describe("InputRelay", () => {
     expect(detached.notes).toEqual([]);
   });
 });
+
+describe("scroll-up announcement (hardening)", () => {
+  const wheels = (h: ReturnType<typeof harness>) =>
+    h.cdp.filter((call) => call.params?.type === "mouseWheel").map((call) => call.params);
+  const wheel = (x: number, y: number, deltaY: number) => ({
+    type: "mouseWheel",
+    x,
+    y,
+    deltaX: 0,
+    deltaY,
+    modifiers: 0,
+    pointerType: "mouse",
+  });
+
+  it("sends one trusted wheel at the scroller's centre before scrolling it up, never down", async () => {
+    const h = harness();
+    const scroll = (y: number) =>
+      h.relay("driver", { t: "scroll", tab: "tab-1", nodeId: 7, x: 0, y });
+    await scroll(1_000);
+    await scroll(1_200);
+    expect(wheels(h)).toEqual([]);
+    await scroll(1_150);
+    await scroll(700);
+    await scroll(700);
+    // Rect {x: 10, y: 20, w: 100, h: 80}: centre (60, 60). At most one notch.
+    expect(wheels(h)).toEqual([wheel(60, 60, -50), wheel(60, 60, -120)]);
+    // Every scroll still lands exactly, after its wheel.
+    expect(h.commands.filter((command) => command.cmd === "scroll").map((c) => c.y)).toEqual([
+      1_000, 1_200, 1_150, 700, 700,
+    ]);
+  });
+
+  it("uses the viewport's centre for the page's own scroller", async () => {
+    const h = harness();
+    await h.relay("driver", { t: "scroll", tab: "tab-1", nodeId: 0, x: 0, y: 300 });
+    await h.relay("driver", { t: "scroll", tab: "tab-1", nodeId: 0, x: 0, y: 299 });
+    expect(wheels(h)).toEqual([wheel(320, 240, -1)]);
+  });
+
+  it("sends no wheel for a scroller outside the viewport or not shown", async () => {
+    for (const data of [
+      { x: 700, y: 20, w: 100, h: 80, visible: true },
+      { x: 10, y: -200, w: 100, h: 80, visible: true },
+      { x: 10, y: 20, w: 100, h: 80, visible: false },
+    ]) {
+      const h = harness({ rect: async (call) => ({ reqId: call, ok: true, data }) });
+      await h.relay("driver", { t: "scroll", tab: "tab-1", nodeId: 7, x: 0, y: 500 });
+      await h.relay("driver", { t: "scroll", tab: "tab-1", nodeId: 7, x: 0, y: 100 });
+      expect(wheels(h)).toEqual([]);
+      expect(h.commands.filter((command) => command.cmd === "scroll")).toHaveLength(2);
+    }
+  });
+
+  it("is off with MIRROR_AGENT_HARDENING=0, where the agent announces the scroll itself", async () => {
+    vi.stubEnv("MIRROR_AGENT_HARDENING", "0");
+    try {
+      const h = harness();
+      await h.relay("driver", { t: "scroll", tab: "tab-1", nodeId: 7, x: 0, y: 500 });
+      await h.relay("driver", { t: "scroll", tab: "tab-1", nodeId: 7, x: 0, y: 100 });
+      expect(wheels(h)).toEqual([]);
+      expect(h.commands.some((command) => command.cmd === "rect")).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});

@@ -15,6 +15,7 @@ import {
 } from "@mirror/protocol";
 import { record } from "@rrweb/record";
 import type { Emitter } from "./emit";
+import { isHardened } from "./config";
 
 export interface NodeMirror {
   getIds(): number[];
@@ -210,6 +211,11 @@ function setNativeSelectedValues(node: HTMLSelectElement, values: string[]): voi
 
 /** Rounding in the mirror moves it this far without anyone scrolling. */
 const SCROLL_UP_MIN_PX = 3;
+/** The gateway's wheel for a scroll up is at most one notch, and lands within this long. */
+const WHEEL_MAX_PX = 120;
+const WHEEL_SETTLE_MS = 1_000;
+/** Scroller -> the hold on its position after the latest scroll up, until the wheel has landed. */
+const wheelHolds = new WeakMap<Element, () => void>();
 
 /**
  * A page that follows a live transcript to its end puts back any scroll it did not see a person
@@ -217,6 +223,31 @@ const SCROLL_UP_MIN_PX = 3;
  * shows the place the person scrolled to, and its own "scroll to bottom" control has nothing to do.
  */
 function announceScrollUp(scroller: Element, y: number): void {
+  // Hardening: a page can see this event is not trusted. The gateway sends real wheel input for a
+  // scroll up instead (gateway/src/input/scroll-announce.ts), before this command. Chromium may
+  // apply that wheel's scroll after the exact position below, as a further step up, so the position
+  // is put back once if the scroll that ends next leaves it at most one wheel above.
+  if (isHardened()) {
+    wheelHolds.get(scroller)?.();
+    if (y >= scroller.scrollTop - 1) return;
+    const doc = scroller.ownerDocument;
+    const target: EventTarget = scroller === doc.scrollingElement ? doc : scroller;
+    const until = performance.now() + WHEEL_SETTLE_MS;
+    const release = (): void => {
+      target.removeEventListener("scrollend", onEnd, true);
+      if (wheelHolds.get(scroller) === release) wheelHolds.delete(scroller);
+    };
+    const onEnd = (): void => {
+      if (performance.now() > until) return release();
+      const above = y - scroller.scrollTop;
+      if (above <= 0.5 || above > WHEEL_MAX_PX + 1) return;
+      release();
+      scroller.scrollTop = y;
+    };
+    wheelHolds.set(scroller, release);
+    target.addEventListener("scrollend", onEnd, true);
+    return;
+  }
   const deltaY = y - scroller.scrollTop;
   if (deltaY >= -SCROLL_UP_MIN_PX) return;
   scroller.dispatchEvent(new WheelEvent("wheel", { deltaY, bubbles: true, cancelable: true }));

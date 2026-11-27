@@ -7,7 +7,6 @@
   "stack.shape": "P3: wrappers add stack frames",
   "trust.editable": "P1: contenteditable text sync still uses execCommand",
   "trust.value": "P1: value controls are still set from inside the page",
-  "trust.wheel": "P0-A: today's leak, removed by workstream A",
   "xrealm.tostring:hidden": "P3: another realm's toString sees the wrappers",
   "xrealm.tostring:srcdoc": "P3: another realm's toString sees the wrappers",
   "xrealm.tostring:visible": "P3: another realm's toString sees the wrappers"

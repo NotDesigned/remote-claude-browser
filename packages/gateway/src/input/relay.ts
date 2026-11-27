@@ -14,6 +14,7 @@ import { Mod, NODE_IN_FRAME_ERROR, type Down, type RectResult, type Up } from "@
 import { resolveNode, type FrameHop, type ResolveNodeDeps } from "../browser/resolvenode";
 import type { AgentLink, CdpSend } from "../types";
 import { describeKey } from "./keymap";
+import { centreInViewport, createScrollAnnouncer } from "./scroll-announce";
 
 const DEFAULT_RECT_TIMEOUT_MS = 100;
 /**
@@ -48,6 +49,11 @@ export interface InputRelayDeps {
   rectTimeoutMs?: number;
   /** `reason` is short Chinese text for the person, never anything from the page. */
   onValueStatus?(tabId: string, failed: boolean, reason?: string): void;
+  /**
+   * A scroll up is preceded by one trusted wheel at the scroller (scroll-announce.ts). Defaults to
+   * on unless MIRROR_AGENT_HARDENING=0, where the agent dispatches its synthetic wheel instead.
+   */
+  announceScrollUp?: boolean;
 }
 
 export type InputMsg = Extract<
@@ -163,6 +169,20 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     ...(deps.callFrame === undefined ? {} : { callFrame: deps.callFrame }),
     sessionFor: deps.sessionFor,
   };
+  const scrollAnnouncer =
+    (deps.announceScrollUp ?? process.env.MIRROR_AGENT_HARDENING !== "0")
+      ? createScrollAnnouncer({
+          send: deps.send,
+          resolvePoint: async (tabId, nodeId) => {
+            if (nodeId === 0) {
+              const viewport = deps.viewportFor(tabId);
+              return viewport && { x: viewport.w / 2, y: viewport.h / 2 };
+            }
+            const { rect, iframeClip } = await resolveRect(tabId, nodeId);
+            return centreInViewport(rect, deps.viewportFor(tabId), iframeClip);
+          },
+        })
+      : undefined;
 
   const relay = ((viewerId, msg) => {
     const generation = generations.get(msg.tab) ?? 0;
@@ -312,6 +332,11 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
         }
         case "scroll": {
           const command = { cmd: "scroll", x: msg.x, y: msg.y } as const;
+          // A real wheel first, so a page that follows its end sees a person scroll up.
+          await scrollAnnouncer
+            ?.announce(msg.tab, sessionId, msg.nodeId, msg.y)
+            .catch((error: unknown) => reportFailure("scroll-up wheel was dropped", error));
+          if (!valid()) return false;
           // Protocol nodeId 0 is the top-level window sentinel, not an rrweb mirror node. Any other
           // node is first tried in the top document, which is where nearly all of them are.
           let response = await withTimeout(
