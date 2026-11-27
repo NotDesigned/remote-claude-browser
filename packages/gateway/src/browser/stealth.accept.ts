@@ -476,21 +476,21 @@ async function driveTyping(
   await send({ t: "value", tab, nodeId: ids.get("ce")!, value: "fx" });
   await send({ t: "value", tab, nodeId: ids.get("inp")!, value: "typed" });
 
-  // A viewer reports its scroller as it moves: where it is, then 400 px further up.
-  const start = await evaluate<{ stuck: boolean; top: number; bottom: number }>(
-    page.sessionId,
-    "__fx.scroll()",
-  );
+  // The viewer last reported the scroller where it was. The page then followed new output to its
+  // end on its own, and the person scrolls up 400 px from there in one message: the page's live
+  // position, not the viewer's last report, makes that a scroll up.
+  type ScrollState = { stuck: boolean; top: number; bottom: number; code: number };
+  const before = await evaluate<ScrollState>(page.sessionId, "__fx.scroll()");
   const scroller = ids.get("scroller")!;
-  await send({ t: "scroll", tab, nodeId: scroller, x: 0, y: start.top });
+  await send({ t: "scroll", tab, nodeId: scroller, x: 0, y: before.top });
+  await evaluate<number>(page.sessionId, "__fx.grow()");
+  const start = await evaluate<ScrollState>(page.sessionId, "__fx.scroll()");
+  if (start.top <= before.top) checks.push("FAIL: the fixture's transcript did not follow its end");
   await send({ t: "scroll", tab, nodeId: scroller, x: 0, y: start.top - 400 });
   let last = start;
   const end = await waitFor("scroll to settle", async () => {
     await sleep(300);
-    last = await evaluate<{ stuck: boolean; top: number; bottom: number }>(
-      page.sessionId,
-      "__fx.scroll()",
-    );
+    last = await evaluate<ScrollState>(page.sessionId, "__fx.scroll()");
     return Math.abs(last.top - (start.top - 400)) <= 2 ? last : undefined;
   }).catch(() => undefined);
   checks.push(
@@ -499,6 +499,12 @@ async function driveTyping(
       : end.stuck
         ? "FAIL: the page still follows its end after a person scrolled up"
         : "scrolled up and the page let go of its end",
+  );
+  // The wheel went to the transcript itself, not to the code block at its centre.
+  checks.push(
+    last.code === start.code
+      ? "the code block inside the transcript did not move"
+      : `FAIL: the wheel scrolled the code block inside the transcript (${start.code} to ${last.code})`,
   );
   return checks;
 }

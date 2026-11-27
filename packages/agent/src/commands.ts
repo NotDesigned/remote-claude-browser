@@ -16,6 +16,13 @@ import {
 import { record } from "@rrweb/record";
 import type { Emitter } from "./emit";
 import { isHardened } from "./config";
+import {
+  SCROLL_UP_MIN_PX,
+  WHEEL_MAX_PX,
+  defaultWheelPointDom,
+  scrollUpWheelPoint,
+  type WheelPointDom,
+} from "./wheel-point";
 
 export interface NodeMirror {
   getIds(): number[];
@@ -46,6 +53,8 @@ export interface CommandDependencies {
   /** Timers for re-checking an editor after an edit; tests replace them. */
   schedule?: (callback: () => void, delayMs: number) => void;
   editableSettleDelaysMs?: readonly number[];
+  /** Hit testing for `wheelpoint`; tests replace it. */
+  wheelPointDom?: WheelPointDom;
 }
 
 const DEFAULT_SNAPSHOT_READY_TIMEOUT_MS = 2_000;
@@ -209,10 +218,7 @@ function setNativeSelectedValues(node: HTMLSelectElement, values: string[]): voi
   for (const option of node.options) setter.call(option, selectedValues.has(option.value));
 }
 
-/** Rounding in the mirror moves it this far without anyone scrolling. */
-const SCROLL_UP_MIN_PX = 3;
-/** The gateway's wheel for a scroll up is at most one notch, and lands within this long. */
-const WHEEL_MAX_PX = 120;
+/** The gateway's wheel for a scroll up lands within this long. */
 const WHEEL_SETTLE_MS = 1_000;
 /** Scroller -> the hold on its position after the latest scroll up, until the wheel has landed. */
 const wheelHolds = new WeakMap<Element, () => void>();
@@ -224,7 +230,8 @@ const wheelHolds = new WeakMap<Element, () => void>();
  */
 function announceScrollUp(scroller: Element, y: number): void {
   // Hardening: a page can see this event is not trusted. The gateway sends real wheel input for a
-  // scroll up instead (gateway/src/input/scroll-announce.ts), before this command. Chromium may
+  // scroll up instead (gateway/src/input/scroll-announce.ts), before this command, at the point
+  // `wheelpoint` chose from this page's live position (wheel-point.ts). Chromium may
   // apply that wheel's scroll after the exact position below, as a further step up, so the position
   // is put back once if the scroll that ends next leaves it at most one wheel above.
   if (isHardened()) {
@@ -402,6 +409,7 @@ export function createCommandHandler(
   };
 
   const frames: FrameIdCache = { ids: null };
+  const wheelDom = dependencies.wheelPointDom ?? defaultWheelPointDom(toRootViewport);
   const handler = (cmd: AgentCmd): void => {
     try {
       const nodeMirror = getNodeMirror();
@@ -485,6 +493,19 @@ export function createCommandHandler(
                 : {}),
             },
           });
+          return;
+        }
+        case "wheelpoint": {
+          // Where the gateway's trusted wheel for this scroll up goes, decided from where the
+          // page is now; null for no wheel.
+          const scroller =
+            cmd.nodeId === 0 ? document.scrollingElement : getMirrorNode(nodeMirror, cmd.nodeId);
+          if (cmd.nodeId !== 0 && !isElement(scroller)) {
+            emitter.emit({ kind: "cmdres", reqId: cmd.reqId, ok: false, err: missing(cmd.nodeId) });
+            return;
+          }
+          const data = isElement(scroller) ? scrollUpWheelPoint(scroller, cmd.y, wheelDom) : null;
+          emitter.emit({ kind: "cmdres", reqId: cmd.reqId, ok: true, data });
           return;
         }
         case "scroll": {

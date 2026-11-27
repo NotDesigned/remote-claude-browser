@@ -287,6 +287,73 @@ describe("scroll command", () => {
   });
 });
 
+describe("wheelpoint command", () => {
+  function box(scrollTop: number) {
+    const document = {
+      defaultView: { innerWidth: 400, innerHeight: 300 },
+      documentElement: null as unknown,
+      scrollingElement: null as unknown,
+    };
+    const element = {
+      nodeType: 1,
+      isConnected: true,
+      localName: "div",
+      scrollTop,
+      scrollHeight: 4_000,
+      clientWidth: 200,
+      clientHeight: 100,
+      clientLeft: 0,
+      clientTop: 0,
+      ownerDocument: document,
+      parentElement: null,
+      parentNode: null,
+      getRootNode: () => document,
+      getBoundingClientRect: () => ({ left: 10, top: 20, width: 200, height: 100 }),
+    };
+    return { document, element: element as unknown as Element & Node };
+  }
+
+  it("answers from the scroller's live position, and says when a node is gone", () => {
+    vi.stubGlobal("Node", { ELEMENT_NODE: 1 });
+    const { document, element } = box(900);
+    const root = box(900).element;
+    Object.assign(root, { ownerDocument: document });
+    document.scrollingElement = root;
+    vi.stubGlobal("document", document);
+    const messages: AgentMsg[] = [];
+    const nodes = new Map<number, Node>([[7, element]]);
+    const handler = createCommandHandler(
+      { emit: (message) => messages.push(message) },
+      {
+        getNodeMirror: () => ({
+          getIds: () => [...nodes.keys()],
+          getNode: (id) => nodes.get(id) ?? null,
+        }),
+        getCrossOriginIframeMirror: () => null,
+        wheelPointDom: {
+          hit: (_root, x, y) => (x >= 10 && x < 210 && y >= 20 && y < 120 ? element : root),
+          style: () => ({ overflowY: "auto", position: "static" }) as CSSStyleDeclaration,
+          toRoot: (x, y) => ({ x: x + 1, y: y + 1 }),
+          touch: () => false,
+        },
+      },
+    );
+
+    handler({ cmd: "wheelpoint", reqId: 1, nodeId: 7, y: 850 });
+    handler({ cmd: "wheelpoint", reqId: 2, nodeId: 7, y: 950 });
+    handler({ cmd: "wheelpoint", reqId: 3, nodeId: 8, y: 0 });
+    handler({ cmd: "wheelpoint", reqId: 4, nodeId: 0, y: 0 });
+
+    expect(messages).toEqual([
+      { kind: "cmdres", reqId: 1, ok: true, data: { x: 111, y: 71, dy: 50 } },
+      { kind: "cmdres", reqId: 2, ok: true, data: null },
+      { kind: "cmdres", reqId: 3, ok: false, err: "node not found" },
+      // The page itself: the viewport's centre.
+      { kind: "cmdres", reqId: 4, ok: true, data: { x: 201, y: 151, dy: 120 } },
+    ]);
+  });
+});
+
 describe("snapshot command readiness", () => {
   it("waits for recording to start, whose own snapshot answers the request", async () => {
     const messages: AgentMsg[] = [];

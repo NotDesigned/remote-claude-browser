@@ -31,6 +31,8 @@ function harness(
     rectTimeoutMs?: number;
     value?: () => Promise<CmdRes>;
     nativePointer?: Parameters<typeof createInputRelay>[0]["nativePointer"];
+    wheelpoint?: (command: Extract<AgentCmdInput, { cmd: "wheelpoint" }>) => Promise<CmdRes>;
+    cdpError?: (method: string) => Error | undefined;
   } = {},
 ) {
   const cdp: { sessionId: string; method: string; params?: Record<string, unknown> }[] = [];
@@ -62,11 +64,14 @@ function harness(
         );
       }
       if (command.cmd === "value" && options.value) return options.value();
+      if (command.cmd === "wheelpoint" && options.wheelpoint) return options.wheelpoint(command);
       return { reqId: commands.length, ok: true };
     },
   };
   const send: CdpSend = async (sessionId, method, params) => {
     cdp.push({ sessionId, method, ...(params === undefined ? {} : { params }) });
+    const error = options.cdpError?.(method);
+    if (error !== undefined) throw error;
     return {};
   };
   const relay = createInputRelay({
@@ -685,14 +690,17 @@ describe("InputRelay", () => {
         params: { text: "pasted line one\npasted line two" },
       },
     ]);
-    expect(h.commands.slice(-8)).toEqual([
+    expect(h.commands.slice(-10)).toEqual([
       { cmd: "resolve", nodeId: 8 },
       { cmd: "value", nodeId: 8, value: "selected", commit: false },
       { cmd: "resolve", nodeId: 9 },
       { cmd: "value", nodeId: 9, value: "on", checked: true },
       { cmd: "resolve", nodeId: 10 },
       { cmd: "value", nodeId: 10, value: "beta", values: ["beta", "gamma"] },
+      // With hardening each scroll first asks the page whether it is a scroll up.
+      { cmd: "wheelpoint", nodeId: 7, y: 22 },
       { cmd: "scroll", nodeId: 7, x: 11, y: 22 },
+      { cmd: "wheelpoint", nodeId: 0, y: 300 },
       { cmd: "scroll", nodeId: 0, x: 0, y: 300 },
     ]);
   });
@@ -787,6 +795,8 @@ describe("InputRelay", () => {
               }
             : { reqId: commands.length, ok: true, data: { kind: "local" } };
         }
+        if (command.cmd === "wheelpoint" && targetId === "child-1")
+          return { reqId: commands.length, ok: true, data: { x: 5, y: 15, dy: 40 } };
         if (command.cmd === "rect") {
           return targetId === "child-1"
             ? {
@@ -845,6 +855,11 @@ describe("InputRelay", () => {
     expect(commands).toContainEqual({
       targetId: "child-1",
       command: { cmd: "scroll", nodeId: 9, x: 3, y: 90 },
+    });
+    // The child's wheel point, moved by the frame element's place in the top document.
+    expect(cdp.find(({ params }) => params?.type === "mouseWheel")).toMatchObject({
+      sessionId: "top-session",
+      params: { x: 105, y: 65, deltaY: -40 },
     });
   });
 
@@ -919,6 +934,7 @@ describe("InputRelay", () => {
 });
 
 describe("scroll-up announcement (hardening)", () => {
+  type WheelCmd = Extract<AgentCmdInput, { cmd: "wheelpoint" }>;
   const wheels = (h: ReturnType<typeof harness>) =>
     h.cdp.filter((call) => call.params?.type === "mouseWheel").map((call) => call.params);
   const wheel = (x: number, y: number, deltaY: number) => ({
@@ -930,54 +946,107 @@ describe("scroll-up announcement (hardening)", () => {
     modifiers: 0,
     pointerType: "mouse",
   });
+  const scroll = (h: ReturnType<typeof harness>, nodeId: number, y: number) =>
+    h.relay("driver", { t: "scroll", tab: "tab-1", nodeId, x: 0, y });
 
-  it("sends one trusted wheel at the scroller's centre before scrolling it up, never down", async () => {
-    const h = harness();
-    const scroll = (y: number) =>
-      h.relay("driver", { t: "scroll", tab: "tab-1", nodeId: 7, x: 0, y });
-    await scroll(1_000);
-    await scroll(1_200);
+  /** An agent whose scroller is at `top`, which the test moves as the page would. */
+  function page(top: number) {
+    const state = { top };
+    const wheelpoint = async (command: WheelCmd): Promise<CmdRes> => {
+      const above = state.top - command.y;
+      return {
+        reqId: 1,
+        ok: true,
+        data: above > 3 ? { x: 60, y: 60, dy: Math.min(120, above) } : null,
+      };
+    };
+    return { state, wheelpoint };
+  }
+
+  it("asks the page before every scroll and sends its wheel before the exact position", async () => {
+    const remote = page(5_000);
+    const h = harness({ wheelpoint: remote.wheelpoint });
+    // The first and only message of a scroll up is announced: the page knows where it is.
+    await scroll(h, 7, 4_950);
+    expect(wheels(h)).toEqual([wheel(60, 60, -50)]);
+    expect(h.commands.map((command) => command.cmd)).toEqual(["wheelpoint", "scroll"]);
+    expect(h.commands[0]).toEqual({ cmd: "wheelpoint", nodeId: 7, y: 4_950 });
+  });
+
+  it("follows the page, not the viewer's earlier reports", async () => {
+    const remote = page(1_000);
+    const h = harness({ wheelpoint: remote.wheelpoint });
+    await scroll(h, 7, 1_000);
+    // The page followed its end since; the person scrolls up from there.
+    remote.state.top = 5_000;
+    await scroll(h, 7, 4_800);
+    // After a navigation the window is near its top; a scroll down is never a wheel up.
+    remote.state.top = 0;
+    await scroll(h, 0, 500);
+    expect(wheels(h)).toEqual([wheel(60, 60, -120)]);
+  });
+
+  it("sends no wheel when the page has no point that reaches the scroller", async () => {
+    const h = harness({ wheelpoint: async () => ({ reqId: 1, ok: true, data: null }) });
+    await scroll(h, 7, 100);
     expect(wheels(h)).toEqual([]);
-    await scroll(1_150);
-    await scroll(700);
-    await scroll(700);
-    // Rect {x: 10, y: 20, w: 100, h: 80}: centre (60, 60). At most one notch.
-    expect(wheels(h)).toEqual([wheel(60, 60, -50), wheel(60, 60, -120)]);
-    // Every scroll still lands exactly, after its wheel.
-    expect(h.commands.filter((command) => command.cmd === "scroll").map((c) => c.y)).toEqual([
-      1_000, 1_200, 1_150, 700, 700,
-    ]);
+    expect(h.commands.filter((command) => command.cmd === "scroll")).toHaveLength(1);
   });
 
-  it("uses the viewport's centre for the page's own scroller", async () => {
-    const h = harness();
-    await h.relay("driver", { t: "scroll", tab: "tab-1", nodeId: 0, x: 0, y: 300 });
-    await h.relay("driver", { t: "scroll", tab: "tab-1", nodeId: 0, x: 0, y: 299 });
-    expect(wheels(h)).toEqual([wheel(320, 240, -1)]);
-  });
-
-  it("sends no wheel for a scroller outside the viewport or not shown", async () => {
-    for (const data of [
-      { x: 700, y: 20, w: 100, h: 80, visible: true },
-      { x: 10, y: -200, w: 100, h: 80, visible: true },
-      { x: 10, y: 20, w: 100, h: 80, visible: false },
+  it("sends no wheel at a point outside the viewport, or for an agent without wheelpoint", async () => {
+    for (const answer of [
+      { reqId: 1, ok: true, data: { x: 700, y: 20, dy: 40 } },
+      { reqId: 1, ok: true, data: { x: 10, y: -1, dy: 40 } },
+      { reqId: 1, ok: false, err: "unknown command: wheelpoint" },
     ]) {
-      const h = harness({ rect: async (call) => ({ reqId: call, ok: true, data }) });
-      await h.relay("driver", { t: "scroll", tab: "tab-1", nodeId: 7, x: 0, y: 500 });
-      await h.relay("driver", { t: "scroll", tab: "tab-1", nodeId: 7, x: 0, y: 100 });
+      const h = harness({ wheelpoint: async () => answer });
+      await scroll(h, 7, 100);
       expect(wheels(h)).toEqual([]);
-      expect(h.commands.filter((command) => command.cmd === "scroll")).toHaveLength(2);
+      expect(h.commands.filter((command) => command.cmd === "scroll")).toHaveLength(1);
     }
+  });
+
+  it("scrolls a phone page with a short touch gesture, and wheels when Chromium refuses it", async () => {
+    const answer = async (): Promise<CmdRes> => ({
+      reqId: 1,
+      ok: true,
+      data: { x: 30, y: 40, dy: 80, touch: true },
+    });
+    const h = harness({ wheelpoint: answer });
+    await scroll(h, 7, 100);
+    expect(h.cdp.filter((call) => call.method === "Input.synthesizeScrollGesture")).toEqual([
+      {
+        sessionId: "session-1",
+        method: "Input.synthesizeScrollGesture",
+        params: {
+          x: 30,
+          y: 40,
+          xDistance: 0,
+          yDistance: 80,
+          gestureSourceType: "touch",
+          preventFling: true,
+          speed: 2_400,
+        },
+      },
+    ]);
+    expect(wheels(h)).toEqual([]);
+    const refused = harness({
+      wheelpoint: answer,
+      cdpError: (method) =>
+        method === "Input.synthesizeScrollGesture" ? new Error("no touch") : undefined,
+    });
+    await scroll(refused, 7, 100);
+    expect(wheels(refused)).toEqual([wheel(30, 40, -80)]);
   });
 
   it("is off with MIRROR_AGENT_HARDENING=0, where the agent announces the scroll itself", async () => {
     vi.stubEnv("MIRROR_AGENT_HARDENING", "0");
     try {
-      const h = harness();
-      await h.relay("driver", { t: "scroll", tab: "tab-1", nodeId: 7, x: 0, y: 500 });
-      await h.relay("driver", { t: "scroll", tab: "tab-1", nodeId: 7, x: 0, y: 100 });
+      const remote = page(5_000);
+      const h = harness({ wheelpoint: remote.wheelpoint });
+      await scroll(h, 7, 100);
       expect(wheels(h)).toEqual([]);
-      expect(h.commands.some((command) => command.cmd === "rect")).toBe(false);
+      expect(h.commands.some((command) => command.cmd === "wheelpoint")).toBe(false);
     } finally {
       vi.unstubAllEnvs();
     }

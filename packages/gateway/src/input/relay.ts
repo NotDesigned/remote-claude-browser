@@ -10,11 +10,18 @@
  * shows it there a moment late. Pixel pointers carry the node-less sentinel and use their
  * negotiated viewport coordinates directly.
  */
-import { Mod, NODE_IN_FRAME_ERROR, type Down, type RectResult, type Up } from "@mirror/protocol";
+import {
+  Mod,
+  NODE_IN_FRAME_ERROR,
+  type Down,
+  type RectResult,
+  type Up,
+  type WheelPointResult,
+} from "@mirror/protocol";
 import { resolveNode, type FrameHop, type ResolveNodeDeps } from "../browser/resolvenode";
 import type { AgentLink, CdpSend } from "../types";
 import { describeKey } from "./keymap";
-import { centreInViewport, createScrollAnnouncer } from "./scroll-announce";
+import { createScrollAnnouncer, insideViewport, isWheelPoint } from "./scroll-announce";
 
 const DEFAULT_RECT_TIMEOUT_MS = 100;
 /**
@@ -171,17 +178,7 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
   };
   const scrollAnnouncer =
     (deps.announceScrollUp ?? process.env.MIRROR_AGENT_HARDENING !== "0")
-      ? createScrollAnnouncer({
-          send: deps.send,
-          resolvePoint: async (tabId, nodeId) => {
-            if (nodeId === 0) {
-              const viewport = deps.viewportFor(tabId);
-              return viewport && { x: viewport.w / 2, y: viewport.h / 2 };
-            }
-            const { rect, iframeClip } = await resolveRect(tabId, nodeId);
-            return centreInViewport(rect, deps.viewportFor(tabId), iframeClip);
-          },
-        })
+      ? createScrollAnnouncer({ send: deps.send, locate: locateWheel })
       : undefined;
 
   const relay = ((viewerId, msg) => {
@@ -552,8 +549,16 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
       return value;
     }
 
+    const iframeRects = await frameRects(resolved.frameHops);
+    const value = composeRemoteRect(response.data, resolved.frameHops, iframeRects);
+    if (cacheable) rectCache.set(cacheKey, { at: Date.now(), value });
+    return value;
+  }
+
+  /** The rect of each frame element on the way to a node inside out-of-process frames. */
+  async function frameRects(frameHops: readonly FrameHop[]): Promise<RectResult[]> {
     const iframeRects: RectResult[] = [];
-    for (const hop of resolved.frameHops) {
+    for (const hop of frameHops) {
       const iframeResponse = await withTimeout(
         deps.agentLink.sendCmd(
           hop.targetId,
@@ -570,9 +575,47 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
       }
       iframeRects.push(iframeResponse.data);
     }
-    const value = composeRemoteRect(response.data, resolved.frameHops, iframeRects);
-    if (cacheable) rectCache.set(cacheKey, { at: Date.now(), value });
-    return value;
+    return iframeRects;
+  }
+
+  /**
+   * Where a trusted wheel scrolls this scroller up towards `y`, in the tab's viewport. The agent
+   * that owns the node decides from the page's live position and its own hit testing; undefined
+   * means no wheel (not a scroll up, no point that reaches the scroller, or an agent without it).
+   */
+  async function locateWheel(
+    tabId: string,
+    nodeId: number,
+    y: number,
+  ): Promise<WheelPointResult | undefined> {
+    const ask = (targetId: string, localId: number, frameId?: string) =>
+      withTimeout(
+        deps.agentLink.sendCmd(targetId, { cmd: "wheelpoint", nodeId: localId, y }, frameId),
+        rectTimeoutMs,
+        "wheelpoint",
+      );
+    const direct = await ask(tabId, nodeId);
+    let point: unknown = direct.data;
+    let iframeClip: Bounds | undefined;
+    if (!direct.ok) {
+      if (direct.err !== NODE_IN_FRAME_ERROR) return undefined;
+      const resolved = await resolveNode(resolverDeps, tabId, nodeId);
+      const response = await ask(resolved.targetId, resolved.localId, resolved.frameId);
+      if (!response.ok || !isWheelPoint(response.data)) return undefined;
+      point = response.data;
+      if (resolved.frameHops.length > 0) {
+        const inner = response.data;
+        const composed = composeRemoteRect(
+          { x: inner.x, y: inner.y, w: 1, h: 1, visible: true },
+          resolved.frameHops,
+          await frameRects(resolved.frameHops),
+        );
+        point = { ...inner, x: composed.rect.x, y: composed.rect.y };
+        iframeClip = composed.iframeClip;
+      }
+    }
+    if (!isWheelPoint(point)) return undefined;
+    return insideViewport(point, deps.viewportFor(tabId), iframeClip) ? point : undefined;
   }
 
   function clampToViewport(tabId: string, x: number, y: number): Point {

@@ -28,6 +28,12 @@
         margin: 0;
         height: 40px;
       }
+      #code {
+        margin: 0;
+        height: 80px;
+        overflow: auto;
+        background: #eee;
+      }
     </style>
   </head>
   <body>
@@ -43,11 +49,24 @@
       // tells it a person did.
       const scroller = document.getElementById("scroller");
       const state = { stuck: true };
-      for (let i = 0; i < 60; i++) {
-        const line = document.createElement("p");
-        line.textContent = "line " + i;
-        scroller.append(line);
-      }
+      // Near its end, a code block that scrolls on its own sits where the transcript's centre is: a
+      // wheel aimed there would scroll the code block instead.
+      const code = document.createElement("pre");
+      code.id = "code";
+      code.textContent = Array.from({ length: 40 }, (_, i) => "code " + i).join("\n");
+      const tail = document.createElement("p");
+      tail.textContent = "last line";
+      scroller.append(code, tail);
+      let lines = 0;
+      const addLines = (count) => {
+        for (let i = 0; i < count; i++) {
+          const line = document.createElement("p");
+          line.textContent = "line " + lines++;
+          scroller.insertBefore(line, code);
+        }
+      };
+      addLines(60);
+      code.scrollTop = code.scrollHeight;
       scroller.scrollTop = scroller.scrollHeight;
       scroller.addEventListener("wheel", (event) => {
         if (event.deltaY < 0) state.stuck = false;
@@ -55,10 +74,17 @@
       scroller.addEventListener("scroll", () => {
         if (state.stuck) scroller.scrollTop = scroller.scrollHeight;
       });
+      // New output arrives and the transcript follows it, without a scroll the viewer sent.
+      __fx.grow = () => {
+        addLines(20);
+        if (state.stuck) scroller.scrollTop = scroller.scrollHeight;
+        return scroller.scrollTop;
+      };
       __fx.scroll = () => ({
         stuck: state.stuck,
         top: scroller.scrollTop,
         bottom: scroller.scrollHeight - scroller.clientHeight,
+        code: code.scrollTop,
       });
     </script>
   </body>

@@ -54,6 +54,11 @@ export type AgentCmd =
   | { cmd: "resolve"; reqId: number; nodeId: number } // -> ResolveResult, one OOPIF level
   | { cmd: "rect"; reqId: number; nodeId: number } // -> RectResult, or ok:false if node gone
   | { cmd: "scroll"; reqId: number; nodeId: number; x: number; y: number } // nodeId 0 = window
+  /**
+   * Hardening, before a `scroll`: where a trusted wheel would scroll this scroller up towards `y`,
+   * judged from the page's live position -> WheelPointResult, or null when no wheel should go.
+   */
+  | { cmd: "wheelpoint"; reqId: number; nodeId: number; y: number }
   | {
       cmd: "value";
       reqId: number;
@@ -93,6 +98,16 @@ export interface RectResult {
   /** For a frame, how far inside its box its content starts. */
   borderLeft?: number;
   borderTop?: number;
+}
+
+/** `wheelpoint` result: a point in the frame's root viewport that hit-tests to the scroller. */
+export interface WheelPointResult {
+  x: number;
+  y: number;
+  /** Pixels to scroll up, at most one wheel notch. */
+  dy: number;
+  /** The page runs as a phone, where a touch scroll is what a person would send. */
+  touch?: true;
 }
 
 /** `resolve` result for this document or one of its direct cross-origin child frames. */
