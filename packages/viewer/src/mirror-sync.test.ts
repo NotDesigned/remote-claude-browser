@@ -36,36 +36,45 @@ const delta = (seq: number, count: number, changes: { tab?: string; epoch?: numb
 
 describe("mirror snapshot decisions", () => {
   it("ignores snapshots of other tabs, and adopts any while none is active", () => {
-    expect(snapshotDecision(sync(), shown(), { tab: "t2", epoch: 1 })).toBe("ignore");
-    expect(snapshotDecision(sync({ activeTab: null }), null, { tab: "t2", epoch: 1 })).toBe(
+    expect(snapshotDecision(sync(), shown(), { tab: "t2", epoch: 1, seq: 1 })).toBe("ignore");
+    expect(snapshotDecision(sync({ activeTab: null }), null, { tab: "t2", epoch: 1, seq: 1 })).toBe(
       "rebuild",
     );
   });
 
   it("rebuilds whenever the page in view cannot continue", () => {
-    expect(snapshotDecision(sync(), null, { tab: "t1", epoch: 3 })).toBe("rebuild");
-    expect(snapshotDecision(sync(), shown({ epoch: 2 }), { tab: "t1", epoch: 3 })).toBe("rebuild");
-    expect(snapshotDecision(sync(), shown({ tab: "t0" }), { tab: "t1", epoch: 3 })).toBe("rebuild");
-    expect(snapshotDecision(sync(), shown({ needsSnapshot: true }), { tab: "t1", epoch: 3 })).toBe(
+    expect(snapshotDecision(sync(), null, { tab: "t1", epoch: 3, seq: 9 })).toBe("rebuild");
+    expect(snapshotDecision(sync(), shown({ epoch: 2 }), { tab: "t1", epoch: 3, seq: 9 })).toBe(
+      "rebuild",
+    );
+    expect(snapshotDecision(sync(), shown({ tab: "t0" }), { tab: "t1", epoch: 3, seq: 9 })).toBe(
       "rebuild",
     );
     expect(
-      snapshotDecision(sync({ snapshotPending: true }), shown(), { tab: "t1", epoch: 3 }),
+      snapshotDecision(sync(), shown({ needsSnapshot: true }), { tab: "t1", epoch: 3, seq: 9 }),
+    ).toBe("rebuild");
+    expect(
+      snapshotDecision(sync({ snapshotPending: true }), shown(), { tab: "t1", epoch: 3, seq: 9 }),
     ).toBe("rebuild");
   });
 
   it("leaves a trusted page of the same document alone", () => {
-    expect(snapshotDecision(sync(), shown(), { tab: "t1", epoch: 3 })).toBe("ignore");
+    expect(snapshotDecision(sync(), shown(), { tab: "t1", epoch: 3, seq: 9 })).toBe("ignore");
   });
 
   it("confirms the page a catch-up kept, unless its document changed", () => {
     for (const catchUp of ["waiting", "answered", "snapshot"] as const) {
-      expect(snapshotDecision(sync({ catchUp }), shown(), { tab: "t1", epoch: 3 })).toBe("confirm");
-      expect(snapshotDecision(sync({ catchUp }), shown(), { tab: "t1", epoch: 4 })).toBe("rebuild");
+      expect(snapshotDecision(sync({ catchUp }), shown(), { tab: "t1", epoch: 3, seq: 9 })).toBe(
+        "confirm",
+      );
+      expect(snapshotDecision(sync({ catchUp }), shown(), { tab: "t1", epoch: 4, seq: 9 })).toBe(
+        "rebuild",
+      );
       expect(
         snapshotDecision(sync({ catchUp }), shown({ needsSnapshot: true }), {
           tab: "t1",
           epoch: 3,
+          seq: 9,
         }),
       ).toBe("rebuild");
     }
@@ -74,8 +83,21 @@ describe("mirror snapshot decisions", () => {
       snapshotDecision(sync({ catchUp: "answered", snapshotPending: true }), shown(), {
         tab: "t1",
         epoch: 3,
+        seq: 9,
       }),
     ).toBe("confirm");
+  });
+
+  it("rebuilds a kept page the catch-up's snapshot is not exactly level with", () => {
+    for (const catchUp of ["waiting", "answered", "snapshot"] as const) {
+      // Further along: the page lacks what happened while it was away.
+      expect(snapshotDecision(sync({ catchUp }), shown(), { tab: "t1", epoch: 3, seq: 12 })).toBe(
+        "rebuild",
+      );
+      expect(snapshotDecision(sync({ catchUp }), shown(), { tab: "t1", epoch: 3, seq: 4 })).toBe(
+        "rebuild",
+      );
+    }
   });
 });
 

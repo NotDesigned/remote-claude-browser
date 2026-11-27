@@ -15,7 +15,8 @@
  *        any ──rebuild, another tab, lost connection, teardown──▶ null
  *
  *    While catching up, a delta that repeats events the page already applied is trimmed to the
- *    new ones, and a snapshot of the same document confirms the page instead of rebuilding it.
+ *    new ones, and a snapshot of the same document confirms the page instead of rebuilding it, but
+ *    only when it is exactly where the page stands (its seq is the last one the page applied).
  *
  * mirror.ts holds the state and performs the effects; these functions only decide.
  */
@@ -37,7 +38,7 @@ export interface ShownPage {
   needsSnapshot: boolean;
 }
 
-type Snapshot = Pick<Extract<Down, { t: "snapshot" }>, "tab" | "epoch">;
+type Snapshot = Pick<Extract<Down, { t: "snapshot" }>, "tab" | "epoch" | "seq">;
 type Delta = Pick<Extract<Down, { t: "delta" }>, "tab" | "epoch" | "seq" | "data">;
 
 /** A message for a tab other than the active one is not this page's to apply. */
@@ -59,13 +60,15 @@ export function snapshotDecision(
   message: Snapshot,
 ): SnapshotDecision {
   if (!concernsActiveTab(sync, message.tab)) return "ignore";
+  // Only a snapshot of exactly what the page has applied confirms it: one that is further along
+  // carries events the page lacks, and confirming it would leave the page as it was when left.
   if (
     sync.catchUp !== null &&
     shown?.tab === message.tab &&
     !shown.needsSnapshot &&
     message.epoch === shown.epoch
   )
-    return "confirm";
+    return message.seq + 1 === shown.nextSeq ? "confirm" : "rebuild";
   if (
     shown === null ||
     shown.tab !== message.tab ||
