@@ -58,6 +58,17 @@ export interface InputLabHandle {
   lastStamped(tab: TabId): number;
   outstanding(tab: TabId): number;
   caps(): { acks: boolean; echo: boolean };
+  /**
+   * Every typing echo window as it closed: how long after the field's last key, and what closed
+   * it (an ack, the ack mode's liveness ceiling, or the decay timer).
+   */
+  windows: Array<{
+    tab: TabId | null;
+    nodeId: number;
+    ms: number;
+    how: "ack" | "liveness" | "decay";
+    at: number;
+  }>;
 }
 
 function configuredResyncWindowMs(): number {
@@ -206,6 +217,11 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
   let composing = false;
   const echo = createEchoFilter({
     composing: () => composing,
+    onWindowClosed: (closed) => {
+      if (!inputLabOn) return;
+      inputLab.windows.push({ ...closed, tab: activeTab(), at: performance.now() });
+      if (inputLab.windows.length > INPUT_LAB_LOG) inputLab.windows.shift();
+    },
     acks: {
       enabled: sequencer.echoEnabled,
       subscribe: (listener) =>
@@ -374,16 +390,29 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
       frame?.addEventListener("pointerdown", unlock, true);
       frame?.addEventListener("keydown", unlock, true);
       const compositionStart = () => (composing = true);
-      const compositionEnd = () => (composing = false);
+      const compositionEnd = () => {
+        if (!composing) return;
+        composing = false;
+        echo.compositionEnded();
+      };
+      // Some IMEs never send compositionend: leaving the field, or input that is not part of a
+      // composition, ends it all the same.
+      const inputEvent = (event: Event) => {
+        if ((event as InputEvent).isComposing === false) compositionEnd();
+      };
       frame?.addEventListener("compositionstart", compositionStart, true);
       frame?.addEventListener("compositionend", compositionEnd, true);
+      frame?.addEventListener("focusout", compositionEnd, true);
+      frame?.addEventListener("input", inputEvent, true);
       // A parked page gets its interaction again each time it is shown: these must not pile up.
       const unlockCleanup = () => {
         frame?.removeEventListener("pointerdown", unlock, true);
         frame?.removeEventListener("keydown", unlock, true);
         frame?.removeEventListener("compositionstart", compositionStart, true);
         frame?.removeEventListener("compositionend", compositionEnd, true);
-        composing = false;
+        frame?.removeEventListener("focusout", compositionEnd, true);
+        frame?.removeEventListener("input", inputEvent, true);
+        compositionEnd();
       };
       const detachInput = attachMirrorInput({
         replayer,
@@ -455,6 +484,7 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     lastStamped: sequencer.lastStamped,
     outstanding: sequencer.outstanding,
     caps: () => ({ acks: sequencer.enabled(), echo: sequencer.echoEnabled() }),
+    windows: [],
   };
   sequencer.subscribe((settled) => {
     inputResync.settled(settled.tab, settled.failedValue);

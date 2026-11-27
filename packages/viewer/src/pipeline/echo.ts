@@ -19,7 +19,9 @@
  *
  * With input acks (`acks`, a gateway with `ackecho1`), "typing settles" is no longer a guess from
  * a timer: a field stays held while any input is unacknowledged, until the final ack after its
- * last input has settled (input/input-seq.ts). That ack carries the hash of what the page's field
+ * last input has settled (input/input-seq.ts). A final ack the gateway could not fence (an agent
+ * from before fences, a page that did not answer) says nothing about the page's field: the filter
+ * then goes back to the timers until a fenced ack comes again. That ack carries the hash of what the page's field
  * holds, compared with what this replay's field holds after it has applied everything before the
  * ack: equal, and the two are provably in step, so what was held back is dropped; different, and
  * the reconcile is asked for at once. An ack that covers Enter with the page's field empty, while
@@ -91,6 +93,8 @@ const RECONCILE_RETRIES = 30;
 const SENT_CLEAR_MS = 5_000;
 /** Ack mode: a field typed into is let go after this long without its final ack. */
 export const ACK_LIVENESS_MS = 3_000;
+/** Acks kept while an IME composes; the newest matter. */
+const MAX_ACKS_DURING_COMPOSITION = 16;
 
 /** The input acks the filter follows, for the tab in view (input/input-seq.ts). */
 export interface EchoAcks {
@@ -117,6 +121,8 @@ export interface EchoFilter extends Stage {
    * held the two apart is settled, and the next divergence asks for a reconcile again.
    */
   settled(): void;
+  /** The replay's IME composition ended: acks that settled during it are acted on now. */
+  compositionEnded(): void;
   reset(): void;
   restoreHook: RebuildRestoreHook<EchoRestoreState>;
 }
@@ -137,9 +143,15 @@ export interface EchoFilterOptions {
   acks?: EchoAcks;
   /**
    * An IME composition is open in the replay. With acks, a field is then not brought back in step
-   * (that would end the composition and lose its text): the ack after the commit does it.
+   * (that would end the composition and lose its text): acks that settle meanwhile are kept, and
+   * acted on at compositionEnded().
    */
   composing?: () => boolean;
+  /**
+   * A field's echo window closed: `ms` after its last key, by an ack, the ack mode's liveness
+   * ceiling, or the decay timer (inputlab).
+   */
+  onWindowClosed?(closed: { nodeId: number; ms: number; how: "ack" | "liveness" | "decay" }): void;
 }
 
 /** A field's text as the page's editHash sees it. */
@@ -157,7 +169,14 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
   const cancel = options.clearTimer ?? clearTimeout;
   const nodeFor = options.nodeFor ?? (() => null);
   const acks = options.acks;
-  const ackMode = () => acks?.enabled() === true;
+  /**
+   * The last final ack settled without a fence (dispatch only): the page's field is not known, so
+   * the timers decide until a fenced ack comes again.
+   */
+  let timersFallback = false;
+  const ackMode = () => acks?.enabled() === true && !timersFallback;
+  /** Acks settled while an IME composed, acted on once it ends. */
+  const duringComposition: SettledAck[] = [];
   /** Whether a field's echoes are still held back. */
   const active = (state: EditingState, at: number) =>
     ackMode()
@@ -286,11 +305,13 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
         state.timer = null;
         const current = nodes.get(nodeId);
         if (current !== state) return;
-        if (now() - current.lastKeyTs < ACK_LIVENESS_MS) {
+        // Nothing is written into a field while an IME composes in it.
+        if (now() - current.lastKeyTs < ACK_LIVENESS_MS || options.composing?.() === true) {
           armDecay(nodeId, current);
           return;
         }
         current.awaiting = false;
+        options.onWindowClosed?.({ nodeId, ms: now() - current.lastKeyTs, how: "liveness" });
         reconcile(nodeId);
       }, ACK_LIVENESS_MS);
       return;
@@ -306,6 +327,7 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       }
       // The page has not answered for everything typed yet: shadow measurement of acks.
       if ((acks?.outstanding() ?? 0) > 0) acks?.count?.("decayWhileOutstanding");
+      options.onWindowClosed?.({ nodeId, ms: now() - current.lastKeyTs, how: "decay" });
       reconcile(nodeId);
     }, remaining);
   };
@@ -587,6 +609,7 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
     reconcileDeferred = false;
     sentAck = null;
     lastEnter = null;
+    duringComposition.length = 0;
     if (reconcileRetry !== null) cancel(reconcileRetry);
     reconcileRetry = null;
     reconcileRetries = 0;
@@ -595,6 +618,7 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
   /** Ack mode: the final ack after a field's last input settled; the replay has its effects. */
   const closeWindow = (nodeId: number, state: EditingState, settled: SettledAck) => {
     state.awaiting = false;
+    options.onWindowClosed?.({ nodeId, ms: now() - state.lastKeyTs, how: "ack" });
     const edit = settled.mode === "page" ? settled.edit : undefined;
     if (
       edit === undefined ||
@@ -632,10 +656,39 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
     requestReconcile();
   };
 
-  acks?.subscribe((settled) => {
+  /** Whether a final ack without a fence puts the filter on its timers, or a fenced one back. */
+  const followAckMode = (settled: SettledAck) => {
+    if (settled.mode === "page" && timersFallback) {
+      timersFallback = false;
+      // Fields typed into on the timers: the next final ack closes them, the ceiling otherwise.
+      for (const [nodeId, state] of nodes) {
+        state.awaiting = true;
+        state.watermark ??= 0;
+        if (state.timer !== null) cancel(state.timer);
+        state.timer = null;
+        armDecay(nodeId, state);
+      }
+    } else if (settled.mode === "dispatch" && settled.final && !timersFallback) {
+      timersFallback = true;
+      for (const [nodeId, state] of nodes) {
+        state.awaiting = false;
+        if (state.timer !== null) cancel(state.timer);
+        state.timer = null;
+        armDecay(nodeId, state);
+      }
+    }
+  };
+
+  const onSettled = (settled: SettledAck) => {
+    if (acks?.enabled() !== true) return;
+    // Nothing is written into an editor while an IME composes in it: kept until it ends.
+    if (options.composing?.() === true) {
+      duringComposition.push(settled);
+      if (duringComposition.length > MAX_ACKS_DURING_COMPOSITION) duringComposition.shift();
+      return;
+    }
+    followAckMode(settled);
     if (!ackMode()) return;
-    // Nothing is written into an editor while an IME composes in it.
-    if (options.composing?.() === true) return;
     if (reconcileDeferred) {
       reconcileDeferred = false;
       requestReconcile();
@@ -664,7 +717,11 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       if (state.awaiting !== true || settled.iseq < (state.watermark ?? 0)) continue;
       closeWindow(nodeId, state, settled);
     }
-  });
+  };
+  acks?.subscribe(onSettled);
+  filter.compositionEnded = () => {
+    for (const settled of duringComposition.splice(0)) onSettled(settled);
+  };
 
   filter.restoreHook = {
     capture() {

@@ -945,3 +945,115 @@ describe.each([
     }
   });
 });
+
+describe("echo window with acks the page could not fence", () => {
+  it("goes back to the timers after a final dispatch-only ack, and to acks after a fenced one", () => {
+    const clock = clockTimers(false);
+    const acks = fakeAcks(true);
+    const closed: string[] = [];
+    const echo = createEchoFilter({
+      now: clock.now,
+      ...clock.options,
+      acks: acks.acks,
+      onWindowClosed: ({ ms, how }) => closed.push(`${how}@${ms}`),
+    });
+    const field = new FakeInput();
+    const focus = { element: field as unknown as HTMLInputElement, nodeId: 9 };
+    echo.setFocused(focus);
+    acks.send();
+    field.value = "a";
+    echo.input(focus);
+    // An agent from before fences: the quiet fence's ack is final, and dispatch only.
+    clock.to(100);
+    acks.settle({ iseq: 1, mode: "dispatch", final: true });
+    // Held by the decay timer, not the 3 s ceiling.
+    expect(echo(inputEvent(9, ""), clock.to(500))).toBeNull();
+    expect(echo.typingWithin(400)).toBe(false);
+    clock.to(1_000);
+    expect(closed).toEqual(["decay@1000"]);
+    expect(echo(inputEvent(9, "a"), clock.to(1_100))).not.toBeNull();
+    // A fenced ack again: the next burst is closed by its final ack.
+    acks.settle({ iseq: 1, mode: "page", edit: null });
+    clock.to(2_000);
+    acks.send();
+    field.value = "ab";
+    echo.input(focus);
+    expect(echo(inputEvent(9, "a"), clock.to(2_050))).toBeNull();
+    acks.settle({
+      iseq: 2,
+      final: true,
+      edit: { node: 9, len: 2, hash: editHash("ab"), sel: [2, 2] },
+    });
+    expect(closed).toEqual(["decay@1000", "ack@50"]);
+  });
+});
+
+describe("echo window while an IME composes (ack mode)", () => {
+  it("keeps a final ack that settles during a composition, and acts on it when it ends", () => {
+    const clock = clockTimers(true);
+    const acks = fakeAcks(true);
+    let composing = false;
+    const closed: string[] = [];
+    const echo = createEchoFilter({
+      now: clock.now,
+      ...clock.options,
+      acks: acks.acks,
+      composing: () => composing,
+      onWindowClosed: ({ how }) => closed.push(how),
+    });
+    const field = new FakeInput();
+    const focus = { element: field as unknown as HTMLInputElement, nodeId: 9 };
+    echo.setFocused(focus);
+    acks.send();
+    field.value = "hello";
+    echo.input(focus);
+    composing = true;
+    acks.settle({
+      iseq: 1,
+      final: true,
+      edit: { node: 9, len: 5, hash: editHash("hello"), sel: [5, 5] },
+    });
+    expect(closed).toEqual([]);
+    composing = false;
+    echo.compositionEnded();
+    expect(closed).toEqual(["ack"]);
+    // Acks after it are acted on as usual.
+    acks.send();
+    field.value = "hello!";
+    echo.input(focus);
+    acks.settle({
+      iseq: 2,
+      final: true,
+      edit: { node: 9, len: 6, hash: editHash("hello!"), sel: [6, 6] },
+    });
+    expect(closed).toEqual(["ack", "ack"]);
+  });
+
+  it("writes nothing into a composing field when the liveness ceiling passes", () => {
+    const clock = clockTimers(true);
+    const acks = fakeAcks(true);
+    let composing = false;
+    const echo = createEchoFilter({
+      now: clock.now,
+      ...clock.options,
+      acks: acks.acks,
+      composing: () => composing,
+    });
+    const field = new FakeInput();
+    const focus = { element: field as unknown as HTMLInputElement, nodeId: 9 };
+    echo.setFocused(focus);
+    acks.send();
+    field.value = "hel";
+    echo.input(focus);
+    composing = true;
+    // The page's older value comes, and no ack: the composition stays open past the ceiling.
+    expect(echo(inputEvent(9, "he"), clock.to(100))).toBeNull();
+    clock.to(ACK_LIVENESS_MS * 3);
+    expect(field.value).toBe("hel");
+    composing = false;
+    echo.compositionEnded();
+    clock.to(ACK_LIVENESS_MS * 4);
+    // Once it ends, the ceiling lets the field go.
+    expect(field.value).toBe("he");
+  });
+});
