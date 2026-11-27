@@ -103,3 +103,66 @@ export function editableOffset(
   visit(root, 0);
   return found;
 }
+
+/** A DOM point, as a Range or Selection takes it. */
+export interface EditablePoint<T extends EditableTextNode = EditableTextNode> {
+  container: T;
+  offset: number;
+}
+
+const TRAILING_BREAK = /(?:^|\s)ProseMirror-trailingBreak(?:\s|$)/;
+const BLOCK = /^(P|DIV|LI|PRE|BLOCKQUOTE|H[1-6])$/;
+
+/**
+ * The inverse of editableOffset: the DOM point inside `root` at `offset` of `editableText(root)`,
+ * by the same rules, so that `editableOffset(root, p.container, p.offset) === offset`. A point in
+ * a text node is preferred (a Range there has a rect); an empty paragraph, a line break or an
+ * element with no text is used otherwise. Null when `offset` is outside the text.
+ */
+export function editablePoint<T extends EditableTextNode>(
+  root: T,
+  offset: number,
+): EditablePoint<T> | null {
+  if (!Number.isInteger(offset) || offset < 0) return null;
+  const find = (textOnly: boolean): EditablePoint<T> | null => {
+    let found: EditablePoint<T> | null = null;
+    const visit = (node: EditableTextNode, before: number): string => {
+      if (node.nodeType === 3) {
+        const text = node.textContent ?? "";
+        if (found === null && offset >= before && offset <= before + text.length)
+          found = { container: node as T, offset: offset - before };
+        return text;
+      }
+      if (node.nodeName === "BR")
+        return TRAILING_BREAK.test(node.getAttribute?.("class") ?? "") ? "" : "\n";
+      const children = Array.from(node.childNodes);
+      if (children.length === 1 && children[0]!.nodeName === "BR") {
+        if (!textOnly && found === null && offset === before)
+          found = { container: node as T, offset: 0 };
+        return "";
+      }
+      let text = "";
+      let previousBlock = false;
+      for (let index = 0; index < children.length; index++) {
+        const child = children[index]!;
+        const block = BLOCK.test(child.nodeName);
+        if (index > 0 && (block || previousBlock)) text += "\n";
+        if (
+          !textOnly &&
+          found === null &&
+          child.nodeName === "BR" &&
+          offset === before + text.length
+        )
+          found = { container: node as T, offset: index };
+        text += visit(child, before + text.length);
+        previousBlock = block;
+      }
+      if (!textOnly && found === null && offset === before + text.length)
+        found = { container: node as T, offset: children.length };
+      return text;
+    };
+    visit(root, 0);
+    return found;
+  };
+  return find(true) ?? find(false);
+}
