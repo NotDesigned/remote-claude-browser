@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Up } from "@mirror/protocol";
+import { editHash, type Up } from "@mirror/protocol";
 import { attachKeyCapture } from "./keys";
 import { attachTouchCapture, type TouchCaptureOptions } from "./touch";
 
@@ -380,7 +380,16 @@ describe("mobile input capture", () => {
 
     expect(event.preventDefault).toHaveBeenCalledOnce();
     expect(sent).toEqual([
-      { t: "key", tab: "T1", kind: "down", key: "Enter", code: "Enter", mods: 0 },
+      {
+        t: "key",
+        tab: "T1",
+        kind: "down",
+        key: "Enter",
+        code: "Enter",
+        mods: 0,
+        // A soft keyboard's Return also says what the field showed (submit guard).
+        expect: { node: 30, len: 0, hash: editHash(""), head: editHash("") },
+      },
       { t: "key", tab: "T1", kind: "up", key: "Enter", code: "Enter", mods: 0 },
     ]);
     expect(sent.some((message) => message.t === "value" || message.t === "text")).toBe(false);

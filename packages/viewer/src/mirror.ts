@@ -67,6 +67,8 @@ export const EDITABLE_PATCH_RETRY_MS = 700;
 const EDITABLE_PATCH_RETRIES = 8;
 /** The replay's own marker: the live replay has applied everything the catch-up covers. */
 const EDITABLE_PATCH_MARK = "mirror:editable-patch";
+/** The replay's own marker for Mirror.mark: the Replayer has played everything given before it. */
+const APPLIED_MARK = "mirror:applied";
 
 type Snapshot = Extract<Down, { t: "snapshot" }>;
 type Delta = Extract<Down, { t: "delta" }>;
@@ -94,6 +96,12 @@ export interface Mirror {
   refreshViewportLayout(): void;
   /** Lets go of hidden pages of tabs that no longer exist. */
   keepTabs(tabs: readonly TabId[]): void;
+  /**
+   * Puts a marker after everything the tab's live replay has been given; `played` is called with
+   * true when the Replayer plays it, or false when that Replayer is set aside first. False when
+   * the tab has no live replay.
+   */
+  mark(tab: TabId, played: (played: boolean) => void): boolean;
   /** Tear down the Replayer and its iframe. */
   teardown(): void;
 }
@@ -121,6 +129,11 @@ export interface MirrorOpts {
   editableBusy?(): boolean;
   /** An editor was brought back in step in place: what held it apart is settled. */
   onEditablePatched?(): void;
+  /**
+   * The live replay of `tab` has been given its stream up to `nextSeq - 1` of `epoch` (a delta
+   * applied, or a snapshot shown); input acks wait for this (input/input-seq.ts).
+   */
+  onApplied?(tab: TabId, epoch: number, nextSeq: number): void;
   /** Report the buffer actually installed in this Replayer, rather than a future target. */
   onBufferApplied?(bufferMs: number): void;
   /** WebRTC is created and destroyed with each Replayer generation. */
@@ -165,7 +178,21 @@ export function createMirror(opts: MirrorOpts): Mirror {
   let viewportLimit: Extract<Down, { t: "hello" }>["viewportLimit"];
 
   const disposeRtc = (tab: TabId, rtc: LiveRtc | null) => disposeLane(opts.rtc, tab, rtc);
-  const destroyLive = (live: LiveState) => destroyGeneration(opts.rtc, live);
+  /** Markers not yet played, by the replay they are in (see Mirror.mark). */
+  const marks = new Map<LiveState, Map<number, (played: boolean) => void>>();
+  let appliedMarks = 0;
+  /** The timestamp of the last event each replay was given, for markers that follow it. */
+  const lastTimestamp = new WeakMap<LiveState, number>();
+  const abandonMarks = (live: LiveState) => {
+    const pending = marks.get(live);
+    if (pending === undefined) return;
+    marks.delete(live);
+    for (const played of pending.values()) played(false);
+  };
+  const destroyLive = (live: LiveState) => {
+    abandonMarks(live);
+    destroyGeneration(opts.rtc, live);
+  };
   const parked = createParkedPages(opts.parkedTabs ?? 0, destroyLive);
 
   const applyViewportLayout = () => {
@@ -226,6 +253,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
 
   /** Parks a page that can be kept: its WebRTC lane and listeners end with the view. */
   const park = (live: LiveState) => {
+    abandonMarks(live);
     const rtc = live.rtc;
     live.rtc = null;
     disposeRtc(live.tab, rtc);
@@ -324,6 +352,11 @@ export function createMirror(opts: MirrorOpts): Mirror {
     opts.container.dataset.mirrorState = "live";
     applyViewportLayout();
     opts.onSnapshotApplied?.(message);
+    lastTimestamp.set(
+      live,
+      Math.max(lastTimestamp.get(live) ?? 0, message.data.at(-1)?.timestamp ?? 0),
+    );
+    opts.onApplied?.(live.tab, live.epoch, live.nextSeq);
   };
 
   const addEvent = (live: LiveState, event: eventWithTime): boolean => {
@@ -334,6 +367,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
     try {
       const processed = opts.pipeline.run(event, { tab: live.tab, nowMs: now() });
       if (processed !== null) live.replayer.addEvent(processed);
+      lastTimestamp.set(live, Math.max(lastTimestamp.get(live) ?? 0, event.timestamp));
       return true;
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : String(cause);
@@ -420,6 +454,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
           if (!addEvent(live, event)) return;
         }
         live.nextSeq = plan.seq + plan.data.length;
+        opts.onApplied?.(live.tab, live.epoch, live.nextSeq);
       }
     }
   };
@@ -716,6 +751,37 @@ export function createMirror(opts: MirrorOpts): Mirror {
     observeRtt: (rttMs) => clock.observeRtt(rttMs),
     refreshViewportLayout: applyViewportLayout,
     keepTabs: (tabs) => parked.keep(tabs),
+    mark(tab, played) {
+      const live = state;
+      if (live === null || live.tab !== tab || sync.activeTab !== tab) return false;
+      const id = ++appliedMarks;
+      let pending = marks.get(live);
+      if (pending === undefined) {
+        pending = new Map();
+        marks.set(live, pending);
+        const replayer = live.replayer;
+        const onMark = (event: eventWithTime) => {
+          if (event.type !== EventType.Custom || event.data.tag !== APPLIED_MARK) return;
+          const callback = pending!.get(event.data.payload as number);
+          if (callback === undefined) return;
+          pending!.delete(event.data.payload as number);
+          callback(true);
+        };
+        replayer.on("custom-event", onMark as never);
+      }
+      pending.set(id, played);
+      try {
+        live.replayer.addEvent({
+          type: EventType.Custom,
+          timestamp: lastTimestamp.get(live) ?? 0,
+          data: { tag: APPLIED_MARK, payload: id },
+        } as eventWithTime);
+      } catch {
+        pending.delete(id);
+        return false;
+      }
+      return true;
+    },
     teardown() {
       cancelEditablePatch();
       clearReconnectTimer();

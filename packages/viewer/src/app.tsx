@@ -187,6 +187,7 @@ export function App() {
                 speedBps: runtime.state.speedBps,
                 peakSpeedBps: runtime.state.peakSpeedBps,
                 frames: frameRates,
+                inputLab: runtime.state.inputLab,
               }
             : null
         }

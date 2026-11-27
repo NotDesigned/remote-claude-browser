@@ -2,6 +2,7 @@ import { decodeDown, type Down, type Up } from "@mirror/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { createViewportAgreement } from "../hub/viewport";
 import { createRoleManager, type RoleSender } from "./roles";
+import { ackCaps } from "../input/acks";
 
 function collector(): { messages: Down[]; send: RoleSender } {
   const messages: Down[] = [];
@@ -86,6 +87,22 @@ describe("SEC-2 roles", () => {
     const none = collector();
     roles.connect({ sessionId: "s1", inviteRole: "driver", viewerId: "c", ...none });
     expect(none.messages[0]).not.toHaveProperty("build");
+  });
+
+  it("advertises the input acknowledgement caps in hello, and none when they are off", () => {
+    for (const [mode, caps] of [
+      ["on", ["ack1", "ackecho1"]],
+      ["shadow", ["ack1"]],
+    ] as const) {
+      const output = collector();
+      const roles = createRoleManager({ now: () => 1, caps: () => ackCaps(mode) });
+      roles.connect({ sessionId: "s1", inviteRole: "driver", viewerId: "a", ...output });
+      expect(output.messages[0]).toMatchObject({ t: "hello", caps });
+    }
+    const output = collector();
+    const roles = createRoleManager({ now: () => 1, caps: () => ackCaps("off") });
+    roles.connect({ sessionId: "s1", inviteRole: "driver", viewerId: "a", ...output });
+    expect(output.messages[0]).not.toHaveProperty("caps");
   });
 
   it("transfers input rights and reruns D7 with the new driver's viewport", async () => {

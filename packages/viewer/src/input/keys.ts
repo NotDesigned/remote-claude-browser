@@ -6,7 +6,15 @@
  * Value-control paste is synchronized by change capture. Contenteditable paste and
  * composition commits are forwarded as text.
  */
-import { Mod, type TabId } from "@mirror/protocol";
+import {
+  expectTail,
+  Mod,
+  editHash,
+  editableText,
+  normalizeEditableText,
+  type EditExpect,
+  type TabId,
+} from "@mirror/protocol";
 import { createForwardedInputClock, type ForwardedInputClock } from "./forwarded";
 import { isElement, type SendInput } from "./pointer";
 import { eventMods, isPasteShortcut, keyEventMessage, sendKeyPress } from "./encode";
@@ -135,6 +143,15 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
   const now = options.now ?? Date.now;
   const forwardedClock = options.forwardedClock ?? createForwardedInputClock();
   let focused: EditableFocus | null = null;
+  // Enter says what the field showed when it went down, for the gateway's submit guard; the
+  // socket drops it again for a gateway without input acks.
+  const send: SendInput = (message) => {
+    if (message.t !== "key" || message.kind !== "down" || message.key !== "Enter")
+      return options.send(message);
+    const active = deepActiveElement(options.focusRoot ?? options.doc);
+    const expect = active === null ? null : editExpect(active, options.getNodeId);
+    options.send(expect === null ? message : { ...message, expect });
+  };
   let enterDown = false;
   interface CompositionState {
     target: HTMLElement;
@@ -163,7 +180,7 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
   let placeholderDown: { composed: boolean } | null = null;
   const sendEnter = (target: Element, mods: number) => {
     options.flushComposing?.(target, true);
-    sendKeyPress(options.send, options.tab, "Enter", "Enter", mods);
+    sendKeyPress(send, options.tab, "Enter", "Enter", mods);
   };
   const editingHost = (target: EventTarget | null): HTMLElement | null => {
     if (!isElement(target) || !isContenteditableEchoField(target)) return null;
@@ -180,7 +197,7 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
     if (composition.committedText !== null || insert.length === 0) return;
     composition.committedText = insert;
     composition.awaitingFinalInput = !fromInput;
-    options.send({ t: "text", tab: options.tab, insert });
+    send({ t: "text", tab: options.tab, insert });
     forwardedClock.mark(nearestNodeId(target, options.getNodeId), now());
   };
   const notifyFocus = () => {
@@ -285,7 +302,7 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
     if (kind === "down" && event.key === "Enter" && target !== undefined && isEchoField(target)) {
       options.flushComposing?.(target, true);
     }
-    options.send(keyEventMessage(options.tab, kind, event));
+    send(keyEventMessage(options.tab, kind, event));
     // A key that types nothing on the remote (mobile soft-keyboard "Unidentified"/keyCode-229
     // placeholders resolve to text "" -> no-op dispatch) must NOT poison the forwarded-key clock;
     // otherwise it suppresses change.ts's value-sync — the ONLY lane that carries mobile text to
@@ -331,7 +348,7 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
       { key: "Enter", shiftKey: (mods & Mod.Shift) !== 0, isComposing: false } as KeyboardEvent,
       focused,
     );
-    sendKeyPress(options.send, options.tab, "Enter", "Enter", mods);
+    sendKeyPress(send, options.tab, "Enter", "Enter", mods);
   };
   const onPaste = (event: ClipboardEvent) => {
     if (!event.isTrusted) return;
@@ -350,7 +367,7 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
           host !== null &&
           !host.ownerDocument.execCommand("insertText", false, text)
         )
-          options.send({ t: "text", tab: options.tab, insert: text });
+          send({ t: "text", tab: options.tab, insert: text });
         return;
       }
       // Value fields and non-editable targets take only the text below.
@@ -365,7 +382,7 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
     }
     const insert = event.clipboardData?.getData("text/plain");
     if (insert === undefined) return;
-    options.send({ t: "text", tab: options.tab, insert });
+    send({ t: "text", tab: options.tab, insert });
     if (target !== undefined && isEchoField(target)) {
       forwardedClock.mark(nearestNodeId(target, options.getNodeId), now());
     } else {
@@ -453,7 +470,7 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
       // Its different text is a new edit, even within the raw-key duplicate window.
       composition = null;
       forwardedClock.forget(nearestNodeId(target, options.getNodeId));
-      options.send({ t: "text", tab: options.tab, insert: input.data });
+      send({ t: "text", tab: options.tab, insert: input.data });
       return;
     }
     if (!sameComposition && input.inputType !== "insertFromComposition") {
@@ -462,7 +479,7 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
         return;
       // Soft keyboards can insert native text without any composition or usable raw key.
       // This is a complete input event, so it must not suppress the next native text event.
-      options.send({ t: "text", tab: options.tab, insert: input.data });
+      send({ t: "text", tab: options.tab, insert: input.data });
       return;
     }
     // Some IMEs expose the final input before compositionend, or omit compositionend entirely.
@@ -514,6 +531,36 @@ export function quietKeyboardCorrections(target: EventTarget | null): void {
   if (input.getAttribute("autocapitalize") !== "off") input.setAttribute("autocapitalize", "off");
   if (input.getAttribute("autocorrect") !== "off") input.setAttribute("autocorrect", "off");
   if (input.getAttribute("spellcheck") !== "false") input.setAttribute("spellcheck", "false");
+}
+
+/**
+ * What a mirror field shows, as the submit guard compares it with the page's field: its rrweb id
+ * (the editing host's, for rich editors), the length and editHash of its normalized text, and the
+ * hash of all but its last expectTail(len) code units. A password shows a mask here, not its text:
+ * its hash is "", which the guard skips. Null outside a text field.
+ */
+export function editExpect(element: Element, getNodeId: (node: Node) => number): EditExpect | null {
+  let field: HTMLElement;
+  let raw: string;
+  if (isValueEchoField(element)) {
+    field = element;
+    raw = typeof element.value === "string" ? element.value : "";
+  } else if (isContenteditableEchoField(element)) {
+    field = element;
+    while (field.parentElement !== null && isContenteditableEchoField(field.parentElement))
+      field = field.parentElement;
+    raw = editableText(field);
+  } else return null;
+  const node = getNodeId(field);
+  if (node < 0) return null;
+  if (isPasswordField(field)) return { node, len: raw.length, hash: "", head: "" };
+  const text = normalizeEditableText(raw);
+  return {
+    node,
+    len: text.length,
+    hash: editHash(text),
+    head: editHash(text.slice(0, text.length - expectTail(text.length))),
+  };
 }
 
 /** An input that submits on Enter instead of taking a line break. */

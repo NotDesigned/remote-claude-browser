@@ -88,6 +88,9 @@ jobs:
           pnpm run test:pixel-ui
           pnpm run test:mobile-input
           pnpm run test:composer-input
+          SMOKE_RTT_MS=300 SMOKE_JITTER_MS=50 SMOKE_STALL_RATE=0.02 pnpm run test:composer-input
+          SMOKE_RTT_MS=300 SMOKE_JITTER_MS=50 COMPOSER_SMOKE_ONLY=rounds pnpm run test:composer-input
+          MIRROR_INPUT_ACKS=off pnpm run test:composer-input
       - name: Test video and sound over WebRTC
         run: |
           sudo apt-get update -qq

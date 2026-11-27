@@ -1,8 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { EventType, IncrementalSource, type eventWithTime } from "@mirror/protocol";
+import { EventType, IncrementalSource, editHash, type eventWithTime } from "@mirror/protocol";
 import { EventPipeline } from "./index";
-import { createEchoFilter } from "./echo";
+import { ACK_LIVENESS_MS, createEchoFilter } from "./echo";
+import type { SettledAck } from "../input/input-seq";
 
 class FakeInput {
   readonly nodeType = 1;
@@ -681,5 +682,406 @@ describe("F5 native local typing echo", () => {
     time = 1_000;
     timers.last();
     expect(reconcile).not.toHaveBeenCalled();
+  });
+});
+
+/** Input acks as input-seq.ts settles them, driven by the test. */
+function fakeAcks(enabled: boolean) {
+  const listeners = new Set<(settled: SettledAck) => void>();
+  let stamped = 0;
+  let settledIseq = 0;
+  const count = vi.fn();
+  return {
+    acks: {
+      enabled: () => enabled,
+      subscribe(listener: (settled: SettledAck) => void) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      outstanding: () => stamped - settledIseq,
+      lastStamped: () => stamped,
+      count,
+    },
+    count,
+    /** One input message went out. */
+    send: () => ++stamped,
+    settle(ack: Partial<SettledAck> & { iseq: number }) {
+      settledIseq = ack.iseq;
+      for (const listener of listeners)
+        listener({
+          tab: "T1",
+          mode: "page",
+          fenced: ack.mode !== "dispatch",
+          failed: [],
+          failedValue: false,
+          final: false,
+          ...ack,
+        });
+    },
+  };
+}
+
+/** Timers on a clock the test moves; in ack mode, none may be shorter than the liveness ceiling. */
+function clockTimers(ackMode: boolean) {
+  let time = 0;
+  const timers: Array<{ at: number; callback: () => void } | null> = [];
+  return {
+    now: () => time,
+    options: {
+      setTimer: ((callback: () => void, delay = 0) => {
+        if (ackMode && delay < ACK_LIVENESS_MS)
+          throw new Error(`ack mode scheduled a ${delay} ms timer`);
+        timers.push({ at: time + delay, callback });
+        return timers.length as unknown as ReturnType<typeof setTimeout>;
+      }) as typeof setTimeout,
+      clearTimer: ((id: number) => {
+        timers[id - 1] = null;
+      }) as unknown as typeof clearTimeout,
+    },
+    to(ms: number) {
+      for (;;) {
+        const due = timers
+          .map((timer, index) => ({ timer, index }))
+          .filter(({ timer }) => timer !== null && timer.at <= ms)
+          .sort((a, b) => a.timer!.at - b.timer!.at)[0];
+        if (due === undefined) break;
+        timers[due.index] = null;
+        time = due.timer!.at;
+        due.timer!.callback();
+      }
+      time = ms;
+      return { tab: "T1", nowMs: ms };
+    },
+  };
+}
+
+describe.each([
+  { mode: "legacy", ackMode: false },
+  { mode: "ack", ackMode: true },
+])("echo window ($mode)", ({ ackMode }) => {
+  it("lets a slow page's late text through without writing stale text back", () => {
+    const clock = clockTimers(ackMode);
+    const acks = fakeAcks(ackMode);
+    const echo = createEchoFilter({ now: clock.now, ...clock.options, acks: acks.acks });
+    const field = new FakeInput();
+    const focus = { element: field as unknown as HTMLInputElement, nodeId: 9 };
+    echo.setFocused(focus);
+    const written: string[] = [];
+    // Three keys in quick succession; the page applies each about 400 ms late.
+    for (const [at, value] of [
+      [0, "a"],
+      [10, "ab"],
+      [20, "abc"],
+    ] as const) {
+      clock.to(at);
+      acks.send();
+      field.value = value;
+      echo.input(focus);
+    }
+    const watch = () => written.push(field.value);
+    expect(echo(inputEvent(9, "a"), clock.to(900))).toBeNull();
+    watch();
+    expect(echo(inputEvent(9, "ab"), clock.to(1_010))).toBeNull();
+    watch();
+    clock.to(1_050);
+    watch();
+    if (ackMode) {
+      // Still unacknowledged: held, and the person's text stays.
+      expect(echo(inputEvent(9, "abc"), clock.to(1_100))).toBeNull();
+      acks.settle({
+        iseq: 3,
+        final: true,
+        edit: { node: 9, len: 3, hash: editHash("abc"), sel: [3, 3] },
+      });
+      watch();
+      expect(written).toEqual(["abc", "abc", "abc", "abc"]);
+      // In step: the next echo is the page's own change and shows.
+      expect(echo(inputEvent(9, "abcd"), clock.to(1_200))).not.toBeNull();
+    } else {
+      // The window closed on its timer and wrote the page's stale "ab" over "abc".
+      expect(written).toEqual(["abc", "abc", "ab"]);
+    }
+  });
+
+  it("asks for the page's editor when an input rule rewrote it (-- to —)", () => {
+    const clock = clockTimers(ackMode);
+    const acks = fakeAcks(ackMode);
+    const reconcile = vi.fn(() => true);
+    const editor = new FakeContenteditable();
+    const echo = createEchoFilter({
+      now: clock.now,
+      ...clock.options,
+      acks: acks.acks,
+      onContenteditableReconcile: reconcile,
+      nodeFor: editor.nodeFor,
+    });
+    editor.children.set(22, { textContent: "a--" });
+    editor.textContent = "a--";
+    const focus = {
+      element: editor as unknown as HTMLElement,
+      nodeId: 20,
+      subtreeNodeIds: new Set([20, 21, 22]),
+    };
+    echo.setFocused(focus);
+    acks.send();
+    echo.input(focus);
+    // The page's input rule turned the two hyphens into a dash: held back while typing.
+    expect(echo(mutationEvent([{ id: 22, value: "a—" }]), clock.to(150))).toBeNull();
+    expect(reconcile).not.toHaveBeenCalled();
+    if (ackMode) {
+      acks.settle({
+        iseq: 1,
+        final: true,
+        edit: { node: 20, len: 2, hash: editHash("a—"), sel: [2, 2] },
+      });
+      // At once, on the page's own hash: no timer.
+      expect(reconcile).toHaveBeenCalledOnce();
+    } else {
+      clock.to(1_200);
+      expect(reconcile).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("drops what it held back, without a reconcile, when the page's hash matches", () => {
+    const clock = clockTimers(ackMode);
+    const acks = fakeAcks(ackMode);
+    const reconcile = vi.fn(() => true);
+    const editor = new FakeContenteditable();
+    const echo = createEchoFilter({
+      now: clock.now,
+      ...clock.options,
+      acks: acks.acks,
+      onContenteditableReconcile: reconcile,
+      nodeFor: editor.nodeFor,
+    });
+    editor.children.set(22, { textContent: "hello" });
+    editor.textContent = "hello";
+    const focus = {
+      element: editor as unknown as HTMLElement,
+      nodeId: 20,
+      subtreeNodeIds: new Set([20, 21, 22]),
+    };
+    echo.setFocused(focus);
+    acks.send();
+    echo.input(focus);
+    // The page made its own node for the same text: held back, and this replay never got it.
+    expect(
+      echo(
+        mutationEvent(
+          [],
+          [{ parentId: 21, nextId: null, node: { id: 40, type: 3, textContent: "hello" } }],
+        ),
+        clock.to(100),
+      ),
+    ).toBeNull();
+    if (ackMode) {
+      acks.settle({
+        iseq: 1,
+        final: true,
+        edit: { node: 20, len: 5, hash: editHash("hello"), sel: [5, 5] },
+      });
+      expect(echo.typingWithin(50)).toBe(false);
+      // The window is closed, but a key going down now is still typing: no catch-up under it.
+      echo.keyDown({ key: "x" } as KeyboardEvent, focus);
+      expect(echo.typingWithin(50)).toBe(true);
+    } else clock.to(1_200);
+    expect(reconcile).not.toHaveBeenCalled();
+    // A later change to that node still asks: this replay never got it (the page clearing its
+    // composer long after the last ack, for one).
+    echo(mutationEvent([{ id: 40, value: "hello!" }]), clock.to(1_300));
+    expect(reconcile).toHaveBeenCalledOnce();
+  });
+
+  it("asks for the page's editor when it changed after the ack it matched", () => {
+    const clock = clockTimers(ackMode);
+    const acks = fakeAcks(ackMode);
+    const reconcile = vi.fn(() => true);
+    const editor = new FakeContenteditable();
+    const echo = createEchoFilter({
+      now: clock.now,
+      ...clock.options,
+      acks: acks.acks,
+      onContenteditableReconcile: reconcile,
+      nodeFor: editor.nodeFor,
+    });
+    editor.textContent = "hello";
+    const focus = {
+      element: editor as unknown as HTMLElement,
+      nodeId: 20,
+      subtreeNodeIds: new Set([20, 21]),
+    };
+    echo.setFocused(focus);
+    acks.send();
+    echo.input(focus);
+    // The page's text, in a node of its own, then its clear: both held back here.
+    echo(
+      mutationEvent(
+        [],
+        [{ parentId: 21, nextId: null, node: { id: 40, type: 3, textContent: "hello" } }],
+      ),
+      clock.to(100),
+    );
+    echo(removal(21, 40), clock.to(150));
+    // The final ack comes from before the clear: same text as here.
+    if (ackMode)
+      acks.settle({
+        iseq: 1,
+        final: true,
+        edit: { node: 20, len: 5, hash: editHash("hello"), sel: [5, 5] },
+      });
+    else clock.to(1_200);
+    expect(reconcile).toHaveBeenCalledOnce();
+  });
+
+  it("holds the field while input is unacknowledged, whatever the time, and counts the old bug", () => {
+    const clock = clockTimers(ackMode);
+    const acks = fakeAcks(ackMode);
+    const echo = createEchoFilter({ now: clock.now, ...clock.options, acks: acks.acks });
+    const field = new FakeInput();
+    const focus = { element: field as unknown as HTMLInputElement, nodeId: 9 };
+    acks.send();
+    field.value = "x";
+    echo.input(focus);
+    // A 1.5 s round trip: the page's echo of an earlier state comes before its ack.
+    clock.to(1_400);
+    expect(echo.typingWithin(400)).toBe(ackMode);
+    const passed = echo(inputEvent(9, ""), clock.to(1_500));
+    if (ackMode) expect(passed).toBeNull();
+    else {
+      expect(passed).not.toBeNull();
+      expect(acks.count).toHaveBeenCalledWith("decayWhileOutstanding");
+    }
+  });
+});
+
+describe("echo window with acks the page could not fence", () => {
+  it("goes back to the timers after a final dispatch-only ack, and to acks after a fenced one", () => {
+    const clock = clockTimers(false);
+    const acks = fakeAcks(true);
+    const closed: string[] = [];
+    const echo = createEchoFilter({
+      now: clock.now,
+      ...clock.options,
+      acks: acks.acks,
+      onWindowClosed: ({ ms, how }) => closed.push(`${how}@${ms}`),
+    });
+    const field = new FakeInput();
+    const focus = { element: field as unknown as HTMLInputElement, nodeId: 9 };
+    echo.setFocused(focus);
+    acks.send();
+    field.value = "a";
+    echo.input(focus);
+    // An agent from before fences: the quiet fence's ack is final, and dispatch only.
+    clock.to(100);
+    acks.settle({ iseq: 1, mode: "dispatch", final: true });
+    // Held by the decay timer, not the 3 s ceiling.
+    expect(echo(inputEvent(9, ""), clock.to(500))).toBeNull();
+    expect(echo.typingWithin(400)).toBe(false);
+    clock.to(1_000);
+    expect(closed).toEqual(["decay@1000"]);
+    expect(echo(inputEvent(9, "a"), clock.to(1_100))).not.toBeNull();
+    // A fenced ack again: the next burst is closed by its final ack.
+    acks.settle({ iseq: 1, mode: "page", edit: null });
+    clock.to(2_000);
+    acks.send();
+    field.value = "ab";
+    echo.input(focus);
+    expect(echo(inputEvent(9, "a"), clock.to(2_050))).toBeNull();
+    acks.settle({
+      iseq: 2,
+      final: true,
+      edit: { node: 9, len: 2, hash: editHash("ab"), sel: [2, 2] },
+    });
+    expect(closed).toEqual(["decay@1000", "ack@50"]);
+  });
+});
+
+describe("echo window while an IME composes (ack mode)", () => {
+  it("keeps a final ack that settles during a composition, and acts on it when it ends", () => {
+    const clock = clockTimers(true);
+    const acks = fakeAcks(true);
+    let composing = false;
+    const closed: string[] = [];
+    const echo = createEchoFilter({
+      now: clock.now,
+      ...clock.options,
+      acks: acks.acks,
+      composing: () => composing,
+      onWindowClosed: ({ how }) => closed.push(how),
+    });
+    const field = new FakeInput();
+    const focus = { element: field as unknown as HTMLInputElement, nodeId: 9 };
+    echo.setFocused(focus);
+    acks.send();
+    field.value = "hello";
+    echo.input(focus);
+    composing = true;
+    acks.settle({
+      iseq: 1,
+      final: true,
+      edit: { node: 9, len: 5, hash: editHash("hello"), sel: [5, 5] },
+    });
+    expect(closed).toEqual([]);
+    composing = false;
+    echo.compositionEnded();
+    expect(closed).toEqual(["ack"]);
+    // Acks after it are acted on as usual.
+    acks.send();
+    field.value = "hello!";
+    echo.input(focus);
+    acks.settle({
+      iseq: 2,
+      final: true,
+      edit: { node: 9, len: 6, hash: editHash("hello!"), sel: [6, 6] },
+    });
+    expect(closed).toEqual(["ack", "ack"]);
+  });
+
+  it("writes nothing into a composing field when the liveness ceiling passes", () => {
+    const clock = clockTimers(true);
+    const acks = fakeAcks(true);
+    let composing = false;
+    const echo = createEchoFilter({
+      now: clock.now,
+      ...clock.options,
+      acks: acks.acks,
+      composing: () => composing,
+    });
+    const field = new FakeInput();
+    const focus = { element: field as unknown as HTMLInputElement, nodeId: 9 };
+    echo.setFocused(focus);
+    acks.send();
+    field.value = "hel";
+    echo.input(focus);
+    composing = true;
+    // The page's older value comes, and no ack: the composition stays open past the ceiling.
+    expect(echo(inputEvent(9, "he"), clock.to(100))).toBeNull();
+    clock.to(ACK_LIVENESS_MS * 3);
+    expect(field.value).toBe("hel");
+    composing = false;
+    echo.compositionEnded();
+    clock.to(ACK_LIVENESS_MS * 4);
+    // Once it ends, the ceiling lets the field go.
+    expect(field.value).toBe("he");
+  });
+});
+
+describe("echo window when the replay an ack was for is gone", () => {
+  it("stays on acks: a fenced ack settled as dispatch only is no reason for the timers", () => {
+    const clock = clockTimers(true);
+    const acks = fakeAcks(true);
+    const echo = createEchoFilter({ now: clock.now, ...clock.options, acks: acks.acks });
+    const field = new FakeInput();
+    const focus = { element: field as unknown as HTMLInputElement, nodeId: 9 };
+    echo.setFocused(focus);
+    acks.send();
+    field.value = "a";
+    echo.input(focus);
+    acks.settle({ iseq: 1, mode: "dispatch", fenced: true, final: true });
+    // Still ack mode: the next burst is held until its own final ack, with no decay timer.
+    acks.send();
+    field.value = "ab";
+    echo.input(focus);
+    expect(echo(inputEvent(9, "a"), clock.to(1_500))).toBeNull();
   });
 });

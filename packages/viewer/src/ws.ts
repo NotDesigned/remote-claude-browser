@@ -90,6 +90,11 @@ export interface GatewaySocketOptions {
   /** Encoded resume cursors for the next (re)connect, or null to request a full rebuild. */
   resumeParam?: () => string | null;
   visible?: boolean;
+  /**
+   * The message as it goes on the wire, called only for a message that is sent: input sequence
+   * numbers (input/input-seq.ts) must have no gaps.
+   */
+  stamp?(msg: Up): Up;
 }
 
 const OPEN = 1;
@@ -335,7 +340,7 @@ export function connectGateway(
   return {
     send(msg) {
       if (disposed || socket?.readyState !== OPEN) return false;
-      socket.send(encodeMsg(msg));
+      socket.send(encodeMsg(options.stamp?.(msg) ?? msg));
       return true;
     },
     probe() {

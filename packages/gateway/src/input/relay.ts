@@ -61,6 +61,19 @@ export interface InputRelayDeps {
    * on unless MIRROR_AGENT_HARDENING=0, where the agent dispatches its synthetic wheel instead.
    */
   announceScrollUp?: boolean;
+   * An input's dispatch settled (input acks, acks.ts): `ok` false when it was refused or failed.
+   * A coalesced hover, wheel or scroll is reported once, as the newest message it became.
+   */
+  onDispatched?(viewerId: string, msg: InputMsg, ok: boolean): void;
+  /**
+   * Runs in the tab's queue right before the input is dispatched (the submit guard); false
+   * refuses the input.
+   */
+  beforeDispatch?(viewerId: string, msg: InputMsg): Promise<boolean | void>;
+  /** The tab's queued input was discarded (resetTab, forgetTab). */
+  onReset?(tabId: string): void;
+  /** The tab is gone (forgetTab), after onReset. */
+  onForget?(tabId: string): void;
 }
 
 export type InputMsg = Extract<
@@ -83,6 +96,10 @@ export type InputRelay = ((viewerId: string, msg: InputMsg) => Promise<boolean>)
    * it starts from "all synced", and nothing else would tell it the field it sees is stale.
    */
   valueStatusMessages(): Extract<Down, { t: "input-status" }>[];
+  /** Runs `task` in the tab's queue, after the input queued before it and before any after. */
+  enqueue(tabId: string, task: () => Promise<void>): void;
+  /** No input of the tab is waiting for its turn or being dispatched. */
+  isIdle(tabId: string): boolean;
 };
 
 /** Why a field sync failed, in words the person can act on. Never quotes page content. */
@@ -210,24 +227,49 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     pendingMoves.delete(msg.tab);
     const prior = tabTails.get(msg.tab) ?? Promise.resolve();
     let move: ReturnType<typeof pendingMoves.get>;
-    const result = prior.then(() => {
+    queued.set(msg.tab, (queued.get(msg.tab) ?? 0) + 1);
+    const result = prior.then(async () => {
       if (move && pendingMoves.get(msg.tab) === move) pendingMoves.delete(msg.tab);
-      return dispatch(viewerId, move?.msg ?? msg, generation);
+      // A merged hover, wheel or scroll is the newest message, and carries the newest iseq.
+      const current = move?.msg ?? msg;
+      let ok = false;
+      try {
+        const allowed =
+          deps.beforeDispatch === undefined
+            ? true
+            : await deps.beforeDispatch(viewerId, current).catch(() => true);
+        ok = allowed === false ? false : await dispatch(viewerId, current, generation);
+        return ok;
+      } finally {
+        const left = (queued.get(msg.tab) ?? 1) - 1;
+        if (left > 0) queued.set(msg.tab, left);
+        else queued.delete(msg.tab);
+        deps.onDispatched?.(viewerId, current, ok);
+      }
     });
     if (hover || wheel || scroll) {
       move = { viewerId, msg, result };
       pendingMoves.set(msg.tab, move);
     }
-    const tail = result.then(
+    chain(msg.tab, result);
+    return result;
+  }) as InputRelay;
+  /** Inputs of each tab queued or being dispatched. */
+  const queued = new Map<string, number>();
+  const chain = (tabId: string, run: Promise<unknown>) => {
+    const tail = run.then(
       () => undefined,
       () => undefined,
     );
-    tabTails.set(msg.tab, tail);
+    tabTails.set(tabId, tail);
     void tail.finally(() => {
-      if (tabTails.get(msg.tab) === tail) tabTails.delete(msg.tab);
+      if (tabTails.get(tabId) === tail) tabTails.delete(tabId);
     });
-    return result;
-  }) as InputRelay;
+  };
+  relay.enqueue = (tabId, task) => {
+    chain(tabId, (tabTails.get(tabId) ?? Promise.resolve()).then(task));
+  };
+  relay.isIdle = (tabId) => !queued.has(tabId);
   relay.resetTab = (tabId) => {
     // The release queued behind the press is dropped with the rest: send it now.
     releaseHeld(tabId);
@@ -238,6 +280,7 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     for (const key of rectCache.keys()) if (key.startsWith(`${tabId}:`)) rectCache.delete(key);
     presses.delete(tabId);
     touchPositions.delete(tabId);
+    deps.onReset?.(tabId);
   };
   relay.forgetTab = (tabId) => {
     relay.resetTab(tabId);
@@ -246,6 +289,7 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     generations.delete(tabId);
     rectFallbacks.delete(tabId);
     failedValues.delete(tabId);
+    deps.onForget?.(tabId);
   };
   relay.trackedTabs = () =>
     new Set([

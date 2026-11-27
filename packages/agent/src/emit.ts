@@ -12,6 +12,8 @@
 import { BINDING_NAME, encodeChunks, type AgentMsg } from "@mirror/protocol";
 
 export interface Emitter {
+  /** The document epoch every message of this emitter belongs to. */
+  readonly docId: number;
   emit(msg: AgentMsg): void;
   /** Private agent-binding lane; converted to the frozen `clip` Down shape inside AgentLink. */
   emitClipboard(text: string): void;
@@ -96,6 +98,7 @@ export function createEmitter(
   };
 
   return {
+    docId,
     emit(msg: AgentMsg): void {
       send(msg);
     },

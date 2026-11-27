@@ -1,4 +1,5 @@
 // One isolated Chromium, two local fixture pages. Never connects to the authenticated browser.
+// Also times the input-ack fence: from the command to its answer in the page's ordered stream.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
@@ -66,9 +67,11 @@ try {
   const remote = await browser.newPage({ viewport: { width: 1100, height: 850 } });
   const reassembler = new ChunkReassembler();
   const replies = new Map<number, (reply: any) => void>();
+  const fenced = new Map<number, () => void>();
   await remote.exposeFunction("__mirror_emit", (payload: string) => {
     const message = reassembler.add(payload);
     if (message?.kind === "cmdres") replies.get(message.reqId)?.(message);
+    if (message?.kind === "fence") fenced.get(message.n)?.();
   });
   await remote.addInitScript({ content: createAgentBundle({ canvas: { enabled: false } }) });
   await remote.goto(origin + "/remote");
@@ -85,6 +88,26 @@ try {
     }),
   );
   await remote.waitForFunction(() => typeof (window as any).__mirror_cmd === "function");
+  // The fence's round trip: command sent, answer back in the stream (agent/src/fence.ts).
+  const fenceTimes: number[] = [];
+  for (let n = 1; n <= 40; n++) {
+    const started = performance.now();
+    const answered = new Promise<void>((done) => fenced.set(n, done));
+    await remote.evaluate(
+      (n) => (window as any).__mirror_cmd({ cmd: "fence", n, reqId: 100_000 + n }),
+      n,
+    );
+    await answered;
+    fenced.delete(n);
+    fenceTimes.push(performance.now() - started);
+  }
+  fenceTimes.sort((a, b) => a - b);
+  const fence = {
+    p50: Number(fenceTimes[Math.floor(fenceTimes.length * 0.5)]!.toFixed(1)),
+    p95: Number(fenceTimes[Math.floor(fenceTimes.length * 0.95)]!.toFixed(1)),
+  };
+  console.log(`fence round trip: ${JSON.stringify(fence)}`);
+  assert.ok(fence.p95 <= 10, `the fence round trip took ${fence.p95} ms (p95)`);
   let nextCommand = 0;
   const remoteCdp = await remote.context().newCDPSession(remote);
   const received: Up[] = [],
@@ -466,6 +489,7 @@ try {
   assert.equal(await page.locator(".px-ime-input").count(), 0);
   const result = {
     fixtureOnly: true,
+    fence,
     cursor,
     checks: {
       driverUsesNativeCursor: true,

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { decodeUp, encodeMsg, type Up } from "@mirror/protocol";
+import { decodeUp, editHash, encodeMsg, type Up } from "@mirror/protocol";
 import { attachChangeCapture } from "./change";
 import { attachDefaultActionContainment, externalLink } from "./default-actions";
 import { createForwardedInputClock } from "./forwarded";
@@ -1032,7 +1032,16 @@ describe("P1 input capture", () => {
 
     expect(sent).toEqual([
       { t: "value", commit: false, tab: "T1", nodeId: 47, value: "committed" },
-      { t: "key", tab: "T1", kind: "down", key: "Enter", code: "Enter", mods: 0 },
+      {
+        t: "key",
+        tab: "T1",
+        kind: "down",
+        key: "Enter",
+        code: "Enter",
+        mods: 0,
+        // What the field showed, for the gateway's submit guard.
+        expect: { node: 47, len: 9, hash: editHash("committed"), head: editHash("commi") },
+      },
     ]);
     expect(timers.pending()).toBe(0);
     detachKeys();

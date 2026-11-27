@@ -68,6 +68,72 @@ export type SnapshotReason = "nav" | "viewport" | "resync";
  */
 export const LOCAL_RESYNC_REASON = "editable";
 
+/**
+ * What the page's focused editable holds, never its text: its recorder id (-1 inside a
+ * cross-origin frame), the length and editHash of its normalized text, and the selection as
+ * offsets into that text. A password field reports its length only (hash "").
+ */
+export interface EditState {
+  node: number;
+  len: number;
+  hash: string;
+  sel: [number, number];
+}
+
+/**
+ * What the viewer showed when Enter was pressed (submit guard): the field, the length and hash of
+ * its text, and `head`, the editHash of its first len - expectTail(len) code units.
+ */
+export interface EditExpect {
+  node: number;
+  len: number;
+  hash: string;
+  head: string;
+}
+
+/** How many code units at the end of a field the submit guard lets the page rewrite, at most. */
+export const EXPECT_TAIL = 16;
+
+/**
+ * The tail the submit guard lets the page rewrite in a text of `len` code units: EXPECT_TAIL, but
+ * never more than half of it. A short message keeps a head to compare, or any text the page holds
+ * would pass as a rewrite of it.
+ */
+export function expectTail(len: number): number {
+  return Math.min(EXPECT_TAIL, Math.floor(Math.max(0, len) / 2));
+}
+
+/**
+ * `hello.caps`: what this gateway does beyond the base protocol. A viewer uses a feature only when
+ * its cap is listed.
+ *  - `ack1`: input is acknowledged (`input-ack`); the viewer stamps its input with `iseq`.
+ *  - `ackecho1`: the viewer's typing echo is decided by those acknowledgements.
+ */
+export const CAP_INPUT_ACKS = "ack1";
+export const CAP_ACK_ECHO = "ackecho1";
+
+/** An `input-ack` lists at most this many refused inputs. */
+export const MAX_ACK_FAILED = 32;
+
+/** Sent only to the viewer whose input it covers. */
+export interface InputAckMsg {
+  t: "input-ack";
+  tab: TabId;
+  /** Cumulative: every input of this viewer and tab with iseq <= this was dispatched or refused. */
+  iseq: number;
+  /** page: fenced in the page's stream; dispatch: no fence (old agent or timeout). */
+  mode: "page" | "dispatch";
+  /** Only for mode "page": the input's effects are in the stream up to `seq` of `epoch`. */
+  epoch?: number;
+  seq?: number;
+  /** Only for mode "page"; null means no focused editable. */
+  edit?: EditState | null;
+  /** Inputs in (previous ack, iseq] that were refused or failed; at most MAX_ACK_FAILED. */
+  failed?: number[];
+  /** The quiet fence after a burst: no newer input was waiting when it was taken. */
+  final?: true;
+}
+
 /** Gateway -> viewer. */
 export interface ServerStatusMsg {
   t: "server-status";
@@ -111,6 +177,8 @@ export type Down =
        * deploy and should reload; older gateways omit it.
        */
       build?: string;
+      /** What this gateway does beyond the base protocol (CAP_* above); older gateways omit it. */
+      caps?: string[];
     }
   /** Application-level RTT echo; browser JS cannot observe WebSocket control-frame pong timing. */
   /** `sent` counts every byte the gateway wrote to this connection, after compression. */
@@ -227,6 +295,8 @@ export type Down =
       requireInteraction?: boolean;
       renotify?: boolean;
     }
+  /** This viewer's input up to `iseq` was handled (see InputAckMsg). */
+  | InputAckMsg
   /** The page closed the notification, or it was replaced. */
   | { t: "notify-close"; id: string }
   /** A page asks to send notifications; the viewer asks the person (`id` names the request). */
@@ -262,10 +332,22 @@ export type Up =
       dx?: number;
       dy?: number;
       clicks?: 1 | 2 | 3;
+      /** Input sequence number, per connection and tab from 1, when the gateway has `ack1`. */
+      iseq?: number;
     }
-  | { t: "key"; tab: TabId; kind: "down" | "up"; key: string; code: string; mods: Mods }
+  | {
+      t: "key";
+      tab: TabId;
+      kind: "down" | "up";
+      key: string;
+      code: string;
+      mods: Mods;
+      iseq?: number;
+      /** What the field showed here when Enter went down (submit guard). */
+      expect?: EditExpect;
+    }
   /** IME commit + paste ONLY (D3/D5) -> Input.insertText. */
-  | { t: "text"; tab: TabId; insert: string }
+  | { t: "text"; tab: TabId; insert: string; iseq?: number }
   /** Committed text or value-control state, including contenteditable text. */
   | {
       t: "value";
@@ -289,11 +371,12 @@ export type Up =
        * has replaced the editor, text the edit only appended is typed into the one it focused.
        */
       base?: string;
+      iseq?: number;
     }
   /** Composition in flight -> Input.imeSetComposition. */
-  | { t: "ime"; tab: TabId; text: string; selStart: number; selEnd: number }
+  | { t: "ime"; tab: TabId; text: string; selStart: number; selEnd: number; iseq?: number }
   /** <=10Hz per node; nodeId 0 = window scroll. */
-  | { t: "scroll"; tab: TabId; nodeId: number; x: number; y: number }
+  | { t: "scroll"; tab: TabId; nodeId: number; x: number; y: number; iseq?: number }
   | {
       t: "nav";
       tab: TabId;
@@ -369,6 +452,7 @@ const DOWN_TAGS: ReadonlySet<string> = new Set([
   "notify-close",
   "notify-ask",
   "notify-ask-end",
+  "input-ack",
 ]);
 
 const UP_TAGS: ReadonlySet<string> = new Set([
@@ -395,6 +479,41 @@ const UP_TAGS: ReadonlySet<string> = new Set([
   "notify-event",
   "notify-answer",
 ]);
+
+/** The viewer messages that are input: they carry `iseq` and are acknowledged. */
+export type InputUp = Extract<
+  Up,
+  { t: "ptr" } | { t: "key" } | { t: "text" } | { t: "value" } | { t: "ime" } | { t: "scroll" }
+>;
+
+export const INPUT_TAGS: ReadonlySet<string> = new Set([
+  "ptr",
+  "key",
+  "text",
+  "value",
+  "ime",
+  "scroll",
+]);
+
+export function isInputUp(msg: Up): msg is InputUp {
+  return INPUT_TAGS.has(msg.t);
+}
+
+/**
+ * The input a viewer stamps with `iseq` and the gateway acknowledges with a fence: what can change
+ * a field's text, selection or focus (keys, text, values, IME, and pointer presses and releases).
+ * Hover moves, drags, wheel and scroll are not: they come many times a second, and a fence for
+ * each would hold the tab's input queue and keep a burst's final ack from ever coming.
+ */
+export function isAckedInput(msg: Up): msg is InputUp {
+  if (msg.t === "ptr") return msg.kind === "down" || msg.kind === "up";
+  return msg.t === "key" || msg.t === "text" || msg.t === "value" || msg.t === "ime";
+}
+
+/** A well-formed input sequence number: a positive safe integer. */
+export function isIseq(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
 
 /** Single serialization choke point (future CBOR switch lives here). */
 export function encodeMsg(msg: Down | Up): string {

@@ -3,8 +3,8 @@
  * downloads, clipboard, voice and build-skew reloads. It reports everything the shell shows as
  * RuntimeActions; useMirrorRuntime keeps those in a reducer and starts one of these per session.
  */
-import type { AgentMsg, Down, eventWithTime, TabId } from "@mirror/protocol";
-import { EventType, IncrementalSource, LOCAL_RESYNC_REASON } from "@mirror/protocol";
+import type { AgentMsg, Down, eventWithTime, InputAckMsg, TabId } from "@mirror/protocol";
+import { EventType, IncrementalSource, LOCAL_RESYNC_REASON, editHash } from "@mirror/protocol";
 import { apiRequest } from "../api";
 import { DOWNLOAD_NOTICE_MS, startClientDownload } from "../auto-download";
 import { createBuildSkew } from "../build-skew";
@@ -21,10 +21,11 @@ import { attachMirrorInput } from "../input";
 import { externalLink } from "../input/default-actions";
 import { deepActiveElement, isTextEditable } from "../input/keys";
 import { createInputResync, focusedValueMessage, type InputResync } from "../input/resync-input";
+import { createInputSequencer, type InputLabStats, type SettledAck } from "../input/input-seq";
 import type { VoiceLink } from "../media/voice";
 import { createMirror, type Mirror } from "../mirror";
 import { EventPipeline } from "../pipeline";
-import { createEchoFilter } from "../pipeline/echo";
+import { createEchoFilter, localFieldText } from "../pipeline/echo";
 import {
   createScrollFilter,
   replayScrollPosition,
@@ -43,6 +44,32 @@ import { viewStorage } from "./view-storage";
 const MIRROR_PICKER_WINDOW_MS = 5_000;
 /** The tab a fixture replay shows. */
 export const FIXTURE_TAB = "fixture-tab";
+/** Acks and stamps the inputlab keeps for smokes to read, newest last. */
+const INPUT_LAB_LOG = 4_000;
+
+/** What `window.__mirrorInputLab` offers with ?inputlab=1 (smokes and the HUD read it). */
+export interface InputLabHandle {
+  stats(): InputLabStats;
+  /** Every input-ack received, as received. */
+  acks: InputAckMsg[];
+  /** Every ack as it settled, after the replay applied it. */
+  settled: Array<SettledAck & { at: number; localHash?: string }>;
+  /** The newest iseq sent per tab on this connection. */
+  lastStamped(tab: TabId): number;
+  outstanding(tab: TabId): number;
+  caps(): { acks: boolean; echo: boolean };
+  /**
+   * Every typing echo window as it closed: how long after the field's last key, and what closed
+   * it (an ack, the ack mode's liveness ceiling, or the decay timer).
+   */
+  windows: Array<{
+    tab: TabId | null;
+    nodeId: number;
+    ms: number;
+    how: "ack" | "liveness" | "decay";
+    at: number;
+  }>;
+}
 
 function configuredResyncWindowMs(): number {
   const raw = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env
@@ -180,7 +207,37 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
   });
   /** Text typed this recently may not have reached the page yet. */
   const EDITABLE_TYPING_MS = 400;
+  const inputLabOn = new URLSearchParams(window.location.search).get("inputlab") === "1";
+  const sequencer = createInputSequencer({
+    // Acks settle once the replay in view has played everything they cover.
+    mark: (tab, played) => mirror.mark(tab, played),
+  });
+  const activeTab = () => mirror.getActiveTab();
+  /** An IME composition is open in the replay (see attachInteraction). */
+  let composing = false;
   const echo = createEchoFilter({
+    composing: () => composing,
+    onWindowClosed: (closed) => {
+      if (!inputLabOn) return;
+      inputLab.windows.push({ ...closed, tab: activeTab(), at: performance.now() });
+      if (inputLab.windows.length > INPUT_LAB_LOG) inputLab.windows.shift();
+    },
+    acks: {
+      enabled: sequencer.echoEnabled,
+      subscribe: (listener) =>
+        sequencer.subscribe((settled) => {
+          if (settled.tab === activeTab()) listener(settled);
+        }),
+      outstanding: () => {
+        const tab = activeTab();
+        return tab === null ? 0 : sequencer.outstanding(tab);
+      },
+      lastStamped: () => {
+        const tab = activeTab();
+        return tab === null ? 0 : sequencer.lastStamped(tab);
+      },
+      count: sequencer.count,
+    },
     // The reason asks the gateway to answer this page alone from its cached state, not every
     // viewer from a new page snapshot; the mirror takes only the focused editor from it.
     onContenteditableReconcile: () => {
@@ -323,6 +380,7 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     // The gateway spaces these out itself, and they rebuild nothing.
     requestCatchUp: (tab, reason) => socket?.send({ t: "resync-req", tab, reason }) ?? false,
     editableBusy: () => echo.typingWithin(EDITABLE_TYPING_MS),
+    onApplied: (tab, epoch, nextSeq) => sequencer.applied(tab, epoch, nextSeq),
     onEditablePatched: () => echo.settled(),
     watchReplayer: (_tab, replayer) => watchReplayScrollRestores(replayer, scroll),
     attachInteraction(tab, replayer) {
@@ -331,10 +389,28 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
       const unlock = () => options.voice()?.unlock();
       frame?.addEventListener("pointerdown", unlock, true);
       frame?.addEventListener("keydown", unlock, true);
+      const compositionStart = () => (composing = true);
+      const compositionEnd = () => {
+        if (!composing) return;
+        composing = false;
+        echo.compositionEnded();
+      };
+      // Some IMEs never send compositionend: input that is not part of a composition ends it all
+      // the same. Leaving the field does not: a keyboard may commit the word after the blur.
+      const inputEvent = (event: Event) => {
+        if ((event as InputEvent).isComposing === false) compositionEnd();
+      };
+      frame?.addEventListener("compositionstart", compositionStart, true);
+      frame?.addEventListener("compositionend", compositionEnd, true);
+      frame?.addEventListener("input", inputEvent, true);
       // A parked page gets its interaction again each time it is shown: these must not pile up.
       const unlockCleanup = () => {
         frame?.removeEventListener("pointerdown", unlock, true);
         frame?.removeEventListener("keydown", unlock, true);
+        frame?.removeEventListener("compositionstart", compositionStart, true);
+        frame?.removeEventListener("compositionend", compositionEnd, true);
+        frame?.removeEventListener("input", inputEvent, true);
+        compositionEnd();
       };
       const detachInput = attachMirrorInput({
         replayer,
@@ -397,7 +473,40 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     send: (message) => {
       if (presentation.canInput(message.tab, "dom")) socket?.send(message);
     },
+    ackMode: sequencer.echoEnabled,
   });
+  const inputLab: InputLabHandle = {
+    stats: sequencer.stats,
+    acks: [],
+    settled: [],
+    lastStamped: sequencer.lastStamped,
+    outstanding: sequencer.outstanding,
+    caps: () => ({ acks: sequencer.enabled(), echo: sequencer.echoEnabled() }),
+    windows: [],
+  };
+  sequencer.subscribe((settled) => {
+    inputResync.settled(settled.tab, settled.failedValue);
+    // Shadow measurement: at a burst's final ack, does this replay's field hash as the page's?
+    let localHash: string | undefined;
+    const edit = settled.edit;
+    if (settled.final && edit && edit.node >= 0 && edit.hash !== "") {
+      const node = mirror.getReplayer()?.getMirror().getNode(edit.node) ?? null;
+      if (node !== null && mirror.getActiveTab() === settled.tab) {
+        localHash = editHash(localFieldText(node as HTMLElement));
+        sequencer.count(localHash === edit.hash ? "hashMatchAtFinal" : "hashMismatchAtFinal");
+      }
+    }
+    if (inputLabOn) {
+      inputLab.settled.push({
+        ...settled,
+        at: performance.now(),
+        ...(localHash ? { localHash } : {}),
+      });
+      if (inputLab.settled.length > INPUT_LAB_LOG) inputLab.settled.shift();
+    }
+  });
+  if (inputLabOn)
+    (window as Window & { __mirrorInputLab?: InputLabHandle }).__mirrorInputLab = inputLab;
   // Frame rates only mean something in the pixel view: elsewhere, do not redraw the page for them.
   let sampledFrames = false;
   const frameRateTimer = setInterval(() => {
@@ -407,6 +516,8 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     else if (sampledFrames) dispatch({ type: "frame-rates", rates: null });
     sampledFrames = sample;
     paintedFrames = 0;
+    if (inputLabOn && sequencer.enabled())
+      dispatch({ type: "input-lab", stats: sequencer.stats() });
   }, 1_000);
   const resizeObserver = new ResizeObserver(presentation.resized);
   resizeObserver.observe(host);
@@ -466,6 +577,14 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
       voice?.setMic(message.tab, message.on);
       return;
     }
+    if (message.t === "input-ack") {
+      if (inputLabOn) {
+        inputLab.acks.push(message);
+        if (inputLab.acks.length > INPUT_LAB_LOG) inputLab.acks.shift();
+      }
+      sequencer.onAck(message);
+      return;
+    }
     if (message.t === "input-status") {
       dispatch({
         type: "input-status",
@@ -493,6 +612,13 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
         drop: message.dropFps,
       };
       return;
+    }
+    // A new connection numbers its input from 1 again, and says whether acks are on.
+    if (message.t === "hello") {
+      sequencer.hello(message.caps);
+      // The inputlab keeps one connection's acks: their numbers start again with it.
+      inputLab.acks.length = 0;
+      inputLab.settled.length = 0;
     }
     presentation.handle(message);
     if (message.t === "hello") {
@@ -571,8 +697,10 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
       dispatch({ type: "speed", bps: sample });
     },
     resumeParam: presentation.resumeParam,
+    stamp: sequencer.stamp,
     onStateChange(state, reconnected) {
       if (disposed) return;
+      if (state !== "open") sequencer.connectionLost();
       dispatch({ type: "connection", state });
       presentation.connectionChanged(state, reconnected);
       if (state === "ended") {

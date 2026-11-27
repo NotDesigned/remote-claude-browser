@@ -5,6 +5,9 @@
  * it is, Enter is dropped, and nothing but another successful sync clears it. The person's field
  * still holds the right text, so sending it again is usually all recovery needs: first on its
  * own, a couple of times with backoff, and then whenever the UI asks (「重新同步」).
+ *
+ * With input acks (`ackMode`), the page's own answer says which `value` was refused: that one
+ * failure is answered by sending the field again once, at once, and nothing is retried on a timer.
  */
 import { editableText, type TabId, type Up } from "@mirror/protocol";
 import { deepActiveElement, isContenteditableEchoField, isValueEchoField } from "./keys";
@@ -53,6 +56,8 @@ export interface InputResyncOptions {
   retryDelaysMs?: readonly number[];
   setTimer?: typeof setTimeout;
   clearTimer?: typeof clearTimeout;
+  /** Acks decide (a gateway with `ackecho1`): no timed retries; see `settled`. */
+  ackMode?: () => boolean;
 }
 
 export interface InputResync {
@@ -60,6 +65,11 @@ export interface InputResync {
   status(tab: TabId, failed: boolean): void;
   /** Send the focused field again now. False when there was nothing to send. */
   resync(tab: TabId): boolean;
+  /**
+   * Ack mode: an input ack settled; `failedValue` when it names a refused `value`. That is sent
+   * again once, at once; another failure before the tab is synced again waits for the person.
+   */
+  settled(tab: TabId, failedValue: boolean): void;
   dispose(): void;
 }
 
@@ -71,6 +81,8 @@ export function createInputResync(options: InputResyncOptions): InputResync {
   const cancel = options.clearTimer ?? clearTimeout;
   /** Tabs in a failure episode, with the pending automatic try. */
   const episodes = new Map<TabId, { tries: number; timer: ReturnType<typeof setTimeout> | null }>();
+  /** Ack mode: tabs whose refused value was already sent again in this failure episode. */
+  const resent = new Set<TabId>();
 
   const resync = (tab: TabId): boolean => {
     const message = options.valueFor(tab);
@@ -80,6 +92,7 @@ export function createInputResync(options: InputResyncOptions): InputResync {
   };
 
   const arm = (tab: TabId) => {
+    if (options.ackMode?.() === true) return;
     const episode = episodes.get(tab);
     if (episode === undefined || episode.timer !== null || episode.tries >= delays.length) return;
     episode.timer = schedule(() => {
@@ -98,12 +111,18 @@ export function createInputResync(options: InputResyncOptions): InputResync {
       if (!failed) {
         if (episode?.timer != null) cancel(episode.timer);
         episodes.delete(tab);
+        resent.delete(tab);
         return;
       }
       if (episode === undefined) episodes.set(tab, { tries: 0, timer: null });
       arm(tab);
     },
     resync,
+    settled(tab, failedValue) {
+      if (options.ackMode?.() !== true || !failedValue || resent.has(tab)) return;
+      resent.add(tab);
+      resync(tab);
+    },
     dispose() {
       for (const episode of episodes.values()) if (episode.timer !== null) cancel(episode.timer);
       episodes.clear();
