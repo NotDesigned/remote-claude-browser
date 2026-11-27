@@ -292,6 +292,15 @@ describe.each([
     expect(reconcile).toHaveBeenCalledTimes(ackMode ? 1 : 0);
   });
 
+  it("sees a page clear its composer after a send button, long after the final ack", () => {
+    const { echo, reconcile, at, settle } = ackSetup();
+    // Typing settled with the page's text the same as this one's.
+    settle(1, 14, true);
+    // A click on the page's send button (no Enter here), then its clear 1.5 s later.
+    expect(echo(batch({ removes: [{ parentId: 21, id: 22 }] }), at(1_500))).not.toBeNull();
+    expect(reconcile).toHaveBeenCalledTimes(ackMode ? 1 : 0);
+  });
+
   it("knows from the page's ack alone that it sent and cleared the composer", () => {
     const setup = ackSetup();
     typeOnAfterEnter(setup);

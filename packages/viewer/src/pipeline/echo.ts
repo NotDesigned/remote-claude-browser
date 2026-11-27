@@ -182,9 +182,11 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
   /** Ack mode: Enter pressed in a field, and the newest iseq sent before it. */
   let sentAck: { element: HTMLElement; nodeId: number; after: number } | null = null;
   /**
-   * Ack mode: the editor Enter last sent from, and its text then. Acks close the editing window
-   * soon after Enter, but a page may clear its composer much later, with no input to answer: that
-   * clear is looked for in every change to the editor, held back or not.
+   * Ack mode: the editor Enter last sent from, or whose final ack last matched, and its text then.
+   * Acks close the editing window soon after typing stops, but a page may clear its composer much
+   * later (after Enter, or a send button), with no input to answer: that clear is looked for in
+   * every change to the editor, held back or not. Equal text is not equal nodes: this replay's
+   * editor may hold the text in nodes of its own, which the page's clear would not remove.
    */
   let lastEnter: { element: HTMLElement; text: string } | null = null;
 
@@ -599,6 +601,8 @@ export function createEchoFilter(options: EchoFilterOptions = {}): EchoFilter {
       clearState(nodeId);
       state.suppressed = undefined;
       passedTexts.clear();
+      if (isContenteditableEchoField(state.element))
+        lastEnter = { element: state.element, text: state.element.textContent ?? "" };
       return;
     }
     if (isValueEchoField(state.element)) {
