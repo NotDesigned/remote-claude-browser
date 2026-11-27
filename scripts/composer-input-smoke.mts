@@ -168,6 +168,21 @@ interface Mirror {
   acks: AckHarness;
 }
 
+/** The text checks; SMOKE_STRICT_TEXT=0 measures them without failing, for experiments. */
+const strictText = process.env.SMOKE_STRICT_TEXT !== "0";
+const textMisses: string[] = [];
+const textCheck = {
+  deepEqual(actual: unknown, expected: unknown, message: string) {
+    if (strictText) assert.deepEqual(actual, expected, message);
+    else if (JSON.stringify(actual) !== JSON.stringify(expected))
+      textMisses.push(`${message}: ${JSON.stringify(actual)}`);
+  },
+  equal(actual: unknown, expected: unknown, message: string) {
+    if (strictText) assert.equal(actual, expected, message);
+    else if (actual !== expected) textMisses.push(`${message}: ${JSON.stringify(actual)}`);
+  },
+};
+
 /** What each run measured, for the summary at the end. */
 const measured: Array<Record<string, unknown>> = [];
 
@@ -386,10 +401,10 @@ async function rounds({ label, page, remote, mirrored, type, compose }: Mirror):
     () => (window as any).composerView.state.doc.textContent as string,
   );
   console.log(JSON.stringify({ label, sent, composer, pageText, failures }));
-  assert.deepEqual(sent, expected, `${label}: messages did not reach the page as typed`);
+  textCheck.deepEqual(sent, expected, `${label}: messages did not reach the page as typed`);
   assert.deepEqual(failures, [], `${label}: the field sync failed`);
-  assert.equal(pageText, "", `${label}: the page's composer still holds text`);
-  assert.equal(composer, "", `${label}: the composer here still shows text`);
+  textCheck.equal(pageText, "", `${label}: the page's composer still holds text`);
+  textCheck.equal(composer, "", `${label}: the composer here still shows text`);
   console.log(`${label}: a real ProseMirror composer sends each message once and stays in sync.`);
 }
 
@@ -608,7 +623,7 @@ async function sends(mirror: Mirror) {
       await page.waitForTimeout(2_000);
     }
   }
-  assert.deepEqual(problems, [], `${label}: a sent message stayed in a composer`);
+  textCheck.deepEqual(problems, [], `${label}: a sent message stayed in a composer`);
   assert.deepEqual(failures, [], `${label}: the field sync failed`);
   console.log(`${label}: every way of sending leaves both composers empty.`);
 }
@@ -645,9 +660,13 @@ async function slowPage({ label, page, remote, mirrored, type, compose }: Mirror
   );
   const here = (await mirrored.locator("#composer").textContent()) ?? "";
   console.log(JSON.stringify({ label, case: "slow-page", sent, pageText, here }));
-  assert.deepEqual(sent, expected, `${label}: a slow page did not get each message exactly once`);
-  assert.equal(pageText, "", `${label}: the slow page's composer still holds text`);
-  assert.equal(here, "", `${label}: the composer here still shows text after a slow page`);
+  textCheck.deepEqual(
+    sent,
+    expected,
+    `${label}: a slow page did not get each message exactly once`,
+  );
+  textCheck.equal(pageText, "", `${label}: the slow page's composer still holds text`);
+  textCheck.equal(here, "", `${label}: the composer here still shows text after a slow page`);
   console.log(`${label}: a page that applies text late gets it exactly once.`);
 }
 
@@ -667,7 +686,7 @@ async function textarea({ label, page, remote, mirrored, type }: Mirror): Promis
   );
   const here = await mirrored.locator("#plain").inputValue();
   assert.equal(value, typed.join(""), `${label}: the textarea did not get what was typed`);
-  assert.equal(here, value, `${label}: the textarea here differs from the page's`);
+  textCheck.equal(here, value, `${label}: the textarea here differs from the page's`);
   console.log(`${label}: a plain textarea follows bursts of typing.`);
 }
 
@@ -711,7 +730,11 @@ async function checkAcks(label: string, name: string, page: Page, acks: AckHarne
   };
   measured.push(result);
   console.log(`acks ${JSON.stringify(result)}`);
-  assert.deepEqual(coverageProblems(report), [], `${label} ${name}: inputs not acknowledged once`);
+  assert.deepEqual(
+    coverageProblems(report).slice(0, 5),
+    [],
+    `${label} ${name}: inputs not acknowledged once`,
+  );
   assert.equal(report.stats.dispatchOnlyAcks, 0, `${label} ${name}: acks without a fence`);
 
   assert.deepEqual(
@@ -751,6 +774,12 @@ try {
   for (const [label, soft, body, name] of runs)
     if (only.every((part) => part === label || part === name)) await run(label, soft, body);
   console.log(`composer-input acks: ${JSON.stringify(measured)}`);
+  if (!strictText)
+    console.log(
+      `composer-input text over ${describeLink(link)} (measured, not enforced): ${
+        textMisses.length === 0 ? "all exact" : JSON.stringify(textMisses)
+      }`,
+    );
 } finally {
   clearTimeout(watchdog);
   await browser.close();

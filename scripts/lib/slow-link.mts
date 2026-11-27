@@ -30,27 +30,35 @@ export function slowLinkConfig(env: Record<string, string | undefined> = process
   } satisfies SlowLinkConfig;
 }
 
-/** One direction: frames come out in order, each no sooner than its own delay. */
+/**
+ * One direction: frames come out in order, each no sooner than its own delay. One queue and one
+ * timer, so that frames due at the same moment cannot change places (separate timers can), on the
+ * monotonic clock (the wall clock can step).
+ */
 function lane(config: SlowLinkConfig, random: () => number) {
   let last = 0;
-  const pending = new Set<ReturnType<typeof setTimeout>>();
+  const queue: Array<{ at: number; deliver: () => void }> = [];
+  let timer: ReturnType<typeof setTimeout> | null = null;
   const passThrough = config.rttMs === 0 && config.jitterMs === 0 && config.stallRate === 0;
+  const flush = () => {
+    timer = null;
+    while (queue.length > 0 && queue[0]!.at <= performance.now()) queue.shift()!.deliver();
+    if (queue.length > 0) timer = setTimeout(flush, Math.max(0, queue[0]!.at - performance.now()));
+  };
   return {
     pass(deliver: () => void) {
       if (passThrough) return deliver();
       const oneWay = config.rttMs / 2 + (random() * 2 - 1) * config.jitterMs;
       const stall = random() < config.stallRate ? 200 + random() * 400 : 0;
-      const now = Date.now();
+      const now = performance.now();
       last = Math.max(last, now + Math.max(0, oneWay) + stall);
-      const timer = setTimeout(() => {
-        pending.delete(timer);
-        deliver();
-      }, last - now);
-      pending.add(timer);
+      queue.push({ at: last, deliver });
+      if (timer === null) timer = setTimeout(flush, Math.max(0, queue[0]!.at - now));
     },
     stop() {
-      for (const timer of pending) clearTimeout(timer);
-      pending.clear();
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      queue.length = 0;
     },
   };
 }
