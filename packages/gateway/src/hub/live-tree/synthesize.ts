@@ -137,6 +137,10 @@ function writeNode(node: TNode, context: WriteContext): Out {
       delete attributes[SHEET_TEXT_ATTRIBUTE];
       attributes[SHEET_REF_ATTRIBUTE] = cachedHash(node, css, context.sheets);
     }
+    // A select without options has no value, whatever input last said (the page's snapshot
+    // reads select.value, which is then "").
+    if (node.tagName === "select" && attributes.value !== undefined && !hasOption(node))
+      delete attributes.value;
     out.attributes = attributes;
   }
   if (
@@ -164,6 +168,14 @@ function writeNode(node: TNode, context: WriteContext): Out {
     out.childNodes = children;
   }
   return out;
+}
+
+function hasOption(node: TNode): boolean {
+  for (const child of node.childNodes ?? []) {
+    if (child.type !== NodeKind.Element) continue;
+    if (child.tagName === "option" || hasOption(child)) return true;
+  }
+  return false;
 }
 
 function cachedHash(node: TNode, text: string, sheets: Map<string, string>): string {

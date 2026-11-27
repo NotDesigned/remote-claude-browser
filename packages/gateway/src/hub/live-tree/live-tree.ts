@@ -75,8 +75,10 @@ export class TreeBroken extends Error {
     readonly kind: string,
     /** This document should use the legacy store from now on, rather than a new tree. */
     readonly fallback = false,
+    /** Node ids only, never page content: safe to log. */
+    readonly detail = "",
   ) {
-    super(`live tree broken: ${kind}`);
+    super(`live tree broken: ${kind}${detail ? ` (${detail})` : ""}`);
     this.name = "TreeBroken";
   }
 }
@@ -101,6 +103,8 @@ export interface Anomalies {
   styleUncertain: number;
   /** rrweb's legacy -1 sibling ids, which the tree does not place. */
   legacy: number;
+  /** A remove from a parent the node had already left (a move across a shadow boundary). */
+  staleRemove: number;
 }
 
 export interface TreeStats {
@@ -184,6 +188,7 @@ export class LiveTree {
     move: 0,
     styleUncertain: 0,
     legacy: 0,
+    staleRemove: 0,
   };
 
   readonly nodes = new Map<number, TNode>();
@@ -330,9 +335,14 @@ export class LiveTree {
         this.anomalies.unknownTarget += 1;
         continue;
       }
-      // ~12240: parent.removeChild throws (and is only warned about) for a node elsewhere; the
-      // Replayer has already unmapped it, which the tree cannot represent.
-      if (target[PARENT] !== parent) throw new TreeBroken("remove-parent");
+      // ~12240: parent.removeChild throws (and is only warned about) for a node that is not
+      // there. That happens when a node moves between a shadow root and the light DOM: each has
+      // its own observer, so the add under the new parent can come before the remove from the
+      // old one. The page has the node where it was added, and so does the tree.
+      if (target[PARENT] !== parent) {
+        this.anomalies.staleRemove += 1;
+        continue;
+      }
       this.contentChanged(parent);
       this.detach(target);
       this.drop(target, removedNow);
@@ -455,14 +465,25 @@ export class LiveTree {
       queue = [];
       const before = placed;
       for (const tree of queueToResolveTrees(current)) {
+        // The Replayer drops a tree whose parent is not there yet, even when a later add of the
+        // same batch brings it (a node moved out and back in with its children): the page has
+        // those children, so here they wait for the next round instead.
         if (!this.nodes.has(tree.value.parentId)) {
-          this.orphan(countTree(tree), [tree.value], removedNow);
+          iterateResolveTree(tree, (mutation) => queue.push(mutation));
           continue;
         }
         iterateResolveTree(tree, appendNode);
       }
       if (placed === before && queue.length > 0) {
-        this.orphan(queue.length, queue, removedNow);
+        // Nothing placed this round: what is left never will be.
+        const underRemoved = queue.filter(
+          (mutation) =>
+            removedNow.has(mutation.parentId) ||
+            this.graveyard.has(mutation.parentId) ||
+            queue.some((other) => other.node.id === mutation.parentId),
+        );
+        const orphans = queue.length - underRemoved.length;
+        if (orphans > 0) this.orphan(orphans);
         break;
       }
     }
@@ -600,15 +621,8 @@ export class LiveTree {
     this.estBytes += node[SIZE];
   }
 
-  private orphan(count: number, mutations?: AddedNode[], removedNow?: Set<number>): void {
-    // Adds under a node that was removed are what the page meant: nothing to show.
-    if (mutations !== undefined) {
-      const underRemoved = mutations.every(
-        (mutation) =>
-          removedNow?.has(mutation.parentId) === true || this.graveyard.has(mutation.parentId),
-      );
-      if (underRemoved) return;
-    }
+  /** Adds the page meant but no parent or next sibling ever arrived for. */
+  private orphan(count: number): void {
     this.anomalies.orphanAdd += count;
     this.orphans += count;
     if (this.orphans > this.maxOrphans) throw new TreeBroken("orphans");
@@ -720,22 +734,18 @@ export class LiveTree {
     event: eventWithTime,
     data: { id: number; x: number; y: number },
   ): "ok" | "ignored" {
-    if (data.id === this.root.id) {
-      this.offset = { left: Number(data.x) || 0, top: Number(data.y) || 0 };
-      return "ok";
-    }
     const node = this.nodes.get(data.id);
     if (node === undefined) return "ignored";
     if (node.type === NodeKind.Document) {
-      this.frameScrolls.set(node.id, structuredClone(event));
+      if (node === this.root) this.offset = { left: Number(data.x) || 0, top: Number(data.y) || 0 };
+      else this.frameScrolls.set(node.id, structuredClone(event));
+      // A document scrolls by its scrolling element, which a snapshot records as scrolled too.
+      const scrolling = scrollingElement(node);
+      if (scrolling !== undefined) setScroll(scrolling, data);
       return "ok";
     }
     if (node.type !== NodeKind.Element) return "ignored";
-    const attributes = (node.attributes ??= {});
-    if (data.x) attributes.rr_scrollLeft = Number(data.x);
-    else delete attributes.rr_scrollLeft;
-    if (data.y) attributes.rr_scrollTop = Number(data.y);
-    else delete attributes.rr_scrollTop;
+    setScroll(node, data);
     return "ok";
   }
 
@@ -753,12 +763,8 @@ export class LiveTree {
     } else {
       if (text) attributes.value = text;
       else delete attributes.value;
-      if (node.tagName === "textarea") {
-        for (const child of [...(node.childNodes ?? [])]) {
-          this.detach(child);
-          this.drop(child);
-        }
-      }
+      // A textarea's children stay: they are its default text, which the page keeps too (and a
+      // rebuild with a value ignores them).
       if (node.tagName === "select") this.selectOption(node, text);
     }
     node[SIZE] = nodeSize(node);
@@ -911,7 +917,9 @@ export class LiveTree {
    * Differences between this tree and the page's own snapshot of the same document (ids are
    * stable across same-document snapshots). Volatile media time, adopted sheets (whose ids the
    * recorder mints again) and style text whose form differs (a sheet's text against its
-   * children's) are not compared.
+   * children's) are not compared. An inline style that differs as text is reported as kind
+   * "style" (see isStyleOnly): the page writes it as the browser serializes it ("0px" for "0"),
+   * which needs a CSS engine to compare; the acceptance run compares it in a browser.
    */
   compare(meta: eventWithTime, full: eventWithTime, attach: readonly eventWithTime[]): Mismatch[] {
     const page = LiveTree.seed(meta, full);
@@ -956,9 +964,10 @@ export class LiveTree {
       if (isIframe(mine)) {
         const a = this.frames.get(mine.id);
         const b = page.frames.get(theirs.id);
-        if ((a === undefined) !== (b === undefined)) add(mine.id, "frame");
+        if ((a === undefined) !== (b === undefined))
+          add(mine.id, a === undefined ? "frame-missing" : "frame-not-in-page");
         else if (a !== undefined && b !== undefined) {
-          if (a.id !== b.id) add(mine.id, "frame");
+          if (a.id !== b.id) add(mine.id, "frame-id");
           else visit(a, b);
         }
       }
@@ -970,6 +979,18 @@ export class LiveTree {
 }
 
 const VOLATILE_ATTRIBUTES = new Set(["rr_mediaCurrentTime"]);
+const FORM_ATTRIBUTES = new Set(["value", "checked", "selected"]);
+const FORM_TAGS = new Set(["input", "textarea", "select", "option"]);
+
+/**
+ * Mismatches this module can judge: not inline-style text (which needs a CSS engine) and not form
+ * state the page derived without an input event (which no replay of the stream shows either).
+ */
+export function significantMismatches(mismatches: readonly Mismatch[]): Mismatch[] {
+  return mismatches.filter(
+    (mismatch) => mismatch.kind !== "style" && !mismatch.kind.startsWith("form:"),
+  );
+}
 
 function compareAttributes(
   mine: TNode,
@@ -983,6 +1004,9 @@ function compareAttributes(
   for (const name of names) {
     if (VOLATILE_ATTRIBUTES.has(name)) continue;
     if (style && name === "_cssText") continue;
+    // A select's value follows its options (compared on their own): one that lost its options
+    // has none, whatever input said before.
+    if (mine.tagName === "select" && name === "value") continue;
     const x = a[name];
     const y = b[name];
     if (name === "style" && typeof x === "string" && typeof y === "string") {
@@ -992,8 +1016,32 @@ function compareAttributes(
         add(mine.id, "style");
       continue;
     }
-    if (String(x) !== String(y)) add(mine.id, `attr:${name}`);
+    if (String(x) === String(y)) continue;
+    // Form state the page derives (an option selected because another went away) without an
+    // input event: the stream never says, so a replay shows the same as the tree.
+    if (FORM_ATTRIBUTES.has(name) && FORM_TAGS.has(mine.tagName ?? ""))
+      add(mine.id, `form:${name}`);
+    else add(mine.id, `attr:${name}`);
   }
+}
+
+function setScroll(node: TNode, data: { x: number; y: number }): void {
+  const attributes = (node.attributes ??= {});
+  if (data.x) attributes.rr_scrollLeft = Number(data.x);
+  else delete attributes.rr_scrollLeft;
+  if (data.y) attributes.rr_scrollTop = Number(data.y);
+  else delete attributes.rr_scrollTop;
+}
+
+/** document.scrollingElement: <html>, or <body> in quirks mode. */
+function scrollingElement(doc: TNode): TNode | undefined {
+  const html = doc.childNodes?.find(
+    (child) => child.type === NodeKind.Element && child.tagName === "html",
+  );
+  if (html === undefined || doc.compatMode !== "BackCompat") return html;
+  return html.childNodes?.find(
+    (child) => child.type === NodeKind.Element && child.tagName === "body",
+  );
 }
 
 function childList(parent: TNode, shadow: boolean): TNode[] {
@@ -1079,10 +1127,4 @@ function iterateResolveTree(tree: ResolveTree, callback: (mutation: AddedNode) =
   callback(tree.value);
   for (let index = tree.children.length - 1; index >= 0; index--)
     iterateResolveTree(tree.children[index]!, callback);
-}
-
-function countTree(tree: ResolveTree): number {
-  let count = 1;
-  for (const child of tree.children) count += countTree(child);
-  return count;
 }

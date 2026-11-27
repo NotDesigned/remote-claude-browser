@@ -352,6 +352,33 @@ describe("LiveTree mutations", () => {
     expect(tree.anomalies.unknownTarget).toBe(3);
   });
 
+  it("keeps a node where it was added when its old parent's remove comes after", () => {
+    // A move across a shadow boundary: each side's observer reports its half.
+    const tree = seeded();
+    tree.apply(
+      mutation({ adds: [add(7, { ...el(20, "div"), isShadow: true }), add(20, text(21, "t"))] }),
+    );
+    tree.apply(mutation({ adds: [add(4, el(20, "div")), add(20, text(21, "t"))] }));
+    tree.apply(mutation({ removes: [{ parentId: 7, id: 20, isShadow: true }] }));
+    expect(tree.anomalies.staleRemove).toBe(1);
+    expect(childIds(find(shown(tree), 4))).toEqual([5, 7, 20]);
+    expect(childIds(find(shown(tree), 20))).toEqual([21]);
+  });
+
+  it("places children whose parent leaves and comes back in the same batch", () => {
+    const tree = seeded();
+    tree.apply(mutation({ adds: [add(7, el(20, "section")), add(20, text(21, "kept"))] }));
+    // Recorded as: remove the section, add its text under it, add it elsewhere.
+    tree.apply(
+      mutation({
+        removes: [{ parentId: 7, id: 20 }],
+        adds: [add(20, text(21, "kept")), add(5, el(20, "section"))],
+      }),
+    );
+    expect(childIds(find(shown(tree), 20))).toEqual([21]);
+    expect(tree.anomalies.orphanAdd).toBe(0);
+  });
+
   it("breaks where the Replayer would throw or the tree cannot follow", () => {
     const broken = (data: N, kind: string) => {
       const tree = seeded();
@@ -364,7 +391,6 @@ describe("LiveTree mutations", () => {
       }
       throw new Error(`no TreeBroken(${kind})`);
     };
-    broken({ removes: [{ parentId: 3, id: 5 }] }, "remove-parent");
     broken({ adds: [add(6, el(20, "span"))] }, "non-container");
     broken({ adds: [add(3, el(20, "span"), null, 5)] }, "insert");
     broken({ adds: [add(4, el(20, "span"), 6)] }, "insert");
