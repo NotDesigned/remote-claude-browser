@@ -144,6 +144,14 @@
 | `MIRROR_CANVAS_SNAPSHOTS` | `0`（`compose.yml`）             | 页面模式是否采样 canvas。`0` 不采样；不设置时按 `MIRROR_CANVAS_SITES` 采样 |
 | `MIRROR_INPUT_ACKS`      | `shadow`                          | 页面模式的输入确认。`off` 不发确认；`shadow` 发确认，工作台只统计（见[排查 · 输入未同步](troubleshooting.md#输入未同步)）；`on` 工作台按确认判断远程输入框是否跟上，不再按固定的约 1 秒。其他值时网关拒绝启动 |
 | `MIRROR_SUBMIT_GUARD`    | `shadow`                          | 按回车前核对远程输入框的文字和工作台显示的是否一致。`off` 不核对；`shadow` 只统计结果（日志 `submit guard:`）；`on` 不一致时不发送回车（尚未默认开启）。其他值时网关拒绝启动 |
+| `MIRROR_LIVE_TREE`       | `1`                               | 网关是否为每个标签页保存当前的页面（实时树），从它补齐新加入、重连、切回标签页和出错的查看端。`0` 改回快照加有上限的变化记录，变化记录装满后要网页重拍整页快照。其他值时网关拒绝启动 |
+| `MIRROR_LIVE_TREE_RING_EVENTS` | `2000`                      | 每个标签页留多少个最近的增量，用来只补发查看端缺的部分；更早的查看端改发合成的快照 |
+| `MIRROR_LIVE_TREE_RING_BYTES` | `2097152`（2 MiB）           | 同上，按字节计的上限 |
+| `MIRROR_LIVE_TREE_TAB_MAX_NODES` | `400000`                  | 一个文档的实时树超过这么多节点时，这个文档改用快照加变化记录 |
+| `MIRROR_LIVE_TREE_TAB_MAX_MB` | `48`                         | 同上，按估算的内存（MB）计 |
+| `MIRROR_LIVE_TREE_TOTAL_MAX_MB` | 内存的 10%，最多 `256`      | 所有标签页的实时树加在一起的上限（MB）。超出时最久没看的后台标签页先放掉实时树，下次有人要看时再向网页要快照 |
+| `MIRROR_LIVE_TREE_MAX_SIDECAR` | `20000`                     | 每个文档按顺序保存的样式表增删改的条数上限，超出时向网页要一次快照把它们合并进样式表 |
+| `MIRROR_LIVE_TREE_VERIFY` | `0`                              | `1` 时，标签页空闲下来、自上次核对后又有 500 次以上的变化，最多每 30 秒向网页要一次快照，和实时树逐个节点比较；一致时不发给查看端，不一致时换用网页的快照。诊断用 |
 | `MIRROR_FFMPEG`          | `ffmpeg`                          | 画面模式截取显示用的 ffmpeg 程序 |
 | `MIRROR_DIAGNOSTIC_STDERR` | 不设置                          | `1` 把 Chromium 的标准错误输出写进服务端日志，排查浏览器启动失败时用；日志会变多 |
 | `MIRROR_EXIT_LOOKUP_URL` | `https://ipwho.is/`               | 检查出口时，经节点查询出口地址和时区的服务。测试用来指向本地的替身，一般不用改 |

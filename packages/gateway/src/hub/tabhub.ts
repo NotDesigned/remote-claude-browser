@@ -734,8 +734,15 @@ export class TabHub implements BudgetMember {
       clearTimeout(this.pendingVerify.timer);
       this.pendingVerify = null;
     }
-    // Every same-document snapshot also checks the tree, for the metrics.
-    if (this.usesTree && sameDocument && this.treeState === "live" && this.tree !== null)
+    // Every same-document snapshot also checks the tree, for the metrics; not one taken at another
+    // viewport size, whose Meta and layout differ on purpose.
+    if (
+      this.usesTree &&
+      sameDocument &&
+      cause !== "viewport" &&
+      this.treeState === "live" &&
+      this.tree !== null
+    )
       this.countVerify(this.tree.compare(meta, full, []));
 
     this.meta = meta;
