@@ -163,6 +163,13 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
       onEditableInput: options.onEditableInput,
     });
     const mouseFilter = createTouchMouseFilter();
+    // What is still being composed goes out before the press does (a phone keyboard keeps a word
+    // composing until a space): the press may be the send button.
+    const beforePointerDown = () => {
+      if (options.proxy?.active() === true) options.proxy.input.flush();
+      const focused = deepActiveElement(rootDoc);
+      if (focused && isEchoField(focused)) change.flush(focused, true);
+    };
     cleanups.push(
       attachPointerCapture({
         doc,
@@ -180,10 +187,7 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
               !event.metaKey &&
               !event.shiftKey &&
               (options.linkToOpen?.(event.target) ?? null) !== null,
-        beforePointerDown: () => {
-          const focused = deepActiveElement(rootDoc);
-          if (focused && isEchoField(focused)) change.flush(focused, true);
-        },
+        beforePointerDown,
       }),
       attachTouchCapture({
         doc,
@@ -194,10 +198,7 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
         mouseFilter,
         ...(options.linkToOpen === undefined ? {} : { linkToOpen: options.linkToOpen }),
         ...(options.openLink === undefined ? {} : { openLink: options.openLink }),
-        beforePointerDown: () => {
-          const focused = deepActiveElement(rootDoc);
-          if (focused && isEchoField(focused)) change.flush(focused, true);
-        },
+        beforePointerDown,
       }),
       change.dispose,
       follower.watch(doc),
