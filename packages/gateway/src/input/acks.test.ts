@@ -127,7 +127,6 @@ function page(
     hubFor: () => hub,
     sendTo: (viewerId, down) => acks.push([viewerId, down]),
     enqueue: relay.enqueue,
-    isIdle: relay.isIdle,
     guard: options.guard ?? "off",
     onGuard: (_tab, kind, refused) => guards.push(`${kind}${refused ? ":refused" : ""}`),
   });
@@ -169,13 +168,15 @@ afterEach(() => {
 });
 
 describe("input acks", () => {
-  it("fences once the relay is idle, then once more when the burst goes quiet", async () => {
+  it("fences a burst once, when it goes quiet", async () => {
     const { acks, state, text } = page();
     void text("a");
     void text("b");
     void text("c");
     await settle(10);
-    // One fence for the three inputs queued together: the relay was idle only after the third.
+    expect(state.fences).toBe(0);
+    expect(acks).toEqual([]);
+    await settle();
     expect(state.fences).toBe(1);
     expect(acks.map(([, ack]) => ack)).toEqual([
       {
@@ -186,12 +187,9 @@ describe("input acks", () => {
         epoch: 5,
         seq: 4,
         edit: { node: 9, len: 3, hash: editHash("abc"), sel: [3, 3] },
+        final: true,
       },
     ]);
-    await settle();
-    expect(state.fences).toBe(2);
-    expect(acks.at(-1)![1]).toMatchObject({ iseq: 3, mode: "page", seq: 4, final: true });
-    expect(acks).toHaveLength(2);
   });
 
   it("sends no fence into an open IME composition, and acknowledges it once committed", async () => {
@@ -221,7 +219,7 @@ describe("input acks", () => {
     expect(acks.at(-1)![1]).toMatchObject({ iseq: 3, mode: "page", final: true });
   });
 
-  it("fences after 8 inputs, and 50 ms after the first, while the relay stays busy", async () => {
+  it("fences input that keeps coming after 64 inputs, and 2 s after the first", async () => {
     const fenced: number[] = [];
     let now = 0;
     const scheduler = createAckScheduler({
@@ -229,7 +227,6 @@ describe("input acks", () => {
       hubFor: () => undefined,
       sendTo: () => undefined,
       enqueue: () => fenced.push(now),
-      isIdle: () => false,
       now: () => now,
       setTimer: () => 0,
       clearTimer: () => undefined,
@@ -240,18 +237,18 @@ describe("input acks", () => {
       insert: "x",
       iseq,
     });
-    for (let iseq = 1; iseq <= 7; iseq++) scheduler.noteDispatched("driver", key(iseq), true);
+    for (let iseq = 1; iseq <= 63; iseq++) scheduler.noteDispatched("driver", key(iseq), true);
     expect(fenced).toEqual([]);
-    scheduler.noteDispatched("driver", key(8), true);
+    scheduler.noteDispatched("driver", key(64), true);
     expect(fenced).toEqual([0]);
     now = 10;
-    scheduler.noteDispatched("driver", key(9), true);
-    now = 59;
-    scheduler.noteDispatched("driver", key(10), true);
+    scheduler.noteDispatched("driver", key(65), true);
+    now = 2_009;
+    scheduler.noteDispatched("driver", key(66), true);
     expect(fenced).toEqual([0]);
-    now = 60;
-    scheduler.noteDispatched("driver", key(11), true);
-    expect(fenced).toEqual([0, 60]);
+    now = 2_010;
+    scheduler.noteDispatched("driver", key(67), true);
+    expect(fenced).toEqual([0, 2_010]);
   });
 
   it("re-arms the quiet fence with every input, so a burst gets one final ack", async () => {
@@ -265,8 +262,8 @@ describe("input acks", () => {
     const finals = acks.filter(([, ack]) => ack.final);
     expect(finals).toHaveLength(1);
     expect(finals[0]![1]).toMatchObject({ iseq: 5, edit: { hash: editHash("01234") } });
-    // Each keystroke typed alone was its own burst: an idle fence each, plus the quiet one.
-    expect(acks.map(([, ack]) => ack.iseq)).toEqual([1, 2, 3, 4, 5, 5]);
+    // The keys came closer together than the quiet fence waits: one burst, one fence.
+    expect(acks.map(([, ack]) => ack.iseq)).toEqual([5]);
   });
 
   it("covers every input exactly once, in order, whatever the timing", async () => {
@@ -314,7 +311,7 @@ describe("input acks", () => {
     void text("b");
     void text("c");
     await settle();
-    expect(acks.map(([, ack]) => ack.failed)).toEqual([[2], undefined]);
+    expect(acks.map(([, ack]) => ack.failed)).toEqual([[2]]);
   });
 
   it("acknowledges dispatch only, and stops fencing, when the agent knows no fence", async () => {
@@ -323,7 +320,6 @@ describe("input acks", () => {
     await settle();
     // The quiet fence's ack is final all the same: the viewer stops waiting for one.
     expect(acks.map(([, ack]) => ack)).toEqual([
-      { t: "input-ack", tab: TAB, iseq: 1, mode: "dispatch" },
       { t: "input-ack", tab: TAB, iseq: 1, mode: "dispatch", final: true },
     ]);
     const fences = state.fences;
@@ -347,9 +343,14 @@ describe("input acks", () => {
       await settle(FENCE_TIMEOUT_MS - 1);
       expect(acks).toEqual([]);
       await settle(FENCE_TIMEOUT_MS + 100);
-      expect(acks[0]![1]).toEqual({ t: "input-ack", tab: TAB, iseq: 1, mode: "dispatch" });
-      await settle(FENCE_TIMEOUT_MS + 100);
-      expect(acks.at(-1)![1]).toMatchObject({ iseq: 1, mode: "dispatch", final: true });
+      // The quiet fence's ack, final all the same.
+      expect(acks[0]![1]).toEqual({
+        t: "input-ack",
+        tab: TAB,
+        iseq: 1,
+        mode: "dispatch",
+        final: true,
+      });
     }
   });
 
@@ -381,7 +382,6 @@ describe("input acks", () => {
         enqueued.push("fence");
         void task();
       },
-      isIdle: () => true,
       now: () => now,
       setTimer: (run, delay) => timers.push({ at: now + delay, run }) - 1,
       clearTimer: (timer) => (timers[timer as number] = null),
@@ -427,13 +427,13 @@ describe("input acks", () => {
     expect(enqueued).toEqual([]);
     // A key, then the pointer keeps moving: the burst still gets its final ack.
     scheduler.noteDispatched("driver", { t: "text", tab: TAB, insert: "a", iseq: 12 }, true);
-    expect(enqueued).toEqual(["fence"]);
+    expect(enqueued).toEqual([]);
     for (let iseq = 13; iseq <= 20; iseq++) {
       await advance(33);
       scheduler.noteDispatched("driver", ptr(iseq, "move"), true);
     }
     await advance(QUIET_FENCE_MS);
-    expect(enqueued).toEqual(["fence", "fence"]);
+    expect(enqueued).toEqual(["fence"]);
     expect(sent.at(-1)).toMatchObject({ mode: "dispatch", final: true });
     expect(sent.at(-1)!.iseq).toBeGreaterThanOrEqual(12);
   });
@@ -516,10 +516,7 @@ describe("input acks", () => {
       acks
         .filter(([viewer]) => viewer === "driver")
         .map(([viewer, ack]) => [viewer, ack.iseq, ack.final ?? false]),
-    ).toEqual([
-      ["driver", 3, false],
-      ["driver", 3, true],
-    ]);
+    ).toEqual([["driver", 3, true]]);
     // The spectator hears that its input was refused, and nothing is fenced for it.
     expect(acks.filter(([viewer]) => viewer === "spectator")).toEqual([
       [
@@ -536,12 +533,12 @@ describe("input acks", () => {
     await settle(5);
     void text("c", "second");
     await settle(FENCE_TIMEOUT_MS + 10);
-    expect(acks[0]).toEqual(["first", { t: "input-ack", tab: TAB, iseq: 2, mode: "dispatch" }]);
-    await settle(FENCE_TIMEOUT_MS * 3);
-    expect(acks.filter(([viewer]) => viewer === "first").map(([, ack]) => ack.final)).toEqual([
-      undefined,
-      true,
+    expect(acks[0]).toEqual([
+      "first",
+      { t: "input-ack", tab: TAB, iseq: 2, mode: "dispatch", final: true },
     ]);
+    await settle(FENCE_TIMEOUT_MS * 3);
+    expect(acks.filter(([viewer]) => viewer === "first")).toHaveLength(1);
     expect(acks.filter(([viewer]) => viewer === "second").at(-1)![1]).toMatchObject({
       iseq: 3,
       final: true,

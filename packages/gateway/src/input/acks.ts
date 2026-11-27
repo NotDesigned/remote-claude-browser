@@ -9,8 +9,10 @@
  * is the field's length, hash and selection. The viewer acts on it once its replay has applied
  * that far, so it decides on sequence numbers and the page's own hash instead of timers.
  *
- * A fence goes out when the relay has nothing more queued, after 8 inputs, or 50 ms after the
- * first input not yet fenced; one more, the quiet fence (`final`), 60 ms after the last input. An
+ * A burst of input gets one fence, the quiet fence (`final`), 60 ms after its last input. Only
+ * input that keeps coming gets more: one 2 s after the first input not yet fenced, or after 64 of
+ * them. Each fence costs a round trip through the page, which holds the tab's input queue and
+ * reads the focused field; one per keystroke would cost that for every key. An
  * agent from before fences (it answers "unknown command: fence") and a fence that does not come
  * back in time give `mode: "dispatch"` acks: the inputs were dispatched, nothing more is known.
  * The quiet fence's ack is final either way, so the viewer stops waiting for one.
@@ -43,10 +45,10 @@ import {
 import type { FenceResult } from "../hub/tabhub";
 import type { InputMsg } from "./relay";
 
-/** A fence after this long since the first input it would cover, even while input keeps coming. */
-export const FENCE_AFTER_MS = 50;
-/** A fence after this many inputs, even while more are queued. */
-export const FENCE_AFTER_INPUTS = 8;
+/** A fence after this long since the first input it would cover, while input keeps coming. */
+export const FENCE_AFTER_MS = 2_000;
+/** A fence after this many inputs, while input keeps coming. */
+export const FENCE_AFTER_INPUTS = 64;
 /** The quiet fence follows the last input of a burst by this much. */
 export const QUIET_FENCE_MS = 60;
 /** How long the page has to answer a fence, and the stream to carry the answer. */
@@ -95,9 +97,8 @@ export interface AckSchedulerDeps {
   hubFor(tab: string): AckHub | undefined;
   /** To one viewer only; nothing happens when it has left. */
   sendTo(viewerId: string, down: InputAckMsg): void;
-  /** The relay's tab queue (InputRelay.enqueue / isIdle). */
+  /** The relay's tab queue (InputRelay.enqueue). */
   enqueue(tab: string, task: () => Promise<void>): void;
-  isIdle(tab: string): boolean;
   /** The submit guard; "off" when not given. */
   guard?: SubmitGuardMode;
   now?: () => number;
@@ -415,9 +416,7 @@ export function createAckScheduler(deps: AckSchedulerDeps): AckScheduler {
       else if (msg.t === "text" || msg.t === "key") state.composing = false;
       if (
         !state.composing &&
-        (deps.isIdle(msg.tab) ||
-          state.unfenced >= FENCE_AFTER_INPUTS ||
-          now() - state.firstUnfencedAt >= FENCE_AFTER_MS)
+        (state.unfenced >= FENCE_AFTER_INPUTS || now() - state.firstUnfencedAt >= FENCE_AFTER_MS)
       )
         enqueueFence(msg.tab, state, false);
       armQuiet(msg.tab, state);

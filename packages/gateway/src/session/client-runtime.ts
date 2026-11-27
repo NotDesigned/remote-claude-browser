@@ -186,7 +186,6 @@ export async function createClientRuntime(
         deps.sendViewer(viewerId, sid, message);
       },
       enqueue: input.enqueue,
-      isIdle: input.isIdle,
       guard: ackConfig.guard,
       onGuard: (tab, kind, refused) =>
         console.log(`submit guard: ${sid} ${tab} ${kind}${refused ? " refused" : ""}`),
