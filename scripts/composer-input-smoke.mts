@@ -776,8 +776,9 @@ async function checkAcks(label: string, name: string, page: Page, acks: AckHarne
   // The replay's own field, at each burst's final ack, hashes as the page's in the textarea, where
   // the page changes nothing itself. In the composer the page clears what Enter sent and rewrites
   // input rules: the replay still holds those back when the ack settles, and the mismatch is what
-  // asks for the page's editor (logged only).
-  if (name === "textarea" && compared.length > 0)
+  // asks for the page's editor (logged only). A stall can split a burst: its first final ack then
+  // covers less than this field already shows, so it is checked on links without stalls.
+  if (name === "textarea" && link.stallRate === 0 && compared.length > 0)
     assert.ok(
       matched === compared.length,
       `${label} ${name}: the replay's field matched the page's hash ${result.replayHash}`,
