@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TabHub } from "../hub/tabhub";
 import {
   ackCaps,
+  proxyInputConfig,
   classifySubmit,
   createAckScheduler,
   FENCE_TIMEOUT_MS,
@@ -687,6 +688,23 @@ describe("ack configuration", () => {
     expect(ackCaps("off")).toEqual([]);
     expect(ackCaps("shadow")).toEqual(["ack1"]);
     expect(ackCaps("on")).toEqual(["ack1", "ackecho1"]);
+  });
+
+  it("advertises single-writer input only with acks, and refuses it without them", () => {
+    expect(ackCaps("shadow", "on")).toEqual(["ack1", "proxyin1"]);
+    expect(ackCaps("on", "on")).toEqual(["ack1", "ackecho1", "proxyin1"]);
+    expect(ackCaps("off", "on")).toEqual([]);
+    expect(ackCaps("on", "off")).toEqual(["ack1", "ackecho1"]);
+    expect(proxyInputConfig({})).toBe("off");
+    expect(proxyInputConfig({ MIRROR_PROXY_INPUT: "" })).toBe("off");
+    expect(proxyInputConfig({ MIRROR_PROXY_INPUT: "on" })).toBe("on");
+    expect(proxyInputConfig({ MIRROR_PROXY_INPUT: "on", MIRROR_INPUT_ACKS: "shadow" })).toBe("on");
+    expect(() => proxyInputConfig({ MIRROR_PROXY_INPUT: "on", MIRROR_INPUT_ACKS: "off" })).toThrow(
+      /needs input acks/,
+    );
+    expect(() => proxyInputConfig({ MIRROR_PROXY_INPUT: "yes" })).toThrow(
+      /MIRROR_PROXY_INPUT must be off or on/,
+    );
   });
 });
 

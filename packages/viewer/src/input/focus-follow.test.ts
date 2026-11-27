@@ -72,7 +72,7 @@ class FakeDocument {
 beforeEach(() => vi.stubGlobal("Element", FakeElement));
 afterEach(() => vi.unstubAllGlobals());
 
-function setup(followsByItself = true) {
+function setup(followsByItself = true, proxyMode = false) {
   const doc = new FakeDocument();
   const body = new FakeElement("BODY", doc);
   const field = new FakeElement("INPUT", doc);
@@ -93,6 +93,7 @@ function setup(followsByItself = true) {
     hiddenKeyboard: () => hidden,
     followsByItself,
     focusMirror,
+    proxyMode: () => proxyMode,
   });
   follower.watch(doc as unknown as Document);
   return { doc, body, field, follower, hidden, focusMirror };
@@ -113,6 +114,32 @@ const key = (target: FakeElement, k: string, extra: Record<string, unknown> = {}
     preventDefault: vi.fn(),
     ...extra,
   }) as unknown as KeyboardEvent;
+
+describe("focus following with single-writer input", () => {
+  it("routes the page's text field to the proxy, never to the replay field", () => {
+    const { field, follower, hidden } = setup(true, true);
+    follower.remoteFocus({ id: 5, editable: true });
+    expect(field.focus).not.toHaveBeenCalled();
+    expect(hidden.focus).toHaveBeenCalled();
+  });
+
+  it("routes a key typed outside any field to the proxy, on a phone too", () => {
+    const { body, field, follower, hidden } = setup(false, true);
+    follower.remoteFocus({ id: 5, editable: true });
+    expect(hidden.focus).not.toHaveBeenCalled();
+    expect(follower.routeTyping(key(body, "a"))).toBe(true);
+    expect(hidden.focus).toHaveBeenCalled();
+    expect(field.focus).not.toHaveBeenCalled();
+  });
+
+  it("leaves the proxy's blur to the proxy when the page has no field focused", () => {
+    const { follower, hidden, focusMirror } = setup(true, true);
+    follower.remoteFocus({ id: 5, editable: true });
+    follower.remoteFocus({ id: 1, editable: false });
+    expect(hidden.blur).not.toHaveBeenCalled();
+    expect(focusMirror).not.toHaveBeenCalled();
+  });
+});
 
 describe("focus following", () => {
   it("focuses the mirror field the remote page focused, on a desktop with the mirror focused", () => {

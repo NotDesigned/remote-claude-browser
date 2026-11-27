@@ -108,9 +108,17 @@ export function expectTail(len: number): number {
  * its cap is listed.
  *  - `ack1`: input is acknowledged (`input-ack`); the viewer stamps its input with `iseq`.
  *  - `ackecho1`: the viewer's typing echo is decided by those acknowledgements.
+ *  - `proxyin1`: single-writer input (MIRROR_PROXY_INPUT). The replay's text fields stay
+ *    read-only; the driving viewer types into a local proxy at the remote caret and sends only
+ *    keys and committed text, which reach the page as trusted input. Listed only with `ack1`,
+ *    whose acknowledgements take the viewer's prediction away again.
  */
 export const CAP_INPUT_ACKS = "ack1";
 export const CAP_ACK_ECHO = "ackecho1";
+export const CAP_PROXY_INPUT = "proxyin1";
+
+/** The most code units a `key` message's `text` may carry (one grapheme, as a key types it). */
+export const MAX_KEY_TEXT = 8;
 
 /** An `input-ack` lists at most this many refused inputs. */
 export const MAX_ACK_FAILED = 32;
@@ -345,6 +353,11 @@ export type Up =
       iseq?: number;
       /** What the field showed here when Enter went down (submit guard). */
       expect?: EditExpect;
+      /**
+       * keyDown only: the text this key typed here (at most MAX_KEY_TEXT code units), typed as
+       * is instead of through the US layout. Older gateways ignore it.
+       */
+      text?: string;
     }
   /** IME commit + paste ONLY (D3/D5) -> Input.insertText. */
   | { t: "text"; tab: TabId; insert: string; iseq?: number }

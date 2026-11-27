@@ -19,6 +19,8 @@ import {
   CAP_ACK_ECHO,
   CAP_INPUT_ACKS,
   isAckedInput,
+  CAP_PROXY_INPUT,
+  isInputUp,
   type EditState,
   type InputAckMsg,
   type TabId,
@@ -81,6 +83,8 @@ export interface InputSequencer {
   enabled(): boolean;
   /** Acks drive the typing echo (`ackecho1`). */
   echoEnabled(): boolean;
+  /** Single-writer input is offered (`proxyin1`, only with `ack1`). */
+  proxyEnabled(): boolean;
   /** The message as it goes on the wire: with `iseq` for input when acks are on. */
   stamp(msg: Up): Up;
   /** The newest iseq sent for the tab on this connection, 0 before any. */
@@ -250,6 +254,7 @@ export function createInputSequencer(options: InputSequencerOptions = {}): Input
     },
     enabled: () => caps.includes(CAP_INPUT_ACKS),
     echoEnabled: () => caps.includes(CAP_INPUT_ACKS) && caps.includes(CAP_ACK_ECHO),
+    proxyEnabled: () => caps.includes(CAP_INPUT_ACKS) && caps.includes(CAP_PROXY_INPUT),
     stamp(msg) {
       if (!caps.includes(CAP_INPUT_ACKS)) {
         if (msg.t === "key" && msg.expect !== undefined) {

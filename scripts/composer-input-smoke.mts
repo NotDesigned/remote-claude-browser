@@ -12,12 +12,27 @@
 // (scripts/lib/slow-link.mts: SMOKE_RTT_MS, SMOKE_JITTER_MS, SMOKE_STALL_RATE) can sit between
 // the gateway and the viewers. "slow-page" has the page apply IME text 400 ms late; "textarea"
 // checks that a burst's last value is in the stream before its ack.
+//
+// SMOKE_INPUT=proxy runs single-writer input (MIRROR_PROXY_INPUT=on: the viewer types into its
+// local proxy, the page gets trusted keys and text only); "legacy" (the default) does not.
+// SMOKE_DEVICE=desktop|iphone|pixel picks the viewer device (Playwright's descriptors, on
+// Chromium); COMPOSER_SMOKE_ONLY=gate runs the P1 gate (scripts/lib/proxy-gate.mts) on it and
+// writes its measurements to SMOKE_GATE_OUT when set.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { createRequire } from "node:module";
-import { chromium, type CDPSession, type FrameLocator, type Page } from "playwright";
+import { writeFile } from "node:fs/promises";
+import {
+  chromium,
+  devices,
+  type BrowserContextOptions,
+  type CDPSession,
+  type FrameLocator,
+  type Page,
+} from "playwright";
+import { proxyGate } from "./lib/proxy-gate.mts";
 import { createAgentBundle } from "../packages/agent/dist/index.js";
 import {
   ChunkReassembler,
@@ -53,9 +68,28 @@ const remoteHtml = `<!doctype html><meta charset="utf-8"><meta name="viewport" c
 .ProseMirror{min-height:40px;border:1px solid #888;padding:6px;background:#fff;white-space:pre-wrap}
 .ProseMirror p{margin:0}.is-empty::before{content:attr(data-placeholder);color:#999;float:left;height:0}
 #thread{padding:8px 8px 120px}</style>
-<div id="thread"></div><textarea id="plain" rows="3" style="width:90%;margin:8px"></textarea><div id="bar"></div>
+<input id="secret" type="password" autocomplete="off" style="margin:8px"><div id="thread"></div><textarea id="plain" rows="3" style="width:90%;margin:8px"></textarea><div id="bar"></div>
 <script>${composerScript.replaceAll("</script", "<\\/script")}</script>
 <script>
+// Every keyboard and input event the page gets, with isTrusted: the gate counts them.
+window.inputLog = [];
+window.untrustedEvents = 0;
+for (const type of ["keydown", "keypress", "beforeinput", "input", "compositionstart", "compositionupdate", "compositionend", "keyup"])
+  document.addEventListener(type, (event) => {
+    if (!event.isTrusted) window.untrustedEvents += 1;
+    const target = event.target;
+    const field = target && target.closest ? target.closest("#composer, #plain, #secret") : null;
+    window.inputLog.push({
+      type: event.type,
+      isTrusted: event.isTrusted,
+      inputType: event.inputType,
+      data: event.data,
+      key: event.key,
+      keyCode: event.keyCode,
+      target: field ? field.id : "other",
+    });
+    if (window.inputLog.length > 20000) window.inputLog.shift();
+  }, true);
 const thread = document.getElementById("thread");
 window.sentMessages = [];
 const send = (text) => {
@@ -145,7 +179,29 @@ const browser = await chromium.launch({
 const wss = new WebSocketServer({ server, path: "/ws" });
 const link = slowLinkConfig();
 const ackMode = smokeAckMode();
-console.log(`composer-input: ${describeLink(link)}, MIRROR_INPUT_ACKS=${ackMode}`);
+const proxyInput = (process.env.SMOKE_INPUT ?? "legacy") === "proxy";
+if (!["proxy", "legacy"].includes(process.env.SMOKE_INPUT ?? "legacy"))
+  throw new Error("SMOKE_INPUT must be proxy or legacy");
+if (proxyInput && ackMode === "off") throw new Error("SMOKE_INPUT=proxy needs input acks");
+const device = process.env.SMOKE_DEVICE ?? "";
+if (!["", "desktop", "iphone", "pixel"].includes(device))
+  throw new Error("SMOKE_DEVICE must be desktop, iphone or pixel");
+console.log(
+  `composer-input: ${describeLink(link)}, MIRROR_INPUT_ACKS=${ackMode}, input ${
+    proxyInput ? "proxy" : "legacy"
+  }${device ? `, ${device}` : ""}`,
+);
+/** The viewer's browser context for a run. */
+const contextFor = (softKeyboard: boolean): BrowserContextOptions => {
+  const named = device === "iphone" ? "iPhone 15" : device === "pixel" ? "Pixel 7" : null;
+  if (named !== null) {
+    const { defaultBrowserType: _browser, ...descriptor } = devices[named]!;
+    return descriptor;
+  }
+  return softKeyboard
+    ? { viewport: { width: 390, height: 760 }, isMobile: true, hasTouch: true }
+    : { viewport: { width: 1100, height: 800 } };
+};
 const sockets = new Set<{ raw: any; slow: SlowSocket }>();
 const chunks = new ChunkReassembler();
 const pending = new Map<number, (reply: CmdRes) => void>();
@@ -166,6 +222,7 @@ interface Mirror {
   compose(pinyin: string, text: string): Promise<void>;
   cdp: CDPSession;
   acks: AckHarness;
+  counters: { editableResyncs: number; bytesUp: number; bytesDown: number };
 }
 
 /** The text checks; SMOKE_STRICT_TEXT=0 measures them without failing, for experiments. */
@@ -265,8 +322,16 @@ async function run(
   });
   acks.attach(relay);
   let queue = Promise.resolve();
+  const counters = { editableResyncs: 0, bytesUp: 0, bytesDown: 0 };
   const onConnection = (raw: any) => {
-    const socket = slowSocket(raw, link);
+    const slow = slowSocket(raw, link);
+    const socket: SlowSocket = {
+      ...slow,
+      send(data) {
+        counters.bytesDown += Buffer.byteLength(data);
+        slow.send(data);
+      },
+    };
     const entry = { raw, slow: socket };
     sockets.add(entry);
     acks.route("viewer", (down) => socket.send(JSON.stringify(down)));
@@ -281,7 +346,9 @@ async function run(
         role: "driver",
         sessionId: "client-1",
         serverTs: Date.now(),
-        ...(acks.caps.length > 0 ? { caps: acks.caps } : {}),
+        ...(acks.caps.length > 0
+          ? { caps: proxyInput ? [...acks.caps, "proxyin1"] : acks.caps }
+          : {}),
       }),
     );
     socket.send(
@@ -292,6 +359,7 @@ async function run(
     );
     for (const down of hub.joinPayload()) socket.send(JSON.stringify(down));
     socket.onMessage((text) => {
+      counters.bytesUp += Buffer.byteLength(text);
       const message = JSON.parse(text) as Up;
       if (message.t === "ping")
         socket.send(
@@ -311,20 +379,17 @@ async function run(
         });
       // As the gateway does: an editor's catch-up is this viewer's alone, from the cached state.
       if (message.t === "resync-req") {
-        if (message.reason === LOCAL_RESYNC_REASON)
+        if (message.reason === LOCAL_RESYNC_REASON) {
+          counters.editableResyncs += 1;
           for (const down of hub.joinPayload()) socket.send(JSON.stringify(down));
-        else hub.requestSnapshot("resync");
+        } else hub.requestSnapshot("resync");
       }
       if (["ptr", "key", "text", "value", "scroll", "ime"].includes(message.t))
         void relay("viewer", message as InputMsg);
     });
   };
   wss.on("connection", onConnection);
-  const context = await browser.newContext(
-    softKeyboard
-      ? { viewport: { width: 390, height: 760 }, isMobile: true, hasTouch: true }
-      : { viewport: { width: 1100, height: 800 } },
-  );
+  const context = await browser.newContext(contextFor(softKeyboard));
   await context.addInitScript(() => {
     try {
       localStorage.setItem("mirror.view-mode", "dom");
@@ -339,6 +404,8 @@ async function run(
     );
     const mirrored = page.frameLocator("#mirror-host iframe");
     await mirrored.locator("#composer").waitFor();
+    if (proxyInput)
+      await page.waitForFunction(() => (window as any).__mirrorInputLab?.caps().proxy === true);
     await mirrored.locator("#composer").click();
     await page.waitForTimeout(400);
     const cdp = await context.newCDPSession(page);
@@ -361,8 +428,20 @@ async function run(
       }
       await cdp.send("Input.insertText", { text });
     };
-    await body({ label, softKeyboard, page, remote, mirrored, type, compose, cdp, acks });
-    await checkAcks(label, body.name, page, acks);
+    await body({
+      label,
+      softKeyboard,
+      page,
+      remote,
+      mirrored,
+      type,
+      compose,
+      cdp,
+      acks,
+      counters,
+    });
+    // The gate records the ack checks with its measurements instead of stopping on them.
+    if (body !== gate) await checkAcks(label, body.name, page, acks);
   } finally {
     wss.off("connection", onConnection);
     for (const socket of sockets) {
@@ -550,6 +629,19 @@ async function sends(mirror: Mirror) {
   /** Selects `word` in the composer here (focusing it again) and types `by` over it. */
   const replaceWord = async (word: string, by: string, delay: number) => {
     await page.waitForTimeout(delay);
+    // With single-writer input the composer here is read-only: the word is in the proxy.
+    if (proxyInput) {
+      const selected = await page.evaluate((word) => {
+        const field = document.querySelector("[data-proxy-input]") as HTMLTextAreaElement | null;
+        const at = field?.value.lastIndexOf(word) ?? -1;
+        if (field === null || at < 0) return false;
+        field.focus();
+        field.setSelectionRange(at, at + word.length);
+        return true;
+      }, word);
+      if (selected) await cdp.send("Input.insertText", { text: by });
+      return;
+    }
     const found = await mirrored.locator("#composer").evaluate((editor, word) => {
       const document = editor.ownerDocument;
       const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
@@ -573,11 +665,14 @@ async function sends(mirror: Mirror) {
     await remote.evaluate((delay) => ((window as any).clearDelay = delay), scenario.clearDelay);
     const before = await remote.evaluate(() => (window as any).sentMessages.length as number);
     // The send button took focus here; the composer is clicked into again, as a person would.
-    if (
-      !(await mirrored
-        .locator("#composer")
-        .evaluate((node) => node.ownerDocument.activeElement === node))
-    ) {
+    const typingHere = proxyInput
+      ? await page.evaluate(
+          () => document.activeElement?.getAttribute("data-proxy-input") === "true",
+        )
+      : await mirrored
+          .locator("#composer")
+          .evaluate((node) => node.ownerDocument.activeElement === node);
+    if (!typingHere) {
       await mirrored.locator("#composer").click();
       await page.waitForTimeout(300);
     }
@@ -783,13 +878,16 @@ async function checkAcks(label: string, name: string, page: Page, acks: AckHarne
       matched === compared.length,
       `${label} ${name}: the replay's field matched the page's hash ${result.replayHash}`,
     );
-  assert.ok(windowMs.length > 0, `${label} ${name}: no echo window closed`);
+  if (!proxyInput) assert.ok(windowMs.length > 0, `${label} ${name}: no echo window closed`);
   // At the end of each burst the page reports its own field's text: all of it for the textarea,
-  // at least 99 % for ProseMirror (which may still be rendering).
+  // at least 99 % for ProseMirror (which may still be rendering). Over a lossy link input
+  // arrives in bursts after each stall, and the text is read after the ack went out: the next
+  // burst can already be in it, so 85 % there.
   const hashed = acks.pageHash.match + acks.pageHash.mismatch;
+  const least = name === "textarea" ? 1 : link.lossRate > 0 ? 0.85 : 0.99;
   if (hashed > 0)
     assert.ok(
-      acks.pageHash.match / hashed >= (name === "textarea" ? 1 : 0.99),
+      acks.pageHash.match / hashed >= least,
       `${label} ${name}: the page's final hashes matched its text ${result.pageHash}`,
     );
   // A stalled link holds frames for up to 600 ms: the budget is checked on links without stalls
@@ -798,6 +896,7 @@ async function checkAcks(label: string, name: string, page: Page, acks: AckHarne
   // (logged as slowWindows and slowAcks).
   const budget = link.rttMs + link.jitterMs + 150;
   if (
+    !proxyInput &&
     link.stallRate === 0 &&
     (name === "rounds" || name === "textarea") &&
     result.windowCloseP95 !== null
@@ -808,9 +907,37 @@ async function checkAcks(label: string, name: string, page: Page, acks: AckHarne
     );
 }
 
+/** The P1 gate on SMOKE_DEVICE (desktop unless set): measured, judged by p1-gate.sh. */
+async function gate(mirror: Mirror): Promise<void> {
+  const result = await proxyGate({
+    ...mirror,
+    device: device || "desktop",
+    proxy: proxyInput,
+    failures,
+  });
+  let ackChecks = "ok";
+  try {
+    await checkAcks(mirror.label, "gate", mirror.page, mirror.acks);
+  } catch (error) {
+    ackChecks = error instanceof Error ? error.message : String(error);
+  }
+  const record = {
+    link: describeLink(link),
+    rttMs: link.rttMs,
+    lossRate: link.lossRate,
+    ackChecks,
+    ackSummary: measured.at(-1) ?? null,
+    ...result,
+  };
+  console.log(`GATE ${JSON.stringify(record)}`);
+  if (process.env.SMOKE_GATE_OUT)
+    await writeFile(process.env.SMOKE_GATE_OUT, JSON.stringify(record));
+}
+
 // COMPOSER_SMOKE_ONLY=Desktop,rounds (any of Desktop, Phone, rounds, sends, slow-page, textarea)
-// runs part of it.
+// runs part of it; COMPOSER_SMOKE_ONLY=gate runs only the gate.
 const only = (process.env.COMPOSER_SMOKE_ONLY ?? "").split(",").filter(Boolean);
+const phone = device === "iphone" || device === "pixel";
 const runs: Array<[string, boolean, (mirror: Mirror) => Promise<void>, string]> = [
   ["Desktop", false, rounds, "rounds"],
   ["Phone", true, rounds, "rounds"],
@@ -820,8 +947,10 @@ const runs: Array<[string, boolean, (mirror: Mirror) => Promise<void>, string]> 
   ["Desktop", false, textarea, "textarea"],
 ];
 try {
-  for (const [label, soft, body, name] of runs)
-    if (only.every((part) => part === label || part === name)) await run(label, soft, body);
+  if (only.includes("gate")) await run(phone ? "Phone" : "Desktop", phone, gate);
+  else
+    for (const [label, soft, body, name] of runs)
+      if (only.every((part) => part === label || part === name)) await run(label, soft, body);
   console.log(`composer-input acks: ${JSON.stringify(measured)}`);
   if (!strictText)
     console.log(

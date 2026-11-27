@@ -11,6 +11,7 @@
  * negotiated viewport coordinates directly.
  */
 import {
+  MAX_KEY_TEXT,
   Mod,
   NODE_IN_FRAME_ERROR,
   type Down,
@@ -694,13 +695,17 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
       return;
     }
 
+    // The text a viewer saw this key type (single-writer input): typed as is, so that a phone's
+    // or another layout's character is not remapped through the US table.
+    const typed = keyText(msg);
+    const text = typed ?? description.text;
     await deps.send(sessionId, "Input.dispatchKeyEvent", {
-      type: description.text ? "keyDown" : "rawKeyDown",
+      type: text ? "keyDown" : "rawKeyDown",
       modifiers: msg.mods,
-      key: description.key,
+      key: typed ?? description.key,
       code: description.code,
-      text: description.text,
-      unmodifiedText: description.text,
+      text,
+      unmodifiedText: text,
       windowsVirtualKeyCode: description.keyCode,
       location: description.location,
       isKeypad: description.location === 3,
@@ -854,4 +859,13 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, what = "re
 export function appendedText(base: string, value: string): string | null {
   if (value.length <= base.length || !value.startsWith(base)) return null;
   return value.slice(base.length);
+}
+
+/** A key message's own typed text, when it is one a key could type. */
+function keyText(msg: Extract<InputMsg, { t: "key" }>): string | undefined {
+  const text = msg.text;
+  if (typeof text !== "string" || text.length === 0 || text.length > MAX_KEY_TEXT) return undefined;
+  // Control characters are what Enter, Tab and Backspace type: those keep their own description.
+  if (/[\u0000-\u001f\u007f]/.test(text)) return undefined;
+  return text;
 }

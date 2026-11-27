@@ -91,6 +91,11 @@ jobs:
           SMOKE_RTT_MS=300 SMOKE_JITTER_MS=50 SMOKE_STALL_RATE=0.02 pnpm run test:composer-input
           SMOKE_RTT_MS=300 SMOKE_JITTER_MS=50 COMPOSER_SMOKE_ONLY=rounds pnpm run test:composer-input
           MIRROR_INPUT_ACKS=off pnpm run test:composer-input
+      - name: Test single-writer input over a lossy link (desktop and phone)
+        run: |
+          SMOKE_INPUT=proxy SMOKE_RTT_MS=150 SMOKE_LOSS_RATE=0.02 pnpm run test:composer-input
+          SMOKE_INPUT=proxy SMOKE_RTT_MS=150 SMOKE_LOSS_RATE=0.02 SMOKE_DEVICE=desktop COMPOSER_SMOKE_ONLY=gate SMOKE_GATE_OUT=gate-desktop.json pnpm run test:composer-input
+          SMOKE_INPUT=proxy SMOKE_RTT_MS=150 SMOKE_LOSS_RATE=0.02 SMOKE_DEVICE=pixel COMPOSER_SMOKE_ONLY=gate SMOKE_GATE_OUT=gate-pixel.json pnpm run test:composer-input
       - name: Test video and sound over WebRTC
         run: |
           sudo apt-get update -qq

@@ -15,7 +15,7 @@ import { isOwnOrigin } from "../auth/origin";
 import type { SessionAccess } from "../auth/session-access";
 import { sendVoice, type VoiceTarget } from "../browser/account-pool";
 import type { VoiceAgentMsg } from "../browser/agentlink";
-import { ackCaps, inputAckConfig } from "../input/acks";
+import { ackCaps, inputAckConfig, proxyInputConfig } from "../input/acks";
 import type { InputMsg } from "../input/relay";
 import type { PixelCapacity } from "../px-capacity";
 import type { ClientRuntime } from "../session/client-runtime";
@@ -70,7 +70,7 @@ export function createViewerHub(deps: ViewerHubDeps) {
   const hasViewer = (sid: string) =>
     [...viewers.values()].some((connection) => connection.sid === sid);
   const onlineSessions = () => new Set([...viewers.values()].map((connection) => connection.sid));
-  const caps = ackCaps(inputAckConfig().acks);
+  const caps = ackCaps(inputAckConfig().acks, proxyInputConfig());
   const roles = createRoleManager({
     // Read for each connection: deploy-viewer.sh publishes a viewer without restarting this.
     build: deps.build,

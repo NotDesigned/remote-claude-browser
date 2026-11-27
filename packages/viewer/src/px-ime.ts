@@ -1,4 +1,5 @@
 import type { TabId, Up } from "@mirror/protocol";
+import { createCompositionGuard } from "./input/composition-guard";
 import { isPasteShortcut, keyEventMessage, sendKeyPress } from "./input/encode";
 
 interface PxKeyboardOptions {
@@ -44,9 +45,7 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
   (options.canvas.parentElement ?? options.canvas.ownerDocument.body).appendChild(input);
 
   let disposed = false;
-  let composing = false;
-  let trustedComposition = false;
-  let trustedPreedit: string | null = null;
+  const guard = createCompositionGuard();
   let committedText: string | null = null;
   /** Keys pressed on the page and not yet released there, with the press that sent them. */
   const forwardedKeys = new Map<string, KeyboardEvent>();
@@ -80,11 +79,9 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
    * the keyboard's composition; its compositionend repeats the same text, which `commit` drops.
    */
   const flush = () => {
-    if (disposed || !composing) return;
+    if (disposed || !guard.composing) return;
     const text = input.value;
-    composing = false;
-    trustedComposition = false;
-    trustedPreedit = null;
+    guard.reset();
     if (text.length > 0) options.send({ t: "text", tab: options.tab, insert: text });
     committedText = text || null;
     if (input.ownerDocument.activeElement === input) input.blur();
@@ -98,7 +95,7 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
     if (disposed || !event.isTrusted) return;
     committedText = null;
     if (
-      composing ||
+      guard.composing ||
       event.isComposing ||
       event.keyCode === 229 ||
       event.key === "Process" ||
@@ -125,50 +122,35 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
   };
   const onCompositionStart = (event: CompositionEvent) => {
     if (disposed || !event.isTrusted) return;
-    composing = true;
-    trustedComposition = true;
-    trustedPreedit = event.data;
+    guard.start(event);
     committedText = null;
   };
   const onCompositionUpdate = (event: CompositionEvent) => {
     if (disposed || !event.isTrusted) return;
-    composing = true;
-    if (trustedComposition) trustedPreedit = event.data;
+    guard.update(event);
   };
   const onCompositionEnd = (event: CompositionEvent) => {
     if (disposed) return;
-    let text = event.data;
-    if (!event.isTrusted) {
-      // Some native Chromium IME traces end with an untrusted compositionend. Its payload is
-      // usable only as confirmation of preedit already observed through trusted native events.
-      if (!composing || !trustedComposition) return;
-      if (text !== "") {
-        if (trustedPreedit === null || text !== trustedPreedit) return;
-        text = trustedPreedit;
-      }
-    }
-    composing = false;
-    trustedComposition = false;
-    trustedPreedit = null;
+    // Some native Chromium IME traces end with an untrusted compositionend (composition-guard.ts).
+    const text = guard.end(event);
+    if (text === null) return;
     commit(text);
   };
   const onInput = (event: Event) => {
     const edit = event as InputEvent;
     if (disposed || !edit.isTrusted) return;
     if (edit.isComposing) {
-      composing = true;
-      trustedComposition = true;
-      trustedPreedit = edit.data;
+      guard.composingInput(edit);
       return;
     }
-    if (composing) return;
+    if (guard.composing) return;
     const text = edit.data ?? input.value;
     if (committedText === text) clearInput();
     else sendText(text);
     committedText = null;
   };
   const onBeforeInput = (event: InputEvent) => {
-    if (disposed || !event.isTrusted || composing || event.isComposing) return;
+    if (disposed || !event.isTrusted || guard.composing || event.isComposing) return;
     if (event.inputType === "insertFromComposition" && event.cancelable) {
       event.preventDefault();
       commit(event.data ?? input.value);
@@ -231,9 +213,7 @@ export function attachPxKeyboard(options: PxKeyboardOptions) {
       input.removeEventListener("beforeinput", onBeforeInput);
       input.removeEventListener("input", onInput);
       input.removeEventListener("paste", onPaste);
-      composing = false;
-      trustedComposition = false;
-      trustedPreedit = null;
+      guard.reset();
       committedText = null;
       forwardedKeys.clear();
       clearInput();

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   CAP_ACK_ECHO,
   CAP_INPUT_ACKS,
+  CAP_PROXY_INPUT,
+  MAX_KEY_TEXT,
   decodeDown,
   decodeUp,
   editableOffset,
@@ -156,6 +158,22 @@ describe("input acknowledgements on the wire", () => {
       caps: [CAP_INPUT_ACKS, CAP_ACK_ECHO],
     };
     expect(decodeDown(encodeMsg(hello))).toEqual(hello);
+  });
+
+  it("names single-writer input and carries a key's typed text", () => {
+    expect(CAP_PROXY_INPUT).toBe("proxyin1");
+    expect(MAX_KEY_TEXT).toBe(8);
+    const key: Up = {
+      t: "key",
+      tab: "T1",
+      kind: "down",
+      key: "é",
+      code: "Digit2",
+      mods: 0,
+      text: "é",
+      iseq: 4,
+    };
+    expect(decodeUp(encodeMsg(key))).toEqual(key);
   });
 
   it("round-trips the fence command and message", () => {

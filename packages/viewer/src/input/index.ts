@@ -17,6 +17,9 @@ import { onRemoteFocus } from "../remote-focus";
 import { attachPointerCapture, createTouchMouseFilter, type SendInput } from "./pointer";
 import { attachTouchCapture } from "./touch";
 import { attachWheelCapture } from "./wheel";
+import { attachReadOnly } from "./read-only";
+import { frameTransform } from "./caret";
+import type { ProxyInput } from "./proxy-input";
 import { attachScrollSync, type ScrollFilter } from "../pipeline/scroll";
 
 export interface MirrorInputOptions {
@@ -35,6 +38,11 @@ export interface MirrorInputOptions {
   /** Files pasted into the mirror; they are uploaded to the remote page as attachments. */
   onPasteFiles?(tab: TabId, files: File[]): void;
   scrollFilter?: ScrollFilter;
+  /**
+   * Single-writer input (proxy-input.ts). The proxy belongs to the runtime and outlives this
+   * replay; while `active()`, typing goes only to it and the replay's text fields are read-only.
+   */
+  proxy?: { active(): boolean; input: ProxyInput };
 }
 
 /**
@@ -68,6 +76,7 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
     followsByItself: followsFocusByItself(replayFrame.ownerDocument?.defaultView ?? null),
     hiddenKeyboard: () => {
       if (!active) return null;
+      if (options.proxy?.active() === true) return options.proxy.input;
       if (hidden === null) {
         hidden = attachPxKeyboard({
           canvas: replayFrame,
@@ -85,8 +94,13 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
       return hidden;
     },
     focusMirror: () => replayFrame.focus?.({ preventScroll: true }),
+    proxyMode: () => options.proxy?.active() === true,
   });
-  const stopFollowing = onRemoteFocus(options.replayer, follower.remoteFocus);
+  const stopFollowing = onRemoteFocus(options.replayer, (focus) => {
+    if (options.proxy?.active() === true) options.proxy.input.remoteFocus(focus);
+    follower.remoteFocus(focus);
+  });
+  const viewerDoc = replayFrame.ownerDocument;
 
   const attachDocument = (doc: Document): void => {
     if (!active || documents.has(doc)) return;
@@ -118,6 +132,27 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
             }),
           ]),
       attachWheelCapture({ doc, rootDoc, tab: options.tab, getNodeId, send: options.send }),
+      ...(options.proxy === undefined
+        ? []
+        : [
+            attachReadOnly({
+              doc,
+              active: options.proxy.active,
+              flush: options.proxy.input.flush,
+              focus: options.proxy.input.focus,
+              pressed: options.proxy.input.pressed,
+              clickedElsewhere: options.proxy.input.release,
+              toViewer: (point) => {
+                const map = frameTransform(doc, viewerDoc);
+                return map === null
+                  ? point
+                  : {
+                      clientX: map.x + point.clientX * map.scale,
+                      clientY: map.y + point.clientY * map.scale,
+                    };
+              },
+            }),
+          ]),
     );
     const change = attachChangeCapture({
       doc,
@@ -129,6 +164,13 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
       onEditableInput: options.onEditableInput,
     });
     const mouseFilter = createTouchMouseFilter();
+    // What is still being composed goes out before the press does (a phone keyboard keeps a word
+    // composing until a space): the press may be the send button.
+    const beforePointerDown = () => {
+      if (options.proxy?.active() === true) options.proxy.input.flush();
+      const focused = deepActiveElement(rootDoc);
+      if (focused && isEchoField(focused)) change.flush(focused, true);
+    };
     cleanups.push(
       attachPointerCapture({
         doc,
@@ -146,10 +188,7 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
               !event.metaKey &&
               !event.shiftKey &&
               (options.linkToOpen?.(event.target) ?? null) !== null,
-        beforePointerDown: () => {
-          const focused = deepActiveElement(rootDoc);
-          if (focused && isEchoField(focused)) change.flush(focused, true);
-        },
+        beforePointerDown,
       }),
       attachTouchCapture({
         doc,
@@ -160,10 +199,7 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
         mouseFilter,
         ...(options.linkToOpen === undefined ? {} : { linkToOpen: options.linkToOpen }),
         ...(options.openLink === undefined ? {} : { openLink: options.openLink }),
-        beforePointerDown: () => {
-          const focused = deepActiveElement(rootDoc);
-          if (focused && isEchoField(focused)) change.flush(focused, true);
-        },
+        beforePointerDown,
       }),
       change.dispose,
       follower.watch(doc),

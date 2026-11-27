@@ -22,6 +22,13 @@ import { externalLink } from "../input/default-actions";
 import { deepActiveElement, isTextEditable } from "../input/keys";
 import { createInputResync, focusedValueMessage, type InputResync } from "../input/resync-input";
 import { createInputSequencer, type InputLabStats, type SettledAck } from "../input/input-seq";
+import {
+  createPredictOverlay,
+  createProxyLab,
+  type OverlayState,
+  type ProxyLab,
+} from "../input/predict-overlay";
+import { createProxyInput, type ProxyInput } from "../input/proxy-input";
 import type { VoiceLink } from "../media/voice";
 import { createMirror, type Mirror } from "../mirror";
 import { EventPipeline } from "../pipeline";
@@ -57,7 +64,6 @@ export interface InputLabHandle {
   /** The newest iseq sent per tab on this connection. */
   lastStamped(tab: TabId): number;
   outstanding(tab: TabId): number;
-  caps(): { acks: boolean; echo: boolean };
   /**
    * Every typing echo window as it closed: how long after the field's last key, and what closed
    * it (an ack, the ack mode's liveness ceiling, or the decay timer).
@@ -69,6 +75,29 @@ export interface InputLabHandle {
     how: "ack" | "liveness" | "decay";
     at: number;
   }>;
+  caps(): { acks: boolean; echo: boolean; proxy: boolean };
+  /** Single-writer input (predict-overlay.ts, proxy-input.ts). */
+  proxy: {
+    active(): boolean;
+    lab: ProxyLab;
+    state(): OverlayState;
+    model(): ReturnType<ProxyInput["model"]>;
+    element(): HTMLElement;
+  };
+}
+
+/** `?input=proxy|legacy` (kept for the tab's session): debug override of single-writer input. */
+export function inputModeOverride(): "proxy" | "legacy" | null {
+  let value: string | null = null;
+  try {
+    value = new URLSearchParams(window.location.search).get("input");
+    const storage = window.sessionStorage;
+    if (value === "proxy" || value === "legacy") storage.setItem("mirror.input-mode", value);
+    else value = storage.getItem("mirror.input-mode");
+  } catch {
+    // No storage: the address alone decides.
+  }
+  return value === "proxy" || value === "legacy" ? value : null;
 }
 
 function configuredResyncWindowMs(): number {
@@ -213,6 +242,51 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     mark: (tab, played) => mirror.mark(tab, played),
   });
   const activeTab = () => mirror.getActiveTab();
+  // Single-writer input: on when the gateway offers it and this viewer drives (or forced).
+  const inputOverride = inputModeOverride();
+  const proxyActive = () =>
+    inputOverride !== "legacy" &&
+    sequencer.enabled() &&
+    (sequencer.proxyEnabled() || inputOverride === "proxy") &&
+    presentation.isDriver();
+  const proxyLab = createProxyLab();
+  const replayNode = (id: number) => mirror.getReplayer()?.getMirror().getNode(id) ?? null;
+  const predictOverlay = createPredictOverlay({
+    doc: document,
+    node: replayNode,
+    rtt: sequencer.rtt,
+    ...(inputLabOn ? { lab: proxyLab } : {}),
+    resend: (text) => {
+      const tab = activeTab();
+      if (tab !== null && presentation.canInput(tab, "dom"))
+        socket?.send({ t: "text", tab, insert: text });
+    },
+    putBack: (text) => proxyInput.putBack(text),
+  });
+  const proxyInput = createProxyInput({
+    doc: document,
+    tab: activeTab,
+    send: (message) =>
+      "tab" in message && presentation.canInput(message.tab, "dom")
+        ? (socket?.send(message) ?? false)
+        : false,
+    lastStamped: sequencer.lastStamped,
+    outstanding: sequencer.outstanding,
+    overlay: predictOverlay,
+    node: replayNode,
+    idOf: (node) => mirror.getReplayer()?.getMirror().getId(node) ?? -1,
+    replaySelection: () => {
+      const root = mirror.getReplayer()?.iframe.contentDocument;
+      return root?.getSelection()?.toString() ?? "";
+    },
+    onPasteFiles: (files) => {
+      const tab = activeTab();
+      if (tab !== null && presentation.canInput(tab, "dom") && sessionId !== null)
+        void uploadPastedFiles(tab, files, sessionId);
+    },
+    ...(inputLabOn ? { lab: proxyLab } : {}),
+  });
+  let replayAppliedFrame: number | null = null;
   /** An IME composition is open in the replay (see attachInteraction). */
   let composing = false;
   const echo = createEchoFilter({
@@ -380,7 +454,15 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     // The gateway spaces these out itself, and they rebuild nothing.
     requestCatchUp: (tab, reason) => socket?.send({ t: "resync-req", tab, reason }) ?? false,
     editableBusy: () => echo.typingWithin(EDITABLE_TYPING_MS),
-    onApplied: (tab, epoch, nextSeq) => sequencer.applied(tab, epoch, nextSeq),
+    onApplied: (tab, epoch, nextSeq) => {
+      sequencer.applied(tab, epoch, nextSeq);
+      // The page may have changed the field by itself (a late clear): reseed once per frame.
+      if (replayAppliedFrame === null && proxyActive())
+        replayAppliedFrame = requestAnimationFrame(() => {
+          replayAppliedFrame = null;
+          proxyInput.replayApplied();
+        });
+    },
     onEditablePatched: () => echo.settled(),
     watchReplayer: (_tab, replayer) => watchReplayScrollRestores(replayer, scroll),
     attachInteraction(tab, replayer) {
@@ -412,9 +494,12 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
         frame?.removeEventListener("input", inputEvent, true);
         compositionEnd();
       };
+      // A new replay of the page: the overlay measures again once an ack settles on it.
+      predictOverlay.replayChanged();
       const detachInput = attachMirrorInput({
         replayer,
         tab,
+        proxy: { active: proxyActive, input: proxyInput },
         send: (message) => {
           if (presentation.canInput(tab, "dom")) socket?.send(message);
         },
@@ -455,7 +540,10 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     entryTab: new URLSearchParams(window.location.search).get("tab"),
     entryMode: options.entryMode,
     preferredQuality: () => preferredPxQuality(viewStorage()),
-    onTab: (tab) => dispatch({ type: "active-tab", tab }),
+    onTab: (tab) => {
+      proxyInput.flush();
+      dispatch({ type: "active-tab", tab });
+    },
     onViewMode: (mode) => dispatch({ type: "view-mode", mode }),
     onTabMode: (tab, mode) => dispatch({ type: "tab-mode", tab, mode }),
     onInputReady: (ready) => {
@@ -481,10 +569,22 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     settled: [],
     lastStamped: sequencer.lastStamped,
     outstanding: sequencer.outstanding,
-    caps: () => ({ acks: sequencer.enabled(), echo: sequencer.echoEnabled() }),
+    caps: () => ({
+      acks: sequencer.enabled(),
+      echo: sequencer.echoEnabled(),
+      proxy: proxyActive(),
+    }),
     windows: [],
+    proxy: {
+      active: proxyActive,
+      lab: proxyLab,
+      state: predictOverlay.state,
+      model: proxyInput.model,
+      element: () => proxyInput.element,
+    },
   };
   sequencer.subscribe((settled) => {
+    if (settled.tab === activeTab() && proxyActive()) proxyInput.settled(settled);
     inputResync.settled(settled.tab, settled.failedValue);
     // Shadow measurement: at a burst's final ack, does this replay's field hash as the page's?
     let localHash: string | undefined;
@@ -543,6 +643,9 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
       runtime.socket = null;
       options.voice()?.setSender(null);
       presentation.dispose();
+      proxyInput.dispose();
+      predictOverlay.dispose();
+      if (replayAppliedFrame !== null) cancelAnimationFrame(replayAppliedFrame);
       inputResync.dispose();
       resync.dispose();
       clipboard.dispose();
@@ -649,6 +752,10 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     if (message.t === "driver") {
       dispatch({ type: "driver", viewerId: message.viewerId });
       if (!presentation.isDriver()) {
+        // Another viewer drives now: this one types nothing and predicts nothing.
+        proxyInput.flush();
+        proxyInput.blur();
+        predictOverlay.clear();
         uploads.clear();
         uploadRequest?.abort();
       }
@@ -700,7 +807,11 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
     stamp: sequencer.stamp,
     onStateChange(state, reconnected) {
       if (disposed) return;
-      if (state !== "open") sequencer.connectionLost();
+      if (state !== "open") {
+        // What was not acknowledged may not have arrived: offered again, never resent by itself.
+        predictOverlay.connectionLost();
+        sequencer.connectionLost();
+      }
       dispatch({ type: "connection", state });
       presentation.connectionChanged(state, reconnected);
       if (state === "ended") {
