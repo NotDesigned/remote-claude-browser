@@ -25,6 +25,8 @@ import { describeKey } from "./keymap";
 import { createScrollAnnouncer, insideViewport, isWheelPoint } from "./scroll-announce";
 
 const DEFAULT_RECT_TIMEOUT_MS = 100;
+/** How long the page may take to note or put back its caret around a multi-line insert. */
+const CARET_TAIL_TIMEOUT_MS = 1_000;
 /**
  * Scrolls carry the absolute position, so a later one replaces an earlier one. Waiting longer for
  * a busy page only holds up the input queued behind it.
@@ -305,6 +307,19 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
     [...failedValues].map(([tab, reason]) => ({ t: "input-status", tab, failed: true, reason }));
   return relay;
 
+  /** The page's caret around a multi-line insert (`caret-tail`); a failure only leaves it be. */
+  async function caretTail(tab: string, phase: "mark" | "restore"): Promise<void> {
+    try {
+      const response = await withTimeout(
+        deps.agentLink.sendCmd(tab, { cmd: "caret-tail", phase }),
+        CARET_TAIL_TIMEOUT_MS,
+      );
+      if (!response.ok) reportFailure(`caret-tail ${phase}`, response.err);
+    } catch (error) {
+      reportFailure(`caret-tail ${phase}`, error);
+    }
+  }
+
   async function dispatch(viewerId: string, msg: InputMsg, generation: number): Promise<boolean> {
     const valid = () =>
       (generations.get(msg.tab) ?? 0) === generation &&
@@ -328,9 +343,15 @@ export function createInputRelay(deps: InputRelayDeps): InputRelay {
         case "key":
           await dispatchKey(sessionId, msg);
           return true;
-        case "text":
+        case "text": {
+          // Chrome inserts text with line breaks as paragraphs and leaves the caret some lines
+          // short of its end (a paste in single-writer input): the page's agent puts it back.
+          const lines = /[\r\n]/.test(msg.insert);
+          if (lines) await caretTail(msg.tab, "mark");
           await deps.send(sessionId, "Input.insertText", { text: msg.insert });
+          if (lines) await caretTail(msg.tab, "restore");
           return true;
+        }
         case "ime":
           await deps.send(sessionId, "Input.imeSetComposition", {
             text: msg.text,

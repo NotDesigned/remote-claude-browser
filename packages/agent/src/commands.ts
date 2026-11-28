@@ -27,7 +27,7 @@ import {
   type WheelPointDom,
 } from "./wheel-point";
 import { createFence, focusedEditingHost } from "./fence";
-import { revealCaret } from "./caret-view";
+import { caretFromEnd, placeCaretFromEnd, revealCaret } from "./caret-view";
 
 export interface NodeMirror {
   getIds(): number[];
@@ -406,6 +406,8 @@ export function createCommandHandler(
   const frames: FrameIdCache = { ids: null };
   const wheelDom = dependencies.wheelPointDom ?? defaultWheelPointDom(toRootViewport);
   let fence: ReturnType<typeof createFence> | null = null;
+  /** The focused editor and how much of its text followed the caret, at a caret-tail mark. */
+  let caretTail: { host: HTMLElement; fromEnd: number } | null = null;
   const handler = (cmd: AgentCmd): void => {
     try {
       const nodeMirror = getNodeMirror();
@@ -682,6 +684,20 @@ export function createCommandHandler(
           });
           fence(cmd);
           return;
+        case "caret-tail": {
+          const host = focusedEditingHost(document);
+          if (cmd.phase === "mark") {
+            const fromEnd = host === null ? null : caretFromEnd(host);
+            caretTail = host === null || fromEnd === null ? null : { host, fromEnd };
+          } else {
+            const mark = caretTail;
+            caretTail = null;
+            if (mark !== null && mark.host === host && placeCaretFromEnd(host, mark.fromEnd))
+              revealCaret(host);
+          }
+          emitter.emit({ kind: "cmdres", reqId: cmd.reqId, ok: true });
+          return;
+        }
         case "ping":
           emitter.emit({ kind: "cmdres", reqId: cmd.reqId, ok: true, data: "pong" });
           return;

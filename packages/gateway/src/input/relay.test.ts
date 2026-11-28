@@ -32,6 +32,7 @@ function harness(
     value?: () => Promise<CmdRes>;
     nativePointer?: Parameters<typeof createInputRelay>[0]["nativePointer"];
     wheelpoint?: (command: Extract<AgentCmdInput, { cmd: "wheelpoint" }>) => Promise<CmdRes>;
+    caretTail?: () => Promise<CmdRes>;
     cdpError?: (method: string) => Error | undefined;
     hooks?: Pick<
       Parameters<typeof createInputRelay>[0],
@@ -69,6 +70,7 @@ function harness(
       }
       if (command.cmd === "value" && options.value) return options.value();
       if (command.cmd === "wheelpoint" && options.wheelpoint) return options.wheelpoint(command);
+      if (command.cmd === "caret-tail" && options.caretTail) return options.caretTail();
       return { reqId: commands.length, ok: true };
     },
   };
@@ -370,6 +372,30 @@ describe("InputRelay", () => {
     const lost = harness({ resolve: gone });
     expect(await lost.relay("driver", { ...typed, value: "ab", base: "a" })).toBe(true);
     expect(lost.cdp[0]).toMatchObject({ method: "Input.insertText", params: { text: "b" } });
+  });
+  it("has the page keep its caret at the end of text with line breaks inserted at once", async () => {
+    const h = harness();
+    const pasted: InputMsg = { t: "text", tab: "tab-1", insert: "line one\nline two\nline three" };
+    expect(await h.relay("driver", pasted)).toBe(true);
+    expect(h.commands).toEqual([
+      { cmd: "caret-tail", phase: "mark" },
+      { cmd: "caret-tail", phase: "restore" },
+    ]);
+    expect(h.cdp).toEqual([
+      { sessionId: "session-1", method: "Input.insertText", params: { text: pasted.insert } },
+    ]);
+    // One line, as typed or committed by an IME: nothing to put back.
+    expect(await h.relay("driver", { t: "text", tab: "tab-1", insert: "word" })).toBe(true);
+    expect(h.commands).toHaveLength(2);
+    expect(h.cdp).toHaveLength(2);
+  });
+  it("still inserts the text when the page's agent does not know caret-tail", async () => {
+    const h = harness({
+      caretTail: async () => ({ reqId: 1, ok: false, err: "unknown command: caret-tail" }),
+    });
+    expect(await h.relay("driver", { t: "text", tab: "tab-1", insert: "a\r\nb" })).toBe(true);
+    expect(h.cdp.map((entry) => entry.method)).toEqual(["Input.insertText"]);
+    expect(h.commands.map((command) => command.cmd)).toEqual(["caret-tail", "caret-tail"]);
   });
   it("hands an editor edit's base to the page, which makes the edit on its own text", async () => {
     const h = harness();

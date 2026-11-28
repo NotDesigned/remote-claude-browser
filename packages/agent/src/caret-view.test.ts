@@ -233,6 +233,80 @@ describe("revealCaret", () => {
   });
 });
 
+describe("caret-tail command", () => {
+  it("puts the caret back as far from the end as it was before a multi-line insert", () => {
+    vi.stubGlobal("NodeFilter", { SHOW_TEXT: 4 });
+    vi.stubGlobal("Node", { ELEMENT_NODE: 1, TEXT_NODE: 3 });
+    const texts = [text("one"), text("tail")];
+    const caret: { node: FakeText; offset: number } = { node: texts[1]!, offset: 0 };
+    const document = {
+      activeElement: null as unknown,
+      defaultView: null,
+      getSelection: () => ({
+        rangeCount: 1,
+        get focusNode() {
+          return caret.node;
+        },
+        get focusOffset() {
+          return caret.offset;
+        },
+        setBaseAndExtent: (node: FakeText, offset: number) =>
+          Object.assign(caret, { node, offset }),
+      }),
+      createRange: () => {
+        let start = { node: texts[0]!, offset: 0 };
+        return {
+          setStart: (node: FakeText, offset: number) => (start = { node, offset }),
+          setEnd: vi.fn(),
+          collapse: vi.fn(),
+          getClientRects: () => [],
+          toString: () => {
+            const index = texts.indexOf(start.node);
+            return (
+              start.node.data.slice(start.offset) +
+              texts
+                .slice(index + 1)
+                .map((node) => node.data)
+                .join("")
+            );
+          },
+        };
+      },
+      createTreeWalker: () => {
+        let index = 0;
+        return { nextNode: () => texts[index++] ?? null };
+      },
+    };
+    const host = {
+      nodeType: 1,
+      isContentEditable: true,
+      parentElement: null,
+      ownerDocument: document,
+      childNodes: texts,
+      contains: (node: FakeText) => texts.includes(node),
+    };
+    document.activeElement = host;
+    vi.stubGlobal("document", document);
+    const messages: AgentMsg[] = [];
+    const handler = createCommandHandler({ emit: (message) => messages.push(message) }, {});
+    handler({ cmd: "caret-tail", reqId: 1, phase: "mark" });
+    // Chrome split the inserted text into paragraphs and left the caret inside them.
+    texts.splice(1, 0, text("two"), text("three"));
+    caret.node = texts[2]!;
+    caret.offset = 1;
+    handler({ cmd: "caret-tail", reqId: 2, phase: "restore" });
+    expect(caret).toEqual({ node: texts[3], offset: 0 });
+    expect(messages).toEqual([
+      { kind: "cmdres", reqId: 1, ok: true },
+      { kind: "cmdres", reqId: 2, ok: true },
+    ]);
+    // A restore without a mark moves nothing.
+    caret.offset = 2;
+    handler({ cmd: "caret-tail", reqId: 3, phase: "restore" });
+    expect(caret.offset).toBe(2);
+  });
+});
+
 describe("caret at a distance from the end", () => {
   it("is put back where it was counted from the end of the text", () => {
     vi.stubGlobal("NodeFilter", { SHOW_TEXT: 4 });

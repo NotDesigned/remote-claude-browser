@@ -87,6 +87,12 @@ export type AgentCmd =
        */
       base?: string;
     } // native text edit or control setter + input/change
+  /**
+   * Around a trusted `Input.insertText` of text with line breaks: "mark" notes how much of the
+   * focused editor's text follows its caret, "restore" puts the caret back that far from the end
+   * and in view (Chrome leaves it some lines up). An agent from before answers ok:false.
+   */
+  | { cmd: "caret-tail"; reqId: number; phase: "mark" | "restore" }
   /** Emit a `fence` message once earlier input has settled; `text` only for the submit guard. */
   | { cmd: "fence"; reqId: number; n: number; text?: boolean }
   | { cmd: "ping"; reqId: number }; // liveness
