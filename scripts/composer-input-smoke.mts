@@ -11,7 +11,9 @@
 // hash matching the replay's at the end of each burst, and the ack's round trip. A slow link
 // (scripts/lib/slow-link.mts: SMOKE_RTT_MS, SMOKE_JITTER_MS, SMOKE_STALL_RATE) can sit between
 // the gateway and the viewers. "slow-page" has the page apply IME text 400 ms late; "textarea"
-// checks that a burst's last value is in the stream before its ack.
+// checks that a burst's last value is in the stream before its ack; "paste" pastes 60 lines into
+// the composer, whose box scrolls (as claude.ai's does), and checks that both boxes stay at the
+// caret, at the end, while more is typed, and stay where they are scrolled by hand.
 //
 // SMOKE_INPUT=proxy runs single-writer input (MIRROR_PROXY_INPUT=on: the viewer types into its
 // local proxy, the page gets trusted keys and text only); "legacy" (the default) does not.
@@ -74,8 +76,9 @@ const remoteHtml = `<!doctype html><meta charset="utf-8"><meta name="viewport" c
 <style>body{margin:0;font:16px sans-serif}#bar{position:fixed;bottom:0;left:0;right:0;padding:8px;background:#eee}
 .ProseMirror{min-height:40px;border:1px solid #888;padding:6px;background:#fff;white-space:pre-wrap}
 .ProseMirror p{margin:0}.is-empty::before{content:attr(data-placeholder);color:#999;float:left;height:0}
-#thread{padding:8px 8px 120px;max-height:45vh;overflow:auto}</style>
-<input id="secret" type="password" autocomplete="off" style="margin:8px"><div id="thread"></div><textarea id="plain" rows="3" style="width:90%;margin:8px"></textarea><div id="bar"></div>
+#thread{padding:8px 8px 120px;max-height:45vh;overflow:auto}
+#scroller{max-height:120px;overflow-y:auto}</style>
+<input id="secret" type="password" autocomplete="off" style="margin:8px"><div id="thread"></div><textarea id="plain" rows="3" style="width:90%;margin:8px"></textarea><div id="bar"><div id="scroller"></div></div>
 <script>${composerScript.replaceAll("</script", "<\\/script")}</script>
 <script>
 // Every keyboard and input event the page gets, with isTrusted: the gate counts them.
@@ -120,8 +123,14 @@ const send = (text) => {
       if (++words > 40) clearInterval(timer);
     }, 30);
 };
-const view = PMComposer.mount(document.getElementById("bar"), { onSend: send });
+// As claude.ai's: the editor sits in a box of limited height that scrolls when the text is longer.
+const view = PMComposer.mount(document.getElementById("scroller"), { onSend: send });
 window.composerView = view;
+// Where the composer's box was put, each time it scrolled (the paste scenario).
+window.scrollLog = [];
+document.getElementById("scroller").addEventListener("scroll", (event) => {
+  window.scrollLog.push([Math.round(performance.now()), Math.round(event.target.scrollTop)]);
+});
 // A slow page: with window.slowPage set, text typed in (an IME's commit, a paste) is applied by
 // the editor 400 ms late, as a page busy with its own work does.
 window.slowPage = false;
@@ -443,7 +452,10 @@ async function run(
     });
   };
   wss.on("connection", onConnection);
-  const context = await browser.newContext(contextFor(softKeyboard));
+  const context = await browser.newContext({
+    ...contextFor(softKeyboard),
+    permissions: ["clipboard-read", "clipboard-write"],
+  });
   await context.addInitScript(() => {
     try {
       localStorage.setItem("mirror.view-mode", "dom");
@@ -525,8 +537,9 @@ async function run(
       };
       treeRuns.push(result);
       console.log(`live-tree ${JSON.stringify(result)}`);
+      // A composer holding a 60-line paste is a fifth of this small page by itself.
       assert.ok(
-        tree.subtreeBytes.every((bytes) => bytes <= tree.fullBytes * 0.05),
+        body === paste || tree.subtreeBytes.every((bytes) => bytes <= tree.fullBytes * 0.05),
         `${label} ${body.name}: a subtree was more than 5 % of the whole snapshot`,
       );
     } else console.log(`rebuilds ${JSON.stringify({ label, run: body.name, rebuilds })}`);
@@ -851,6 +864,190 @@ async function slowPage({ label, page, remote, mirrored, type, compose }: Mirror
   textCheck.equal(pageText, "", `${label}: the slow page's composer still holds text`);
   textCheck.equal(here, "", `${label}: the composer here still shows text after a slow page`);
   console.log(`${label}: a page that applies text late gets it exactly once.`);
+}
+
+/**
+ * The composer's box (#scroller) in a document: how far it is scrolled and can be, how many
+ * characters follow the caret (null when the caret is not in the composer), and whether the caret
+ * is inside the box's visible part. A string, so that the bundler's helpers stay out of it.
+ */
+const COMPOSER_BOX = String.raw`(doc) => {
+  const box = doc.querySelector("#scroller");
+  const field = doc.querySelector("#composer");
+  const selection = doc.getSelection();
+  let fromEnd = null;
+  let caretSeen = false;
+  if (selection && selection.rangeCount > 0 && field.contains(selection.focusNode)) {
+    const rest = doc.createRange();
+    rest.setStart(selection.focusNode, selection.focusOffset);
+    rest.setEnd(field, field.childNodes.length);
+    fromEnd = rest.toString().length;
+    const at = doc.createRange();
+    at.setStart(selection.focusNode, selection.focusOffset);
+    at.collapse(true);
+    const rect = at.getClientRects()[0];
+    const seen = box.getBoundingClientRect();
+    caretSeen = rect !== undefined && rect.bottom > seen.top && rect.top < seen.bottom;
+  }
+  return {
+    top: Math.round(box.scrollTop),
+    max: box.scrollHeight - box.clientHeight,
+    fromEnd,
+    caretSeen,
+  };
+}`;
+type ComposerBox = { top: number; max: number; fromEnd: number | null; caretSeen: boolean };
+const pageBox = (remote: Page) =>
+  remote.evaluate(`(${COMPOSER_BOX})(document)`) as Promise<ComposerBox>;
+/**
+ * The replay's composer box. In single-writer input the caret shown is the proxy's (drawn over the
+ * replay, which has no selection of its own): it is seen when it is inside the box on screen, and
+ * at the end when the proxy's own field has its caret at the end.
+ */
+const replayBox = (page: Page) =>
+  page.evaluate(`(() => {
+    const frame = document.querySelector("#mirror-host iframe");
+    const state = (${COMPOSER_BOX})(frame.contentDocument);
+    const proxy = document.activeElement;
+    if (proxy === null || proxy.getAttribute("data-proxy-input") !== "true") return state;
+    const caret = document.querySelector(".proxy-caret");
+    const rect = caret === null ? null : caret.getBoundingClientRect();
+    const box = frame.contentDocument.querySelector("#scroller").getBoundingClientRect();
+    const outer = frame.getBoundingClientRect();
+    const scale = frame.offsetWidth > 0 ? outer.width / frame.offsetWidth : 1;
+    const top = outer.top + frame.clientTop * scale + box.top * scale;
+    const bottom = outer.top + frame.clientTop * scale + box.bottom * scale;
+    const middle = rect === null ? null : rect.top + rect.height / 2;
+    return {
+      ...state,
+      fromEnd: proxy.value.length - proxy.selectionEnd,
+      caretSeen: middle !== null && rect.height > 0 && middle > top && middle < bottom,
+    };
+  })()`) as Promise<ComposerBox>;
+
+/**
+ * A long paste into a composer whose box scrolls past a height, as claude.ai's does (and, like
+ * it, an editor that leaves keeping the caret in view to the browser): 60 lines with Ctrl/Cmd+V
+ * on a desktop, or as a phone keyboard's clipboard puts them in (inserted text). Both the page's
+ * box and the one here must show the end of the text, where the caret is, and stay there over
+ * several seconds and while more is typed after pauses, never back at the start. Scrolled to the
+ * start by hand, the box stays there on both until the next key, which brings the caret back.
+ */
+async function paste(mirror: Mirror): Promise<void> {
+  const { label, softKeyboard, page, remote, type } = mirror;
+  await remote.evaluate("composerView.setProps({ handleScrollToSelection: () => true })");
+  await remote.evaluate(() => ((window as any).scrollLog = []));
+  const pasted = Array.from({ length: 60 }, (_, index) => `pasted line ${index + 1}`).join("\n");
+  if (softKeyboard) await page.keyboard.insertText(pasted);
+  else {
+    await page.evaluate((text) => navigator.clipboard.writeText(text), pasted);
+    await page.keyboard.press("ControlOrMeta+V");
+  }
+  const pageText = () =>
+    remote.evaluate(() => {
+      const view = (window as any).composerView;
+      return view.state.doc.textBetween(0, view.state.doc.content.size, "\n") as string;
+    });
+  await remote.waitForFunction(
+    () => (window as any).composerView.state.doc.childCount >= 60,
+    undefined,
+    { timeout: 10_000 },
+  );
+  /**
+   * Both boxes at the end of the text with the caret there: once the edit has reached both (the
+   * replay's box scrolls smoothly to where the page's went), and then at every look for `ms`.
+   */
+  const atEnd = async (step: string, ms: number) => {
+    const settled = (there: ComposerBox, here: ComposerBox) =>
+      there.fromEnd === 0 &&
+      here.fromEnd === 0 &&
+      there.caretSeen &&
+      here.caretSeen &&
+      there.top >= there.max - 24 &&
+      here.top >= here.max - 24;
+    for (let wait = 0; wait < 30; wait++) {
+      const [there, here] = await Promise.all([pageBox(remote), replayBox(page)]);
+      if (settled(there, here)) break;
+      await page.waitForTimeout(100);
+    }
+    const until = Date.now() + ms;
+    do {
+      await page.waitForTimeout(250);
+      const [there, here] = await Promise.all([pageBox(remote), replayBox(page)]);
+      const where = JSON.stringify({ page: there, replay: here });
+      assert.ok(
+        there.max > 200,
+        `${label} paste ${step}: the page's box does not scroll (${where})`,
+      );
+      assert.equal(there.fromEnd, 0, `${label} paste ${step}: the page's caret (${where})`);
+      assert.equal(here.fromEnd, 0, `${label} paste ${step}: the caret here (${where})`);
+      // Its last line in view (a line is some 19 px), with the caret on it.
+      assert.ok(
+        there.top >= there.max - 24 && there.caretSeen,
+        `${label} paste ${step}: the page's box is not at the caret (${where})`,
+      );
+      assert.ok(
+        here.top >= here.max - 24 && here.caretSeen,
+        `${label} paste ${step}: the box here is not at the caret (${where})`,
+      );
+    } while (Date.now() < until);
+  };
+  await atEnd("after pasting", 3_000);
+  let expected = pasted;
+  for (const word of [" and", " more", " typed"]) {
+    await type(word);
+    expected += word;
+    await atEnd(`after typing "${word.trim()}"`, 1_500);
+  }
+  textCheck.equal(await pageText(), expected, `${label} paste: the page's composer text`);
+  // Never back towards the start, even for a moment between two samples.
+  const log = await remote.evaluate(() => (window as any).scrollLog as Array<[number, number]>);
+  const { max } = await pageBox(remote);
+  assert.ok(
+    log.length > 0 && log.every(([, top]) => top > max / 2),
+    `${label} paste: the page's box went back towards the start: ${JSON.stringify(log)}`,
+  );
+
+  // Scrolled to the start by hand: a wheel on a desktop, a finger's (native) scroll on a phone.
+  if (softKeyboard)
+    await page.evaluate(() => {
+      const frame = document.querySelector("#mirror-host iframe") as HTMLIFrameElement;
+      frame.contentDocument!.querySelector("#scroller")!.scrollTop = 0;
+    });
+  else {
+    const point = await page.evaluate(() => {
+      const frame = document.querySelector("#mirror-host iframe") as HTMLIFrameElement;
+      const rect = frame.contentDocument!.querySelector("#scroller")!.getBoundingClientRect();
+      const outer = frame.getBoundingClientRect();
+      const scale = outer.width / frame.offsetWidth;
+      return {
+        x: outer.left + (rect.left + rect.width / 2) * scale,
+        y: outer.top + (rect.top + 20) * scale,
+      };
+    });
+    await page.mouse.move(point.x, point.y);
+    for (let step = 0; step < 8; step++) {
+      await page.mouse.wheel(0, -200);
+      await page.waitForTimeout(40);
+    }
+  }
+  const boxes = async () => {
+    const [there, here] = await Promise.all([pageBox(remote), replayBox(page)]);
+    return { page: there, replay: here, up: there.top <= 8 && here.top <= 8 };
+  };
+  for (let wait = 0; wait < 20 && !(await boxes()).up; wait++) await page.waitForTimeout(150);
+  await page.waitForTimeout(1_500);
+  const held = await boxes();
+  assert.ok(
+    held.up,
+    `${label} paste: scrolled to the start by hand, the boxes did not stay (${JSON.stringify(held)})`,
+  );
+  // The next key brings the caret, at the end, back into view.
+  await type("!");
+  expected += "!";
+  await atEnd("after a key in the scrolled box", 1_500);
+  textCheck.equal(await pageText(), expected, `${label} paste: the page's text after the scroll`);
+  console.log(`${label}: a long paste leaves the composer at its end, there and here.`);
 }
 
 /** Bursts into a plain textarea: the stream carries each burst's last value before its ack. */
@@ -1351,8 +1548,7 @@ async function gate(mirror: Mirror): Promise<void> {
 }
 
 // COMPOSER_SMOKE_ONLY=Desktop,rounds (any of Desktop, Phone, rounds, sends, slow-page, textarea,
-// caret)
-// runs part of it; COMPOSER_SMOKE_ONLY=gate runs only the gate.
+// paste, caret) runs part of it; COMPOSER_SMOKE_ONLY=gate runs only the gate.
 const only = (process.env.COMPOSER_SMOKE_ONLY ?? "").split(",").filter(Boolean);
 const phone = device === "iphone" || device === "pixel";
 const runs: Array<[string, boolean, (mirror: Mirror) => Promise<void>, string]> = [
@@ -1362,6 +1558,8 @@ const runs: Array<[string, boolean, (mirror: Mirror) => Promise<void>, string]> 
   ["Phone", true, sends, "sends"],
   ["Desktop", false, slowPage, "slow-page"],
   ["Desktop", false, textarea, "textarea"],
+  ["Desktop", false, paste, "paste"],
+  ["Phone", true, paste, "paste"],
   // On the legacy path the replay's own field holds the selection, and the page's changes patched
   // into it over a slow link can collapse it (typing then lands beside it): only single-writer
   // input promises the caret scenario there.
