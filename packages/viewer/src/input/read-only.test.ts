@@ -27,6 +27,12 @@ function setup(active = true) {
     focus,
     pressed: (field) => calls.push(`pressed ${field.tagName}`),
     clickedElsewhere: () => calls.push("released"),
+    pointer: (field, press) =>
+      calls.push(
+        `pointer ${press.phase} ${field.tagName} ${press.clientX},${press.clientY} ${press.detail}${
+          press.shift ? " shift" : ""
+        }`,
+      ),
     toViewer: (point) => ({ clientX: point.clientX * 2 + 1, clientY: point.clientY * 2 + 1 }),
   });
   const fire = (type: string, target: FakeElement, init: Record<string, unknown> = {}) =>
@@ -37,9 +43,9 @@ function setup(active = true) {
 describe("read-only replay fields", () => {
   it("keeps a press on a text field from focusing it and focuses the proxy at the point", () => {
     const { paragraph, calls, fire } = setup();
-    const event = fire("mousedown", paragraph);
+    const event = fire("mousedown", paragraph, { detail: 1 });
     expect(event.defaultPrevented).toBe(true);
-    expect(calls).toEqual(["flush", "pressed DIV", "focus 11,13"]);
+    expect(calls).toEqual(["flush", "pressed DIV", "focus 11,13", "pointer down DIV 5,6 1"]);
   });
 
   it("leaves presses elsewhere, and on value controls, alone", () => {
@@ -90,6 +96,47 @@ describe("read-only replay fields", () => {
     expect(calls).toEqual([]);
     fire("click", button);
     expect(calls).toEqual(["released"]);
+  });
+
+  it("hands a press, its drag and its release in a field to the proxy, Shift and clicks too", () => {
+    const { paragraph, button, calls, fire, doc } = setup();
+    fire("mousedown", paragraph, { detail: 2, shiftKey: true });
+    calls.length = 0;
+    // The drag may leave the field: it still extends the selection there.
+    fire("mousemove", button, { buttons: 1, clientX: 40, detail: 0 });
+    fire("mouseup", button, { clientX: 41, detail: 0 });
+    fire("mousemove", paragraph, { buttons: 0 });
+    expect(calls).toEqual(["pointer move DIV 40,6 0", "pointer up DIV 41,6 0"]);
+    expect(doc).toBeDefined();
+  });
+
+  it("places the caret on a tap, not on a long press or a swipe", () => {
+    const { textarea, calls, fire } = setup();
+    const tap = (from: { x: number; y: number }, to: { x: number; y: number }, ms: number) => {
+      fire("touchstart", textarea, {
+        touches: [{ clientX: from.x, clientY: from.y }],
+        timeStamp: 0,
+      });
+      fire("touchend", textarea, {
+        changedTouches: [{ clientX: to.x, clientY: to.y }],
+        timeStamp: ms,
+      });
+    };
+    tap({ x: 1, y: 2 }, { x: 2, y: 2 }, 100);
+    expect(calls.filter((call) => call.startsWith("pointer"))).toEqual([
+      "pointer down TEXTAREA 2,2 1",
+      "pointer up TEXTAREA 2,2 1",
+    ]);
+    calls.length = 0;
+    tap({ x: 1, y: 2 }, { x: 1, y: 2 }, 900);
+    tap({ x: 1, y: 2 }, { x: 60, y: 2 }, 100);
+    expect(calls.filter((call) => call.startsWith("pointer"))).toEqual([]);
+  });
+
+  it("leaves a tap's compatibility mouse press to touchend", () => {
+    const { textarea, calls, fire } = setup();
+    fire("mousedown", textarea, { sourceCapabilities: { firesTouchEvents: true } });
+    expect(calls.filter((call) => call.startsWith("pointer"))).toEqual([]);
   });
 
   it("finds the field around a target", () => {

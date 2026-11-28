@@ -65,6 +65,7 @@ export class FakeElement extends FakeEventTarget {
   type = "text";
   selectionStart: number | null = 0;
   selectionEnd: number | null = 0;
+  selectionDirection: "forward" | "backward" | "none" = "none";
   readonly tagName: string;
   constructor(
     tag: string,
@@ -132,9 +133,15 @@ export class FakeElement extends FakeEventTarget {
     this.ownerDocument.activeElement = null;
     this.emit(fakeEvent("blur"));
   }
-  setSelectionRange(start: number, end: number) {
+  setSelectionRange(start: number, end: number, direction: "forward" | "backward" = "forward") {
     this.selectionStart = start;
     this.selectionEnd = end;
+    this.selectionDirection = direction;
+  }
+  contains(node: unknown): boolean {
+    for (let current = node as FakeElement | null; current; current = current.parentElement)
+      if (current === this) return true;
+    return false;
   }
   setRangeText(text: string, start: number, end: number) {
     this.value = this.value.slice(0, start) + text + this.value.slice(end);

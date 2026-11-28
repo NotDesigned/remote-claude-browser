@@ -46,6 +46,8 @@ function setup() {
     node: (id) => (id === 7 ? replayField : id === 8 ? password : null) as never,
     idOf: (node) => (node === (replayField as never) ? 7 : node === (password as never) ? 8 : -1),
     lab,
+    // A press at x is at offset x.
+    offsetAt: (_field, clientX) => clientX,
     setTimer: (callback) => {
       timers.push(callback);
       return timers.length;
@@ -355,5 +357,152 @@ describe("proxy input", () => {
     proxy.dispose();
     expect(sent.at(-1)).toMatchObject({ t: "key", kind: "up", key: "ArrowUp" });
     vi.restoreAllMocks();
+  });
+});
+
+describe("proxy input: caret and selection", () => {
+  /** "hello world" typed, on the page and in the replay, caret at its end. */
+  function typed() {
+    const context = setup();
+    typeInto(context.field(), "hello world");
+    context.replayText.value = "hello world";
+    context.settle("hello world");
+    context.sent.length = 0;
+    return context;
+  }
+  const keysDown = (sent: Up[]) =>
+    sent.flatMap((message) =>
+      message.t === "key" && message.kind === "down"
+        ? [`${message.mods & 8 ? "Shift+" : ""}${message.key}`]
+        : [],
+    );
+  const selection = (field: FakeElement) => [field.selectionStart, field.selectionEnd];
+
+  it("predicts an arrow's move at once, and the next character lands there", () => {
+    const { field, overlay, sent } = typed();
+    for (let index = 0; index < 5; index++) field().emit(key("ArrowLeft", "ArrowLeft"));
+    expect(overlay.predicted()).toMatchObject({ caret: 6, anchor: 6 });
+    expect(selection(field())).toEqual([6, 6]);
+    expect(keysDown(sent)).toEqual(Array(5).fill("ArrowLeft"));
+    sent.length = 0;
+    field().emit(key("X", "KeyX"));
+    typeInto(field(), "hello Xworld", 7);
+    expect(keysDown(sent)).toEqual(["X"]);
+    expect(overlay.predicted()).toMatchObject({ text: "hello Xworld", caret: 7 });
+  });
+
+  it("goes to the ends with Home and End, by words with Ctrl", () => {
+    const { field, overlay } = typed();
+    field().emit(key("Home", "Home"));
+    expect(overlay.predicted()).toMatchObject({ caret: 0, anchor: 0 });
+    expect(selection(field())).toEqual([0, 0]);
+    field().emit(key("ArrowRight", "ArrowRight", { ctrlKey: true }));
+    expect(overlay.predicted()?.caret).toBeGreaterThanOrEqual(5);
+    field().emit(key("End", "End"));
+    expect(overlay.predicted()).toMatchObject({ caret: 11, anchor: 11 });
+  });
+
+  it("extends a selection with Shift+arrows, and typing replaces it", () => {
+    const { field, overlay, sent } = typed();
+    for (let index = 0; index < 5; index++)
+      field().emit(key("ArrowLeft", "ArrowLeft", { shiftKey: true }));
+    expect(overlay.predicted()).toMatchObject({ caret: 6, anchor: 11 });
+    expect(selection(field())).toEqual([6, 11]);
+    expect(field().selectionDirection).toBe("backward");
+    expect(keysDown(sent)).toEqual(Array(5).fill("Shift+ArrowLeft"));
+    sent.length = 0;
+    field().emit(key("X", "KeyX"));
+    typeInto(field(), "hello X", 7);
+    // The page has the selection too: the key types over it, nothing is deleted first.
+    expect(keysDown(sent)).toEqual(["X"]);
+    expect(overlay.predicted()).toMatchObject({ text: "hello X", caret: 7, anchor: 7 });
+  });
+
+  it("selects everything with Ctrl+A", () => {
+    const { field, overlay, sent } = typed();
+    field().emit(key("a", "KeyA", { ctrlKey: true }));
+    expect(overlay.predicted()).toMatchObject({ caret: 11, anchor: 0 });
+    expect(selection(field())).toEqual([0, 11]);
+    expect(keysDown(sent)).toEqual(["a"]);
+  });
+
+  it("takes the page's selection from its ack, backward ones too", () => {
+    const { field, overlay, settle } = typed();
+    field().emit(key("ArrowLeft", "ArrowLeft", { shiftKey: true }));
+    // The page made more of it than predicted (a word, say).
+    settle("hello world", 11, {
+      edit: { node: 7, len: 11, hash: editHash("hello world"), sel: [11, 6] },
+    });
+    expect(overlay.pending()).toBe(0);
+    expect(overlay.predicted()).toMatchObject({ caret: 6, anchor: 11 });
+    expect(selection(field())).toEqual([6, 11]);
+    expect(field().selectionDirection).toBe("backward");
+  });
+
+  it("copies and cuts the selected text through the proxy's own events", () => {
+    const { field, sent, overlay } = typed();
+    for (let index = 0; index < 5; index++)
+      field().emit(key("ArrowLeft", "ArrowLeft", { shiftKey: true }));
+    sent.length = 0;
+    // Ctrl+C is the proxy's own: not prevented, not sent to the page.
+    expect(field().emit(key("c", "KeyC", { ctrlKey: true })).defaultPrevented).toBe(false);
+    expect(sent).toEqual([]);
+    const clipboard = new Map<string, string>();
+    const clipboardData = { setData: (type: string, data: string) => clipboard.set(type, data) };
+    expect(field().emit(fakeEvent("copy", { clipboardData })).defaultPrevented).toBe(true);
+    expect(clipboard.get("text/plain")).toBe("world");
+    clipboard.clear();
+    expect(field().emit(key("x", "KeyX", { ctrlKey: true })).defaultPrevented).toBe(false);
+    expect(field().emit(fakeEvent("cut", { clipboardData })).defaultPrevented).toBe(true);
+    expect(clipboard.get("text/plain")).toBe("world");
+    expect(keysDown(sent)).toEqual(["Backspace"]);
+    expect(overlay.predicted()).toMatchObject({ text: "hello ", caret: 6 });
+  });
+
+  it("places the caret with a press, extends it with a drag, selects a word on a double press", () => {
+    const { proxy, overlay, field, replayField } = typed();
+    const press = (phase: "down" | "move" | "up", at: number, detail = 1, shift = false) =>
+      proxy.pointer(replayField as never, { phase, clientX: at, clientY: 0, detail, shift });
+    press("down", 3);
+    expect(overlay.predicted()).toMatchObject({ caret: 3, anchor: 3 });
+    expect(selection(field())).toEqual([3, 3]);
+    press("move", 8);
+    press("up", 8);
+    expect(overlay.predicted()).toMatchObject({ caret: 8, anchor: 3 });
+    expect(selection(field())).toEqual([3, 8]);
+    // One prediction per gesture's input, not one per move.
+    expect(overlay.pending()).toBe(1);
+    press("down", 1, 1, true);
+    expect(overlay.predicted()).toMatchObject({ caret: 1, anchor: 3 });
+    press("up", 1);
+    press("down", 8, 2);
+    expect(overlay.predicted()).toMatchObject({ anchor: 6, caret: 11 });
+    press("up", 8, 2);
+  });
+
+  it("follows a soft keyboard moving its caret with arrow presses", () => {
+    const { field, sent, timers, overlay, doc } = typed();
+    field().setSelectionRange(8, 8);
+    doc.emit(fakeEvent("selectionchange"));
+    timers.at(-1)!();
+    expect(keysDown(sent)).toEqual(["ArrowLeft", "ArrowLeft", "ArrowLeft"]);
+    expect(overlay.predicted()).toMatchObject({ caret: 8, anchor: 8 });
+    sent.length = 0;
+    // A selection made with the keyboard's handles: Shift held.
+    field().setSelectionRange(6, 8);
+    doc.emit(fakeEvent("selectionchange"));
+    timers.at(-1)!();
+    expect(keysDown(sent)).toEqual([
+      "ArrowLeft",
+      "ArrowLeft",
+      "Shift+ArrowRight",
+      "Shift+ArrowRight",
+    ]);
+    expect(overlay.predicted()).toMatchObject({ anchor: 6, caret: 8 });
+    // Its own selection, set when it follows the page, sends nothing.
+    sent.length = 0;
+    doc.emit(fakeEvent("selectionchange"));
+    timers.at(-1)!();
+    expect(sent).toEqual([]);
   });
 });

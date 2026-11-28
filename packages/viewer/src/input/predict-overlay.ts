@@ -111,6 +111,8 @@ export interface PredictOverlayOptions {
     caret: typeof caretRect;
     rects: typeof rangeRects;
     selection?: typeof selectionRects;
+    /** Where offset `offset` of a span of the prediction line is (viewer coordinates). */
+    span?(span: HTMLElement, offset: number): { left: number; top: number; height: number } | null;
   };
 }
 
@@ -500,6 +502,10 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
 
   /** The caret at `offset` of a span of the prediction line (null: not measurable). */
   const spanCaret = (span: HTMLElement, offset: number, near: CaretBox): CaretBox | null => {
+    if (options.measure?.span !== undefined) {
+      const at = options.measure.span(span, offset);
+      return at === null ? null : { ...at, box: near.box, scale: near.scale };
+    }
     const node = span.firstChild;
     if (!node || node.nodeType !== 3) return null;
     try {

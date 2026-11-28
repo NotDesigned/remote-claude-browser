@@ -196,6 +196,23 @@ describe("helpers", () => {
     expect(applyOps(state, press("Backspace"))).toMatchObject({ text: "ad", caret: 1 });
     expect(applyOps(state, press("ArrowLeft"))).toMatchObject({ text: "abcd", caret: 1 });
   });
+  it("applies a predicted selection, which the next text replaces", () => {
+    const selected = applyOps({ text: "hello world", caret: 11 }, [
+      { t: "select", anchor: 11, head: 6 },
+    ]);
+    expect(selected).toEqual({ text: "hello world", caret: 6, anchor: 11 });
+    expect(applyOps(selected, [{ t: "char", text: "X" }])).toEqual({
+      text: "hello X",
+      caret: 7,
+      anchor: 7,
+    });
+    expect(applyOps(selected, [{ t: "select", anchor: 0, head: 99 }])).toEqual({
+      text: "hello world",
+      caret: 11,
+      anchor: 0,
+    });
+  });
+
   it("applies presses per grapheme", () => {
     expect(applyOps({ text: "a😀b", caret: 3 }, press("Backspace"))).toMatchObject({
       text: "ab",

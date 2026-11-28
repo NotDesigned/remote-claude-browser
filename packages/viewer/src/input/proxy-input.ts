@@ -59,6 +59,8 @@ export interface ProxyInputOptions {
   /** Text selected in the replay with the mouse, for a local copy. */
   replaySelection?(): string;
   onPasteFiles?(files: File[]): void;
+  /** The offset of a replay field's text under a point (caret.ts offsetAtPoint; tests replace it). */
+  offsetAt?(field: HTMLElement, clientX: number, clientY: number): number | null;
   lab?: ProxyLab;
   now?(): number;
   setTimer?(callback: () => void, ms: number): unknown;
@@ -885,7 +887,7 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
       if (node === null || !(node === field || node.contains(field))) return;
       const state = overlay.predicted();
       if (state === null) return;
-      const offset = offsetAtPoint(node, press.clientX, press.clientY);
+      const offset = (options.offsetAt ?? offsetAtPoint)(node, press.clientX, press.clientY);
       if (offset === null) return;
       const at = Math.min(offset, state.text.length);
       const unitAt = (unit: "char" | "word" | "line"): Sel =>
