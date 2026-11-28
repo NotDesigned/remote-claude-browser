@@ -37,6 +37,10 @@ export interface ViewportAgreementDeps {
   mobile?: boolean;
   /** The account's screen, for the page's screen metrics. */
   screen?: Screen;
+  /** True when the browser engine owns screen metrics natively (AliasMode personas). */
+  nativeScreen?: boolean;
+  /** Resizes the browser window's content area so outerWidth/outerHeight stay consistent. */
+  resizeWindow?(tabId: TabId, width: number, height: number): Promise<void>;
   /**
    * Tells a viewer its unchanged geometry already holds, so it needs no viewport snapshot. Without
    * this every `view` takes the full negotiation.
@@ -324,13 +328,35 @@ export function createViewportAgreement(deps: ViewportAgreementDeps): ViewportAg
     try {
       // At a browser zoom the window is larger and the page still lays out at the same size.
       const zoom = hub.pixelZoom ?? 1;
-      await deps.send(sessionId, "Emulation.setDeviceMetricsOverride", {
-        width: Math.round(desired.w * zoom),
-        height: Math.round(desired.h * zoom),
-        deviceScaleFactor: zoom > 1 || hub.pixelGrabbing ? 1 : desired.dpr,
-        mobile: deps.mobile === true && zoom <= 1,
-        ...screenMetrics(desired.w, desired.h, deps.mobile === true, deps.screen),
-      });
+      const targetWidth = Math.round(desired.w * zoom);
+      const targetHeight = Math.round(desired.h * zoom);
+      const screenLimit = deps.screen ?? { width: 1920, height: 1080 };
+      const useNativeDesktop =
+        deps.nativeScreen === true &&
+        deps.resizeWindow !== undefined &&
+        deps.mobile !== true &&
+        zoom <= 1 &&
+        !hub.pixelGrabbing &&
+        targetWidth >= 520 &&
+        targetHeight >= 240 &&
+        targetWidth <= screenLimit.width &&
+        targetHeight <= screenLimit.height;
+      if (deps.resizeWindow !== undefined && deps.mobile !== true && !hub.pixelGrabbing) {
+        await deps.resizeWindow(tabId, targetWidth, targetHeight).catch(() => undefined);
+      }
+      if (useNativeDesktop) {
+        await deps.send(sessionId, "Emulation.clearDeviceMetricsOverride").catch(() => undefined);
+      } else {
+        await deps.send(sessionId, "Emulation.setDeviceMetricsOverride", {
+          width: targetWidth,
+          height: targetHeight,
+          deviceScaleFactor: zoom > 1 || hub.pixelGrabbing ? 1 : desired.dpr,
+          mobile: deps.mobile === true && zoom <= 1,
+          ...(deps.nativeScreen && deps.mobile !== true
+            ? {}
+            : screenMetrics(desired.w, desired.h, deps.mobile === true, deps.screen)),
+        });
+      }
       if (!current(tabId, state)) return;
       hub.viewport = { w: desired.w, h: desired.h, dpr: desired.dpr };
       state.appliedRevision = desired.revision;

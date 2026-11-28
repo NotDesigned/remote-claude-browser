@@ -78,4 +78,21 @@ describe("sanitizeEmailHtml", () => {
       '<button type="button" class="mail-remote-link cta" data-mail-url="https://claude.ai/magic-link#tok=99">Sign in</button>',
     );
   });
+
+  it("rejects IPv4-mapped IPv6, NAT64, and trailing-dot localhost link targets", () => {
+    const clean = sanitizeEmailHtml(
+      [
+        '<a href="https://[::ffff:127.0.0.1]/admin">v4map</a>',
+        '<a href="https://[0:0:0:0:0:ffff:10.0.0.1]/admin">v4priv</a>',
+        '<a href="https://[64:ff9b::127.0.0.1]/admin">nat64</a>',
+        '<a href="https://localhost./admin">localdot</a>',
+        '<a href="https://claude.ai/login">safe</a>',
+      ].join(" "),
+    )!;
+    expect(clean).not.toContain("7f00:1");
+    expect(clean).not.toContain("a00:1");
+    expect(clean).not.toContain("64:ff9b");
+    expect(clean).not.toContain("localhost.");
+    expect(clean).toContain('data-mail-url="https://claude.ai/login"');
+  });
 });

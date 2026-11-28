@@ -71,6 +71,7 @@ export function createMihomoConfig(node: MihomoExit, options: MihomoConfigOption
         "127.0.0.0/8",
         "169.254.0.0/16",
         "172.16.0.0/12",
+        "192.0.0.0/24",
         "192.168.0.0/16",
         "198.18.0.0/15",
         "224.0.0.0/4",

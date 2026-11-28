@@ -80,6 +80,16 @@ describe("CSS URL parsing", () => {
       "a{background:url(<https://cdn.example/a(b).png>)}",
     );
   });
+
+  it("rewrites bare quoted URLs in image-set() and -webkit-image-set() without touching type() MIME strings", () => {
+    const css =
+      'a{background-image:image-set("/hero.webp" type("image/webp") 1x, \'/hero@2x.png\' 2x);' +
+      'b:-webkit-image-set("https://cdn.example/x.png" 1x, url("/y.png") type("image/png") 2x)}';
+    expect(rewriteCssText(css, wrap, "https://site.example/app/page")).toBe(
+      'a{background-image:image-set("<https://site.example/hero.webp>" type("image/webp") 1x, \'<https://site.example/hero@2x.png>\' 2x);' +
+        'b:-webkit-image-set("<https://cdn.example/x.png>" 1x, url("<https://site.example/y.png>") type("image/png") 2x)}',
+    );
+  });
 });
 
 describe("srcset parsing", () => {

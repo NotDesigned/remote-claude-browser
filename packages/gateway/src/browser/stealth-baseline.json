@@ -1,6 +1,4 @@
 {
-  "msg.any": "P2-E: a child frame still reports to its parent by message",
-  "msg.any@child": "P2-E: a child frame still reports to its parent by message",
   "perf.longtask:ms": "metric",
   "shadow.composed": "P3: the closed-root shim really opens closed roots",
   "stack.shape": "P3: wrappers add stack frames",

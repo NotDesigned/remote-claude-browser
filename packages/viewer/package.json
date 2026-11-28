@@ -1,6 +1,6 @@
 {
   "name": "@mirror/viewer",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Scriptless semantic DOM viewer for Remote Browser",
   "private": true,
   "license": "Apache-2.0",

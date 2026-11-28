@@ -225,6 +225,13 @@ describe("Claude's theme", () => {
 
       localStorage.removeItem("LSS-userThemeMode");
       expect(shared.get("LSS-userThemeMode")).toBe('"light"');
+
+      // Proxy traps on Function.prototype.toString.call(proxy) must never fire or leak tokens
+      expect(
+        evalInPage(
+          `(() => { const keys = []; try { window.Function.prototype.toString.call(new Proxy({}, { has(_t, k) { keys.push(String(k)); return false; } })); return { threw: false, keys }; } catch (e) { return { threw: e instanceof TypeError, keys }; } })()`,
+        ),
+      ).toEqual({ threw: true, keys: [] });
     });
 
     it("leaves every other key and sessionStorage alone", () => {

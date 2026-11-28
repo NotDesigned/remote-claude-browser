@@ -174,6 +174,12 @@ describe("the page's Notification", () => {
   it("refuses showNotification without permission, as Chromium does", async () => {
     const page = await fakePage();
     await expect(page.registration.showNotification("x")).rejects.toThrow(/permission/);
+    await expect(
+      page.registration.showNotification.call({} as ServiceWorkerRegistration, "x"),
+    ).rejects.toThrow(/Illegal invocation/);
+    await expect(
+      page.registration.getNotifications.call({} as ServiceWorkerRegistration),
+    ).rejects.toThrow(/Illegal invocation/);
   });
 
   it("looks like the browser's own to a quick inspection", async () => {

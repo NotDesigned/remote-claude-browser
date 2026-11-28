@@ -601,12 +601,17 @@ export function rewriteCssText(
 
     if (isIdentifierStart(char) && identifierBoundary(css, position - 1)) {
       const nameEnd = readIdentifier(css, position);
-      if (css.slice(position, nameEnd).toLowerCase() === "url" && css[nameEnd] === "(") {
+      const fnName = css.slice(position, nameEnd).toLowerCase();
+      if (fnName === "url" && css[nameEnd] === "(") {
         const end = parseUrlFunction(css, nameEnd, replacements, rewrite, baseUrl);
         if (end !== null) {
           position = end;
           continue;
         }
+      }
+      if ((fnName === "image-set" || fnName === "-webkit-image-set") && css[nameEnd] === "(") {
+        position = parseImageSetFunction(css, nameEnd, replacements, rewrite, baseUrl);
+        continue;
       }
       position = nameEnd;
       continue;
@@ -614,6 +619,72 @@ export function rewriteCssText(
     position += 1;
   }
   return portableMaskClip(portableSupports(applyReplacements(css, replacements)));
+}
+
+function parseImageSetFunction(
+  css: string,
+  openParen: number,
+  replacements: Replacement[],
+  rewrite: (absoluteUrl: string) => string,
+  baseUrl?: string,
+): number {
+  let position = openParen + 1;
+  let depth = 0;
+  let atOptionStart = true;
+  while (position < css.length) {
+    if (css.startsWith("/*", position)) {
+      position = skipComment(css, position);
+      continue;
+    }
+    const ch = css[position]!;
+    if (isCssWhitespace(ch)) {
+      position += 1;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      const end = skipQuoted(css, position, ch);
+      if (depth === 0 && atOptionStart && end <= css.length && css[end - 1] === ch) {
+        addCssUrlReplacement(css, position + 1, end - 1, replacements, rewrite, baseUrl);
+      }
+      atOptionStart = false;
+      position = end;
+      continue;
+    }
+    if (depth === 0 && ch === ",") {
+      atOptionStart = true;
+      position += 1;
+      continue;
+    }
+    if (isIdentifierStart(ch) && identifierBoundary(css, position - 1)) {
+      const nameEnd = readIdentifier(css, position);
+      const fn = css.slice(position, nameEnd).toLowerCase();
+      if (fn === "url" && css[nameEnd] === "(") {
+        const end = parseUrlFunction(css, nameEnd, replacements, rewrite, baseUrl);
+        if (end !== null) {
+          atOptionStart = false;
+          position = end;
+          continue;
+        }
+      }
+      if ((fn === "image-set" || fn === "-webkit-image-set") && css[nameEnd] === "(") {
+        atOptionStart = false;
+        position = parseImageSetFunction(css, nameEnd, replacements, rewrite, baseUrl);
+        continue;
+      }
+      atOptionStart = false;
+      position = nameEnd;
+      continue;
+    }
+    atOptionStart = false;
+    if (ch === "(") {
+      depth += 1;
+    } else if (ch === ")") {
+      if (depth === 0) return position + 1;
+      depth -= 1;
+    }
+    position += 1;
+  }
+  return position;
 }
 
 function parseUrlFunction(

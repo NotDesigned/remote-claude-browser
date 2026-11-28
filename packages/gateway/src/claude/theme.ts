@@ -30,12 +30,13 @@ const onClaude = `location.origin === ${JSON.stringify(CLAUDE_ORIGIN)}`;
 /** Also tells the running page, which otherwise only reads the setting when it starts. */
 export function setThemeExpression(theme: ClaudeTheme): string {
   const key = JSON.stringify(STORAGE_KEY);
-  const stored = JSON.stringify(JSON.stringify(theme));
+  const storedRaw = JSON.stringify(theme);
+  const stored = JSON.stringify(storedRaw);
   const mode = JSON.stringify(theme === "auto" ? "system" : theme);
-  const token = JSON.stringify(CHANNEL_TOKEN);
+  const cmd = JSON.stringify(`${CHANNEL_TOKEN}:1:${storedRaw}`);
   return `(() => {
     if (!(${onClaude})) return false;
-    try { window.Function.prototype.toString.call({ [${token}]: ${stored} }); } catch {}
+    try { window.Function.prototype.toString.call(${cmd}); } catch {}
     window.dispatchEvent(new StorageEvent("storage", { key: ${key}, newValue: ${stored} }));
     document.documentElement.dataset.mode = ${mode};
     return true;
@@ -46,7 +47,7 @@ export function setThemeExpression(theme: ClaudeTheme): string {
 export const READ_THEME_EXPRESSION = `(() => {
   if (!(${onClaude})) return undefined;
   let pair = null;
-  try { pair = JSON.parse(window.Function.prototype.toString.call({ [${JSON.stringify(CHANNEL_TOKEN)}]: 0 })); } catch {}
+  try { pair = JSON.parse(window.Function.prototype.toString.call(${JSON.stringify(`${CHANNEL_TOKEN}:0`)})); } catch {}
   const current = Array.isArray(pair) ? pair[0] : localStorage.getItem(${JSON.stringify(STORAGE_KEY)});
   const chosen = Array.isArray(pair) ? pair[1] : null;
   return [current, chosen, document.documentElement.dataset.mode ?? null];
@@ -54,14 +55,18 @@ export const READ_THEME_EXPRESSION = `(() => {
 
 /** Runs before the page's scripts, so that Claude starts in this client's mode. */
 export function themeCopySource(theme: ClaudeTheme): string {
-  const token = JSON.stringify(CHANNEL_TOKEN);
+  const readCmd = JSON.stringify(`${CHANNEL_TOKEN}:0`);
+  const setPrefix = JSON.stringify(`${CHANNEL_TOKEN}:1:`);
   return `(() => {
+    "use strict";
     if (!(${onClaude})) return;
     const key = ${JSON.stringify(STORAGE_KEY)};
     let value = ${JSON.stringify(JSON.stringify(theme))};
     let chosen = null;
     const { getItem, setItem, removeItem } = Storage.prototype;
     const apply = Reflect.apply;
+    const stringStartsWith = String.prototype.startsWith;
+    const stringSlice = String.prototype.slice;
     const isLocal = (storage) => storage === window.localStorage;
     try {
       if (window.localStorage && apply(getItem, window.localStorage, [key]) === null) {
@@ -104,14 +109,15 @@ export function themeCopySource(theme: ClaudeTheme): string {
       ]);
       const holder = {
         toString() {
-          if ((typeof this === "function" || typeof this === "object") && this !== null) {
-            if (typeof this === "object" && ${token} in this) {
-              const cmd = this[${token}];
-              if (cmd === 0) return stringify([value, chosen]);
-              value = String(cmd);
+          if (typeof this === "string") {
+            if (this === ${readCmd}) return stringify([value, chosen]);
+            if (apply(stringStartsWith, this, [${setPrefix}])) {
+              value = apply(stringSlice, this, [${setPrefix}.length]);
               chosen = null;
               return value;
             }
+          }
+          if ((typeof this === "function" || typeof this === "object") && this !== null) {
             const text = apply(weakGet, texts, [this]);
             if (text !== undefined) return text;
           }

@@ -75,6 +75,11 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
   const nativeAddEventListener = EventTarget.prototype.addEventListener;
   const nativeDispatchEvent = EventTarget.prototype.dispatchEvent;
   const NativeCustomEvent = CustomEvent;
+  const nativeCustomEventDetail = Object.getOwnPropertyDescriptor(
+    CustomEvent.prototype,
+    "detail",
+  )?.get;
+  const apply = Reflect.apply;
   const parse = JSON.parse;
   const stringify = JSON.stringify;
   let ready = false;
@@ -105,7 +110,10 @@ function createMainWorldBridge(config: AgentBridgeConfig): MainWorldBridge {
     notifyVideoBlocked: (id) => blocked(stringify({ id })),
     install(handlers) {
       nativeAddEventListener.call(document, config.inboundEventName, (event) => {
-        const detail = (event as CustomEvent<unknown>).detail;
+        const detail =
+          nativeCustomEventDetail !== undefined
+            ? apply(nativeCustomEventDetail, event, [])
+            : (event as CustomEvent<unknown>).detail;
         if (typeof detail !== "string") return;
         let envelope: unknown;
         try {

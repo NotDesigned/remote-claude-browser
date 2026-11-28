@@ -342,7 +342,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..677ebc71cf01471b8f1ec3c5eb50bfc3
 +/** Hardening: a child's message carries its payload under the session's key, and nothing else. */
 +function keyedIframeMessage(message) {
 +  const data = message.data;
-+  const payload = data !== null && typeof data === "object" ? data[hardening.messageKey] : void 0;
++  const payload = data !== null && typeof data === "object" && Object.prototype.hasOwnProperty.call(data, hardening.messageKey) ? data[hardening.messageKey] : void 0;
 +  if (payload === null || typeof payload !== "object") return null;
 +  return {
 +    origin: message.origin,
@@ -359,21 +359,25 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..677ebc71cf01471b8f1ec3c5eb50bfc3
  class IframeManager {
    constructor(options) {
      __publicField(this, "iframes", /* @__PURE__ */ new WeakMap());
-@@ -3591,6 +3775,7 @@ class IframeManager {
+@@ -3591,7 +3775,8 @@ class IframeManager {
        )
      );
      this.mirror = options.mirror;
 +    activeIframeManager = this;
      if (this.recordCrossOriginIframes) {
-       window.addEventListener("message", this.handleMessage.bind(this));
+-      window.addEventListener("message", this.handleMessage.bind(this));
++      window.addEventListener("message", this.handleMessage.bind(this), Boolean(hardening.messageKey));
      }
-@@ -3631,17 +3816,23 @@ class IframeManager {
+   }
+@@ -3631,17 +3816,25 @@ class IframeManager {
        );
    }
    handleMessage(message) {
 -    const crossOriginMessageEvent = message;
 +    const crossOriginMessageEvent = hardening.messageKey ? keyedIframeMessage(message) : message;
 +    if (crossOriginMessageEvent === null) return;
++    if (hardening.messageKey && activeIframeManager === this && typeof message.stopImmediatePropagation === "function")
++      message.stopImmediatePropagation();
      if (crossOriginMessageEvent.data.type !== "rrweb" || // To filter out the rrweb messages which are forwarded by some sites.
      crossOriginMessageEvent.origin !== crossOriginMessageEvent.data.origin)
        return;
@@ -393,7 +397,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..677ebc71cf01471b8f1ec3c5eb50bfc3
      );
      if (transformedEvent)
        this.wrappedEmit(
-@@ -3649,11 +3840,13 @@ class IframeManager {
+@@ -3649,11 +3842,13 @@ class IframeManager {
          crossOriginMessageEvent.data.isCheckout
        );
    }
@@ -409,7 +413,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..677ebc71cf01471b8f1ec3c5eb50bfc3
          this.crossOriginIframeStyleMirror.reset(iframeEl);
          this.replaceIdOnNode(e.data.node, iframeEl);
          const rootId = e.data.node.id;
-@@ -3845,7 +4038,7 @@ class ShadowDomManager {
+@@ -3845,7 +4040,7 @@ class ShadowDomManager {
          mirror: this.mirror
        })
      );
@@ -418,7 +422,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..677ebc71cf01471b8f1ec3c5eb50bfc3
        if (shadowRoot2.adoptedStyleSheets && shadowRoot2.adoptedStyleSheets.length > 0)
          this.bypassOptions.stylesheetManager.adoptStyleSheets(
            shadowRoot2.adoptedStyleSheets,
-@@ -3860,7 +4053,7 @@ class ShadowDomManager {
+@@ -3860,7 +4055,7 @@ class ShadowDomManager {
            shadowRoot2
          )
        );
@@ -427,7 +431,12 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..677ebc71cf01471b8f1ec3c5eb50bfc3
    }
    /**
     * Monkey patch 'attachShadow' of an IFrameElement to observe newly added shadow doms.
-@@ -3889,7 +4082,8 @@ class ShadowDomManager {
+@@ -3885,11 +4080,12 @@ class ShadowDomManager {
+           return function(option) {
+-            const sRoot = original.call(this, option);
++            const sRoot = reflectApply(original, this, arguments);
+             const shadowRootEl = index.shadowRoot(this);
+             if (shadowRootEl && inDom(this))
                manager.addShadowRoot(shadowRootEl, doc);
              return sRoot;
            };
@@ -437,7 +446,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..677ebc71cf01471b8f1ec3c5eb50bfc3
        )
      );
    }
-@@ -4644,6 +4838,17 @@ function record(options = {}) {
+@@ -4644,6 +4840,17 @@ function record(options = {}) {
      }
      if (inEmittingFrame) {
        emit == null ? void 0 : emit(eventProcessor(e), isCheckout);
@@ -455,7 +464,7 @@ index 0ac65f2b7908bd96d3b5f4af8a30ad8630beb6fb..677ebc71cf01471b8f1ec3c5eb50bfc3
      } else if (passEmitsToParent) {
        const message = {
          type: "rrweb",
-@@ -5030,6 +5235,7 @@ record.takeFullSnapshot = (isCheckout) => {
+@@ -5030,6 +5237,7 @@ record.takeFullSnapshot = (isCheckout) => {
  };
  record.mirror = mirror;
  export {

@@ -19,6 +19,7 @@ interface SelectionLike {
 
 interface CopyEventLike {
   readonly clipboardData?: { getData(format: string): string; clearData?(): void } | null;
+  readonly isTrusted?: boolean;
   preventDefault?(): void;
   stopImmediatePropagation?(): void;
   readonly target?: EventTarget | null;
@@ -73,6 +74,26 @@ export function installClipboardHooks(options: ClipboardHookOptions): () => void
     options.emitter.emitClipboard(value);
   };
   const mask = options.mask;
+  const realm = view as unknown as {
+    TypeError?: TypeErrorConstructor;
+    DOMException?: typeof DOMException;
+    navigator?: { userActivation?: { isActive?: boolean } };
+  };
+  const NativeTypeError = realm.TypeError ?? TypeError;
+  const NativeDOMException =
+    realm.DOMException ?? (typeof DOMException !== "undefined" ? DOMException : Error);
+  const assertReceiver = (self: unknown, name: string): void => {
+    if (clipboard !== undefined && self !== clipboard) {
+      throw new NativeTypeError(`Failed to execute '${name}' on 'Clipboard': Illegal invocation`);
+    }
+  };
+  const assertReadAllowed = (name: string): void => {
+    if (mask === undefined || writeVersion > 0) return;
+    throw new NativeDOMException(
+      `Failed to execute '${name}' on 'Clipboard': Read permission denied.`,
+      "NotAllowedError",
+    );
+  };
   const replace = (name: string, value: unknown) => {
     if (clipboard === undefined) return;
     if (mask !== undefined) {
@@ -100,23 +121,41 @@ export function installClipboardHooks(options: ClipboardHookOptions): () => void
       // Event interception still protects native keyboard copy in constrained embeddings.
     }
   };
-  replace("writeText", async (value: string) => {
+  replace("writeText", async function (this: unknown, value: string) {
+    assertReceiver(this, "writeText");
+    if (arguments.length < 1) {
+      throw new NativeTypeError(
+        "Failed to execute 'writeText' on 'Clipboard': 1 argument required, but only 0 present.",
+      );
+    }
     writeVersion++;
     items = [];
     remember(String(value));
   });
-  replace("readText", async () => text);
-  replace("write", async (value: ClipboardItem[]) => {
+  replace("readText", async function (this: unknown) {
+    assertReceiver(this, "readText");
+    assertReadAllowed("readText");
+    return text;
+  });
+  replace("write", async function (this: unknown, value: ClipboardItem[]) {
+    assertReceiver(this, "write");
+    if (arguments.length < 1) {
+      throw new NativeTypeError(
+        "Failed to execute 'write' on 'Clipboard': 1 argument required, but only 0 present.",
+      );
+    }
     const version = ++writeVersion;
     items = Array.from(value);
     text = "";
     const item = items.find((entry) => entry.types.includes("text/plain"));
     if (item) {
-      const value = await (await item.getType("text/plain")).text();
-      if (version === writeVersion) remember(value);
+      const nextText = await (await item.getType("text/plain")).text();
+      if (version === writeVersion) remember(nextText);
     }
   });
-  replace("read", async () => {
+  replace("read", async function (this: unknown) {
+    assertReceiver(this, "read");
+    assertReadAllowed("read");
     if (items.length > 0) return [...items];
     return text === ""
       ? []
@@ -128,7 +167,6 @@ export function installClipboardHooks(options: ClipboardHookOptions): () => void
     items = [];
     remember(copiedText(event, view));
     event.preventDefault?.();
-    event.stopImmediatePropagation?.();
     event.clipboardData?.clearData?.();
   };
   const onCut = (event: CopyEventLike): void => {
@@ -136,18 +174,20 @@ export function installClipboardHooks(options: ClipboardHookOptions): () => void
     view.document?.execCommand("delete");
   };
   const onPaste = (event: CopyEventLike): void => {
+    // Untrusted synthetic ClipboardEvents carry no OS clipboard data; let page listeners run.
+    if (event.isTrusted === false) return;
     // This fallback covers remote context-menu paste. Client keyboard paste uses Input.insertText.
     event.preventDefault?.();
     event.stopImmediatePropagation?.();
     if (text) view.document?.execCommand("insertText", false, text);
   };
-  view.addEventListener("copy", onCopy, true);
-  view.addEventListener("cut", onCut, true);
+  view.addEventListener("copy", onCopy, false);
+  view.addEventListener("cut", onCut, false);
   view.addEventListener("paste", onPaste, true);
 
   return () => {
-    view.removeEventListener("copy", onCopy, true);
-    view.removeEventListener("cut", onCut, true);
+    view.removeEventListener("copy", onCopy, false);
+    view.removeEventListener("cut", onCut, false);
     view.removeEventListener("paste", onPaste, true);
     for (const [name, { owner, descriptor }] of prototypeDescriptors)
       Object.defineProperty(owner, name, descriptor);

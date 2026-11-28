@@ -316,6 +316,7 @@ describe("asset fetch lanes", () => {
       expect(options.headers["sec-ch-ua"]).toContain('"Google Chrome";v="134"');
       expect(options.headers["sec-ch-ua"]).toContain('"Not:A-Brand";v="24"');
       expect(options.headers["sec-ch-ua-platform"]).toBe('"macOS"');
+      expect(options.headers["accept-language"]).toBe("en-US,en;q=0.9");
       return directResponse(
         "partial",
         {
@@ -346,6 +347,36 @@ describe("asset fetch lanes", () => {
       "Network.getCookies",
       "Browser.getVersion",
     ]);
+  });
+
+  it("rotates the session dispatcher immediately when a workspace switches proxy URL", async () => {
+    let currentProxy: string | undefined = "http://10.253.0.2:8780";
+    const dispatchers: unknown[] = [];
+    const send = vi.fn<CdpSend>(async (_sessionId, method) => {
+      if (method === "Network.getCookies") return { cookies: [] };
+      if (method === "Browser.getVersion") return { userAgent: "Chrome/134.0.0.0" };
+      throw new Error(`Unexpected: ${method}`);
+    });
+    const fetcher = createAssetFetcher({
+      send,
+      sessionFor: () => "cdp-session-a",
+      proxyFor: () => currentProxy,
+      directRequest: async (_url, options) => {
+        dispatchers.push(options.dispatcher);
+        return directResponse("ok", { "content-type": "audio/mpeg" }, 206);
+      },
+    });
+    try {
+      await fetcher.fetch({ ref, range: "bytes=0-1" });
+      await fetcher.fetch({ ref, range: "bytes=0-1" });
+      expect(dispatchers[0]).toBe(dispatchers[1]);
+
+      currentProxy = "http://10.253.0.6:8780";
+      await fetcher.fetch({ ref, range: "bytes=0-1" });
+      expect(dispatchers[2]).not.toBe(dispatchers[0]);
+    } finally {
+      await fetcher.close();
+    }
   });
 
   it("streams decoded CDP chunks without stale upstream encoding or length headers", async () => {

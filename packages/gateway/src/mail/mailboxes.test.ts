@@ -134,6 +134,7 @@ it("routes verified delivery to matching addresses and serves message bodies onl
     expect(detail.json()).toEqual({
       message: {
         ...summary,
+        authenticated: true,
         text: "Code: 123456 Verify [https://example.com/verify]",
         html: '<div class="mail-canvas"><p>Code: <strong>123456</strong> <button type="button" class="mail-remote-link" data-mail-url="https://example.com/verify">Verify</button></p></div>',
       },
@@ -143,13 +144,17 @@ it("routes verified delivery to matching addresses and serves message bodies onl
     });
     fetcher.mockResolvedValueOnce(
       Response.json({
-        from: "sender@example.com",
+        from: "sender\u202e@example.com",
         text: "Unverified email",
         headers: { "authentication-results": "dmarc=pass" },
       }),
     );
-    expect(await store.readMessage("owner", first.id, "test-email")).toMatchObject({
-      authenticated: false,
+    const unverified = await app.inject({ url: `${messages}/test-email`, headers: owner });
+    expect(unverified.json()).toMatchObject({
+      message: {
+        from: "sender@example.com",
+        authenticated: false,
+      },
     });
     fetcher.mockResolvedValueOnce(
       Response.json({

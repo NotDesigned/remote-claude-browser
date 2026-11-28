@@ -27,7 +27,28 @@ type StitchKind = "sync" | "sync-ready" | "ready" | "ack";
  * sync that answers a ready (the `ready: true` of the fixed-name form).
  */
 const KEYED: Record<StitchKind, number> = { sync: 1, ready: 2, ack: 3, "sync-ready": 4 };
+const hasOwn = Object.prototype.hasOwnProperty;
+const apply = Reflect.apply;
+const nativeAddWindowListener =
+  typeof EventTarget !== "undefined" ? EventTarget.prototype.addEventListener : undefined;
+const nativeRemoveWindowListener =
+  typeof EventTarget !== "undefined" ? EventTarget.prototype.removeEventListener : undefined;
 let stitchKey = "";
+
+function addStitchListener(target: Window, listener: (event: MessageEvent) => void): () => void {
+  if (nativeAddWindowListener && nativeRemoveWindowListener && target instanceof EventTarget) {
+    apply(nativeAddWindowListener, target, ["message", listener, true]);
+    return () => {
+      apply(nativeRemoveWindowListener, target, ["message", listener, true]);
+    };
+  }
+  target.addEventListener("message", listener, true);
+  return () => target.removeEventListener("message", listener, true);
+}
+
+function consumeKeyedStitchEvent(event: MessageEvent): void {
+  if (stitchKey !== "") event.stopImmediatePropagation?.();
+}
 
 /**
  * Hardening: frames of one browser exchange `{[key]: n}` instead of messages with fixed names a
@@ -50,6 +71,7 @@ function stitchMessage(kind: StitchKind): unknown {
 export function readStitchMessage(data: unknown): StitchKind | null {
   if (typeof data !== "object" || data === null) return null;
   if (stitchKey !== "") {
+    if (!apply(hasOwn, data, [stitchKey])) return null;
     const value = (data as Record<string, unknown>)[stitchKey];
     for (const kind of Object.keys(KEYED) as StitchKind[]) if (KEYED[kind] === value) return kind;
     return null;
@@ -115,15 +137,16 @@ export function broadcastStitchSync(target: Window = window): void {
 
 export function installStitchReadyListener(target: Window = window): () => void {
   const onMessage = (event: MessageEvent): void => {
-    if (readStitchMessage(event.data) !== "ready" || event.source === null) return;
+    if (readStitchMessage(event.data) !== "ready") return;
+    consumeKeyedStitchEvent(event);
+    if (event.source === null) return;
 
     // Reply directly to the ready child. A nested child forwards the resulting sync to its own
     // descendants, preserving the depth>=2 path without waking unrelated sibling recorders.
     (event.source as Window).postMessage(stitchMessage("sync-ready"), "*");
   };
 
-  target.addEventListener("message", onMessage);
-  return () => target.removeEventListener("message", onMessage);
+  return addStitchListener(target, onMessage);
 }
 
 interface SerializedTree {
@@ -210,10 +233,12 @@ export function acknowledgeAttachedDocument(
 export function installStitchSyncForwarder(target: Window = window): () => void {
   const onMessage = (event: MessageEvent): void => {
     const kind = readStitchMessage(event.data);
-    if (kind === "sync" || kind === "sync-ready") broadcastStitchSync(target);
+    if (kind === "sync" || kind === "sync-ready") {
+      consumeKeyedStitchEvent(event);
+      broadcastStitchSync(target);
+    }
   };
-  target.addEventListener("message", onMessage);
-  return () => target.removeEventListener("message", onMessage);
+  return addStitchListener(target, onMessage);
 }
 
 export function installStitchSyncListener(
@@ -274,6 +299,7 @@ export function installStitchSyncListener(
   const onMessage = (event: MessageEvent): void => {
     const kind = readStitchMessage(event.data);
     if (kind === "ack") {
+      consumeKeyedStitchEvent(event);
       acknowledged = true;
       // The frame above took in a snapshot of this document after the request that is waiting
       // was sent, which is all that request asked for.
@@ -285,6 +311,7 @@ export function installStitchSyncListener(
       return;
     }
     if (kind !== "sync" && kind !== "sync-ready") return;
+    consumeKeyedStitchEvent(event);
     // The answer to this document's ready message, whose snapshot the frame above already has.
     if (kind === "sync-ready" && acknowledged && !pendingSnapshot) return;
 
@@ -300,10 +327,10 @@ export function installStitchSyncListener(
     honorPendingSnapshot(true);
   };
 
-  target.addEventListener("message", onMessage);
+  const removeWindowListener = addStitchListener(target, onMessage);
   return () => {
     removeRecorderStartedListener();
     if (pendingTimer !== null) clearTimeout(pendingTimer);
-    target.removeEventListener("message", onMessage);
+    removeWindowListener();
   };
 }

@@ -96,6 +96,12 @@ describe("clipboard hooks", () => {
     await clipboard.writeText("kept in the page");
     expect(nativeWrite).not.toHaveBeenCalled();
     expect(clips).toEqual(["kept in the page"]);
+    await expect(
+      (Clipboard.prototype as unknown as { writeText(v: string): Promise<void> }).writeText.call(
+        {},
+        "bad",
+      ),
+    ).rejects.toThrow(/Illegal invocation/);
     cleanup();
     expect(Object.getOwnPropertyDescriptor(Clipboard.prototype, "writeText")).toEqual(before);
   });

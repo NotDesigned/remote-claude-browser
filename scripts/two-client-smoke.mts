@@ -687,12 +687,24 @@ try {
     await evaluate("a", first.sid, aTab, "navigator.clipboard.readText()"),
     "A native API private",
   );
-  assert.equal(await evaluate("b", second.sid, bTab, "navigator.clipboard.readText()"), "");
+  assert.equal(
+    await evaluate(
+      "b",
+      second.sid,
+      bTab,
+      "navigator.clipboard.readText().then(v => v, e => e.name)",
+    ),
+    "NotAllowedError",
+  );
   await evaluate(
     "b",
     second.sid,
     bTab,
     "navigator.clipboard.writeText('B native API private').then(() => true)",
+  );
+  assert.equal(
+    await evaluate("b", second.sid, bTab, "navigator.clipboard.readText()"),
+    "B native API private",
   );
   assert.equal(
     await evaluate("a", first.sid, aTab, "navigator.clipboard.readText()"),

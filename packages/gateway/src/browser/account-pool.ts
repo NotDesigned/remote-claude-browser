@@ -198,6 +198,7 @@ export function createAccountPool(deps: AccountPoolDeps) {
       ownerOf: (targetId) => pool.ownerOf(targetId),
       isPhoneSession: deps.isPhoneSession,
       screen: identity.screen,
+      nativeScreen: Boolean(identity.fingerprint),
       onError: (error) => report("phone identity failed", error),
     });
     const themeCopies = createThemeCopies(browser.send);

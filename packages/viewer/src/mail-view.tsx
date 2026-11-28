@@ -130,34 +130,58 @@ button.mail-remote-link:focus-visible {
 }
 `;
 
+function isPrivateIpv4(a: number, b: number): boolean {
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    a >= 224
+  );
+}
+
+export function stripBidiControls(value: string): string {
+  return value.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "");
+}
+
 export function isPrivateMailHostname(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const host = hostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.+$/, "");
   if (
+    host === "" ||
     host === "localhost" ||
     host.endsWith(".localhost") ||
     host === "0.0.0.0" ||
     host === "::" ||
     host === "::1" ||
-    /^(?:fe80|fc[0-9a-f]{2}|fd[0-9a-f]{2}):/i.test(host)
+    /^(?:0+:){0,7}0*1$/i.test(host) ||
+    /^(?:0+:){1,7}0*$/i.test(host) ||
+    /^(?:fe[89ab][0-9a-f]|fc[0-9a-f]{2}|fd[0-9a-f]{2}|64:ff9b):/i.test(host)
   ) {
     return true;
   }
   const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
   if (ipv4) {
-    const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
-    if (
-      a === 0 ||
-      a === 10 ||
-      a === 127 ||
-      (a === 100 && b >= 64 && b <= 127) ||
-      (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      (a === 198 && (b === 18 || b === 19)) ||
-      a >= 224
-    ) {
-      return true;
-    }
+    return isPrivateIpv4(Number(ipv4[1]), Number(ipv4[2]));
+  }
+  const mappedHex =
+    /^(?:::(?:ffff:)?|(?:0+:){5}(?:ffff:|0+:))([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
+  if (mappedHex) {
+    const hi = Number.parseInt(mappedHex[1]!, 16);
+    return isPrivateIpv4((hi >> 8) & 0xff, hi & 0xff);
+  }
+  const mappedDot =
+    /^(?:::(?:ffff:)?|(?:0+:){5}(?:ffff:|0+:))(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/i.exec(
+      host,
+    );
+  if (mappedDot) {
+    return isPrivateIpv4(Number(mappedDot[1]), Number(mappedDot[2]));
   }
   return false;
 }

@@ -59,6 +59,19 @@ describe("createPhoneTargetPreparer", () => {
     expect(methods(send)).toEqual(["Emulation.setDeviceMetricsOverride"]);
   });
 
+  it("preserves native OS screen metrics on AliasMode desktop profiles", async () => {
+    const send = vi.fn(async () => ({}));
+    const prepare = createPhoneTargetPreparer({
+      send,
+      ownerOf: () => "client-1",
+      isPhoneSession: () => false,
+      nativeScreen: true,
+      sleep: async () => {},
+    });
+    await prepare(page);
+    expect(methods(send)).toEqual([]);
+  });
+
   it("waits for a new window's owner to be known", async () => {
     let calls = 0;
     const { send, sleep, prepare } = setup(() => (++calls > 3 ? "client-1" : undefined));

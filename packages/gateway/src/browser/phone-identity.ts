@@ -21,6 +21,8 @@ export interface PhoneIdentityDeps {
   ownerOf(targetId: string): string | undefined;
   isPhoneSession(sid: string): boolean;
   screen?: Screen;
+  /** True when the browser engine sets realistic OS screen metrics natively (AliasMode). */
+  nativeScreen?: boolean;
   sleep?(ms: number): Promise<void>;
   onError?(error: unknown): void;
 }
@@ -44,22 +46,27 @@ export function createPhoneTargetPreparer(deps: PhoneIdentityDeps) {
   return async (target: TargetRef): Promise<void> => {
     const owner = await waitForOwner(target, deps);
     if (owner === undefined || target.type !== "page") return;
-    const commands = [
-      deps.send(target.sessionId, "Emulation.setDeviceMetricsOverride", {
-        width: 0,
-        height: 0,
-        deviceScaleFactor: 0,
-        mobile: false,
-        ...screenMetrics(0, 0, false, deps.screen),
-      }),
-    ];
-    if (deps.isPhoneSession(owner))
+    const phone = deps.isPhoneSession(owner);
+    const commands: Promise<unknown>[] = [];
+    if (!deps.nativeScreen || phone) {
+      commands.push(
+        deps.send(target.sessionId, "Emulation.setDeviceMetricsOverride", {
+          width: 0,
+          height: 0,
+          deviceScaleFactor: 0,
+          mobile: false,
+          ...screenMetrics(0, 0, false, deps.screen),
+        }),
+      );
+    }
+    if (phone)
       commands.push(
         deps.send(target.sessionId, "Emulation.setTouchEmulationEnabled", {
           enabled: true,
           maxTouchPoints: 5,
         }),
       );
-    void Promise.all(commands).catch((error: unknown) => deps.onError?.(error));
+    if (commands.length > 0)
+      void Promise.all(commands).catch((error: unknown) => deps.onError?.(error));
   };
 }

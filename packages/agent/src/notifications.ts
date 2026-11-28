@@ -355,13 +355,16 @@ export function installNotificationShim(
   });
 
   // A service worker registration's notifications, shown from the page.
-  const registration = target.ServiceWorkerRegistration?.prototype;
+  const NativeRegistration = target.ServiceWorkerRegistration;
+  const registration = NativeRegistration?.prototype;
   if (registration !== undefined) {
     defineProperty(registration, "showNotification", {
       value: asNative(
         function showNotification(this: unknown, title: unknown, options?: unknown) {
           const context = "Failed to execute 'showNotification' on 'ServiceWorkerRegistration'";
           try {
+            if (typeof NativeRegistration === "function" && !(this instanceof NativeRegistration))
+              throw new NativeTypeError(`${context}: Illegal invocation`);
             if (arguments.length < 1)
               throw new NativeTypeError(`${context}: 1 argument required, but only 0 present.`);
             if (permission !== "granted")
@@ -383,7 +386,14 @@ export function installNotificationShim(
     });
     defineProperty(registration, "getNotifications", {
       value: asNative(
-        function getNotifications(filter?: { tag?: unknown }) {
+        function getNotifications(this: unknown, filter?: { tag?: unknown }) {
+          if (typeof NativeRegistration === "function" && !(this instanceof NativeRegistration)) {
+            return NativePromise.reject(
+              new NativeTypeError(
+                "Failed to execute 'getNotifications' on 'ServiceWorkerRegistration': Illegal invocation",
+              ),
+            );
+          }
           const tag = filter?.tag === undefined ? "" : String(filter.tag);
           const open = [...shown.values()].filter((notification) => {
             const state = states.get(notification)!;
@@ -402,6 +412,7 @@ export function installNotificationShim(
 
   // navigator.permissions.query({ name: "notifications" }) answers with the same state.
   const statuses = new Set<PermissionStatus>();
+  let statusProtoHooked = false;
   const stateGetter = asNative(() => permission, "get state", 0);
   const permissions = target.Permissions?.prototype;
   if (permissions !== undefined && typeof permissions.query === "function") {
@@ -414,7 +425,32 @@ export function installNotificationShim(
           const name = (descriptor as { name?: unknown } | null | undefined)?.name;
           if (name !== "notifications") return result;
           return result.then((status) => {
-            defineProperty(status, "state", { get: stateGetter, configurable: true });
+            const statusProto = Object.getPrototypeOf(status) as object | null;
+            const protoDesc = statusProto
+              ? Object.getOwnPropertyDescriptor(statusProto, "state")
+              : undefined;
+            if (statusProto !== null && typeof protoDesc?.get === "function") {
+              if (!statusProtoHooked) {
+                statusProtoHooked = true;
+                const prevGet = protoDesc.get;
+                const getProtoState = function (this: PermissionStatus) {
+                  if (statuses.has(this)) return permission;
+                  return prevGet.call(this);
+                };
+                if (mask !== undefined) {
+                  mask.accessor(statusProto, "state", {
+                    get: getProtoState as unknown as (this: never) => unknown,
+                  });
+                } else {
+                  defineProperty(statusProto, "state", {
+                    ...protoDesc,
+                    get: asNative(getProtoState, "get state", 0),
+                  });
+                }
+              }
+            } else {
+              defineProperty(status, "state", { get: stateGetter, configurable: true });
+            }
             statuses.add(status);
             return status;
           });

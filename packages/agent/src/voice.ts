@@ -394,14 +394,25 @@ export function installVoiceBridge(
     return track;
   };
   const devices = target.navigator.mediaDevices as MediaDevices | undefined;
+  const NativeMediaDevices = (target as unknown as { MediaDevices?: Function }).MediaDevices;
   if (devices !== undefined) {
-    const nativeGetUserMedia = devices.getUserMedia.bind(devices);
-    const getUserMedia = async (constraints?: MediaStreamConstraints): Promise<MediaStream> => {
-      if (!constraints?.audio) return nativeGetUserMedia(constraints);
+    const rawGetUserMedia = devices.getUserMedia;
+    const getUserMedia = async function (
+      this: MediaDevices,
+      constraints?: MediaStreamConstraints,
+    ): Promise<MediaStream> {
+      const validReceiver =
+        typeof NativeMediaDevices === "function"
+          ? this instanceof NativeMediaDevices
+          : this === devices;
+      if (!validReceiver || !constraints?.audio) {
+        // eslint-disable-next-line prefer-rest-params
+        return rawGetUserMedia.apply(this, arguments as unknown as [MediaStreamConstraints]);
+      }
       if (!(await openMic()))
-        throw new DOMException("The microphone was not allowed", "NotAllowedError");
+        throw new target.DOMException("The microphone was not allowed", "NotAllowedError");
       const stream = constraints.video
-        ? await nativeGetUserMedia({ video: constraints.video })
+        ? await rawGetUserMedia.call(this, { video: constraints.video })
         : new NativeMediaStream();
       stream.addTrack(issueTrack());
       return stream;
@@ -413,9 +424,10 @@ export function installVoiceBridge(
     else devices.getUserMedia = getUserMedia;
 
     if (mask !== undefined && typeof devices.enumerateDevices === "function") {
-      const nativeEnumerate = devices.enumerateDevices.bind(devices);
-      const enumerateDevices = async (): Promise<MediaDeviceInfo[]> => {
-        const list = await nativeEnumerate();
+      const rawEnumerate = devices.enumerateDevices;
+      const enumerateDevices = async function (this: MediaDevices): Promise<MediaDeviceInfo[]> {
+        // eslint-disable-next-line prefer-rest-params
+        const list = await rawEnumerate.apply(this, arguments as unknown as []);
         if (!micGrantedOnce) return list;
         hookDeviceInfoPrototype();
         const existingAudio = list.find((item) => item.kind === "audioinput");
@@ -448,6 +460,7 @@ export function installVoiceBridge(
   }
   const permissionsProto = (target as unknown as { Permissions?: { prototype: Permissions } })
     .Permissions?.prototype;
+  let micStatusProtoHooked = false;
   if (
     mask !== undefined &&
     permissionsProto !== undefined &&
@@ -455,22 +468,27 @@ export function installVoiceBridge(
   ) {
     const nativeQuery = permissionsProto.query;
     const query = function (this: Permissions, descriptor: PermissionDescriptor) {
-      const result = nativeQuery.apply(this, [descriptor]);
+      // eslint-disable-next-line prefer-rest-params
+      const result = nativeQuery.apply(this, arguments as unknown as [PermissionDescriptor]);
       const name = (descriptor as { name?: unknown } | null | undefined)?.name;
       if (name !== "microphone") return result;
       return result.then((status) => {
-        const protoDesc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(status), "state");
-        const nativeGetState = protoDesc?.get;
-        const stateGetter = () =>
-          micGrantedOnce
-            ? "granted"
-            : nativeGetState
-              ? (nativeGetState.call(status) as PermissionState)
-              : status.state;
-        Object.defineProperty(status, "state", {
-          get: mask.asNativeNamed(stateGetter, "get state", 0) as () => PermissionState,
-          configurable: true,
-        });
+        const statusProto = Object.getPrototypeOf(status) as object | null;
+        const protoDesc = statusProto
+          ? Object.getOwnPropertyDescriptor(statusProto, "state")
+          : undefined;
+        if (statusProto !== null && typeof protoDesc?.get === "function") {
+          if (!micStatusProtoHooked) {
+            micStatusProtoHooked = true;
+            const prevGet = protoDesc.get;
+            mask.accessor(statusProto, "state", {
+              get: function (this: PermissionStatus) {
+                if (micStatuses.has(this) && micGrantedOnce) return "granted";
+                return prevGet.call(this);
+              } as unknown as (this: never) => unknown,
+            });
+          }
+        }
         micStatuses.add(status);
         return status;
       });

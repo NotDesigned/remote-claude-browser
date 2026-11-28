@@ -34,10 +34,24 @@ export function installClosedShadowShim(mask?: NativeMask): void {
     return;
   const getNativeShadowRoot = nativeShadowRootGetter;
   const getNativeMode = nativeModeGetter;
+  const ElementCtor = Element;
+  const apply = Reflect.apply;
 
   function attachShadow(this: Element, init: ShadowRootInit): ShadowRoot {
-    const requestedClosed = init.mode === "closed";
-    const root = nativeAttachShadow.call(this, requestedClosed ? { ...init, mode: "open" } : init);
+    if (
+      !(this instanceof ElementCtor) ||
+      arguments.length < 1 ||
+      typeof init !== "object" ||
+      init === null
+    ) {
+      // eslint-disable-next-line prefer-rest-params
+      return apply(nativeAttachShadow, this, arguments) as ShadowRoot;
+    }
+    const modeValue = init.mode;
+    const requestedClosed = modeValue === "closed";
+    const root = apply(nativeAttachShadow, this, [
+      requestedClosed ? { ...init, mode: "open" } : init,
+    ]) as ShadowRoot;
     if (requestedClosed) {
       closedRoots.set(this, root);
       coercedRoots.add(root);

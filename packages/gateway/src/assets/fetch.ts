@@ -125,8 +125,11 @@ export function createAssetFetcher(deps: AssetFetcherDeps): ManagedAssetFetcher 
     refused: { range: 0, "cdp-failed": 0 },
   };
   let lastRefusalReport = Number.NEGATIVE_INFINITY;
-  // One connection pool per workspace, so no TLS session or socket crosses between them.
-  const pools = new Map<string, { dispatcher: Agent | ProxyAgent; closed: boolean }>();
+  // One connection pool per workspace, rotated immediately if the workspace's proxy URL changes.
+  const pools = new Map<
+    string,
+    { proxy: string | undefined; dispatcher: Agent | ProxyAgent; closed: boolean }
+  >();
   const closeSession = async (sessionId: string): Promise<void> => {
     const pool = pools.get(sessionId);
     pools.delete(sessionId);
@@ -138,29 +141,37 @@ export function createAssetFetcher(deps: AssetFetcherDeps): ManagedAssetFetcher 
 
   return {
     async fetch(request) {
+      const currentProxy = deps.proxyFor?.(request.ref);
       let pool = pools.get(request.ref.sessionId);
+      if (pool && pool.proxy !== currentProxy) {
+        pools.delete(request.ref.sessionId);
+        pool.closed = true;
+        void pool.dispatcher.destroy().catch(() => undefined);
+        pool = undefined;
+      }
       if (!pool) {
-        const proxy = deps.proxyFor?.(request.ref);
         // Without a profile proxy (whose rules reject private ranges) the gateway connects itself;
         // the public-only agent pins each connection to the addresses it checked.
         pool = {
-          dispatcher: proxy
-            ? new ProxyAgent(proxy)
+          proxy: currentProxy,
+          dispatcher: currentProxy
+            ? new ProxyAgent(currentProxy)
             : (deps.directDispatcher ?? createPublicOnlyAgent)(),
           closed: false,
         };
         pools.set(request.ref.sessionId, pool);
       }
+      const activePool = pool;
       const cdpSessionId = await deps.sessionFor(request.ref);
-      if (pool.closed || cdpSessionId === undefined) {
+      if (activePool.closed || cdpSessionId === undefined) {
         throw new Error(`Asset tab is not attached: ${request.ref.tabId}`);
       }
       // A request whose workspace was released while it looked up credentials must not go out.
       const directRequest: DirectRequest = (url, options) => {
-        if (pool.closed) throw new Error("Asset session was closed");
+        if (activePool.closed) throw new Error("Asset session was closed");
         return (deps.directRequest ?? defaultDirectRequest)(url, {
           ...options,
-          dispatcher: pool.dispatcher,
+          dispatcher: activePool.dispatcher,
         });
       };
 
@@ -373,6 +384,7 @@ async function fetchDirect(
   if (hardened) {
     Object.assign(headers, clientHintHeaders(userAgent, target.protocol === "https:"));
     headers.accept = "*/*";
+    headers["accept-language"] = "en-US,en;q=0.9";
     headers["accept-encoding"] =
       request.range !== undefined ? "identity;q=1, *;q=0" : "gzip, deflate, br";
   }

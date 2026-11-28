@@ -974,7 +974,7 @@ async function checkAcks(label: string, name: string, page: Page, acks: AckHarne
   // arrives in bursts after each stall, and the text is read after the ack went out: the next
   // burst can already be in it, so 85 % there.
   const hashed = acks.pageHash.match + acks.pageHash.mismatch;
-  const least = name === "textarea" ? 1 : link.lossRate > 0 ? 0.85 : 0.99;
+  const least = name === "textarea" ? 1 : link.lossRate > 0 || link.stallRate > 0 ? 0.85 : 0.99;
   if (hashed > 0)
     assert.ok(
       acks.pageHash.match / hashed >= least,

@@ -104,6 +104,10 @@ export interface ScreencastOpts {
   mobile?: boolean;
   /** The account's screen, for the page's screen metrics. */
   screen?: Screen;
+  /** True when the browser engine owns screen metrics natively (AliasMode personas). */
+  nativeScreen?: boolean;
+  /** Resizes the browser window's content area when leaving pixel grab. */
+  resizeWindow?(tabId: string, width: number, height: number): Promise<void>;
   grab?: ScreenGrab;
   /** How long Chromium's zoom bubble stays up. Tests shorten it. */
   zoomBubbleMs?: number;
@@ -219,13 +223,35 @@ export function createScreencast(opts: ScreencastOpts): ScreencastController {
   const applyMetrics = async (state: TabState, zoom: number): Promise<void> => {
     const viewport = state.hub.viewport;
     if (!viewport) return;
+    const targetWidth = Math.round(viewport.w * zoom);
+    const targetHeight = Math.round(viewport.h * zoom);
+    const screenLimit = opts.screen ?? { width: 1920, height: 1080 };
+    if (
+      opts.nativeScreen === true &&
+      opts.resizeWindow !== undefined &&
+      opts.mobile !== true &&
+      zoom <= 1 &&
+      !state.hub.pixelGrabbing &&
+      targetWidth >= 520 &&
+      targetHeight >= 240 &&
+      targetWidth <= screenLimit.width &&
+      targetHeight <= screenLimit.height
+    ) {
+      await opts
+        .resizeWindow(state.target.targetId, targetWidth, targetHeight)
+        .catch(() => undefined);
+      await sendBounded(state, "Emulation.clearDeviceMetricsOverride").catch(() => undefined);
+      return;
+    }
     await sendBounded(state, "Emulation.setDeviceMetricsOverride", {
-      width: Math.round(viewport.w * zoom),
-      height: Math.round(viewport.h * zoom),
+      width: targetWidth,
+      height: targetHeight,
       deviceScaleFactor: zoom > 1 || state.hub.pixelGrabbing ? 1 : viewport.dpr,
       // Browser zoom has no effect on a mobile viewport. The layout is the same width either way.
       mobile: opts.mobile === true && zoom <= 1,
-      ...screenMetrics(viewport.w, viewport.h, opts.mobile === true, opts.screen),
+      ...(opts.nativeScreen && opts.mobile !== true
+        ? {}
+        : screenMetrics(viewport.w, viewport.h, opts.mobile === true, opts.screen)),
     });
   };
   const pageDensity = async (state: TabState): Promise<number> => {

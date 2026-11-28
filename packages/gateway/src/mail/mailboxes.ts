@@ -13,6 +13,10 @@ const MAILBOX_PATH = "/api/me/mailboxes";
 const CLAIM_PATH = `${MAILBOX_PATH}/claims`;
 const CLAIM_VALID_MS = 10 * 60_000;
 const CLAIM_RESEND_MS = 60_000;
+
+function stripBidi(value: string): string {
+  return value.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "");
+}
 /** Addresses a user may hold through their own creating and claiming; admin assignment is exempt. */
 export const MAX_ADDRESSES_PER_USER = 20;
 const addressWords = `
@@ -378,8 +382,8 @@ export async function createMailboxService(options: {
       if (event)
         addMessage.run(
           event.id,
-          event.from,
-          event.subject,
+          stripBidi(event.from),
+          stripBidi(event.subject),
           event.receivedAt,
           event.receivedAt,
           JSON.stringify(event.to),
@@ -498,8 +502,18 @@ export function registerMailboxRoutes(
       requireAddress(userId, addressId);
       const message = await service.readMessage(userId, addressId, messageId);
       if (!message) throw new MailboxError(404, "没有这封邮件");
-      const { id, from, subject, receivedAt, text, html } = message;
-      return { message: { id, from, subject, receivedAt, text, ...(html ? { html } : {}) } };
+      const { id, from, subject, receivedAt, text, html, authenticated } = message;
+      return {
+        message: {
+          id,
+          from: stripBidi(from),
+          subject: stripBidi(subject),
+          receivedAt,
+          text,
+          authenticated,
+          ...(html ? { html } : {}),
+        },
+      };
     },
   );
   if (service.enabled)

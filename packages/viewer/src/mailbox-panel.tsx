@@ -9,7 +9,12 @@ import {
   type MailboxContents,
   type MailboxMessage,
 } from "./mailboxes";
-import { extractSanitizedHtmlLinks, isPrivateMailHostname, MailHtmlView } from "./mail-view";
+import {
+  extractSanitizedHtmlLinks,
+  isPrivateMailHostname,
+  MailHtmlView,
+  stripBidiControls,
+} from "./mail-view";
 import "./user-panel.css";
 import "./mailbox-panel.css";
 
@@ -494,11 +499,17 @@ export function MailboxPanel({
                 )}
               </div>
               <h3 ref={messageHeading} tabIndex={-1}>
-                {selectedMessage.subject || "无主题"}
+                {stripBidiControls(contents?.subject ?? selectedMessage.subject) || "无主题"}
               </h3>
               <p class="user-panel-muted">
-                {selectedMessage.from} · {dateTime.format(selectedMessage.receivedAt)}
+                {stripBidiControls(contents?.from ?? selectedMessage.from)} ·{" "}
+                {dateTime.format(selectedMessage.receivedAt)}
               </p>
+              {contents?.authenticated === false && (
+                <p class="user-panel-message user-panel-error mailbox-auth-warning" role="alert">
+                  发件人域名未通过身份验证（DMARC），请警惕伪造发件人或钓鱼链接。
+                </p>
+              )}
               {contents ? (
                 <>
                   {(() => {
@@ -549,7 +560,7 @@ export function MailboxPanel({
                             <ul class="mailbox-link-list">
                               {links.map((url) => (
                                 <li key={url} class="mailbox-link-item">
-                                  <code class="mailbox-link-url">{url}</code>
+                                  <code class="mailbox-link-url">{stripBidiControls(url)}</code>
                                   <button
                                     type="button"
                                     class="user-panel-save"
@@ -590,9 +601,9 @@ export function MailboxPanel({
                           openMessage(message);
                         }}
                       >
-                        <strong>{message.subject || "无主题"}</strong>
+                        <strong>{stripBidiControls(message.subject) || "无主题"}</strong>
                         <span class="user-panel-muted">
-                          {message.from} · {dateTime.format(message.receivedAt)}
+                          {stripBidiControls(message.from)} · {dateTime.format(message.receivedAt)}
                         </span>
                       </button>
                     </li>

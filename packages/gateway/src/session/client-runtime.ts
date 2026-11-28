@@ -143,6 +143,21 @@ export async function createClientRuntime(
   });
   const isDriver = (id: string) => deps.isDriver(id, sid);
   const phone = deps.sessions.get(sid)?.phone === true;
+  const nativeScreen = Boolean(account.identity.fingerprint);
+  const windowIds = new Map<string, number>();
+  const resizeWindow = scoped.sendBrowser
+    ? async (tab: string, width: number, height: number) => {
+        let windowId = windowIds.get(tab);
+        if (windowId === undefined) {
+          const found = (await scoped.sendBrowser!("Browser.getWindowForTarget", {
+            targetId: tab,
+          })) as { windowId: number };
+          windowId = found.windowId;
+          windowIds.set(tab, windowId);
+        }
+        await scoped.sendBrowser!("Browser.setContentsSize", { windowId, width, height });
+      }
+    : undefined;
   const viewport = createViewportAgreement({
     send: scoped.send,
     sessionFor: (tab) => targets.get(tab)?.sessionId,
@@ -150,6 +165,8 @@ export async function createClientRuntime(
     isDriver,
     mobile: phone,
     screen: account.identity.screen,
+    nativeScreen,
+    ...(resizeWindow ? { resizeWindow } : {}),
     confirmViewport: (_viewer, tab, { w, h }) => publish({ t: "view-ok", tab, w, h }),
   });
   const pixelWindow =
@@ -202,6 +219,7 @@ export async function createClientRuntime(
   // What the input relay keeps per tab goes with the tab.
   scoped.onDetached((target) => {
     if (target.type !== "page" || targets.has(target.targetId)) return;
+    windowIds.delete(target.targetId);
     input.forgetTab(target.targetId);
     deps.onTabClosed?.(sid, target.targetId);
   });
@@ -247,6 +265,8 @@ export async function createClientRuntime(
     ...(account.zoomReady ? { browserZoom } : {}),
     mobile: phone,
     screen: account.identity.screen,
+    nativeScreen,
+    ...(resizeWindow ? { resizeWindow } : {}),
     ...(pixelWindow
       ? {
           grab: {

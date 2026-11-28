@@ -12,8 +12,7 @@
 
 ### 变更
 
-- `?input=proxy` 不再强制打开单写者输入，也不再在标签页里记住：以前在一个标签页里用过它，之后网关关闭单写者输入（`MIRROR_PROXY_INPUT=off`）时这个标签页仍按单写者输入打字，回放里的输入框不显示光标、不能选中文字。现在单写者输入只在网关开启时使用，`?input=legacy` 仍可让单个标签页退回原来的方式；旧版本记住的设置在打开工作台时清除。
-- 单写者输入（`MIRROR_PROXY_INPUT=on`）下输入框的光标和选区像普通输入框一样：始终显示闪烁的光标（空输入框里也有，未确认的文字后面也有）；方向键、Home/End、Ctrl（Mac 上 Option/Command）加方向键、Shift 扩选和 Ctrl/Cmd+A 立即移动光标或显示选区；鼠标点按放置光标，拖动、双击、三击选中，Shift 点按扩选；复制得到选中的文字，在选区上打字或退格会替换、删除它；手机上点按放置光标，键盘自己的光标移动（iOS 空格键拖动、Android 方向键）也会移动网页里的光标。以前这些操作在工作台上看不到光标和选区，左右移动后打的字也可能落错位置。采集脚本报告的选区改为「起点、焦点」顺序，以区分反向选区。
+无
 
 ### 移除
 
@@ -22,6 +21,31 @@
 ### 升级步骤
 
 无
+
+## [0.5.2] - 2026-11-28
+
+### 新增
+
+无
+
+### 变更
+
+- `?input=proxy` 不再强制打开单写者输入，也不再在标签页里记住：以前在一个标签页里用过它，之后网关关闭单写者输入（`MIRROR_PROXY_INPUT=off`）时这个标签页仍按单写者输入打字，回放里的输入框不显示光标、不能选中文字。现在单写者输入只在网关开启时使用，`?input=legacy` 仍可让单个标签页退回原来的方式；旧版本记住的设置在打开工作台时清除。
+- 单写者输入（`MIRROR_PROXY_INPUT=on`）下输入框的光标和选区像普通输入框一样：始终显示闪烁的光标（空输入框里也有，未确认的文字后面也有）；方向键、Home/End、Ctrl（Mac 上 Option/Command）加方向键、Shift 扩选和 Ctrl/Cmd+A 立即移动光标或显示选区；鼠标点按放置光标，拖动、双击、三击选中，Shift 点按扩选；复制得到选中的文字，在选区上打字或退格会替换、删除它；手机上点按放置光标，键盘自己的光标移动（iOS 空格键拖动、Android 方向键）也会移动网页里的光标。以前这些操作在工作台上看不到光标和选区，左右移动后打的字也可能落错位置。采集脚本报告的选区改为「起点、焦点」顺序，以区分反向选区。
+- 出口、指纹与跨帧隔离加固：
+  - AliasMode 桌面配置在常规视口下同步调整真实浏览器窗口内容区并保留内核原生系统栏与屏幕参数，确保顶层页面与跨源验证/支付子帧（如 Cloudflare Turnstile、Stripe）的 `screen`、`outerWidth`/`outerHeight` 与像素密度一致。
+  - 音视频分段（`Range`）直连通道在会话切换浏览器配置或出口地址变更时即时轮换代理连接池，并补齐 `Accept-Language` 请求头与 `192.0.0.0/24` 出口保留网段拦截。
+  - 录制代理预先保存原生 `CustomEvent.prototype.detail` 读取器并在捕获阶段拦截内部跨帧拼接与录制消息，使父子帧页面均无法观测到录制通信；同步收紧隐身验收基线。
+  - 补齐 `Clipboard`、`Element.prototype.attachShadow`、`MediaDevices`、`Permissions`、`ServiceWorkerRegistration` 与 `PermissionStatus` 的原生接收者校验、零参数行为与原型属性归属；`claude.ai` 外观同步改用严格模式原始值通道以避免触发 `Proxy` 陷阱。
+  - 「收件箱」邮件链接过滤补充拦截 IPv4-mapped IPv6、NAT64 与末尾点回环主机名，清理发件人与主题中的双向覆盖控制符并提示未通过 DMARC 的发件人；页面模式样式重写支持 `image-set()` 裸字符串地址。
+
+### 移除
+
+无
+
+### 升级步骤
+
+- 正常升级：`docker compose up -d --build`（使用预构建镜像的，把 `.env` 里的 `SERVER_IMAGE`、`CPA_BROKER_IMAGE`、`CPA_BROKER_ENGINE_IMAGE` 一并更新到 `v0.5.2` 后执行 `docker compose up -d`）。
 
 ## [0.5.1] - 2026-11-28
 
@@ -335,7 +359,9 @@
 
 无
 
-[未发布]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.5.0...HEAD
+[未发布]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/NotDesigned/remote-claude-browser/compare/v0.2.0...v0.3.0

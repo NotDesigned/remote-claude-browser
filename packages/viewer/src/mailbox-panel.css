@@ -69,6 +69,10 @@
   margin: 0;
   font-size: 0.85em;
 }
+.mailbox-auth-warning {
+  margin: 0;
+  font-size: 0.85em;
+}
 .mailbox-html-host {
   min-width: 0;
 }

@@ -507,4 +507,50 @@ describe("createReturnedDocumentCheck", () => {
     isReturned(snapshot);
     expect(isReturned(attach(7))).toBe(false);
   });
+
+  it("stops immediate propagation of keyed stitch messages so page listeners never observe them", () => {
+    setStitchKey("k9x2m7p4q1w8");
+    const child = windowHarness();
+    const stopImmediatePropagation = vi.fn();
+    let registeredCapture: unknown;
+    const origAdd = child.window.addEventListener;
+    child.window.addEventListener = ((
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      capture?: boolean,
+    ) => {
+      registeredCapture = capture;
+      origAdd(type, listener);
+    }) as typeof child.window.addEventListener;
+    const readiness = createRecordReadiness();
+    readiness.markStarted();
+    installStitchSyncListener(child.window, stitchDependencies(readiness, vi.fn()));
+    expect(registeredCapture).toBe(true);
+
+    const listeners = child.window as unknown as Record<string, unknown>;
+    void listeners;
+    // Dispatch a keyed stitch-ack message and verify stopImmediatePropagation is called,
+    // while unrelated page messages are left untouched.
+    const keyedAck = {
+      data: { k9x2m7p4q1w8: 3 },
+      stopImmediatePropagation,
+    } as unknown as MessageEvent;
+    const unrelated = {
+      data: { hello: "world" },
+      stopImmediatePropagation: vi.fn(),
+    } as unknown as MessageEvent;
+    // Trigger via a custom harness listener invoke
+    const capturedListeners: Array<(e: MessageEvent) => void> = [];
+    const h2 = windowHarness();
+    const origAdd2 = h2.window.addEventListener;
+    h2.window.addEventListener = ((t: string, l: EventListenerOrEventListenerObject) => {
+      capturedListeners.push(l as (e: MessageEvent) => void);
+      origAdd2(t, l);
+    }) as typeof h2.window.addEventListener;
+    installStitchSyncListener(h2.window, stitchDependencies(readiness, vi.fn()));
+    capturedListeners[0]!(keyedAck);
+    capturedListeners[0]!(unrelated);
+    expect(stopImmediatePropagation).toHaveBeenCalledOnce();
+    expect(unrelated.stopImmediatePropagation).not.toHaveBeenCalled();
+  });
 });
