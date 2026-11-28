@@ -19,7 +19,14 @@ interface FakeNode {
 
 interface FakeDocument {
   activeElement: FakeNode | null;
-  selection: { node: FakeNode; offset: number; endNode?: FakeNode; endOffset?: number } | null;
+  selection: {
+    node: FakeNode;
+    offset: number;
+    endNode?: FakeNode;
+    endOffset?: number;
+    /** The focus is at the start. */
+    backward?: boolean;
+  } | null;
   getSelection(): unknown;
 }
 
@@ -30,8 +37,18 @@ function fakeDocument(): FakeDocument {
     getSelection() {
       const selection = document.selection;
       if (selection === null) return { rangeCount: 0 };
+      const start = { node: selection.node, offset: selection.offset };
+      const end = {
+        node: selection.endNode ?? selection.node,
+        offset: selection.endOffset ?? selection.offset,
+      };
+      const [anchor, focus] = selection.backward ? [end, start] : [start, end];
       return {
         rangeCount: 1,
+        anchorNode: anchor.node,
+        anchorOffset: anchor.offset,
+        focusNode: focus.node,
+        focusOffset: focus.offset,
         getRangeAt: () => ({
           startContainer: selection.node,
           startOffset: selection.offset,
@@ -178,6 +195,45 @@ describe("fence", () => {
       edit: { node: 30, len: 11, hash: editHash("hello\nworld"), sel: [9, 9] },
       text: "hello\nworld",
     });
+  });
+
+  it("reports a selection as [anchor, focus], backward ones too", async () => {
+    const document = fakeDocument();
+    const words = text("hello world");
+    const host = editable(document, "div", [element(document, "p", [words])]);
+    document.activeElement = host;
+    document.selection = { node: words, offset: 6, endOffset: 11, backward: true };
+    const textarea = element(document, "textarea", [], {
+      value: "hello world",
+      selectionStart: 6,
+      selectionEnd: 11,
+      selectionDirection: "backward",
+      disabled: false,
+      readOnly: false,
+    });
+    const { handler, messages, settled } = harness(
+      document,
+      new Map([
+        [host, 4],
+        [textarea, 5],
+      ]),
+    );
+    handler({ cmd: "fence", reqId: 1, n: 1 });
+    await settled();
+    document.selection = { node: words, offset: 6, endOffset: 11 };
+    handler({ cmd: "fence", reqId: 2, n: 2 });
+    await settled();
+    document.activeElement = textarea;
+    handler({ cmd: "fence", reqId: 3, n: 3 });
+    await settled();
+    const sels = messages
+      .filter((message) => message.kind === "fence")
+      .map((message) => (message as { edit: { sel: number[] } }).edit.sel);
+    expect(sels).toEqual([
+      [11, 6],
+      [6, 11],
+      [11, 6],
+    ]);
   });
 
   it("reads a ProseMirror composer, trailing break and all", async () => {

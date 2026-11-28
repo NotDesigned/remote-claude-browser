@@ -76,7 +76,8 @@ export const LOCAL_RESYNC_REASON = "editable";
 /**
  * What the page's focused editable holds, never its text: its recorder id (-1 inside a
  * cross-origin frame), the length and editHash of its normalized text, and the selection as
- * offsets into that text. A password field reports its length only (hash "").
+ * offsets into that text, [anchor, focus]: a backward selection has the larger offset first
+ * (agents before that sent [start, end]). A password field reports its length only (hash "").
  */
 export interface EditState {
   node: number;

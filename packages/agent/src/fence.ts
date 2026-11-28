@@ -106,12 +106,20 @@ export function readFocusedField(
     const start =
       typeof control.selectionStart === "number" ? control.selectionStart : value.length;
     const end = typeof control.selectionEnd === "number" ? control.selectionEnd : start;
+    // Anchor first, focus second: the viewer draws its caret at the focus.
+    const backward = control.selectionDirection === "backward";
+    const [anchor, focusAt] = backward ? [end, start] : [start, end];
     if (focus.password === true || wasPassword(control))
-      return { edit: { node, len: value.length, hash: "", sel: [start, end] }, text: null };
+      return { edit: { node, len: value.length, hash: "", sel: [anchor, focusAt] }, text: null };
     const text = normalizeEditableText(value);
     const clamp = (at: number) => Math.max(0, Math.min(at, text.length));
     return {
-      edit: { node, len: text.length, hash: editHash(value), sel: [clamp(start), clamp(end)] },
+      edit: {
+        node,
+        len: text.length,
+        hash: editHash(value),
+        sel: [clamp(anchor), clamp(focusAt)],
+      },
       text,
     };
   }
@@ -127,6 +135,12 @@ export function readFocusedField(
     const start = editableOffset(host, range.startContainer, range.startOffset);
     const end = editableOffset(host, range.endContainer, range.endOffset);
     if (start >= 0 && end >= 0) sel = [clamp(start), clamp(end)];
+    // Anchor first, focus second, where the selection says which end is which.
+    if (selection.anchorNode && selection.focusNode && start !== end) {
+      const anchor = editableOffset(host, selection.anchorNode, selection.anchorOffset);
+      const focusAt = editableOffset(host, selection.focusNode, selection.focusOffset);
+      if (anchor >= 0 && focusAt >= 0 && anchor > focusAt) sel = [clamp(end), clamp(start)];
+    }
   }
   return { edit: { node: getId(host), len: text.length, hash: editHash(raw), sel }, text };
 }
