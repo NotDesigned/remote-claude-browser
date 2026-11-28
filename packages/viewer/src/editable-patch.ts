@@ -16,6 +16,7 @@
  */
 import { Replayer } from "@rrweb/replay";
 import { EventType, MIRROR_RECORD_CLASSES, type eventWithTime } from "@mirror/protocol";
+import { caretFromEnd, placeCaretFromEnd } from "./input/caret-tail";
 
 type ReplayMirror = ReturnType<Replayer["getMirror"]>;
 
@@ -40,60 +41,6 @@ export type EditablePatchOptions = Omit<SubtreePatchOptions, "restoreCaret">;
 /** True when the editor now holds what the page's editor holds. */
 export function patchEditable(options: EditablePatchOptions): boolean {
   return patchSubtree({ ...options, restoreCaret: true });
-}
-
-/** Text offset of the caret, counted from the end of the editor's text; null when not inside. */
-function caretFromEnd(editor: HTMLElement): number | null {
-  const selection = editor.ownerDocument.getSelection();
-  if (selection === null || selection.rangeCount === 0 || selection.focusNode === null) return null;
-  if (!editor.contains(selection.focusNode)) return null;
-  try {
-    const rest = editor.ownerDocument.createRange();
-    rest.setStart(selection.focusNode, selection.focusOffset);
-    rest.setEnd(editor, editor.childNodes.length);
-    return rest.toString().length;
-  } catch {
-    return null;
-  }
-}
-
-/** Puts a collapsed caret `fromEnd` characters before the end of the editor's text. */
-function placeCaret(editor: HTMLElement, fromEnd: number): void {
-  const document = editor.ownerDocument;
-  const selection = document.getSelection();
-  if (selection === null) return;
-  const texts: Text[] = [];
-  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
-  for (let node = walker.nextNode(); node !== null; node = walker.nextNode())
-    texts.push(node as Text);
-  let remaining = fromEnd;
-  for (let index = texts.length - 1; index >= 0; index--) {
-    const text = texts[index]!;
-    if (remaining <= text.data.length) {
-      selection.setBaseAndExtent(
-        text,
-        text.data.length - remaining,
-        text,
-        text.data.length - remaining,
-      );
-      return;
-    }
-    remaining -= text.data.length;
-  }
-  // The caret was before all of the text the editor now has: its start.
-  if (texts.length > 0) {
-    selection.setBaseAndExtent(texts[0]!, 0, texts[0]!, 0);
-    return;
-  }
-  // No text (an emptied editor): the start of its first block, where the browser would type.
-  let first: Node = editor;
-  while (
-    first.firstChild !== null &&
-    first.firstChild.nodeType === Node.ELEMENT_NODE &&
-    first.firstChild.nodeName !== "BR"
-  )
-    first = first.firstChild;
-  selection.setBaseAndExtent(first, 0, first, 0);
 }
 
 /** Gives each copied node the rrweb id of the node it was copied from. */
@@ -177,7 +124,7 @@ export function patchSubtree(options: SubtreePatchOptions): boolean {
         if (target.getAttribute(attribute.name) !== attribute.value)
           target.setAttribute(attribute.name, attribute.value);
     }
-    if (options.restoreCaret && fromEnd !== null) placeCaret(target, fromEnd);
+    if (options.restoreCaret && fromEnd !== null) placeCaretFromEnd(target, fromEnd);
     return true;
   } catch {
     return false;

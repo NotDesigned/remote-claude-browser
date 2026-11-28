@@ -1,6 +1,7 @@
 import type { Replayer } from "@rrweb/replay";
 import type { TabId } from "@mirror/protocol";
 import { attachChangeCapture } from "./change";
+import { keepCaretThroughMultilineInserts } from "./caret-tail";
 import { attachDefaultActionContainment, opensLocalTextMenu } from "./default-actions";
 import { attachFileCapture } from "./files";
 import { createForwardedInputClock } from "./forwarded";
@@ -203,6 +204,7 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
         beforePointerDown,
       }),
       change.dispose,
+      keepCaretThroughMultilineInserts(doc),
       follower.watch(doc),
       quietCorrections(doc),
       attachKeyCapture({
