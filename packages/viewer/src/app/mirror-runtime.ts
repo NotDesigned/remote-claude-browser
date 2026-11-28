@@ -40,6 +40,7 @@ import {
   createPredictOverlay,
   createProxyLab,
   type OverlayState,
+  type PredictOverlay,
   type ProxyLab,
 } from "../input/predict-overlay";
 import { createProxyInput, type ProxyInput } from "../input/proxy-input";
@@ -96,6 +97,8 @@ export interface InputLabHandle {
     active(): boolean;
     lab: ProxyLab;
     state(): OverlayState;
+    /** The field as predicted: its text and selection. */
+    predicted(): ReturnType<PredictOverlay["predicted"]>;
     model(): ReturnType<ProxyInput["model"]>;
     element(): HTMLElement;
   };
@@ -601,6 +604,7 @@ export function startMirrorRuntime(options: MirrorRuntimeOptions): MirrorRuntime
       active: proxyActive,
       lab: proxyLab,
       state: predictOverlay.state,
+      predicted: predictOverlay.predicted,
       model: proxyInput.model,
       element: () => proxyInput.element,
     },

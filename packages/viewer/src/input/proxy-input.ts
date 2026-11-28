@@ -24,13 +24,16 @@ import { pastedFiles } from "./keys";
 import { isPasswordField } from "./password";
 import type { SettledAck } from "./input-seq";
 import {
-  nextGrapheme,
+  graphemeCount,
+  MAX_PLAN_PRESSES,
+  opText,
   planEdit,
-  previousGrapheme,
   type PlanOp,
   type ProxyState,
 } from "./proxy-plan";
 import { replayFieldText, type PredictOverlay, type ProxyLab } from "./predict-overlay";
+import { lineAt, moveSelection, platformOf, wordAt, type Sel } from "./caret-moves";
+import { offsetAtPoint } from "./caret";
 
 /** Context the proxy holds before and after the caret. */
 export const WINDOW_BEFORE = 64;
@@ -78,8 +81,14 @@ export interface ProxyInput extends HiddenKeyboard {
   settled(ack: SettledAck): void;
   /** The replay applied more of the page's stream: reseed if idle and the field changed. */
   replayApplied(): void;
-  /** Writes the window of `text` around `sel` into the proxy, if it differs. */
+  /** Writes the window of `text` around `sel` ([anchor, focus]) into the proxy, if it differs. */
   seed(text: string, sel: [number, number]): void;
+  /**
+   * A press, drag or release of the mouse (or a tap) in this replay text field, in the field
+   * document's client coordinates: the caret or selection it makes is shown at once, and the
+   * page's answer replaces it. The press itself goes to the page as pointer input (pointer.ts).
+   */
+  pointer(field: Element, press: ProxyPointer): void;
   /**
    * A click elsewhere in the page (a send button): what the proxy holds may be gone from the page
    * the moment it lands, so a keyboard's late correction must not edit it there. The next ack
@@ -91,6 +100,15 @@ export interface ProxyInput extends HiddenKeyboard {
   composing(): boolean;
   model(): ProxyState & { start: number };
   dispose(): void;
+}
+
+export interface ProxyPointer {
+  phase: "down" | "move" | "up";
+  clientX: number;
+  clientY: number;
+  /** The click count: 2 selects a word, 3 a line. */
+  detail: number;
+  shift: boolean;
 }
 
 /** The window of `text` the proxy holds around [selStart, selEnd]. */
@@ -134,7 +152,16 @@ const FORWARDED_KEYS = new Set([
   "Enter",
   "Insert",
 ]);
-const CARET_KEYS = new Set(["ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
+const CARET_KEYS = new Set([
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+]);
 
 export function createProxyInput(options: ProxyInputOptions): ProxyInput {
   const doc = options.doc;
@@ -157,6 +184,10 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
   let intendedBlur = false;
   /** Let go of by a click elsewhere: no reseed until a field is focused again. */
   let released = false;
+  const platform = platformOf(doc.defaultView?.navigator);
+  /** A press in the field whose drag extends the selection: by character, word or line. */
+  let drag: { origin: Sel; unit: "char" | "word" | "line" } | null = null;
+  let selectionTimer: unknown = null;
 
   function make(isPassword: boolean): HTMLTextAreaElement | HTMLInputElement {
     const field = isPassword ? doc.createElement("input") : doc.createElement("textarea");
@@ -271,6 +302,8 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
         send(keyMessage("down", op.key, op.key, 0));
         effect();
         send(keyMessage("up", op.key, op.key, 0));
+      } else if (op.t === "select") {
+        continue;
       } else if (op.t === "char" && keyEvent !== null) {
         const mods = eventMods(keyEvent);
         send(keyMessage("down", keyEvent.key, keyEvent.code, mods, op.text));
@@ -302,13 +335,83 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
     };
     caretUnknown = false;
     if (same) return;
-    element.value = window.value;
+    if (element.value !== window.value) element.value = window.value;
+    setRange(window.selStart, window.selEnd, sel[1] < sel[0]);
+    if (options.lab) options.lab.reseeds += 1;
+  };
+
+  const setRange = (start: number, end: number, backward: boolean) => {
     try {
-      element.setSelectionRange(window.selStart, window.selEnd);
+      element.setSelectionRange(start, end, backward ? "backward" : "forward");
     } catch {
       // A detached or password field may refuse a selection.
     }
-    if (options.lab) options.lab.reseeds += 1;
+  };
+
+  /**
+   * The proxy holds the selection `anchor`..`head` of `text` (the field as predicted), so that
+   * what is typed next replaces it and an IME reads the right context: only its selection moves
+   * while the window has it, else the window is written again.
+   */
+  const syncSelection = (text: string, anchor: number, head: number) => {
+    if (password) return;
+    const lo = Math.min(anchor, head);
+    const hi = Math.max(anchor, head);
+    const start = model.start;
+    const end = start + model.value.length;
+    if (
+      lo >= start &&
+      hi <= end &&
+      element.value === model.value &&
+      text.slice(start, end) === model.value
+    ) {
+      model = { ...model, selStart: lo - start, selEnd: hi - start };
+      setRange(lo - start, hi - start, head < anchor);
+    } else seed(text, [anchor, head]);
+    caretUnknown = false;
+  };
+
+  /** Shows `next` at once, until the ack of input `iseq` brings where the page has it. */
+  const predictSelection = (next: Sel, text: string, iseq: number) => {
+    overlay.select(next.anchor, next.head, iseq);
+    syncSelection(text, next.anchor, next.head);
+  };
+
+  /** Where a caret key just sent (input `iseq`) puts the selection; false: not predicted. */
+  const predictKey = (event: KeyboardEvent, shortcut: boolean, iseq: number): boolean => {
+    const state = overlay.predicted();
+    if (state === null) return false;
+    let next: Sel | null = null;
+    if (shortcut && event.key.toLowerCase() === "a" && !event.shiftKey && !event.altKey)
+      next = { anchor: 0, head: state.text.length };
+    else if (CARET_KEYS.has(event.key))
+      next = moveSelection(
+        state.text,
+        { anchor: state.anchor, head: state.caret },
+        {
+          key: event.key,
+          shift: event.shiftKey,
+          ctrl: event.ctrlKey,
+          alt: event.altKey,
+          meta: event.metaKey,
+        },
+        platform,
+        (head, direction) => overlay.vertical(head, direction),
+      );
+    if (next === null) return false;
+    predictSelection(next, state.text, iseq);
+    return true;
+  };
+
+  /** The selected text, as predicted (empty for a password or a collapsed selection). */
+  const selectedText = (): string => {
+    if (password) return "";
+    const state = overlay.predicted();
+    if (state === null || state.anchor === state.caret) return "";
+    return state.text.slice(
+      Math.min(state.anchor, state.caret),
+      Math.max(state.anchor, state.caret),
+    );
   };
 
   const idle = () => {
@@ -370,7 +473,7 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
     };
     if (ops.length === 0) return;
     const sent = sendOps(ops, keyEvent);
-    const text = ops.map((op) => (op.t === "press" ? "" : op.text)).join("");
+    const text = ops.map(opText).join("");
     if (sent === null) {
       overlay.undelivered(text, false);
       return;
@@ -438,6 +541,9 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
     lastKey = null;
     if (isPasteShortcut(event)) return;
     const key = event.key.toLowerCase();
+    if (shortcut && (key === "c" || key === "x") && !event.shiftKey && selectedText() !== "")
+      // The proxy's copy and cut events take the selection (onCopy, onCut).
+      return;
     if (shortcut && key === "c") {
       const selected = options.replaySelection?.() ?? "";
       if (selected !== "") {
@@ -462,21 +568,15 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
     )
       return;
     event.preventDefault();
-    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-      // The page's caret moves one grapheme; the proxy's follows it.
-      const state = current();
-      if (!event.shiftKey && !shortcut && !event.altKey && state.selStart === state.selEnd) {
-        const value = element.value;
-        const at =
-          event.key === "ArrowLeft"
-            ? Math.max(0, state.selStart - previousGrapheme(value, state.selStart))
-            : Math.min(value.length, state.selStart + nextGrapheme(value, state.selStart));
-        element.setSelectionRange(at, at);
-        model = { ...model, selStart: at, selEnd: at };
-      } else caretUnknown = true;
-    } else if (CARET_KEYS.has(event.key) || shortcut) caretUnknown = true;
     forwardedKeys.set(event.code || event.key, event);
+    const id = tab();
+    const before = id === null ? 0 : options.lastStamped(id);
     sendKey(event, "down");
+    const iseq = id === null ? 0 : options.lastStamped(id);
+    // The caret moves (or the selection grows) on the page: here at once, and in the proxy, so
+    // that what is typed next lands where the page's caret is.
+    const predicted = iseq > before && predictKey(event, shortcut, iseq);
+    if (!predicted && (CARET_KEYS.has(event.key) || shortcut)) caretUnknown = true;
   };
   const onKeyUp = (event: KeyboardEvent) => {
     if (disposed || !event.isTrusted || !forwardedKeys.delete(event.code || event.key)) return;
@@ -557,6 +657,88 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
     if (disposed) return;
     if (!intendedBlur && options.lab) options.lab.blurs += 1;
     intendedBlur = false;
+    overlay.setFocused(false);
+  };
+  const onFocus = () => {
+    if (!disposed) overlay.setFocused(true);
+  };
+  const onCopy = (event: ClipboardEvent) => {
+    if (disposed || !event.isTrusted) return;
+    const selected = selectedText();
+    if (selected === "" || event.clipboardData === null) return;
+    event.preventDefault();
+    event.clipboardData.setData("text/plain", selected);
+  };
+  const onCut = (event: ClipboardEvent) => {
+    if (disposed || !event.isTrusted) return;
+    const selected = selectedText();
+    if (selected === "" || event.clipboardData === null) return;
+    event.preventDefault();
+    event.clipboardData.setData("text/plain", selected);
+    // Deleting the selection is the proxy's own edit, as a Backspace over it would be.
+    const state = current();
+    if (state.selStart !== state.selEnd && state.selStart === model.selStart) {
+      element.setRangeText("", state.selStart, state.selEnd, "end");
+      plan(null);
+      return;
+    }
+    const ops: PlanOp[] = [{ t: "press", key: "Backspace" }];
+    const sent = sendOps(ops, null);
+    if (sent !== null)
+      overlay.push({ first: sent.first, last: sent.last, ops, iseqs: sent.iseqs, text: "" });
+    caretUnknown = true;
+  };
+  /**
+   * The proxy's own selection moved without a key the proxy saw: a soft keyboard's cursor
+   * control (iOS's space-bar trackpad, Gboard's cursor keys without key events), or its handles.
+   * The page's caret is moved the same way with arrow presses, Shift held for a selection.
+   */
+  const onSelectionChange = () => {
+    if (disposed || password || !hasFocus() || selectionTimer !== null) return;
+    // After the task that moved it: an edit that comes with it (autocorrect) is planned first.
+    selectionTimer = setTimer(() => {
+      selectionTimer = null;
+      followProxySelection();
+    }, 0);
+  };
+  const followProxySelection = () => {
+    if (disposed || password || !hasFocus() || guard.composing) return;
+    if (element.value !== model.value) return;
+    const state = current();
+    if (state.selStart === model.selStart && state.selEnd === model.selEnd) return;
+    const id = tab();
+    if (id === null) return;
+    const value = model.value;
+    const backward = element.selectionDirection === "backward";
+    const anchor = backward ? state.selEnd : state.selStart;
+    const head = backward ? state.selStart : state.selEnd;
+    const from = model.selStart === model.selEnd ? model.selStart : null;
+    const presses: Array<{ key: "ArrowLeft" | "ArrowRight"; shift: boolean }> = [];
+    const walk = (at: number, to: number, shift: boolean) => {
+      const key = to < at ? "ArrowLeft" : "ArrowRight";
+      const count = graphemeCount(value.slice(Math.min(at, to), Math.max(at, to)));
+      for (let index = 0; index < count; index++) presses.push({ key, shift });
+    };
+    let at = from;
+    if (at === null) {
+      // A selection first collapses to its start.
+      presses.push({ key: "ArrowLeft", shift: false });
+      at = model.selStart;
+    }
+    walk(at, anchor, false);
+    walk(anchor, head, true);
+    model = { ...model, selStart: state.selStart, selEnd: state.selEnd };
+    if (presses.length > MAX_PLAN_PRESSES * 2) {
+      // Too far to walk: where it ends up is the page's to say.
+      caretUnknown = true;
+      return;
+    }
+    for (const press of presses) {
+      const mods = press.shift ? 8 : 0;
+      options.send(keyMessage("down", press.key, press.key, mods));
+      options.send(keyMessage("up", press.key, press.key, mods));
+    }
+    overlay.select(model.start + anchor, model.start + head, options.lastStamped(id));
   };
 
   const listen = (field: HTMLElement) => {
@@ -568,7 +750,10 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
     field.addEventListener("compositionupdate", onCompositionUpdate);
     field.addEventListener("compositionend", onCompositionEnd);
     field.addEventListener("paste", onPaste);
+    field.addEventListener("copy", onCopy);
+    field.addEventListener("cut", onCut);
     field.addEventListener("blur", onBlur);
+    field.addEventListener("focus", onFocus);
   };
   const unlisten = (field: HTMLElement) => {
     field.removeEventListener("keydown", onKeyDown);
@@ -579,9 +764,13 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
     field.removeEventListener("compositionupdate", onCompositionUpdate);
     field.removeEventListener("compositionend", onCompositionEnd);
     field.removeEventListener("paste", onPaste);
+    field.removeEventListener("copy", onCopy);
+    field.removeEventListener("cut", onCut);
     field.removeEventListener("blur", onBlur);
+    field.removeEventListener("focus", onFocus);
   };
   listen(element);
+  doc.addEventListener("selectionchange", onSelectionChange);
 
   const hasFocus = () => doc.activeElement === element;
   const blur = () => {
@@ -627,6 +816,7 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
       mirrorAttributes();
       place(point);
       if (!hasFocus()) element.focus({ preventScroll: true });
+      overlay.setFocused(hasFocus());
       if (caretUnknown) reseedFromReplay();
     },
     hasFocus,
@@ -689,6 +879,41 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
       reseedFromReplay();
     },
     seed,
+    pointer(field, press) {
+      if (disposed || tab() === null) return;
+      const node = replayNode();
+      if (node === null || !(node === field || node.contains(field))) return;
+      const state = overlay.predicted();
+      if (state === null) return;
+      const offset = offsetAtPoint(node, press.clientX, press.clientY);
+      if (offset === null) return;
+      const at = Math.min(offset, state.text.length);
+      const unitAt = (unit: "char" | "word" | "line"): Sel =>
+        unit === "word"
+          ? wordAt(state.text, at)
+          : unit === "line"
+            ? lineAt(state.text, at)
+            : { anchor: at, head: at };
+      let next: Sel;
+      if (press.phase === "down") {
+        const unit = press.detail >= 3 ? "line" : press.detail === 2 ? "word" : "char";
+        next = press.shift && unit === "char" ? { anchor: state.anchor, head: at } : unitAt(unit);
+        drag = { origin: next, unit };
+      } else {
+        if (drag === null) return;
+        const { origin, unit } = drag;
+        const lo = Math.min(origin.anchor, origin.head);
+        const hi = Math.max(origin.anchor, origin.head);
+        const here = unitAt(unit);
+        if (unit === "char") next = { anchor: origin.anchor, head: at };
+        else if (at < lo) next = { anchor: hi, head: Math.min(here.anchor, here.head) };
+        else next = { anchor: lo, head: Math.max(hi, here.anchor, here.head) };
+        if (press.phase === "up") drag = null;
+      }
+      // The press or release still to be stamped is what the page's answer covers.
+      const id = tab()!;
+      predictSelection(next, state.text, options.lastStamped(id) + 1);
+    },
     putBack(text) {
       if (disposed || text === "") return;
       element.focus({ preventScroll: true });
@@ -714,6 +939,9 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
       forwardedKeys.clear();
       disposed = true;
       if (blurTimer !== null) clearTimer(blurTimer);
+      if (selectionTimer !== null) clearTimer(selectionTimer);
+      doc.removeEventListener("selectionchange", onSelectionChange);
+      overlay.setFocused(false);
       unlisten(element);
       element.remove();
     },

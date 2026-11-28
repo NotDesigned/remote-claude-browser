@@ -142,6 +142,7 @@ export function attachMirrorInput(options: MirrorInputOptions): () => void {
               focus: options.proxy.input.focus,
               pressed: options.proxy.input.pressed,
               clickedElsewhere: options.proxy.input.release,
+              pointer: options.proxy.input.pointer,
               toViewer: (point) => {
                 const map = frameTransform(doc, viewerDoc);
                 return map === null

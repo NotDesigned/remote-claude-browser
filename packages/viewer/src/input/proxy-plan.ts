@@ -24,7 +24,13 @@ export type PlanOp =
   /** One grapheme typed by the key just pressed: goes to the page as that key, with its text. */
   | { t: "char"; text: string }
   /** Any other text (an IME's commit, a soft keyboard's word, a paste): Input.insertText. */
-  | { t: "insert"; text: string };
+  | { t: "insert"; text: string }
+  /**
+   * Where a caret key, a press or a drag puts the selection, as this viewer predicts it (offsets
+   * into the text it applies to): drawn until the page's acknowledgement says where it is. Never
+   * sent: its message is the key or pointer input itself.
+   */
+  | { t: "select"; anchor: number; head: number };
 
 /** More presses than this for one edit and the edit is not replayed (the caller falls back). */
 export const MAX_PLAN_PRESSES = 48;
@@ -149,13 +155,18 @@ function textOp(text: string, lastKey: string | undefined): PlanOp {
 export function applyOps(
   state: { text: string; caret: number; anchor?: number },
   ops: readonly PlanOp[],
-): { text: string; caret: number } {
+): { text: string; caret: number; anchor: number } {
   let { text, caret } = state;
   caret = Math.max(0, Math.min(caret, text.length));
   // A selection (anchor to caret): the first op replaces it, deletes it or collapses it.
   let anchor =
     state.anchor === undefined ? caret : Math.max(0, Math.min(state.anchor, text.length));
   for (const op of ops) {
+    if (op.t === "select") {
+      anchor = Math.max(0, Math.min(op.anchor, text.length));
+      caret = Math.max(0, Math.min(op.head, text.length));
+      continue;
+    }
     if (anchor !== caret) {
       const [from, to] = [Math.min(anchor, caret), Math.max(anchor, caret)];
       anchor = caret;
@@ -183,7 +194,12 @@ export function applyOps(
     }
     anchor = caret;
   }
-  return { text, caret };
+  return { text, caret, anchor };
+}
+
+/** The text an op types (none for presses and selections). */
+export function opText(op: PlanOp): string {
+  return op.t === "char" || op.t === "insert" ? op.text : "";
 }
 
 /** Code units of the grapheme before `at` (0 at the start). */

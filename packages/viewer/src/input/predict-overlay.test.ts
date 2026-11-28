@@ -201,6 +201,6 @@ describe("prediction overlay", () => {
     overlay.settled(pageAck(6, "ab—"));
     expect(lab.hashMismatch).toBe(1);
     expect(overlay.pending()).toBe(0);
-    expect(overlay.predicted()).toEqual({ text: "ab—", caret: 3 });
+    expect(overlay.predicted()).toEqual({ text: "ab—", caret: 3, anchor: 3 });
   });
 });

@@ -6,7 +6,12 @@
  * with a Range at editablePoint; a text input or textarea, whose text a Range cannot reach, with a
  * clone that copies its box and font, measured and removed again in the same task.
  */
-import { editablePoint as protocolPoint, type EditableTextNode } from "@mirror/protocol";
+import {
+  editableOffset,
+  editablePoint as protocolPoint,
+  editableText,
+  type EditableTextNode,
+} from "@mirror/protocol";
 
 /** editablePoint over real DOM nodes. */
 function editablePoint(
@@ -277,4 +282,147 @@ export function rangeRects(field: HTMLElement, from: number, to: number, top: Do
           rect.height * map.scale,
         ),
     );
+}
+
+/** The caret of `field` at `offset`, in the field's own document (null: not measurable). */
+export function localCaret(
+  field: HTMLElement,
+  offset: number,
+): { left: number; top: number; height: number } | null {
+  if (!field.isConnected) return null;
+  return isValueField(field) ? valueCaret(field, offset) : editableCaret(field, offset);
+}
+
+/** Most characters of a text input or textarea that a point is looked up in. */
+const MAX_HIT_CHARS = 20_000;
+
+/**
+ * The offset of `field`'s text under a point in its own document's client coordinates, where a
+ * press there puts the caret. A point outside the field gives its start (above it or left of it)
+ * or its end. Null when the point cannot be looked up.
+ */
+export function offsetAtPoint(field: HTMLElement, clientX: number, clientY: number): number | null {
+  if (!field.isConnected) return null;
+  if (isValueField(field)) return valueOffsetAt(field, clientX, clientY);
+  const doc = field.ownerDocument as Document & {
+    caretPositionFromPoint?(x: number, y: number): { offsetNode: Node; offset: number } | null;
+  };
+  let node: Node | null = null;
+  let offset = 0;
+  try {
+    if (typeof doc.caretPositionFromPoint === "function") {
+      const position = doc.caretPositionFromPoint(clientX, clientY);
+      node = position?.offsetNode ?? null;
+      offset = position?.offset ?? 0;
+    } else if (typeof doc.caretRangeFromPoint === "function") {
+      const range = doc.caretRangeFromPoint(clientX, clientY);
+      node = range?.startContainer ?? null;
+      offset = range?.startOffset ?? 0;
+    }
+  } catch {
+    node = null;
+  }
+  if (node !== null && (node === field || field.contains(node))) {
+    const found = editableOffset(
+      field as unknown as EditableTextNode,
+      node as unknown as EditableTextNode,
+      offset,
+    );
+    if (found >= 0) return found;
+  }
+  const rect = field.getBoundingClientRect();
+  if (clientY < rect.top || (clientY <= rect.bottom && clientX < rect.left)) return 0;
+  // A node before the field in the document: its start; anything else: its end.
+  if (node !== null && node !== field && field.compareDocumentPosition(node) & 2) return 0;
+  return editableText(field as unknown as EditableTextNode).length;
+}
+
+function valueOffsetAt(
+  field: HTMLInputElement | HTMLTextAreaElement,
+  clientX: number,
+  clientY: number,
+): number | null {
+  const doc = field.ownerDocument;
+  const view = doc.defaultView;
+  const host = doc.documentElement;
+  if (view === null || host === null) return null;
+  const value = field.type === "password" ? "•".repeat(field.value.length) : field.value;
+  if (value.length > MAX_HIT_CHARS) return null;
+  const style = view.getComputedStyle(field);
+  const clone = doc.createElement("div");
+  for (const name of COPIED_STYLES) clone.style[name] = style[name];
+  const textarea = field.tagName.toLowerCase() === "textarea";
+  Object.assign(clone.style, {
+    position: "absolute",
+    visibility: "hidden",
+    top: "0px",
+    left: "-9999px",
+    overflow: "hidden",
+    whiteSpace: textarea ? "pre-wrap" : "pre",
+  });
+  const spans: HTMLSpanElement[] = [];
+  for (const character of value) {
+    const span = doc.createElement("span");
+    span.textContent = character;
+    spans.push(span);
+  }
+  clone.append(...spans);
+  host.appendChild(clone);
+  try {
+    const cloneRect = clone.getBoundingClientRect();
+    const fieldRect = field.getBoundingClientRect();
+    const x = clientX - fieldRect.left + field.scrollLeft + cloneRect.left;
+    const y = clientY - fieldRect.top + field.scrollTop + cloneRect.top;
+    // The nearest line to the point; on it, before the first character whose middle is right of
+    // the point, or after the last one (before its line break).
+    let lineDistance = Infinity;
+    let found = value.length;
+    let offset = 0;
+    for (const span of spans) {
+      const length = span.textContent!.length;
+      const rect = span.getClientRects()[0];
+      if (rect !== undefined && rect.height > 0 && span.textContent !== "\n") {
+        const distance = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
+        if (distance < lineDistance - 0.5) {
+          lineDistance = distance;
+          found = x < rect.left + rect.width / 2 ? offset : offset + length;
+        } else if (Math.abs(distance - lineDistance) <= 0.5 && found === offset)
+          found = x < rect.left + rect.width / 2 ? offset : offset + length;
+      }
+      offset += length;
+    }
+    if (lineDistance === Infinity) return clientY < fieldRect.top ? 0 : field.value.length;
+    return Math.min(found, field.value.length);
+  } finally {
+    clone.remove();
+  }
+}
+
+/**
+ * Rects covering [from, to) of a field's text in viewer coordinates (the selection highlight). A
+ * text input or textarea is covered line by line from its caret positions.
+ */
+export function selectionRects(
+  field: HTMLElement,
+  from: number,
+  to: number,
+  top: Document,
+): DOMRect[] {
+  if (from >= to) return [];
+  if (!isValueField(field)) return rangeRects(field, from, to, top);
+  const start = caretRect(field, from, top);
+  const end = caretRect(field, to, top);
+  if (start === null || end === null) return [];
+  const height = start.height;
+  if (Math.abs(start.top - end.top) < height / 2)
+    return [new DOMRect(start.left, start.top, Math.max(1, end.left - start.left), height)];
+  const rects = [
+    new DOMRect(start.left, start.top, Math.max(1, start.box.right - start.left), height),
+  ];
+  for (let y = start.top + height; y < end.top - height / 2; y += height)
+    rects.push(new DOMRect(start.box.left, y, start.box.right - start.box.left, height));
+  rects.push(
+    new DOMRect(start.box.left, end.top, Math.max(1, end.left - start.box.left), end.height),
+  );
+  return rects;
 }

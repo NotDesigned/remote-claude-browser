@@ -24,7 +24,15 @@ import {
 } from "@mirror/protocol";
 import type { SettledAck } from "./input-seq";
 import { applyOps, commonEnds, type PlanOp } from "./proxy-plan";
-import { caretRect, isValueField, rangeRects, type CaretBox } from "./caret";
+import {
+  caretRect,
+  isValueField,
+  localCaret,
+  offsetAtPoint,
+  rangeRects,
+  selectionRects,
+  type CaretBox,
+} from "./caret";
 
 export interface OverlayTarget {
   nodeId: number;
@@ -99,7 +107,11 @@ export interface PredictOverlayOptions {
   resend?(text: string): void;
   putBack?(text: string): void;
   /** Measurement (caret.ts); replaced in tests. */
-  measure?: { caret: typeof caretRect; rects: typeof rangeRects };
+  measure?: {
+    caret: typeof caretRect;
+    rects: typeof rangeRects;
+    selection?: typeof selectionRects;
+  };
 }
 
 export interface OverlayState {
@@ -121,6 +133,11 @@ export interface PredictOverlay {
   setTarget(target: OverlayTarget | null): void;
   target(): OverlayTarget | null;
   push(edit: PendingEdit): void;
+  /**
+   * A predicted selection (a caret key, a press, a drag) until the ack of input `iseq` says where
+   * the page has it. One right after another for the same input replaces it (a drag's moves).
+   */
+  select(anchor: number, head: number, iseq: number): void;
   preedit(text: string | null): void;
   settled(ack: SettledAck): void;
   /** The connection went: what was not acknowledged may not have arrived. */
@@ -129,10 +146,17 @@ export interface PredictOverlay {
   undelivered(text: string, maybe: boolean): void;
   /** Enter's submit guard: the field as the page will hold it once every edit so far arrived. */
   expectFor(): EditExpect | null;
-  /** The page's text and caret with every edit applied (null without a target). */
-  predicted(): { text: string; caret: number } | null;
+  /** The page's text and selection with every edit applied (null without a target). */
+  predicted(): { text: string; caret: number; anchor: number } | null;
   /** The caret where the page's next text goes, for the proxy's own position. */
   caret(): CaretBox | null;
+  /** The proxy has focus: the caret and selection are drawn (and kept measured). */
+  setFocused(focused: boolean): void;
+  /**
+   * The offset a line up or down from `head` on screen, keeping its x (null: not measurable, or
+   * no line there; also while text typed is not in the replay yet).
+   */
+  vertical(head: number, direction: -1 | 1): number | null;
   pending(): number;
   /** The caret the page reported last for the target (offset into its text). */
   lastSelection(): [number, number] | null;
@@ -151,6 +175,24 @@ export function replayFieldText(node: Node): string {
   return normalizeEditableText(editableText(element as never));
 }
 
+/** The selection highlight drawn over a replay field. */
+const SELECTION_COLOR = "rgba(0, 117, 255, 0.3)";
+/** While the proxy has focus and nothing is pending, the caret is measured again this often. */
+export const IDLE_REDRAW_MS = 120;
+
+/** The caret's blink, once per document. */
+function ensureCaretStyle(doc: Document): void {
+  if (typeof doc.querySelector !== "function") return; // a test DOM
+  if (doc.querySelector("style[data-proxy-caret]") !== null) return;
+  const style = doc.createElement("style");
+  style.setAttribute("data-proxy-caret", "true");
+  style.textContent =
+    "@keyframes proxy-caret-blink{0%{opacity:1}50%{opacity:0}}" +
+    ".proxy-caret{animation:proxy-caret-blink 1.06s steps(1,end) 0.5s infinite}" +
+    "@media (prefers-reduced-motion: reduce){.proxy-caret{animation:none}}";
+  (doc.head ?? doc.body).appendChild(style);
+}
+
 const LAYER_STYLE: Partial<CSSStyleDeclaration> = {
   position: "fixed",
   left: "0px",
@@ -167,6 +209,7 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
   const doc = options.doc;
   const measureCaret = options.measure?.caret ?? caretRect;
   const measureRects = options.measure?.rects ?? rangeRects;
+  const measureSelection = options.measure?.selection ?? selectionRects;
   const layer = doc.createElement("div");
   layer.className = "proxy-predict";
   layer.setAttribute("aria-hidden", "true");
@@ -215,14 +258,27 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
     display: "none",
   });
   failChip.className = "proxy-undelivered";
-  layer.append(masks, line, chip, failChip);
+  // The replay's fields never take focus (read-only.ts), so nothing draws their caret or
+  // selection: the overlay does, at the selection the page reported with the predictions applied.
+  const highlight = doc.createElement("div");
+  highlight.className = "proxy-selection";
+  const caretMark = doc.createElement("div");
+  caretMark.className = "proxy-caret";
+  Object.assign(caretMark.style, { position: "fixed", display: "none", pointerEvents: "none" });
+  ensureCaretStyle(doc);
+  layer.append(highlight, masks, line, caretMark, chip, failChip);
   doc.body.appendChild(layer);
 
   let target: OverlayTarget | null = null;
+  /** The proxy has focus: the caret and selection are drawn. */
+  let focused = false;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let caretBox: CaretBox | null = null;
+  let caretKey = "";
   let edits: PendingEdit[] = [];
   let preedit: string | null = null;
   /** The field's text and caret at the newest page acknowledgement (or when it was targeted). */
-  let base: { text: string; caret: number } | null = null;
+  let base: { text: string; caret: number; anchor?: number } | null = null;
   let selection: [number, number] | null = null;
   let settledPage = 0;
   let frame: number | null = null;
@@ -260,7 +316,11 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
       }
       return {
         shown: 0,
-        start: { text, caret: Math.min(base.caret, text.length) },
+        start: {
+          text,
+          caret: Math.min(base.caret, text.length),
+          anchor: Math.min(base.anchor ?? base.caret, text.length),
+        },
         intended: state,
       };
     }
@@ -306,6 +366,8 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
     const element = field();
     const password = target?.password === true;
     if (target === null) {
+      hideCaret();
+      caretBox = null;
       hide();
       last = { ...last, shown: [], text: "", visible: null, intended: null, pending: 0 };
       return;
@@ -314,6 +376,8 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
     if (element === null) {
       // Cross-origin field, or not in the replay: only the chip can show the prediction.
       const text = (password ? "•".repeat(pendingText.length) : pendingText) + (preedit ?? "");
+      hideCaret();
+      caretBox = null;
       if (text === "") hide();
       else showChip(text, null);
       last = {
@@ -352,8 +416,15 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
       pending: edits.length,
       chip: null,
     };
-    if (hiddenUntilSettled || (drawn === "" && from === to)) {
+    const insertLength = predicted.text.length - suffix - prefix;
+    if (hiddenUntilSettled) {
       hide();
+      hideCaret();
+      return;
+    }
+    if (drawn === "" && from === to) {
+      hide();
+      drawCaret(element, start, predicted, from, insertLength, false);
       return;
     }
     const caret = measureCaret(element, from, doc);
@@ -363,6 +434,7 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
       masks.replaceChildren();
       showChip(drawn, element);
       last.chip = drawn;
+      drawCaret(element, start, predicted, from, insertLength, false);
       return;
     }
     chip.style.display = "none";
@@ -416,6 +488,127 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
       showChip(drawn, element);
       last.chip = drawn;
     }
+    drawCaret(element, start, predicted, from, insertLength, line.style.display !== "none");
+  };
+
+  const hideCaret = () => {
+    caretMark.style.display = "none";
+    highlight.replaceChildren();
+    highlight.setAttribute("data-selected", "");
+    caretKey = "";
+  };
+
+  /** The caret at `offset` of a span of the prediction line (null: not measurable). */
+  const spanCaret = (span: HTMLElement, offset: number, near: CaretBox): CaretBox | null => {
+    const node = span.firstChild;
+    if (!node || node.nodeType !== 3) return null;
+    try {
+      const range = doc.createRange();
+      range.setStart(node, offset);
+      range.collapse(true);
+      let rect: DOMRect | undefined = [...range.getClientRects()].find((r) => r.height > 0);
+      let left = rect?.left;
+      if (rect === undefined && offset > 0) {
+        range.setStart(node, offset - 1);
+        range.setEnd(node, offset);
+        rect = [...range.getClientRects()].filter((r) => r.height > 0).at(-1);
+        left = rect?.right;
+      }
+      if (rect === undefined || left === undefined) return null;
+      return { left, top: rect.top, height: rect.height, box: near.box, scale: near.scale };
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * The caret and selection, where the page reported them with every prediction applied: in the
+   * prediction line for a caret inside text not in the replay yet, else in the replay's field (an
+   * offset after the predicted text maps back to where the replay has it).
+   */
+  const drawCaret = (
+    element: HTMLElement,
+    start: { text: string },
+    predicted: { text: string; caret: number; anchor?: number },
+    from: number,
+    insertLength: number,
+    lineShown: boolean,
+  ) => {
+    const head = predicted.caret;
+    const anchor = predicted.anchor ?? head;
+    const delta = predicted.text.length - start.text.length;
+    const toReplay = (offset: number) =>
+      offset <= from
+        ? offset
+        : offset >= from + insertLength
+          ? Math.max(from, offset - delta)
+          : from;
+    let box: CaretBox | null = null;
+    if (lineShown) {
+      const near = measureCaret(element, from, doc);
+      if (near !== null && preedit !== null && preeditSpan.textContent !== "")
+        box = spanCaret(preeditSpan, preeditSpan.textContent!.length, near);
+      else if (near !== null && insertLength > 0 && head >= from && head <= from + insertLength)
+        box = head === from ? near : spanCaret(inserted, head - from, near);
+    }
+    box ??= measureCaret(element, toReplay(head), doc);
+    caretBox = box;
+    if (!focused || box === null) {
+      hideCaret();
+      return;
+    }
+    const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+    if (anchor === head || (preedit !== null && preedit !== "")) {
+      const width = Math.max(1, Math.round(box.scale * 1.5));
+      const caretColor = style?.caretColor;
+      const color =
+        caretColor && caretColor !== "auto" && !/rgba\(.*,\s*0\)$/.test(caretColor)
+          ? caretColor
+          : (style?.color ?? "#000");
+      const left = box.left - width / 2;
+      Object.assign(caretMark.style, {
+        display: "block",
+        left: `${left}px`,
+        top: `${box.top}px`,
+        width: `${width}px`,
+        height: `${box.height}px`,
+        background: color,
+      });
+      const key = `${left},${box.top},${box.height}`;
+      if (key !== caretKey) {
+        // A caret that moved shows at once, then blinks again.
+        caretKey = key;
+        caretMark.style.animation = "none";
+        void caretMark.offsetWidth;
+        caretMark.style.animation = "";
+      }
+    } else {
+      caretMark.style.display = "none";
+      caretKey = "";
+    }
+    if (anchor !== head) {
+      const lo = Math.min(anchor, head);
+      const hi = Math.max(anchor, head);
+      const rects = measureSelection(element, toReplay(lo), toReplay(hi), doc);
+      highlight.replaceChildren(
+        ...rects.map((rect) => {
+          const mark = doc.createElement("div");
+          Object.assign(mark.style, {
+            position: "fixed",
+            left: `${rect.left}px`,
+            top: `${rect.top}px`,
+            width: `${rect.width}px`,
+            height: `${rect.height}px`,
+            background: SELECTION_COLOR,
+          });
+          return mark;
+        }),
+      );
+      highlight.setAttribute("data-selected", target?.password ? "" : predicted.text.slice(lo, hi));
+    } else {
+      highlight.replaceChildren();
+      highlight.setAttribute("data-selected", "");
+    }
   };
 
   const getComputedDirection = (element: Element) =>
@@ -445,8 +638,11 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
     const element = field();
     if (element === null) return;
     const text = replayFieldText(element);
-    if (edits.length === 0)
-      base = { text, caret: Math.min(selection?.[1] ?? base?.caret ?? text.length, text.length) };
+    if (edits.length === 0) {
+      const caret = Math.min(selection?.[1] ?? base?.caret ?? text.length, text.length);
+      const anchor = Math.min(selection?.[0] ?? base?.anchor ?? caret, text.length);
+      base = { text, caret, anchor };
+    }
   };
 
   let gapRun = 0;
@@ -479,6 +675,14 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
     if (frame !== null) return;
     if (edits.length === 0 && preedit === null) {
       endGapRun();
+      // Nothing pending: the caret still follows the replay (a page scrolling, a field growing).
+      if (focused && target !== null && idleTimer === null)
+        idleTimer = setTimeout(() => {
+          idleTimer = null;
+          if (frame !== null) return;
+          draw();
+          schedule();
+        }, IDLE_REDRAW_MS);
       return;
     }
     frame = doc.defaultView?.requestAnimationFrame(tick) ?? null;
@@ -534,6 +738,20 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
       schedule();
     },
     target: () => target,
+    select(anchor, head, iseq) {
+      const op = { t: "select" as const, anchor, head };
+      const previous = edits.at(-1);
+      if (
+        previous !== undefined &&
+        previous.last === iseq &&
+        previous.ops.length === 1 &&
+        previous.ops[0]!.t === "select"
+      )
+        previous.ops = [op];
+      else edits.push({ first: iseq, last: iseq, ops: [op], iseqs: [iseq], text: "" });
+      draw();
+      schedule();
+    },
     push(edit) {
       edits.push(edit);
       if (options.lab) options.lab.ops += edit.ops.length;
@@ -578,20 +796,22 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
         const edit = ack.edit;
         if (edit && edit.node === target?.nodeId) {
           selection = [edit.sel[0], edit.sel[1]];
-          const caretAt = (value: string) => Math.min(edit.sel[1], value.length);
+          const caretAt = (value: string) => ({
+            caret: Math.min(edit.sel[1], value.length),
+            anchor: Math.min(edit.sel[0], value.length),
+          });
           if (edit.hash === "") {
             // A password: the replay shows a mask, never its text.
             const value = expected?.text ?? text ?? "";
-            base = { text: value, caret: caretAt(value) };
+            base = { text: value, ...caretAt(value) };
           } else if (expected !== null && editHash(expected.text) === edit.hash) {
-            base = { text: expected.text, caret: caretAt(expected.text) };
+            base = { text: expected.text, ...caretAt(expected.text) };
           } else {
             // The page made something else of it (an input rule, a page of its own mind).
             if (options.lab) options.lab.hashMismatch += 1;
-            if (text !== null && editHash(text) === edit.hash)
-              base = { text, caret: caretAt(text) };
-            else if (expected !== null) base = { ...expected, caret: caretAt(expected.text) };
-            else if (text !== null) base = { text, caret: caretAt(text) };
+            if (text !== null && editHash(text) === edit.hash) base = { text, ...caretAt(text) };
+            else if (expected !== null) base = { ...expected, ...caretAt(expected.text) };
+            else if (text !== null) base = { text, ...caretAt(text) };
           }
         } else if (expected !== null) {
           base = expected;
@@ -643,15 +863,43 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
       const element = field();
       if (element === null) return null;
       const { shown, start } = split(replayFieldText(element));
-      let state = start;
+      let state: { text: string; caret: number; anchor?: number } = start;
       for (const edit of edits.slice(shown)) state = applyOps(state, edit.ops);
-      return state;
+      return { text: state.text, caret: state.caret, anchor: state.anchor ?? state.caret };
     },
     caret() {
+      if (caretBox !== null) return caretBox;
       const element = field();
       if (element === null) return null;
       const state = overlay.predicted();
       return state === null ? null : measureCaret(element, state.caret, doc);
+    },
+    setFocused(next) {
+      if (focused === next) return;
+      focused = next;
+      if (!focused && idleTimer !== null) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+      draw();
+      schedule();
+    },
+    vertical(head, direction) {
+      const element = field();
+      const state = overlay.predicted();
+      if (element === null || state === null || state.text !== replayFieldText(element))
+        return null;
+      try {
+        const at = localCaret(element, head);
+        if (at === null || at.height <= 0) return null;
+        const y = direction < 0 ? at.top - at.height / 2 : at.top + at.height * 1.5;
+        const rect = element.getBoundingClientRect();
+        if (y < rect.top || y > rect.bottom) return null;
+        return offsetAtPoint(element, at.left, y);
+      } catch {
+        // A field that cannot be laid out (gone, or not a real DOM).
+        return null;
+      }
     },
     pending: () => edits.length,
     lastSelection: () => selection,
@@ -667,10 +915,13 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
       preedit = null;
       base = null;
       hide();
+      hideCaret();
       last = { ...last, shown: [], text: "", visible: null, intended: null, pending: 0 };
     },
     dispose() {
       overlay.clear();
+      if (idleTimer !== null) clearTimeout(idleTimer);
+      idleTimer = null;
       if (frame !== null) doc.defaultView?.cancelAnimationFrame(frame);
       frame = null;
       layer.remove();

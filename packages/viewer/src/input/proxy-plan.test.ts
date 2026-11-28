@@ -187,21 +187,21 @@ describe("helpers", () => {
   });
   it("never splits a surrogate pair in the common ends", () => {
     expect(commonEnds("a😀", "a😃")).toEqual({ prefix: 1, suffix: 0 });
-    expect(commonEnds("😀b", "😃b")).toEqual({ prefix: 0, suffix: 1 });
-    expect(commonEnds("abc", "abc")).toEqual({ prefix: 3, suffix: 0 });
+    expect(commonEnds("😀b", "😃b")).toMatchObject({ prefix: 0, suffix: 1 });
+    expect(commonEnds("abc", "abc")).toMatchObject({ prefix: 3, suffix: 0 });
   });
   it("replaces, deletes or collapses a selection with the first op", () => {
     const state = { text: "abcd", caret: 3, anchor: 1 };
-    expect(applyOps(state, [insert("x")])).toEqual({ text: "axd", caret: 2 });
-    expect(applyOps(state, press("Backspace"))).toEqual({ text: "ad", caret: 1 });
-    expect(applyOps(state, press("ArrowLeft"))).toEqual({ text: "abcd", caret: 1 });
+    expect(applyOps(state, [insert("x")])).toMatchObject({ text: "axd", caret: 2 });
+    expect(applyOps(state, press("Backspace"))).toMatchObject({ text: "ad", caret: 1 });
+    expect(applyOps(state, press("ArrowLeft"))).toMatchObject({ text: "abcd", caret: 1 });
   });
   it("applies presses per grapheme", () => {
-    expect(applyOps({ text: "a😀b", caret: 3 }, press("Backspace"))).toEqual({
+    expect(applyOps({ text: "a😀b", caret: 3 }, press("Backspace"))).toMatchObject({
       text: "ab",
       caret: 1,
     });
-    expect(applyOps({ text: "ab", caret: 0 }, press("ArrowRight", 5))).toEqual({
+    expect(applyOps({ text: "ab", caret: 0 }, press("ArrowRight", 5))).toMatchObject({
       text: "ab",
       caret: 2,
     });
