@@ -9,6 +9,7 @@
  */
 import {
   NODE_IN_FRAME_ERROR,
+  editablePoint,
   editableText,
   normalizeEditableText,
   sameEditableText,
@@ -26,6 +27,7 @@ import {
   type WheelPointDom,
 } from "./wheel-point";
 import { createFence, focusedEditingHost } from "./fence";
+import { revealCaret } from "./caret-view";
 
 export interface NodeMirror {
   getIds(): number[];
@@ -543,8 +545,11 @@ export function createCommandHandler(
               const range = document.createRange();
               range.selectNodeContents(host);
               let insert = wanted;
-              // Preserve inline formatting when the browser text has no block separators.
-              if (current.length > 0 && host.textContent === current) {
+              // Only the text that changed is replaced, between points found by the editor's text
+              // with its line breaks: inline formatting stays, and so does the rest of an editor of
+              // many paragraphs (a long paste). Replacing all of it would empty the editor's box
+              // for a moment, which puts the box back at its top.
+              if (current.length > 0) {
                 const before = segment(current);
                 const after = segment(wanted);
                 let prefix = 0;
@@ -563,18 +568,13 @@ export function createCommandHandler(
                   suffix++;
                 const start = before.slice(0, prefix).join("").length;
                 const end = current.length - before.slice(before.length - suffix).join("").length;
-                const point = (offset: number): [Node, number] => {
-                  const walker = document.createTreeWalker(host, 4);
-                  for (let text = walker.nextNode(); text; text = walker.nextNode()) {
-                    const length = text.textContent?.length ?? 0;
-                    if (offset <= length) return [text, offset];
-                    offset -= length;
-                  }
-                  return [host, host.childNodes.length];
-                };
-                range.setStart(...point(start));
-                range.setEnd(...point(end));
-                insert = after.slice(prefix, after.length - suffix).join("");
+                const from = editablePoint<Node>(host, start);
+                const to = start === end ? from : editablePoint<Node>(host, end);
+                if (from !== null && to !== null) {
+                  range.setStart(from.container, from.offset);
+                  range.setEnd(to.container, to.offset);
+                  insert = after.slice(prefix, after.length - suffix).join("");
+                }
               }
               const selection = document.getSelection();
               if (!selection) throw new Error("editable selection unavailable");
@@ -582,6 +582,9 @@ export function createCommandHandler(
               selection.addRange(range);
               if (!document.execCommand("insertText", false, insert))
                 throw new Error("editable update failed");
+              // Where typing would have left the editor's box: at the caret. After the editor
+              // has redrawn what it was given (its own update runs in a microtask).
+              queueMicrotask(() => revealCaret(host));
             }
             const expected = wanted;
             const reqId = cmd.reqId;
