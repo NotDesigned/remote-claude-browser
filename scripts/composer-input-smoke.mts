@@ -1001,22 +1001,24 @@ async function checkAcks(label: string, name: string, page: Page, acks: AckHarne
 const pageField = (remote: Page) =>
   remote.evaluate(() => {
     const view = (window as any).composerView;
-    const { from, to, anchor, head } = view.state.selection;
-    return {
-      text: view.state.doc.textBetween(0, view.state.doc.content.size, "\n") as string,
-      sel: [Math.min(anchor, head) - 1, Math.max(anchor, head) - 1] as [number, number],
-      focused: view.hasFocus() as boolean,
-      _: [from, to],
-    };
+    const { from, to } = view.state.selection;
+    const text = view.state.doc.textBetween(0, view.state.doc.content.size, "\n") as string;
+    // In the one paragraph, position p is offset p - 1; select-all spans the whole document.
+    const sel: [number, number] = [
+      Math.max(0, Math.min(from - 1, text.length)),
+      Math.max(0, Math.min(to - 1, text.length)),
+    ];
+    return { text, sel };
   });
 
 /**
- * What the viewer shows of the composer's caret and selection: where offset `at` of the replay's
- * composer is on screen, and the caret drawn there (the proxy's caret element, or the replay's own
- * focused field and selection on the legacy path), and the text shown selected. A string, so that
- * the bundler's helpers stay out of it.
+ * What the viewer shows of the composer's caret and selection, and where offsets of the replay's
+ * composer are on screen: the caret drawn (the proxy's caret element, or the replay's own focused
+ * field on the legacy path), the text shown selected, and the ends of its highlight (the proxy's
+ * selection layer, or the replay's own selection). A string, so that the bundler's helpers stay
+ * out of it.
  */
-const VIEWER_CARET = String.raw`(at) => {
+const VIEWER_CARET = String.raw`(offsets) => {
   const frame = document.querySelector("#mirror-host iframe");
   const doc = frame.contentDocument;
   const field = doc.querySelector("#composer");
@@ -1026,25 +1028,25 @@ const VIEWER_CARET = String.raw`(at) => {
     x: frameRect.left + frame.clientLeft * scale + x * scale,
     y: frameRect.top + frame.clientTop * scale + y * scale,
   });
-  const walker = doc.createTreeWalker(field, NodeFilter.SHOW_TEXT);
-  let left = at;
-  let point = null;
-  let lastText = null;
-  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    lastText = node;
-    if (left <= node.data.length) {
-      point = { node, offset: left };
-      break;
+  const pointOf = (at) => {
+    const walker = doc.createTreeWalker(field, NodeFilter.SHOW_TEXT);
+    let left = at;
+    let point = null;
+    let lastText = null;
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      lastText = node;
+      if (left <= node.data.length) {
+        point = { node, offset: left };
+        break;
+      }
+      left -= node.data.length;
     }
-    left -= node.data.length;
-  }
-  let expected;
-  if (lastText === null) {
-    const line = field.querySelector("p") || field;
-    const rect = line.getBoundingClientRect();
-    const style = getComputedStyle(line);
-    expected = map(rect.left + (parseFloat(style.paddingLeft) || 0), rect.top + rect.height / 2);
-  } else {
+    if (lastText === null) {
+      const line = field.querySelector("p") || field;
+      const rect = line.getBoundingClientRect();
+      const style = getComputedStyle(line);
+      return map(rect.left + (parseFloat(style.paddingLeft) || 0), rect.top + rect.height / 2);
+    }
     const target = point || { node: lastText, offset: lastText.data.length };
     const range = doc.createRange();
     range.setStart(target.node, target.offset);
@@ -1056,43 +1058,69 @@ const VIEWER_CARET = String.raw`(at) => {
       const before = range.getClientRects()[0];
       rect = new DOMRect(before.right, before.top, 0, before.height);
     }
-    expected = map(rect.left, rect.top + rect.height / 2);
-  }
+    return map(rect.left, rect.top + rect.height / 2);
+  };
+  const points = offsets.map(pointOf);
+  const ends = (rects, toViewer) => {
+    const list = [...rects].filter((rect) => rect.width > 0 && rect.height > 0);
+    if (list.length === 0) return null;
+    const first = list[0];
+    const last = list[list.length - 1];
+    const start = { x: first.left, y: first.top + first.height / 2 };
+    const end = { x: last.right, y: last.top + last.height / 2 };
+    return toViewer
+      ? { start: map(start.x, start.y), end: map(end.x, end.y) }
+      : { start, end };
+  };
   let caret = null;
   let selected = "";
-  const proxyCaret = document.querySelector(".proxy-caret");
-  if (proxyCaret !== null && getComputedStyle(proxyCaret).display !== "none") {
-    const rect = proxyCaret.getBoundingClientRect();
-    if (rect.height > 0)
-      caret = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, kind: "proxy" };
-    const highlight = document.querySelector(".proxy-selection");
-    selected = (highlight && highlight.getAttribute("data-selected")) || "";
+  let highlight = null;
+  const proxy = document.activeElement?.getAttribute("data-proxy-input") === "true";
+  if (proxy) {
+    const proxyCaret = document.querySelector(".proxy-caret");
+    if (proxyCaret !== null && getComputedStyle(proxyCaret).display !== "none") {
+      const rect = proxyCaret.getBoundingClientRect();
+      if (rect.height > 0)
+        caret = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, kind: "proxy" };
+    }
+    const layer = document.querySelector(".proxy-selection");
+    selected = (layer && layer.getAttribute("data-selected")) || "";
+    if (layer) highlight = ends([...layer.children].map((child) => child.getBoundingClientRect()), false);
   } else {
     const selection = doc.getSelection();
     const focused = doc.activeElement === field || field.contains(doc.activeElement);
     if (focused && selection !== null && selection.rangeCount > 0) {
       selected = selection.toString();
-      const range = doc.createRange();
-      range.setStart(selection.focusNode, selection.focusOffset);
-      range.collapse(true);
-      const rect = range.getClientRects()[0];
-      caret = rect
-        ? { ...map(rect.left, rect.top + rect.height / 2), kind: "native" }
-        : { ...expected, kind: "native-unmeasured" };
+      if (selection.isCollapsed) {
+        const range = doc.createRange();
+        range.setStart(selection.focusNode, selection.focusOffset);
+        range.collapse(true);
+        const rect = range.getClientRects()[0];
+        caret = rect
+          ? { ...map(rect.left, rect.top + rect.height / 2), kind: "native" }
+          : { ...points[0], kind: "native-unmeasured" };
+      } else highlight = ends(selection.getRangeAt(0).getClientRects(), true);
     }
   }
-  return { expected, caret, selected };
+  const lab = window.__mirrorInputLab;
+  const predicted = lab && lab.proxy && lab.proxy.active() ? lab.proxy.predicted() : null;
+  return { points, caret, selected, highlight, predicted };
 }`;
+type Point = { x: number; y: number };
 type ViewerCaret = {
-  expected: { x: number; y: number };
-  caret: { x: number; y: number; kind: string } | null;
+  points: Point[];
+  caret: (Point & { kind: string }) | null;
   selected: string;
+  highlight: { start: Point; end: Point } | null;
+  predicted: unknown;
 };
-const viewerCaret = (page: Page, at: number): Promise<ViewerCaret> =>
-  page.evaluate(`(${VIEWER_CARET})(${at})`);
+const viewerCaret = (page: Page, offsets: number[]): Promise<ViewerCaret> =>
+  page.evaluate(`(${VIEWER_CARET})(${JSON.stringify(offsets)})`);
 
 /** The point of offset `at` in the replay's composer, in viewer coordinates (for a press). */
-const pointAt = async (page: Page, at: number) => (await viewerCaret(page, at)).expected;
+const pointAt = async (page: Page, at: number) => (await viewerCaret(page, [at])).points[0]!;
+
+const near = (a: Point, b: Point) => Math.abs(a.x - b.x) <= 3 && Math.abs(a.y - b.y) <= 6;
 
 /**
  * Caret and selection while typing: the caret is shown where the page's is, arrows and Home/End
@@ -1102,18 +1130,33 @@ const pointAt = async (page: Page, at: number) => (await viewerCaret(page, at)).
 async function caret(mirror: Mirror): Promise<void> {
   const { label, softKeyboard, page, remote, type } = mirror;
   const settle = () => page.waitForTimeout(700);
-  const expectShown = async (step: string, at: number, selected = "", soon = false) => {
-    // Right away (the prediction) when `soon`, and again once the page has answered.
+  /**
+   * The viewer shows a caret at `at`, or with `selected`, that text highlighted from offset `at`
+   * to `to`. Right away (the prediction) when `soon`, else once the page has answered.
+   */
+  const expectShown = async (step: string, at: number, selected = "", soon = false, to = at) => {
     if (soon) await page.waitForTimeout(60);
-    const shown = await viewerCaret(page, at);
+    const shown = await viewerCaret(page, [at, to]);
     const where = JSON.stringify(shown);
-    assert.ok(shown.caret !== null, `${label} caret ${step}: no caret shown (${where})`);
-    assert.ok(
-      Math.abs(shown.caret!.x - shown.expected.x) <= 3 &&
-        Math.abs(shown.caret!.y - shown.expected.y) <= 6,
-      `${label} caret ${step}: the caret is not shown at offset ${at} (${where})`,
+    if (selected === "") {
+      assert.ok(shown.caret !== null, `${label} caret ${step}: no caret shown (${where})`);
+      assert.ok(
+        near(shown.caret!, shown.points[0]!),
+        `${label} caret ${step}: the caret is not shown at offset ${at} (${where})`,
+      );
+    } else {
+      assert.ok(
+        shown.highlight !== null &&
+          near(shown.highlight.start, shown.points[0]!) &&
+          near(shown.highlight.end, shown.points[1]!),
+        `${label} caret ${step}: the selection is not highlighted from ${at} to ${to} (${where})`,
+      );
+    }
+    assert.equal(
+      shown.selected,
+      selected,
+      `${label} caret ${step}: the selection shown (${where})`,
     );
-    assert.equal(shown.selected, selected, `${label} caret ${step}: the selection shown`);
   };
   const expectPage = async (step: string, text: string, sel: [number, number]) => {
     const field = await pageField(remote);
@@ -1152,10 +1195,10 @@ async function caret(mirror: Mirror): Promise<void> {
 
   // Shift+arrows extend a selection, shown at once; typing replaces it.
   await press("Shift+ArrowLeft", 5);
-  await expectShown("shift+left x5", 10, "world", true);
+  await expectShown("shift+left x5", 10, "world", true, 15);
   await settle();
   await expectPage("shift+left x5", "hello big world", [10, 15]);
-  await expectShown("shift+left x5 settled", 10, "world");
+  await expectShown("shift+left x5 settled", 10, "world", false, 15);
   await type("there");
   await settle();
   await expectPage("typed over the selection", "hello big there", [15, 15]);
@@ -1182,15 +1225,51 @@ async function caret(mirror: Mirror): Promise<void> {
     await page.mouse.dblclick(word.x + 2, word.y);
     await settle();
     await expectPage("double-click", "hello very big", [6, 10]);
-    await expectShown("double-click", 10, "very");
+    await expectShown("double-click", 6, "very", false, 10);
+    if (proxyInput) {
+      // Copy takes the selected text (the proxy's copy event; the legacy path's is native).
+      await page.evaluate(() => {
+        (window as any).copied = null;
+        window.addEventListener("copy", (event) => {
+          (window as any).copied = event.clipboardData?.getData("text/plain") ?? null;
+        });
+      });
+      await press(`${shortcut}+c`);
+      assert.equal(
+        await page.evaluate(() => (window as any).copied),
+        "very",
+        `${label} caret: copy did not take the selected text`,
+      );
+    }
+  }
+
+  let text = "hello very big";
+  if (proxyInput) {
+    // A soft keyboard's own cursor control (iOS's space-bar trackpad) moves the proxy's caret
+    // with no key event: the page's caret follows, and the next character lands there.
+    await press("End");
+    await settle();
+    await page.evaluate(() => {
+      const proxy = document.querySelector("[data-proxy-input]") as HTMLTextAreaElement;
+      const at = (proxy.selectionStart ?? 0) - 9;
+      proxy.setSelectionRange(at, at);
+    });
+    await settle();
+    await expectPage("keyboard cursor", text, [5, 5]);
+    await expectShown("keyboard cursor", 5);
+    await type("!");
+    await settle();
+    text = "hello! very big";
+    await expectPage("typed after the keyboard cursor", text, [6, 6]);
+    await expectShown("typed after the keyboard cursor", 6);
   }
 
   // Ctrl/Cmd+A selects everything; Backspace empties it.
   await press(`${shortcut}+a`);
   await settle();
   // The legacy path selects all in the replay only; its Backspace then syncs the whole field.
-  if (proxyInput) await expectPage("select all", "hello very big", [0, 14]);
-  await expectShown("select all", 14, "hello very big");
+  if (proxyInput) await expectPage("select all", text, [0, text.length]);
+  await expectShown("select all", 0, text, false, text.length);
   await press("Backspace");
   await settle();
   await expectPage("emptied", "", [0, 0]);
