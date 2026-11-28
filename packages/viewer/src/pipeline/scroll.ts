@@ -291,10 +291,28 @@ export interface ScrollSyncOptions {
   tab: TabId;
   getNodeId(node: Node): number;
   filter: ScrollFilter;
+  now?: () => number;
 }
 
-/** Capture native mirror scrolling; wheel events themselves take the mutually exclusive D5 path. */
+/**
+ * How long after an edit in the replay a scroll of a box around the edited field is the browser
+ * keeping the caret in view rather than the person scrolling. The scroll event comes with the next
+ * frame after the edit; a slow phone can take a few.
+ */
+export const EDIT_REVEAL_MS = 250;
+
+/**
+ * Capture native mirror scrolling; wheel events themselves take the mutually exclusive D5 path.
+ *
+ * Typing or pasting into a field of the replay (the legacy path edits the replay's own copy) makes
+ * the browser scroll the boxes around the field to keep the caret in view, here as on the page.
+ * That scroll is not the person's: the page keeps its own caret in view, and the replay follows
+ * its scroll events. Sent upstream, the replay's position (its own text, laid out with this
+ * device's fonts, and the page's changes to it held back while typing) would scroll the page's box
+ * away from the page's caret and hold the page's next scrolls off for half a second.
+ */
 export function attachScrollSync(options: ScrollSyncOptions): () => void {
+  const now = options.now ?? (() => performance.now());
   const rootDoc = options.rootDoc ?? options.doc;
   const eventNodeId = options.getNodeId(options.doc);
   const nodeId = options.doc === rootDoc ? 0 : options.getNodeId(options.doc.documentElement);
@@ -312,13 +330,35 @@ export function attachScrollSync(options: ScrollSyncOptions): () => void {
               }
             : undefined,
         );
+  /** The field last edited here, and when; forgotten when the person scrolls by hand. */
+  let edited: { field: Node; at: number } | null = null;
+  const onInput = (event: Event) => {
+    if (event.isTrusted && isElement(event.target)) edited = { field: event.target, at: now() };
+  };
+  const onScrollGesture = () => {
+    edited = null;
+  };
+  const revealsEdit = (target: EventTarget | null) => {
+    if (edited === null || now() - edited.at > EDIT_REVEAL_MS) return false;
+    // The document's own scroller is the person's to move (and the page's).
+    if (!isElement(target)) return false;
+    return target === edited.field || target.contains(edited.field);
+  };
   const onScroll = (event: Event) => {
+    if (revealsEdit(event.target)) return;
     const target = resolveScrollTarget(event.target, options.doc, options.getNodeId, rootDoc);
     if (target !== null) options.filter.localScroll(options.tab, target.nodeId, target.x, target.y);
   };
+  const gesture = { capture: true, passive: true } as const;
+  options.doc.addEventListener("input", onInput, true);
+  options.doc.addEventListener("wheel", onScrollGesture, gesture);
+  options.doc.addEventListener("touchmove", onScrollGesture, gesture);
   options.doc.addEventListener("scroll", onScroll, true);
   return () => {
     unregisterDocument();
+    options.doc.removeEventListener("input", onInput, true);
+    options.doc.removeEventListener("wheel", onScrollGesture, gesture);
+    options.doc.removeEventListener("touchmove", onScrollGesture, gesture);
     options.doc.removeEventListener("scroll", onScroll, true);
   };
 }

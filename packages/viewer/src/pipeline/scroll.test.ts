@@ -1,7 +1,12 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { EventType, IncrementalSource, type eventWithTime, type Up } from "@mirror/protocol";
-import { createScrollFilter, watchReplayScrollRestores } from "./scroll";
+import {
+  EDIT_REVEAL_MS,
+  attachScrollSync,
+  createScrollFilter,
+  watchReplayScrollRestores,
+} from "./scroll";
 
 function scrollEvent(id: number, x: number, y: number): eventWithTime {
   return {
@@ -287,6 +292,124 @@ describe("scrolls replay makes itself", () => {
 
     unwatch();
     expect(handlers.size).toBe(0);
+    filter.reset();
+  });
+});
+
+describe("scrolls the browser makes for an edit in the replay", () => {
+  /** A document with a composer box around an editor, and the listeners attached to it. */
+  function composerPage() {
+    const listeners = new Map<string, Array<(event: Event) => void>>();
+    const doc = {
+      nodeType: 9,
+      defaultView: null,
+      documentElement: { nodeType: 1 },
+      body: { nodeType: 1 },
+      scrollingElement: null,
+      addEventListener: (type: string, listener: (event: Event) => void) =>
+        listeners.set(type, [...(listeners.get(type) ?? []), listener]),
+      removeEventListener: (type: string, listener: (event: Event) => void) =>
+        listeners.set(
+          type,
+          (listeners.get(type) ?? []).filter((entry) => entry !== listener),
+        ),
+    };
+    const editor = { nodeType: 1, parentElement: null as unknown };
+    const box = {
+      nodeType: 1,
+      scrollLeft: 0,
+      scrollTop: 0,
+      parentElement: null,
+      contains: (node: unknown) => node === editor || node === box,
+    };
+    const other = { nodeType: 1, scrollLeft: 0, scrollTop: 0, contains: () => false };
+    editor.parentElement = box;
+    const ids = new Map<unknown, number>([
+      [doc, 1],
+      [box, 30],
+      [editor, 31],
+      [other, 40],
+    ]);
+    const fire = (type: string, target: unknown, isTrusted = true) => {
+      for (const listener of listeners.get(type) ?? [])
+        listener({ type, target, isTrusted } as unknown as Event);
+    };
+    return { doc, editor, box, other, ids, fire, listeners };
+  }
+
+  function attach(page: ReturnType<typeof composerPage>, clock: { now: number }) {
+    const sent: Up[] = [];
+    const filter = createScrollFilter({
+      send: (message) => sent.push(message),
+      now: () => clock.now,
+    });
+    const detach = attachScrollSync({
+      doc: page.doc as unknown as Document,
+      tab: "T1",
+      getNodeId: (node) => page.ids.get(node) ?? -1,
+      filter,
+      now: () => clock.now,
+    });
+    return { sent, filter, detach };
+  }
+
+  it("keeps the replay's own caret reveal after typing or a paste from the page", () => {
+    const clock = { now: 1_000 };
+    const page = composerPage();
+    const { sent, filter, detach } = attach(page, clock);
+    page.fire("input", page.editor);
+    page.box.scrollTop = 966;
+    clock.now += 16;
+    page.fire("scroll", page.box);
+    expect(sent).toEqual([]);
+    // The page's own scroll to its caret is not held back as an echo of the person's.
+    const server = scrollEvent(30, 0, 970);
+    expect(filter(server, { tab: "T1", nowMs: clock.now })).toBe(server);
+    detach();
+    expect([...page.listeners.values()].every((list) => list.length === 0)).toBe(true);
+    filter.reset();
+  });
+
+  it("still sends the person's scroll of that box, after the edit or with a finger or wheel", () => {
+    const clock = { now: 1_000 };
+    const page = composerPage();
+    const { sent, filter } = attach(page, clock);
+    page.fire("input", page.editor);
+    clock.now += EDIT_REVEAL_MS + 1;
+    page.box.scrollTop = 300;
+    page.fire("scroll", page.box);
+    expect(sent).toEqual([{ t: "scroll", tab: "T1", nodeId: 30, x: 0, y: 300 }]);
+
+    clock.now += 1_000;
+    page.fire("input", page.editor);
+    page.fire("touchmove", page.box);
+    page.box.scrollTop = 200;
+    page.fire("scroll", page.box);
+    expect(sent.at(-1)).toEqual({ t: "scroll", tab: "T1", nodeId: 30, x: 0, y: 200 });
+
+    clock.now += 1_000;
+    page.fire("input", page.editor);
+    page.fire("wheel", page.box);
+    page.box.scrollTop = 100;
+    page.fire("scroll", page.box);
+    expect(sent.at(-1)).toEqual({ t: "scroll", tab: "T1", nodeId: 30, x: 0, y: 100 });
+    filter.reset();
+  });
+
+  it("sends a scroll of a box the edited field is not in, and ignores untrusted input", () => {
+    const clock = { now: 1_000 };
+    const page = composerPage();
+    const { sent, filter } = attach(page, clock);
+    page.fire("input", page.editor);
+    page.other.scrollTop = 50;
+    page.fire("scroll", page.other);
+    expect(sent).toEqual([{ t: "scroll", tab: "T1", nodeId: 40, x: 0, y: 50 }]);
+
+    clock.now += 1_000;
+    page.fire("input", page.editor, false);
+    page.box.scrollTop = 120;
+    page.fire("scroll", page.box);
+    expect(sent.at(-1)).toEqual({ t: "scroll", tab: "T1", nodeId: 30, x: 0, y: 120 });
     filter.reset();
   });
 });
