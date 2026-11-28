@@ -1003,10 +1003,10 @@ const pageField = (remote: Page) =>
     const view = (window as any).composerView;
     const { from, to } = view.state.selection;
     const text = view.state.doc.textBetween(0, view.state.doc.content.size, "\n") as string;
-    // In the one paragraph, position p is offset p - 1; select-all spans the whole document.
+    // The text before a position, paragraphs joined by line breaks, is its offset.
     const sel: [number, number] = [
-      Math.max(0, Math.min(from - 1, text.length)),
-      Math.max(0, Math.min(to - 1, text.length)),
+      (view.state.doc.textBetween(0, from, "\n") as string).length,
+      (view.state.doc.textBetween(0, to, "\n") as string).length,
     ];
     return { text, sel };
   });
@@ -1034,6 +1034,14 @@ const VIEWER_CARET = String.raw`(offsets) => {
     let point = null;
     let lastText = null;
     for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      // A new paragraph: the line break between them is one offset.
+      if (lastText !== null && lastText.parentElement.closest("p") !== node.parentElement.closest("p")) {
+        if (left === 0) {
+          point = { node: lastText, offset: lastText.data.length };
+          break;
+        }
+        left -= 1;
+      }
       lastText = node;
       if (left <= node.data.length) {
         point = { node, offset: left };
@@ -1274,6 +1282,30 @@ async function caret(mirror: Mirror): Promise<void> {
   await settle();
   await expectPage("emptied", "", [0, 0]);
   await expectShown("emptied", 0);
+
+  if (proxyInput) {
+    // Up and down go by the lines on screen, keeping the column where they began, as the
+    // page's own caret does.
+    await type("one");
+    await press("Shift+Enter");
+    await type("two!");
+    await settle();
+    await expectPage("two lines", "one\ntwo!", [8, 8]);
+    await expectShown("two lines", 8);
+    await press("ArrowUp");
+    await expectShown("up", 3, "", true);
+    await settle();
+    await expectPage("up", "one\ntwo!", [3, 3]);
+    await press("ArrowDown");
+    await expectShown("down", 8, "", true);
+    await settle();
+    await expectPage("down", "one\ntwo!", [8, 8]);
+    await press("ArrowLeft");
+    await press("ArrowUp");
+    await expectShown("left, up", 3, "", true);
+    await settle();
+    await expectPage("left, up", "one\ntwo!", [3, 3]);
+  }
   console.log(`${label}: the caret and selection follow arrows, presses and typing.`);
 }
 

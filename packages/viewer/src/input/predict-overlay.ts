@@ -155,10 +155,11 @@ export interface PredictOverlay {
   /** The proxy has focus: the caret and selection are drawn (and kept measured). */
   setFocused(focused: boolean): void;
   /**
-   * The offset a line up or down from `head` on screen, keeping its x (null: not measurable, or
-   * no line there; also while text typed is not in the replay yet).
+   * The offset a line up or down from `head` on screen (null: not measurable, or no line there;
+   * also while text typed is not in the replay yet). It keeps the x where a run of vertical moves
+   * began, as a browser does: `again` continues that run.
    */
-  vertical(head: number, direction: -1 | 1): number | null;
+  vertical(head: number, direction: -1 | 1, again: boolean): number | null;
   pending(): number;
   /** The caret the page reported last for the target (offset into its text). */
   lastSelection(): [number, number] | null;
@@ -276,6 +277,8 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
   let focused = false;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   let caretBox: CaretBox | null = null;
+  /** Where a run of Up and Down presses began, in the field's document (see vertical). */
+  let goalX: number | null = null;
   let caretKey = "";
   let edits: PendingEdit[] = [];
   let preedit: string | null = null;
@@ -890,7 +893,7 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
       draw();
       schedule();
     },
-    vertical(head, direction) {
+    vertical(head, direction, again) {
       const element = field();
       const state = overlay.predicted();
       if (element === null || state === null || state.text !== replayFieldText(element))
@@ -898,10 +901,11 @@ export function createPredictOverlay(options: PredictOverlayOptions): PredictOve
       try {
         const at = localCaret(element, head);
         if (at === null || at.height <= 0) return null;
+        if (!again || goalX === null) goalX = at.left;
         const y = direction < 0 ? at.top - at.height / 2 : at.top + at.height * 1.5;
         const rect = element.getBoundingClientRect();
         if (y < rect.top || y > rect.bottom) return null;
-        return offsetAtPoint(element, at.left, y);
+        return offsetAtPoint(element, goalX, y);
       } catch {
         // A field that cannot be laid out (gone, or not a real DOM).
         return null;

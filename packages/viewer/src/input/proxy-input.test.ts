@@ -402,6 +402,20 @@ describe("proxy input: caret and selection", () => {
     expect(overlay.predicted()).toMatchObject({ caret: 11, anchor: 11 });
   });
 
+  it("keeps the column of a run of Up and Down presses, as the page does", () => {
+    const { field, overlay } = typed();
+    const again: boolean[] = [];
+    overlay.vertical = (_head, _direction, keep) => {
+      again.push(keep);
+      return null;
+    };
+    field().emit(key("ArrowUp", "ArrowUp"));
+    field().emit(key("ArrowDown", "ArrowDown"));
+    field().emit(key("ArrowLeft", "ArrowLeft"));
+    field().emit(key("ArrowUp", "ArrowUp"));
+    expect(again).toEqual([false, true, false]);
+  });
+
   it("extends a selection with Shift+arrows, and typing replaces it", () => {
     const { field, overlay, sent } = typed();
     for (let index = 0; index < 5; index++)

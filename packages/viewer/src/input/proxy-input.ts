@@ -190,6 +190,8 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
   /** A press in the field whose drag extends the selection: by character, word or line. */
   let drag: { origin: Sel; unit: "char" | "word" | "line" } | null = null;
   let selectionTimer: unknown = null;
+  /** The last thing done was Up or Down: the next one keeps its column (overlay.vertical). */
+  let vertical = false;
 
   function make(isPassword: boolean): HTMLTextAreaElement | HTMLInputElement {
     const field = isPassword ? doc.createElement("input") : doc.createElement("textarea");
@@ -398,8 +400,9 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
           meta: event.metaKey,
         },
         platform,
-        (head, direction) => overlay.vertical(head, direction),
+        (head, direction) => overlay.vertical(head, direction, vertical),
       );
+    vertical = event.key === "ArrowUp" || event.key === "ArrowDown";
     if (next === null) return false;
     predictSelection(next, state.text, iseq);
     return true;
@@ -454,6 +457,7 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
 
   /** One trusted edit of the proxy: plan it, send it, predict it. */
   const plan = (event: Event | null) => {
+    vertical = false;
     if (disposed || tab() === null) return;
     const next = current();
     const keyEvent = lastKey;
@@ -897,6 +901,7 @@ export function createProxyInput(options: ProxyInputOptions): ProxyInput {
             ? lineAt(state.text, at)
             : { anchor: at, head: at };
       let next: Sel;
+      vertical = false;
       if (press.phase === "down") {
         const unit = press.detail >= 3 ? "line" : press.detail === 2 ? "word" : "char";
         next = press.shift && unit === "char" ? { anchor: state.anchor, head: at } : unitAt(unit);
