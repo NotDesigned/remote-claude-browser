@@ -585,8 +585,12 @@ export function createCommandHandler(
               if (!document.execCommand("insertText", false, insert))
                 throw new Error("editable update failed");
               // Where typing would have left the editor's box: at the caret. After the editor
-              // has redrawn what it was given (its own update runs in a microtask).
-              queueMicrotask(() => revealCaret(host));
+              // has redrawn what it was given (its own update runs in a microtask). An await
+              // rather than queueMicrotask, which a page could replace to watch for edits.
+              void (async () => {
+                await undefined;
+                revealCaret(host);
+              })();
             }
             const expected = wanted;
             const reqId = cmd.reqId;
