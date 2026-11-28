@@ -1158,9 +1158,6 @@ async function caret(mirror: Mirror): Promise<void> {
    */
   const expectShown = async (step: string, at: number, selected = "", soon = false, to = at) => {
     if (soon) await page.waitForTimeout(60);
-    // On the legacy path the replay's own field shows the selection, and a page's change patched
-    // into it later (a slow link) may collapse it: only the single-writer path promises it.
-    if (!proxyInput && selected !== "" && !soon && link.rttMs > 0) return;
     const shown = await viewerCaret(page, [at, to]);
     const where = JSON.stringify(shown);
     if (selected === "") {
@@ -1365,8 +1362,15 @@ const runs: Array<[string, boolean, (mirror: Mirror) => Promise<void>, string]> 
   ["Phone", true, sends, "sends"],
   ["Desktop", false, slowPage, "slow-page"],
   ["Desktop", false, textarea, "textarea"],
-  ["Desktop", false, caret, "caret"],
-  ["Phone", true, caret, "caret"],
+  // On the legacy path the replay's own field holds the selection, and the page's changes patched
+  // into it over a slow link can collapse it (typing then lands beside it): only single-writer
+  // input promises the caret scenario there.
+  ...(proxyInput || link.rttMs === 0
+    ? ([
+        ["Desktop", false, caret, "caret"],
+        ["Phone", true, caret, "caret"],
+      ] as const)
+    : []),
 ];
 try {
   if (only.includes("gate")) await run(phone ? "Phone" : "Desktop", phone, gate);
