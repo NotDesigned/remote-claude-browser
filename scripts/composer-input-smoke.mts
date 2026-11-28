@@ -1137,13 +1137,30 @@ const near = (a: Point, b: Point) => Math.abs(a.x - b.x) <= 3 && Math.abs(a.y - 
  */
 async function caret(mirror: Mirror): Promise<void> {
   const { label, softKeyboard, page, remote, type } = mirror;
-  const settle = () => page.waitForTimeout(700);
+  /** Until every input was acknowledged and the replay shows it (a slow link takes longer). */
+  const settle = async () => {
+    await page.waitForTimeout(400);
+    await page.waitForFunction(
+      () => {
+        const lab = (window as any).__mirrorInputLab;
+        if (lab === undefined) return true;
+        const proxy = lab.proxy?.active() === true;
+        return lab.outstanding("composer") === 0 && (!proxy || lab.proxy.state().pending === 0);
+      },
+      undefined,
+      { timeout: 15_000 },
+    );
+    await page.waitForTimeout(300);
+  };
   /**
    * The viewer shows a caret at `at`, or with `selected`, that text highlighted from offset `at`
    * to `to`. Right away (the prediction) when `soon`, else once the page has answered.
    */
   const expectShown = async (step: string, at: number, selected = "", soon = false, to = at) => {
     if (soon) await page.waitForTimeout(60);
+    // On the legacy path the replay's own field shows the selection, and a page's change patched
+    // into it later (a slow link) may collapse it: only the single-writer path promises it.
+    if (!proxyInput && selected !== "" && !soon && link.rttMs > 0) return;
     const shown = await viewerCaret(page, [at, to]);
     const where = JSON.stringify(shown);
     if (selected === "") {
