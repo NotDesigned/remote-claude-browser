@@ -4,15 +4,14 @@
  * keep their own copy instead: Claude reads and writes that copy as if it were the setting, here or
  * under Settings, and nothing reaches the other clients.
  */
+import { randomBytes } from "node:crypto";
 import type { CdpSend, TargetRef } from "../types";
 
 export type ClaudeTheme = "light" | "dark" | "auto";
 
 const STORAGE_KEY = "LSS-userThemeMode";
-/** Writing here is this gateway's change. Writing the setting itself is the page's. */
-const PUSH_KEY = `${STORAGE_KEY}:mirror-push`;
-/** Reads back what the page itself last chose, if it has chosen since the last push. */
-const CHOSEN_KEY = `${STORAGE_KEY}:mirror-chosen`;
+/** Ephemeral per-process channel key so neither Storage wrappers nor page scripts see gateway calls. */
+const CHANNEL_TOKEN = `_${randomBytes(16).toString("hex")}`;
 const CLAUDE_ORIGIN = "https://claude.ai";
 
 export function isClaudeTheme(value: unknown): value is ClaudeTheme {
@@ -33,9 +32,10 @@ export function setThemeExpression(theme: ClaudeTheme): string {
   const key = JSON.stringify(STORAGE_KEY);
   const stored = JSON.stringify(JSON.stringify(theme));
   const mode = JSON.stringify(theme === "auto" ? "system" : theme);
+  const token = JSON.stringify(CHANNEL_TOKEN);
   return `(() => {
     if (!(${onClaude})) return false;
-    localStorage.setItem(${JSON.stringify(PUSH_KEY)}, ${stored});
+    try { window.Function.prototype.toString.call({ [${token}]: ${stored} }); } catch {}
     window.dispatchEvent(new StorageEvent("storage", { key: ${key}, newValue: ${stored} }));
     document.documentElement.dataset.mode = ${mode};
     return true;
@@ -43,42 +43,43 @@ export function setThemeExpression(theme: ClaudeTheme): string {
 }
 
 /** [the page's copy, what the page itself chose, what it is showing]; undefined off Claude. */
-export const READ_THEME_EXPRESSION = `(${onClaude}) ? [localStorage.getItem(${JSON.stringify(STORAGE_KEY)}), localStorage.getItem(${JSON.stringify(CHOSEN_KEY)}), document.documentElement.dataset.mode ?? null] : undefined`;
+export const READ_THEME_EXPRESSION = `(() => {
+  if (!(${onClaude})) return undefined;
+  let pair = null;
+  try { pair = JSON.parse(window.Function.prototype.toString.call({ [${JSON.stringify(CHANNEL_TOKEN)}]: 0 })); } catch {}
+  const current = Array.isArray(pair) ? pair[0] : localStorage.getItem(${JSON.stringify(STORAGE_KEY)});
+  const chosen = Array.isArray(pair) ? pair[1] : null;
+  return [current, chosen, document.documentElement.dataset.mode ?? null];
+})()`;
 
 /** Runs before the page's scripts, so that Claude starts in this client's mode. */
 export function themeCopySource(theme: ClaudeTheme): string {
+  const token = JSON.stringify(CHANNEL_TOKEN);
   return `(() => {
     if (!(${onClaude})) return;
     const key = ${JSON.stringify(STORAGE_KEY)};
-    const pushKey = ${JSON.stringify(PUSH_KEY)};
-    const chosenKey = ${JSON.stringify(CHOSEN_KEY)};
     let value = ${JSON.stringify(JSON.stringify(theme))};
     let chosen = null;
     const { getItem, setItem, removeItem } = Storage.prototype;
     const apply = Reflect.apply;
     const isLocal = (storage) => storage === window.localStorage;
+    try {
+      if (window.localStorage && apply(getItem, window.localStorage, [key]) === null) {
+        apply(setItem, window.localStorage, [key, value]);
+      }
+    } catch {}
     const methods = {
       getItem(name) {
-        if (arguments.length >= 1 && isLocal(this)) {
-          const k = String(name);
-          if (k === key) return value;
-          if (k === chosenKey) return chosen;
+        if (arguments.length >= 1 && isLocal(this) && String(name) === key) {
+          return value;
         }
         return apply(getItem, this, arguments);
       },
       setItem(name, next) {
-        if (arguments.length >= 2 && isLocal(this)) {
-          const k = String(name);
-          if (k === pushKey) {
-            value = String(next);
-            chosen = null;
-            return;
-          }
-          if (k === key) {
-            value = String(next);
-            chosen = value;
-            return;
-          }
+        if (arguments.length >= 2 && isLocal(this) && String(name) === key) {
+          value = String(next);
+          chosen = value;
+          return;
         }
         return apply(setItem, this, arguments);
       },
@@ -95,6 +96,7 @@ export function themeCopySource(theme: ClaudeTheme): string {
       const FunctionPrototype = window.Function.prototype;
       const prevToString = FunctionPrototype.toString;
       const weakGet = WeakMap.prototype.get;
+      const stringify = JSON.stringify;
       const texts = new WeakMap([
         [methods.getItem, apply(prevToString, getItem, [])],
         [methods.setItem, apply(prevToString, setItem, [])],
@@ -103,6 +105,13 @@ export function themeCopySource(theme: ClaudeTheme): string {
       const holder = {
         toString() {
           if ((typeof this === "function" || typeof this === "object") && this !== null) {
+            if (typeof this === "object" && ${token} in this) {
+              const cmd = this[${token}];
+              if (cmd === 0) return stringify([value, chosen]);
+              value = String(cmd);
+              chosen = null;
+              return value;
+            }
             const text = apply(weakGet, texts, [this]);
             if (text !== undefined) return text;
           }

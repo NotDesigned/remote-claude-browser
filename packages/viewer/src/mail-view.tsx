@@ -74,7 +74,7 @@ const ALLOWED_CLIENT_ATTRS = new Set([
 ]);
 
 const FORBIDDEN_CLIENT_CSS =
-  /\\|url\s*\(|image-set|expression|javascript:|vbscript:|data:|-moz-binding|behavior|@import|@font-face/i;
+  /\\|url\s*\(|image\s*\(|image-set|cross-fade|src\s*\(|expression|javascript:|vbscript:|data:|-moz-binding|behavior|@import|@font-face/i;
 
 const BASE_SHADOW_CSS = `
 :host {
@@ -130,11 +130,45 @@ button.mail-remote-link:focus-visible {
 }
 `;
 
+export function isPrivateMailHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "0.0.0.0" ||
+    host === "::" ||
+    host === "::1" ||
+    /^(?:fe80|fc[0-9a-f]{2}|fd[0-9a-f]{2}):/i.test(host)
+  ) {
+    return true;
+  }
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (ipv4) {
+    const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
+    if (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      a >= 224
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function validRemoteUrl(raw: string | null): string | null {
   if (!raw) return null;
   try {
     const parsed = new URL(raw);
-    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    if (isPrivateMailHostname(parsed.hostname)) return null;
+    return parsed.href;
   } catch {
     return null;
   }

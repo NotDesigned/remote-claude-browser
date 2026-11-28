@@ -313,6 +313,8 @@ describe("asset fetch lanes", () => {
       expect(options.headers["sec-fetch-dest"]).toBe("audio");
       expect(options.headers["sec-fetch-site"]).toBe("same-origin");
       expect(options.headers["sec-ch-ua"]).toContain('"Chromium";v="134"');
+      expect(options.headers["sec-ch-ua"]).toContain('"Google Chrome";v="134"');
+      expect(options.headers["sec-ch-ua"]).toContain('"Not:A-Brand";v="24"');
       expect(options.headers["sec-ch-ua-platform"]).toBe('"macOS"');
       return directResponse(
         "partial",

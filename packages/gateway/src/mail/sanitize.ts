@@ -39,6 +39,7 @@ const DROP_SUBTREE_TAGS = new Set([
   "button",
   "datalist",
   "head-ignored",
+  "style",
   "title",
   "template",
   "portal",
@@ -200,7 +201,22 @@ const SAFE_CSS_PROPERTIES = new Set([
 ]);
 
 const FORBIDDEN_CSS_VALUE =
-  /\\|url\s*\(|image-set|expression|javascript:|vbscript:|data:|-moz-binding|behavior|@import|@font-face|<!--|-->|<\/?/i;
+  /\\|url\s*\(|image\s*\(|image-set|cross-fade|src\s*\(|expression|javascript:|vbscript:|data:|-moz-binding|behavior|@import|@font-face|<!--|-->|<\/?/i;
+
+const ALLOWED_CSS_FUNCTIONS = new Set([
+  "rgb",
+  "rgba",
+  "hsl",
+  "hsla",
+  "linear-gradient",
+  "radial-gradient",
+  "calc",
+  "min",
+  "max",
+  "clamp",
+  "minmax",
+  "var",
+]);
 
 function escapeHtml(value: string): string {
   return value
@@ -241,6 +257,15 @@ export function sanitizeCssDeclarations(css: string): string {
     const val = part.slice(colon + 1).trim();
     if (!SAFE_CSS_PROPERTIES.has(prop) || !val || val.length > 400) continue;
     if (FORBIDDEN_CSS_VALUE.test(val) || /[{}]/.test(val)) continue;
+    if (prop !== "font-family" && /["']/.test(val)) continue;
+    let unknownFn = false;
+    for (const fnMatch of val.matchAll(/([A-Za-z0-9_-]+)\s*\(/g)) {
+      if (!ALLOWED_CSS_FUNCTIONS.has(fnMatch[1]!.toLowerCase())) {
+        unknownFn = true;
+        break;
+      }
+    }
+    if (unknownFn) continue;
     if (prop === "display" && /\bfixed\b|\babsolute\b/i.test(val)) continue;
     out.push(`${prop}:${val}`);
   }
@@ -328,12 +353,45 @@ function parseAttributes(raw: string): Map<string, string> {
   return attrs;
 }
 
+function isPrivateOrLocalHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "0.0.0.0" ||
+    host === "::" ||
+    host === "::1" ||
+    /^(?:fe80|fc[0-9a-f]{2}|fd[0-9a-f]{2}):/i.test(host)
+  ) {
+    return true;
+  }
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (ipv4) {
+    const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
+    if (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      a >= 224
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function safeHttpUrl(raw: string): string | null {
   const trimmed = raw.trim();
   if (!trimmed || trimmed.length > 2048) return null;
   try {
     const parsed = new URL(trimmed);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    if (isPrivateOrLocalHostname(parsed.hostname)) return null;
     return parsed.href;
   } catch {
     return null;
@@ -436,7 +494,7 @@ export function sanitizeEmailHtml(input: string | undefined): string | undefined
     },
   );
 
-  const tagRe = /<\/?([A-Za-z][A-Za-z0-9:-]*)(\s[^<>]*?)?\s*(\/?)>/g;
+  const tagRe = /<\/?([A-Za-z][A-Za-z0-9:-]*)(\s(?:[^<>"']|"[^"]*"|'[^']*')*)?\s*(\/?)>/g;
   let cursor = 0;
   let match: RegExpExecArray | null;
 

@@ -8,7 +8,7 @@ test("profile addresses are stable, isolated /30 networks and safe kernel names"
   assert.notEqual(a.subnet, networkIdentity("browser-p-abcdef1234").subnet);
   assert.ok(a.hostIf.length < 16);
   assert.match(a.peerIp, /^10\.253\./);
-  assert.match(a.peerIp6, /^fd4d:6972:726f:[a-f0-9]+::2$/);
+  assert.match(a.peerIp6, /^fd9a:4c2e:81b0:[a-f0-9]+::2$/);
   assert.notEqual(a.subnet6, networkIdentity("browser-p-abcdef1234").subnet6);
   assert.notEqual(a.subnet6, networkIdentity("browser-p-1234567890", 1).subnet6);
   assert.throws(() => networkIdentity("../../other"));

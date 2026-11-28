@@ -1388,6 +1388,29 @@ describe("P1 input capture", () => {
       expect(externalLink(link("mailto:a@example.com"), page)).toBeNull();
       expect(externalLink(new FakeElement(4) as unknown as EventTarget, page)).toBeNull();
     });
+
+    it("handles SVG anchors with SVGAnimatedString href and xlink:href without throwing", () => {
+      const svgAnchor = {
+        nodeType: 1,
+        tagName: "a",
+        parentElement: null,
+        href: {
+          baseVal: "https://example.org/svg-target",
+          animVal: "https://example.org/svg-target",
+        },
+        closest: () => null,
+        hasAttribute: (name: string) => name === "xlink:href",
+        getAttribute: (name: string) =>
+          name === "xlink:href" ? "https://example.org/svg-target" : null,
+      } as unknown as EventTarget;
+      expect(externalLink(svgAnchor, page)).toBe("https://example.org/svg-target");
+
+      const claudeSvgAnchor = {
+        ...svgAnchor,
+        href: { baseVal: "https://claude.ai/settings", animVal: "https://claude.ai/settings" },
+      } as unknown as EventTarget;
+      expect(externalLink(claudeSvgAnchor, page)).toBeNull();
+    });
   });
 
   it("clamps fallback-relative coordinates", () => {

@@ -22,6 +22,28 @@
 
 无
 
+## [0.5.1] - 2026-11-28
+
+### 新增
+
+无
+
+### 变更
+
+- 安全与隐蔽性加固：
+  - `claude.ai` 外观同步不再经页面主世界的 `Storage.prototype` 读写特征键名，并在空配置下补齐 `LSS-userThemeMode` 的存储存在性。
+  - 「收件箱」排版视图采用 CSS 函数白名单（拦截 `image()`、`src()` 等样式引用及非字体属性引号），修复属性值含 `>` 时的标签解析与未闭合 `<style>` 块丢弃，并过滤回环与保留内网地址链接。
+  - 页面模式回放补齐 `<body>`、`<table>`、`<tr>`、`<td>`、`<th>` 的 `background` 资源代理重写，保留 SVG `<a xlink:href>` 为导航链接并修复 SVG 链接的点击与外链识别。
+  - `claude.ai` 语音模式授权麦克风后，`navigator.mediaDevices.enumerateDevices()` 与 `navigator.permissions.query({ name: "microphone" })` 同步返回一致的设备标识与已授权状态；音视频分段请求按浏览器主版本号生成一致的 `Sec-CH-UA` 品牌序列；移除浏览器配置内部 IPv6 前缀的固定字符特征。
+
+### 移除
+
+无
+
+### 升级步骤
+
+- 正常升级：`docker compose up -d --build`（使用预构建镜像的，把 `.env` 里的 `SERVER_IMAGE`、`CPA_BROKER_IMAGE`、`CPA_BROKER_ENGINE_IMAGE` 一并更新到 `v0.5.1` 后执行 `docker compose up -d`）。
+
 ## [0.5.0] - 2026-11-28
 
 ### 新增

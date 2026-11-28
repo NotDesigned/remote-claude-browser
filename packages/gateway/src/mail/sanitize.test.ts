@@ -32,11 +32,14 @@ describe("sanitizeEmailHtml", () => {
               <a class="cta" href="https://claude.ai/magic-link#tok=99" ping="https://tracker.example/ping" onclick="alert(1)">Sign in</a>
               <p>Fallback: https://claude.ai/magic-link#tok=99.</p>
               <a href="javascript:alert(1)">Bad link</a>
+              <a href="http://127.0.0.1:3010/internal">Internal link</a>
+              <div title="a > b" style="color: #333; background: image('/logout'); border-image: src('/logout')">Quoted gt</div>
             </td>
           </tr>
         </table>
         <svg><image href="https://tracker.example/svg.png"/></svg>
         <iframe src="https://tracker.example/frame"></iframe>
+        <style>body { background: url(https://tracker.example/unclosed-tail); }
       </body>
       </html>`;
 
@@ -59,6 +62,12 @@ describe("sanitizeEmailHtml", () => {
     expect(clean).not.toContain("ping=");
     expect(clean).not.toContain("javascript:");
     expect(clean).not.toContain("url(");
+    expect(clean).not.toContain("image(");
+    expect(clean).not.toContain("src(");
+    expect(clean).not.toContain("/logout");
+    expect(clean).not.toContain("127.0.0.1");
+    expect(clean).not.toContain("unclosed-tail");
+    expect(clean).toContain('<div style="color:#333">Quoted gt</div>');
 
     // Meaningful non-pixel alt text, table layout, styles, code, and remote-link buttons stay intact
     expect(clean).toContain('<span class="mail-img-alt">Anthropic</span>');

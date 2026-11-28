@@ -216,9 +216,57 @@ export function installVoiceBridge(
   const MIC_SAMPLE_RATE = 48_000;
 
   let micOpen = false;
+  let micGrantedOnce = false;
   let micTracks = 0;
   const micWaiters: ((granted: boolean) => void)[] = [];
+  const micStatuses = new Set<PermissionStatus>();
+  const maskedDevices = new WeakSet<object>();
+  let devicePrototypeHooked = false;
   let nextMicAt = 0;
+
+  const hookDeviceInfoPrototype = (): void => {
+    if (devicePrototypeHooked) return;
+    const proto = (target as unknown as { MediaDeviceInfo?: { prototype: MediaDeviceInfo } })
+      .MediaDeviceInfo?.prototype;
+    if (!proto) return;
+    devicePrototypeHooked = true;
+    const hookGetter = (key: "deviceId" | "groupId" | "label" | "kind", value: string) => {
+      const desc = Object.getOwnPropertyDescriptor(proto, key);
+      if (!desc?.get) return;
+      const nativeGet = desc.get;
+      const getter = function (this: MediaDeviceInfo): string {
+        if (maskedDevices.has(this)) return value;
+        return nativeGet.call(this);
+      };
+      if (mask !== undefined) {
+        mask.accessor(proto, key, { get: getter as unknown as (this: never) => unknown });
+      } else {
+        Object.defineProperty(proto, key, { ...desc, get: getter });
+      }
+    };
+    hookGetter("deviceId", micDeviceId);
+    hookGetter("groupId", micGroupId);
+    hookGetter("label", MIC_LABEL);
+    hookGetter("kind", "audioinput");
+    const nativeToJson = proto.toJSON;
+    if (typeof nativeToJson === "function") {
+      proto.toJSON = masked(
+        "toJSON",
+        function (this: MediaDeviceInfo) {
+          if (maskedDevices.has(this)) {
+            return {
+              deviceId: micDeviceId,
+              kind: "audioinput",
+              label: MIC_LABEL,
+              groupId: micGroupId,
+            };
+          }
+          return nativeToJson.call(this);
+        },
+        nativeToJson,
+      );
+    }
+  };
   const openMic = (): Promise<boolean> => {
     if (micOpen) return Promise.resolve(true);
     return new Promise((resolve) => {
@@ -363,9 +411,72 @@ export function installVoiceBridge(
     if (mask !== undefined && owner !== null && typeof owner.getUserMedia === "function")
       owner.getUserMedia = masked("getUserMedia", getUserMedia, owner.getUserMedia);
     else devices.getUserMedia = getUserMedia;
+
+    if (mask !== undefined && typeof devices.enumerateDevices === "function") {
+      const nativeEnumerate = devices.enumerateDevices.bind(devices);
+      const enumerateDevices = async (): Promise<MediaDeviceInfo[]> => {
+        const list = await nativeEnumerate();
+        if (!micGrantedOnce) return list;
+        hookDeviceInfoPrototype();
+        const existingAudio = list.find((item) => item.kind === "audioinput");
+        if (existingAudio) {
+          maskedDevices.add(existingAudio);
+          return list;
+        }
+        const proto =
+          (
+            target as unknown as {
+              InputDeviceInfo?: { prototype: object };
+              MediaDeviceInfo?: { prototype: object };
+            }
+          ).InputDeviceInfo?.prototype ??
+          (target as unknown as { MediaDeviceInfo?: { prototype: object } }).MediaDeviceInfo
+            ?.prototype ??
+          Object.prototype;
+        const synthetic = Object.create(proto) as MediaDeviceInfo;
+        maskedDevices.add(synthetic);
+        return [synthetic, ...list];
+      };
+      if (owner !== null && typeof owner.enumerateDevices === "function")
+        owner.enumerateDevices = masked(
+          "enumerateDevices",
+          enumerateDevices,
+          owner.enumerateDevices,
+        );
+      else devices.enumerateDevices = enumerateDevices;
+    }
   }
-  // Device enumeration and permission state belong to Chromium. The viewer authorizes its own
-  // microphone separately; inventing devices or PermissionStatus objects changes Web API semantics.
+  const permissionsProto = (target as unknown as { Permissions?: { prototype: Permissions } })
+    .Permissions?.prototype;
+  if (
+    mask !== undefined &&
+    permissionsProto !== undefined &&
+    typeof permissionsProto.query === "function"
+  ) {
+    const nativeQuery = permissionsProto.query;
+    const query = function (this: Permissions, descriptor: PermissionDescriptor) {
+      const result = nativeQuery.apply(this, [descriptor]);
+      const name = (descriptor as { name?: unknown } | null | undefined)?.name;
+      if (name !== "microphone") return result;
+      return result.then((status) => {
+        const protoDesc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(status), "state");
+        const nativeGetState = protoDesc?.get;
+        const stateGetter = () =>
+          micGrantedOnce
+            ? "granted"
+            : nativeGetState
+              ? (nativeGetState.call(status) as PermissionState)
+              : status.state;
+        Object.defineProperty(status, "state", {
+          get: mask.asNativeNamed(stateGetter, "get state", 0) as () => PermissionState,
+          configurable: true,
+        });
+        micStatuses.add(status);
+        return status;
+      });
+    };
+    permissionsProto.query = masked("query", query, nativeQuery);
+  }
   target.addEventListener("pagehide", () => {
     if (micOpen) send({ mic: false });
   });
@@ -375,6 +486,17 @@ export function installVoiceBridge(
       const message = value as Partial<VoiceIn & { state: boolean; pcm: string }>;
       if (typeof message.state === "boolean") {
         micOpen = message.state;
+        if (message.state && !micGrantedOnce) {
+          micGrantedOnce = true;
+          hookDeviceInfoPrototype();
+          for (const status of micStatuses) {
+            try {
+              target.EventTarget.prototype.dispatchEvent.call(status, new target.Event("change"));
+            } catch {
+              // Ignore detached status listeners.
+            }
+          }
+        }
         for (const answer of [...micWaiters]) answer(message.state);
         return;
       }

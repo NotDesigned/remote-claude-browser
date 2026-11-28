@@ -81,11 +81,21 @@ export function externalLink(
   target: EventTarget | null,
   pageUrl: string | undefined,
 ): string | null {
-  const href = (closestNavigationLink(target) as HTMLAnchorElement | null)?.href;
-  if (!href) return null;
+  const link = closestNavigationLink(target);
+  if (!link) return null;
+  const propHref = (link as HTMLAnchorElement & { href?: unknown }).href;
+  const rawHref =
+    typeof propHref === "string"
+      ? propHref
+      : typeof (propHref as { baseVal?: unknown } | null | undefined)?.baseVal === "string"
+        ? (propHref as { baseVal: string }).baseVal
+        : (link.getAttribute?.("href") ?? link.getAttribute?.("xlink:href") ?? "");
+  if (!rawHref) return null;
   let url: URL;
   try {
-    url = new URL(href);
+    const base =
+      pageUrl ?? (link as { ownerDocument?: { baseURI?: string } }).ownerDocument?.baseURI;
+    url = base ? new URL(rawHref, base) : new URL(rawHref);
   } catch {
     return null;
   }
@@ -99,9 +109,23 @@ export function externalLink(
   return url.href;
 }
 
-/** Includes image-map areas; anchor descendants are the ordinary rrweb replay case. */
+/** Includes image-map areas and SVG anchors (`href` or `xlink:href`). */
 export function closestNavigationLink(target: EventTarget | null): Element | null {
-  return isElement(target) ? target.closest("a[href],area[href]") : null;
+  if (!isElement(target)) return null;
+  const standard = target.closest("a[href],area[href]");
+  if (standard !== null) return standard;
+  let cur: Element | null = target;
+  while (cur !== null) {
+    const tag = cur.tagName.toLowerCase();
+    if (
+      (tag === "a" || tag === "area") &&
+      (cur.hasAttribute?.("href") === true || cur.hasAttribute?.("xlink:href") === true)
+    ) {
+      return cur;
+    }
+    cur = cur.parentElement;
+  }
+  return null;
 }
 
 /** Ordinary text and local editors can use the device's copy, paste and spelling menu. */

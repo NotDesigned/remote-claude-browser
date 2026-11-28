@@ -1,6 +1,6 @@
 {
   "name": "@mirror/gateway",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "CDP, auth, asset proxy, and WebSocket gateway for Remote Browser",
   "private": true,
   "license": "Apache-2.0",

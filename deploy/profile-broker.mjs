@@ -22,7 +22,7 @@ export function networkIdentity(id, offset = 0) {
   const slot = ((hash.readUInt16BE(0) + offset) % 16382) + 1;
   const base = slot * 4;
   const prefix = `10.253.${base >> 8}`;
-  const prefix6 = `fd4d:6972:726f:${slot.toString(16)}`;
+  const prefix6 = `fd9a:4c2e:81b0:${slot.toString(16)}`;
   return {
     name: `rb-${hash.toString("hex").slice(0, 12)}`,
     hostIf: `rbh${hash.toString("hex").slice(0, 10)}`,

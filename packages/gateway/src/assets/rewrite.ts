@@ -24,7 +24,8 @@ type UnknownRecord = Record<string, unknown>;
 
 const NODE_ELEMENT = 2;
 const NODE_TEXT = 3;
-const DIRECT_URL_ATTRIBUTES = new Set(["src", "poster", "xlink:href"]);
+const DIRECT_URL_ATTRIBUTES = new Set(["src", "poster"]);
+const BACKGROUND_URL_TAGS = new Set(["body", "table", "thead", "tbody", "tfoot", "tr", "td", "th"]);
 const SVG_HREF_TAGS = new Set([
   "image",
   "use",
@@ -444,6 +445,8 @@ function rewriteAttributes(
     let rewritten: unknown = original;
     if (
       (DIRECT_URL_ATTRIBUTES.has(lowerName) ||
+        (lowerName === "xlink:href" && tag !== "a") ||
+        (lowerName === "background" && tag !== undefined && BACKGROUND_URL_TAGS.has(tag)) ||
         (lowerName === "data" && tag === "object") ||
         (lowerName === "href" && tag !== undefined && SVG_HREF_TAGS.has(tag))) &&
       typeof original === "string"

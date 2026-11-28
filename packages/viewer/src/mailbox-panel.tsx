@@ -9,7 +9,7 @@ import {
   type MailboxContents,
   type MailboxMessage,
 } from "./mailboxes";
-import { extractSanitizedHtmlLinks, MailHtmlView } from "./mail-view";
+import { extractSanitizedHtmlLinks, isPrivateMailHostname, MailHtmlView } from "./mail-view";
 import "./user-panel.css";
 import "./mailbox-panel.css";
 
@@ -41,6 +41,7 @@ export function extractMailLinks(text: string): string[] {
     try {
       const parsed = new URL(raw);
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:") continue;
+      if (isPrivateMailHostname(parsed.hostname)) continue;
       if (seen.has(raw)) continue;
       seen.add(raw);
       links.push(raw);

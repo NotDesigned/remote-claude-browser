@@ -26,12 +26,15 @@ describe("Claude's theme", () => {
     expect(parseStoredTheme(null)).toBeNull();
   });
 
-  it("pushes JSON, tells the running page and uses Claude's name for automatic", () => {
+  it("pushes JSON, tells the running page and uses Claude's name for automatic without literal mirror keys", () => {
     const script = setThemeExpression("auto");
-    expect(script).toContain('"LSS-userThemeMode:mirror-push", "\\"auto\\""');
+    expect(script).not.toContain("mirror-push");
+    expect(script).not.toContain("mirror-chosen");
     expect(script).toContain('key: "LSS-userThemeMode", newValue: "\\"auto\\""');
     expect(script).toContain('dataset.mode = "system"');
     expect(setThemeExpression("dark")).toContain('dataset.mode = "dark"');
+    expect(themeCopySource("dark")).not.toContain("mirror");
+    expect(READ_THEME_EXPRESSION).not.toContain("mirror");
   });
 
   it("says whether a Claude page took the setting, so the viewer knows to try again", async () => {
@@ -137,8 +140,15 @@ describe("Claude's theme", () => {
 
   describe("each client's own copy", () => {
     /** Runs the copy's source against a fake page, as Chromium would before the page's scripts. */
-    function page(theme: "light" | "dark" | "auto") {
-      const shared = new Map([["LSS-userThemeMode", '"light"']]);
+    function page(theme: "light" | "dark" | "auto", empty = false) {
+      const shared = new Map(empty ? [] : [["LSS-userThemeMode", '"light"']]);
+      class RealmFunction extends Function {}
+      Object.defineProperty(RealmFunction.prototype, "toString", {
+        value: Function.prototype.toString,
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
       class Storage {
         getItem(name: string) {
           return shared.get(name) ?? null;
@@ -152,28 +162,67 @@ describe("Claude's theme", () => {
       }
       const localStorage = new Storage();
       const session = new Storage();
+      const doc = { documentElement: { dataset: {} as Record<string, string> } };
+      const win = {
+        localStorage,
+        Function: RealmFunction,
+        dispatchEvent: () => true,
+      };
       new Function("location", "Storage", "window", themeCopySource(theme))(
         { origin: "https://claude.ai" },
         Storage,
-        { localStorage },
+        win,
       );
-      return { shared, localStorage, session };
+      const evalInPage = (expr: string) =>
+        new Function(
+          "location",
+          "localStorage",
+          "window",
+          "document",
+          "StorageEvent",
+          `return ${expr}`,
+        )(
+          { origin: "https://claude.ai" },
+          localStorage,
+          win,
+          doc,
+          class {
+            constructor(_type: string, _init?: unknown) {}
+          },
+        );
+      return { shared, localStorage, session, Storage, evalInPage };
     }
 
-    it("gives the page its own mode, whatever the shared storage holds", () => {
+    it("gives the page its own mode, whatever the shared storage holds, and seeds empty storage", () => {
       expect(page("dark").localStorage.getItem("LSS-userThemeMode")).toBe('"dark"');
+      const seeded = page("dark", true);
+      expect(seeded.shared.get("LSS-userThemeMode")).toBe('"dark"');
     });
 
-    it("keeps a change made in the page out of the shared storage", () => {
-      const { shared, localStorage } = page("dark");
+    it("keeps a change made in the page out of the shared storage without exposing Storage calls", () => {
+      const { shared, localStorage, Storage, evalInPage } = page("dark");
+      const observedStorageCalls: string[] = [];
+      const origGet = Storage.prototype.getItem;
+      const origSet = Storage.prototype.setItem;
+      Storage.prototype.getItem = function (k: string) {
+        observedStorageCalls.push(`get:${k}`);
+        return origGet.apply(this, arguments as never);
+      };
+      Storage.prototype.setItem = function (k: string, v: string) {
+        observedStorageCalls.push(`set:${k}=${v}`);
+        return origSet.apply(this, arguments as never);
+      };
+
       localStorage.setItem("LSS-userThemeMode", '"auto"');
-      expect(localStorage.getItem("LSS-userThemeMode")).toBe('"auto"');
-      expect(localStorage.getItem("LSS-userThemeMode:mirror-chosen")).toBe('"auto"');
+      observedStorageCalls.length = 0;
+
+      // Gateway read & push never invoke page-wrapped Storage.prototype methods
+      expect(evalInPage(READ_THEME_EXPRESSION)).toEqual(['"auto"', '"auto"', null]);
       expect(shared.get("LSS-userThemeMode")).toBe('"light"');
-      localStorage.setItem("LSS-userThemeMode:mirror-push", '"dark"');
-      expect(localStorage.getItem("LSS-userThemeMode")).toBe('"dark"');
-      expect(localStorage.getItem("LSS-userThemeMode:mirror-chosen")).toBeNull();
-      expect(shared.has("LSS-userThemeMode:mirror-push")).toBe(false);
+      expect(evalInPage(setThemeExpression("dark"))).toBe(true);
+      expect(evalInPage(READ_THEME_EXPRESSION)).toEqual(['"dark"', null, "dark"]);
+      expect(observedStorageCalls).toEqual([]);
+
       localStorage.removeItem("LSS-userThemeMode");
       expect(shared.get("LSS-userThemeMode")).toBe('"light"');
     });

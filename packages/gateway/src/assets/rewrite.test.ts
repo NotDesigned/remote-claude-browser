@@ -923,6 +923,51 @@ describe("rrweb RewriteStage", () => {
     });
     expect(createRewriteStage(KEY)(original, CTX)).toBe(original);
   });
+
+  it("rewrites legacy HTML background URLs while leaving SVG anchor xlink:href as navigation", () => {
+    const rewritten = createRewriteStage(KEY)(
+      fullSnapshot({
+        type: 2,
+        id: 1,
+        tagName: "body",
+        attributes: { background: "https://img.example/body-bg.png" },
+        childNodes: [
+          {
+            type: 2,
+            id: 2,
+            tagName: "table",
+            attributes: { background: "https://img.example/table-bg.png" },
+            childNodes: [],
+          },
+          {
+            type: 2,
+            id: 3,
+            tagName: "a",
+            attributes: { "xlink:href": "https://claude.ai/svg-nav" },
+            childNodes: [],
+          },
+        ],
+      }),
+      CTX,
+    ) as unknown as {
+      data: {
+        node: {
+          attributes: { background: string };
+          childNodes: Array<{ attributes: Record<string, string> }>;
+        };
+      };
+    };
+
+    expect(proxiedRef(rewritten.data.node.attributes.background).url).toBe(
+      "https://img.example/body-bg.png",
+    );
+    expect(proxiedRef(rewritten.data.node.childNodes[0]!.attributes.background!).url).toBe(
+      "https://img.example/table-bg.png",
+    );
+    expect(rewritten.data.node.childNodes[1]!.attributes["xlink:href"]).toBe(
+      "https://claude.ai/svg-nav",
+    );
+  });
 });
 
 describe("portable @supports for the viewer's browser", () => {

@@ -421,8 +421,9 @@ async function fetchDirect(
 
 function clientHintHeaders(userAgent: string, secure: boolean): Record<string, string> {
   if (!secure) return {};
-  const major = /\bChrome\/(\d+)/.exec(userAgent)?.[1];
-  if (!major) return {};
+  const majorStr = /\bChrome\/(\d+)/.exec(userAgent)?.[1];
+  if (!majorStr) return {};
+  const major = Number.parseInt(majorStr, 10);
   const platform = /\bWindows\b/i.test(userAgent)
     ? "Windows"
     : /\bAndroid\b/i.test(userAgent)
@@ -432,8 +433,27 @@ function clientHintHeaders(userAgent: string, secure: boolean): Record<string, s
         : /\bCrOS\b/i.test(userAgent)
           ? "Chrome OS"
           : "Linux";
+  // Chromium's deterministic GREASE brand and permutation (user_agent_utils.cc).
+  const greaseChars = [" ", "(", ":", "-", ".", "/", ")", ";", "=", "?", "_"] as const;
+  const greaseVersions = ["8", "99", "24"] as const;
+  const greaseBrand = `Not${greaseChars[major % 11]}A${greaseChars[(major + 1) % 11]}Brand`;
+  const greaseVer = greaseVersions[major % 3]!;
+  const brands = [
+    `"${greaseBrand}";v="${greaseVer}"`,
+    `"Chromium";v="${majorStr}"`,
+    `"Google Chrome";v="${majorStr}"`,
+  ] as const;
+  const orders = [
+    [0, 1, 2],
+    [0, 2, 1],
+    [1, 0, 2],
+    [1, 2, 0],
+    [2, 0, 1],
+    [2, 1, 0],
+  ] as const;
+  const order = orders[major % 6]!;
   return {
-    "sec-ch-ua": `"Not:A-Brand";v="99", "Google Chrome";v="${major}", "Chromium";v="${major}"`,
+    "sec-ch-ua": order.map((index) => brands[index]!).join(", "),
     "sec-ch-ua-mobile": /\bMobile\b/.test(userAgent) ? "?1" : "?0",
     "sec-ch-ua-platform": JSON.stringify(platform),
   };
